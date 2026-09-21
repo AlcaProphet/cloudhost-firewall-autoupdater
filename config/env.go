@@ -31,6 +31,7 @@ func ParseEnv(content string) (*Config, error) {
 		LogLevel:         getOr(kv, "LOG_LEVEL", "info"),
 		DNSTimeout:       10 * time.Second,
 		DNSFailThreshold: 5,
+		WebUIHost:        "127.0.0.1",
 		WebUIPort:        60200,
 		SyncEnabled:      true, // 默认开启
 		TCAccessID:       kv["TC_ACCESS_ID"],
@@ -53,6 +54,9 @@ func ParseEnv(content string) (*Config, error) {
 			return nil, fmt.Errorf("DNS_FAIL_THRESHOLD 必须为整数: %w", err)
 		}
 		cfg.DNSFailThreshold = n
+	}
+	if v := strings.TrimSpace(kv["WEBUI_HOST"]); v != "" {
+		cfg.WebUIHost = v
 	}
 	if v := kv["WEBUI_PORT"]; v != "" {
 		n, err := strconv.Atoi(v)
@@ -91,6 +95,22 @@ func ParseEnv(content string) (*Config, error) {
 		cfg.DomainRules = rules
 	}
 	return cfg, nil
+}
+
+// ApplyWebUIEnv 将运行时环境变量覆盖到 WebUI 监听配置。
+// WebUI 模式主配置来自 SQLite，容器部署需要通过环境变量单独指定监听地址和端口。
+func ApplyWebUIEnv(cfg *Config) error {
+	if v := strings.TrimSpace(os.Getenv("WEBUI_HOST")); v != "" {
+		cfg.WebUIHost = v
+	}
+	if v := strings.TrimSpace(os.Getenv("WEBUI_PORT")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("WEBUI_PORT 必须为整数: %w", err)
+		}
+		cfg.WebUIPort = n
+	}
+	return nil
 }
 
 // mergeContinuation 将 `\` 续行合并为单行

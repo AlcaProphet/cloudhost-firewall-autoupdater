@@ -126,7 +126,7 @@ make build
 
 未检测到 `TARGETS` 环境变量时自动进入。配置存储在 SQLite 数据库中，通过浏览器管理，修改后自动热重载。
 
-- 默认地址：`http://127.0.0.1:60200`（仅绑定本机，端口被占用时自动在 50000–65535 随机选择）
+- 默认地址：`http://127.0.0.1:60200`（仅绑定本机，端口被占用时由操作系统随机分配可用端口）
 - 数据路径（自动选择）：
   - macOS：`~/Library/Application Support/fwalizer/config.db`
   - Linux：`~/.config/fwalizer/config.db`
@@ -191,7 +191,8 @@ RULES=api.example.com|TCP|443|ACCEPT||生产API
 | `DNS_FAIL_THRESHOLD` | `5` | 连续失败多少次后触发熔断 |
 | `TC_ACCESS_ID` / `TC_ACCESS_KEY` | （凭据） | 腾讯云 API 密钥（[获取地址](https://console.cloud.tencent.com/cam/capi)） |
 | `ALI_ACCESS_ID` / `ALI_ACCESS_KEY` | （凭据） | 阿里云 AccessKey（[获取地址](https://ram.console.aliyun.com/manage/ak)） |
-| `WEBUI_PORT` | `60200` | WebUI 监听端口（绑定 127.0.0.1） |
+| `WEBUI_HOST` | `127.0.0.1` | WebUI 监听地址；容器、局域网或独立反向代理访问时设为 `0.0.0.0` |
+| `WEBUI_PORT` | `60200` | WebUI 监听端口 |
 | `FWALIZER_DATA_DIR` | 各平台标准路径 | WebUI 数据存储目录（SQLite 数据库位置） |
 
 ### RULES 语法（.env 模式）
@@ -297,12 +298,14 @@ docker pull ghcr.io/alcaprophet/fwalizer:latest
 
 docker run -d --name fwalizer --restart=always \
   -p 60200:60200 \
+  -e WEBUI_HOST=0.0.0.0 \
   -e FWALIZER_DATA_DIR=/app/data \
   -v fwalizer-data:/app/data \
   ghcr.io/alcaprophet/fwalizer:latest
 ```
 
-然后浏览器访问 `http://127.0.0.1:60200`。
+然后可在宿主机访问 `http://127.0.0.1:60200`，或在防火墙允许的前提下通过 `http://<宿主机IP>:60200` 访问。
+如果只允许同机反向代理访问，将端口映射改为 `-p 127.0.0.1:60200:60200`。
 
 ### .env 模式运行（备用/进阶）
 
@@ -322,6 +325,8 @@ services:
     image: ghcr.io/alcaprophet/fwalizer:latest
     container_name: fwalizer
     restart: unless-stopped
+    environment:
+      - WEBUI_HOST=0.0.0.0
     ports:
       - "60200:60200"              # WebUI 模式（推荐）
     volumes:
@@ -471,15 +476,25 @@ make build
 
 启动 WebUI 模式后，在左侧菜单进入「告警配置」页面，填写 SMTP 或 Webhook 信息并启用即可。Webhook 支持在配置页选择「通知渠道」（钉钉/飞书/Slack），程序会自动适配各平台的消息格式。配置保存后即时生效。
 
-### 10. 后端服务端口被占用怎么办？
+### 10. 如何通过局域网或反向代理访问 WebUI？
 
-默认端口 `60200` 被占用时，程序会自动在 `50000–65535` 范围内随机选择一个可用端口，并在日志中输出 WARN 提示和实际端口号。您也可以显式设置 `WEBUI_PORT` 环境变量指定其他端口。
+直接运行时默认只监听 `127.0.0.1`。需要通过主机 IP 访问，或反向代理与 FWAlizer 不在同一网络命名空间时，设置 `WEBUI_HOST=0.0.0.0`。此时请同时通过主机防火墙、VPN 或带身份验证的反向代理限制访问。
 
-### 11. WebUI 模式能否同时启动多个实例？
+```bash
+WEBUI_HOST=0.0.0.0 WEBUI_PORT=60200 ./fwalizer
+```
+
+Docker 需在容器内设置 `WEBUI_HOST=0.0.0.0`。宿主机的暴露范围由端口映射决定：`-p 60200:60200` 允许通过宿主机网卡访问，`-p 127.0.0.1:60200:60200` 则只允许宿主机本地反向代理访问。
+
+### 11. 后端服务端口被占用怎么办？
+
+默认端口 `60200` 被占用时，程序会由操作系统随机分配一个可用端口，并在日志中输出 WARN 提示和实际端口号。您也可以显式设置 `WEBUI_PORT` 环境变量指定其他端口。Docker 端口映射不会跟随容器内的随机端口，建议为容器保留专用的固定端口。
+
+### 12. WebUI 模式能否同时启动多个实例？
 
 **不能。** 程序通过 pidfile（`<数据目录>/fwalizer.pid`）检测已有实例，若检测到另一个 FWAlizer 进程正在运行，会拒绝启动并提示 PID。这避免了多实例操作同一 SQLite 数据库可能引起的问题。
 
-### 12. 如何切换明暗主题？
+### 13. 如何切换明暗主题？
 
 侧边栏顶部 FWAlizer 标题右侧的 ☀️/🌙 开关即可切换；主题偏好持久化保存，重启后保持。
 

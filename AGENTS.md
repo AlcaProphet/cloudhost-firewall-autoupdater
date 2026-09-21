@@ -34,7 +34,7 @@
 
 - 项目以**内部使用**为设计前提，WebUI 不针对公开访问设计
 - 网络安全边界由用户自己控制（防火墙、VPN、反向代理等）
-- WebUI 默认绑定 `127.0.0.1`，端口通过 `WEBUI_PORT` 配置（默认 `60200`，若被占用自动在 50000–65535 范围随机选择可用端口；参见 `webui/server.go` 的 `findAvailablePort`）
+- WebUI 默认绑定 `127.0.0.1`，可通过 `WEBUI_HOST` 配置监听地址（Docker 内使用 `0.0.0.0`）；端口通过 `WEBUI_PORT` 配置（默认 `60200`，若被占用则由 OS 随机选择可用端口；参见 `webui/server.go` 的 `findAvailablePort`）
 - Docker 用户通过 `-p` 自行决定暴露范围
 - 凭据通过独立环境变量传入，不与资源声明混合
 

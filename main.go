@@ -68,13 +68,17 @@ func main() {
 			fmt.Fprintf(os.Stderr, "加载配置失败: %v\n", err)
 			os.Exit(1)
 		}
+		if err := config.ApplyWebUIEnv(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "加载 WebUI 监听配置失败: %v\n", err)
+			os.Exit(1)
+		}
 
 		// 初始化日志（同时输出到 stdout 和 WebUI 日志流）
 		logBroadcaster := webapi.NewLogBroadcaster(cfg.LogLevel)
 		app.InitLoggerWithBroadcaster(cfg.LogLevel, logBroadcaster)
 
 		// 启动 WebUI 服务器
-		srv := webui.NewServer(store, cfg.WebUIPort)
+		srv := webui.NewServer(store, cfg.WebUIHost, cfg.WebUIPort)
 		srv.SetLogBroadcaster(logBroadcaster)
 
 		// 创建同步引擎（初始 Provider 可为空，等待用户通过 WebUI 配置后热重载生效）

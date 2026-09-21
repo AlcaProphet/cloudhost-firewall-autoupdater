@@ -14,15 +14,17 @@ import (
 // Server WebUI HTTP 服务器
 type Server struct {
 	store *config.Store
+	host  string
 	port  int
 	mux   *http.ServeMux
 	deps  *api.Deps
 }
 
 // NewServer 创建 WebUI 服务器
-func NewServer(store *config.Store, port int) *Server {
+func NewServer(store *config.Store, host string, port int) *Server {
 	s := &Server{
 		store: store,
+		host:  host,
 		port:  port,
 		mux:   http.NewServeMux(),
 		deps:  &api.Deps{Store: store},
@@ -50,25 +52,25 @@ func (s *Server) SetLogBroadcaster(b *api.LogBroadcaster) {
 // Start 启动 HTTP 服务器（阻塞）。若配置端口被占用，自动随机选择可用端口。
 // 返回实际监听的端口号。
 func (s *Server) Start() (int, error) {
-	actualPort := findAvailablePort(s.port)
+	actualPort := findAvailablePort(s.host, s.port)
 	if actualPort != s.port {
 		slog.Warn("端口已被占用，使用随机端口", "请求端口", s.port, "实际端口", actualPort)
 		s.port = actualPort
 	}
-	addr := fmt.Sprintf("127.0.0.1:%d", actualPort)
+	addr := net.JoinHostPort(s.host, fmt.Sprintf("%d", actualPort))
 	slog.Info("WebUI 启动", "访问地址", "http://"+addr)
 	return actualPort, http.ListenAndServe(addr, s.mux)
 }
 
 // findAvailablePort 探测端口：优先使用 preferred，被占用时由 OS 随机分配
-func findAvailablePort(preferred int) int {
-	addr := fmt.Sprintf("127.0.0.1:%d", preferred)
+func findAvailablePort(host string, preferred int) int {
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", preferred))
 	l, err := net.Listen("tcp", addr)
 	if err == nil {
 		l.Close()
 		return preferred
 	}
-	l, err = net.Listen("tcp", "127.0.0.1:0")
+	l, err = net.Listen("tcp", net.JoinHostPort(host, "0"))
 	if err != nil {
 		return preferred
 	}

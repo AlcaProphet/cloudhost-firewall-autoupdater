@@ -20,6 +20,7 @@
 |------|------|---------|------|
 | 1 | 仓库身份收束与 Desktop 正式移除 | Design4 §二-17、§二-18 | ✅ 验收通过 |
 | 2 | Docker 数据卷非 root 写权限修复 | AGENTS.md §八、Issue4 R4-01 | ✅ 验收通过 |
+| 3 | WebUI 可配置监听地址与 Docker 端口映射修复 | AGENTS.md §二、Issue4 R4-02 | ✅ 验收通过 |
 
 > 状态标记：☐ 未开始 / ◧ 进行中 / ✅ 验收通过
 
@@ -31,6 +32,7 @@
 |------|---------|------|
 | 1 | `AGENTS.md`、`Design4.md`、`Build5.md`、`README.md`、`.env.example`、`go.mod`、Go 导入、构建与 CI 文件、Desktop 归档文件 | 更新仓库/module 身份；保留运行时兼容标识；移除 Desktop 范围 |
 | 2 | `build/Dockerfile`、`README.md`、`Build5.md`、`Issue4.md` | 预创建并授权数据目录；统一 Docker 数据路径；提供旧卷无损迁移命令 |
+| 3 | `config/`、`webui/server.go`、`main.go`、Docker 与配置示例、`README.md`、`AGENTS.md`、`Build5.md`、`Issue4.md` | 新增 `WEBUI_HOST`；运行时环境覆盖；Docker 容器内监听所有接口 |
 
 ---
 
@@ -39,6 +41,7 @@
 ```
 Step 1 仓库身份收束与 Desktop 正式移除
 Step 2 Docker 数据卷非 root 写权限修复
+Step 3 WebUI 可配置监听地址与 Docker 端口映射修复
 后续候选项（Design4 §三）逐项经用户确认后转为后续 Step
 ```
 
@@ -73,6 +76,19 @@ Step 2 Docker 数据卷非 root 写权限修复
   - `git diff --check`
 - **验收结果（2026-09-21）：** Docker 镜像构建通过；全新命名卷下业务进程为 `appuser`（UID/GID 1000），`/app/data`、pidfile 与 SQLite 数据库均归该用户所有，容器健康；root 所有的旧卷可稳定复现原权限错误，执行无损迁移后保留原文件并健康启动；Compose 配置校验、前端生产构建、`go test ./...`、`go vet ./...` 与 `git diff --check` 通过。
 
+### Step 3：WebUI 可配置监听地址与 Docker 端口映射修复
+
+- **目标：** 保留本机运行默认仅回环访问，同时使 Docker 端口映射、主机 IP 和独立反向代理可访问 WebUI。
+- **实现边界：** 新增 `WEBUI_HOST`，默认 `127.0.0.1`；仅在用户或 Docker 示例显式设置 `0.0.0.0` 时对外监听；不引入新 HTTP 框架或应用层网络访问控制。
+- **验收命令：**
+  - `go test ./... -race`
+  - `go vet ./...`
+  - `docker compose -f docker-compose.yml.example config --quiet`
+  - 构建 Docker 镜像，以 `WEBUI_HOST=0.0.0.0` 和宿主机端口映射启动，从宿主机请求 `/api/health`
+  - 分别以默认值和 `WEBUI_HOST=0.0.0.0` 启动真实进程，检查监听地址并请求 `/api/health`
+  - `git diff --check`
+- **验收结果（2026-09-21）：** 默认运行时仅监听 `127.0.0.1`；设置 `WEBUI_HOST=0.0.0.0` 后监听所有接口，并已通过实际局域网 IP 请求健康端点；Docker 镜像构建后通过宿主机端口映射成功请求容器健康端点；race 测试、前端生产构建、`go vet ./...`、Compose 配置校验与 `git diff --check` 通过。
+
 ---
 
 ## 五、候选构建项（待用户决策，逐项转 Step）
@@ -95,3 +111,4 @@ Step 2 Docker 数据卷非 root 写权限修复
 | v1.0 | 2026-08-02 | 初始版本：作为当前构建方案（承接已存档 Build1-4），候选构建项见第五节 |
 | v1.1 | 2026-09-21 | Step 1 验收通过：仓库身份收束与 Desktop 正式移除 |
 | v1.2 | 2026-09-21 | Step 2 验收通过：修复 Docker 数据卷非 root 写权限问题 |
+| v1.3 | 2026-09-21 | Step 3 验收通过：WebUI 监听地址可配置，Docker 端口映射可访问 |

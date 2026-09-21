@@ -593,6 +593,7 @@ func (s *Store) LoadConfig() (*Config, error) {
 		DNSTimeout:       10 * time.Second,
 		DNSFailThreshold: 5,
 		LogLevel:         "info",
+		WebUIHost:        "127.0.0.1",
 		WebUIPort:        60200,
 		Mode:             "webui",
 		SyncEnabled:      true, // 默认开启（向后兼容：老用户无该键时保持启动即同步）

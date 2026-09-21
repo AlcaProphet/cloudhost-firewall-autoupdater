@@ -86,6 +86,7 @@ type Config struct {
 	DNSTimeout       time.Duration // 默认 10s
 	DNSFailThreshold int           // 默认 5
 	LogLevel         string        // debug / info / warn / error
+	WebUIHost        string        // 默认 127.0.0.1
 	WebUIPort        int           // 默认 60200
 	Mode             string        // env / webui / 空=自动
 	SyncEnabled      bool          // 同步开关：true=开启，false=暂停；默认 true

@@ -119,8 +119,43 @@ RULES=a.com|TCP|80|ACCEPT
 	if cfg.WebUIPort != 60200 {
 		t.Errorf("WebUIPort = %d, want 60200", cfg.WebUIPort)
 	}
+	if cfg.WebUIHost != "127.0.0.1" {
+		t.Errorf("WebUIHost = %s, want 127.0.0.1", cfg.WebUIHost)
+	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("LogLevel = %s, want info", cfg.LogLevel)
+	}
+}
+
+func TestParseEnv_WebUIListen(t *testing.T) {
+	cfg, err := ParseEnv("WEBUI_HOST=0.0.0.0\nWEBUI_PORT=61234\n")
+	if err != nil {
+		t.Fatalf("ParseEnv 失败: %v", err)
+	}
+	if cfg.WebUIHost != "0.0.0.0" {
+		t.Errorf("WebUIHost = %s, want 0.0.0.0", cfg.WebUIHost)
+	}
+	if cfg.WebUIPort != 61234 {
+		t.Errorf("WebUIPort = %d, want 61234", cfg.WebUIPort)
+	}
+}
+
+func TestApplyWebUIEnv(t *testing.T) {
+	t.Setenv("WEBUI_HOST", "0.0.0.0")
+	t.Setenv("WEBUI_PORT", "61234")
+	cfg := &Config{WebUIHost: "127.0.0.1", WebUIPort: 60200}
+	if err := ApplyWebUIEnv(cfg); err != nil {
+		t.Fatalf("ApplyWebUIEnv 失败: %v", err)
+	}
+	if cfg.WebUIHost != "0.0.0.0" || cfg.WebUIPort != 61234 {
+		t.Errorf("监听配置 = %s:%d, want 0.0.0.0:61234", cfg.WebUIHost, cfg.WebUIPort)
+	}
+}
+
+func TestApplyWebUIEnv_InvalidPort(t *testing.T) {
+	t.Setenv("WEBUI_PORT", "invalid")
+	if err := ApplyWebUIEnv(&Config{}); err == nil {
+		t.Fatal("WEBUI_PORT 非整数时应报错")
 	}
 }
 
