@@ -7,7 +7,13 @@
 
 ## 一、进行中问题
 
-当前无进行中问题（截至 2026-08-02，Build4 Step 1-13 全部验收通过，全量回归 `go test ./... -race` + 前端生产构建全绿）。
+### R4-01 Docker 数据卷对非 root 用户不可写
+
+- **现象：** Linux 使用示例 Compose 启动时持续报错 `写入 pidfile 失败: open /app/data/fwalizer.pid: permission denied`，容器退出后被重启策略反复拉起。
+- **根因：** 镜像以 `appuser` 运行，但切换用户前未创建并授权 `/app/data`；命名卷挂载后目录属于 root，`os.MkdirAll` 遇到已存在目录不会修正所有权。
+- **影响范围：** WebUI 模式无法写入 pidfile；即使绕过 pidfile，SQLite 数据库及 WAL/SHM 文件也无法写入。README 原直接运行示例使用的历史默认目录同样未在镜像中预创建。
+- **修复方案：** 镜像预创建 `/app/data` 与历史默认目录并授权 `appuser`；README 统一推荐 `/app/data`，补充旧命名卷无损所有权迁移步骤；最终业务进程保持非 root。
+- **状态：** ✅ 已修复（2026-09-21；Docker 新卷启动、旧卷复现与无损迁移、Compose 配置校验、前端构建、`go test ./...`、`go vet ./...`、`git diff --check` 均通过）
 
 ---
 
@@ -40,3 +46,4 @@
 | 版本 | 日期 | 说明 |
 |------|------|------|
 | v1.0 | 2026-08-02 | 初始版本：作为当前问题记录（承接已存档 Issue1-3，见 HistoryDocs/）；后续优化候选已归入 Design4 §三 |
+| v1.1 | 2026-09-21 | R4-01 已修复并完成新卷与旧卷迁移验收 |

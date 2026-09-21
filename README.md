@@ -297,7 +297,8 @@ docker pull ghcr.io/alcaprophet/fwalizer:latest
 
 docker run -d --name fwalizer --restart=always \
   -p 60200:60200 \
-  -v fwalizer-data:/home/appuser/.config/fwalizer \
+  -e FWALIZER_DATA_DIR=/app/data \
+  -v fwalizer-data:/app/data \
   ghcr.io/alcaprophet/fwalizer:latest
 ```
 
@@ -329,6 +330,31 @@ services:
     # volumes:
     #   - ./config/.env:/app/.env:ro
 ```
+
+镜像会预先创建 `/app/data` 并将其授权给非 root 用户 `appuser`。首次创建的命名卷会继承该目录权限，容器无需以 root 用户运行。
+
+如果命名卷曾由旧镜像创建，卷内目录可能仍属于 `root`，更新镜像不会自动改变已有卷的权限。请先停止服务，再执行一次无损权限修复（不会删除数据库）：
+
+```bash
+sudo docker compose stop fwalizer
+sudo docker compose run --rm --user root --entrypoint chown fwalizer \
+  -R appuser:appuser /app/data
+sudo docker compose up -d
+```
+
+直接使用 `docker run` 且卷名为 `fwalizer-data` 时，可执行：
+
+```bash
+sudo docker stop fwalizer
+sudo docker run --rm --user root \
+  -v fwalizer-data:/app/data \
+  --entrypoint chown \
+  ghcr.io/alcaprophet/fwalizer:latest \
+  -R appuser:appuser /app/data
+sudo docker start fwalizer
+```
+
+不要使用 `docker compose down -v` 修复权限；该命令会删除命名卷及其中的 SQLite 数据。
 
 ### 本地构建镜像
 

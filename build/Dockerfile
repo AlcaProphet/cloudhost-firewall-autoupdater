@@ -20,7 +20,9 @@ RUN CGO_ENABLED=0 go build \
 
 # 运行阶段
 FROM alpine:3.20
-RUN adduser -D appuser
+RUN adduser -D appuser \
+    && mkdir -p /app/data /home/appuser/.config/fwalizer \
+    && chown -R appuser:appuser /app/data /home/appuser/.config
 WORKDIR /app
 COPY --from=builder /fwalizer /usr/local/bin/fwalizer
 USER appuser
