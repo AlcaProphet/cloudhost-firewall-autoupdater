@@ -7,8 +7,8 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/alcaprophet/fwalizer/config"
-	"github.com/alcaprophet/fwalizer/webui/api"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/webui/api"
 )
 
 // Server WebUI HTTP 服务器

@@ -1,4 +1,4 @@
-module github.com/alcaprophet/fwalizer
+module github.com/alcaprophet/cloudhost-firewall-autoupdater
 
 go 1.25.0
 

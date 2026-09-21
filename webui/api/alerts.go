@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/alcaprophet/fwalizer/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
 
 // alertsResponse 告警配置响应结构

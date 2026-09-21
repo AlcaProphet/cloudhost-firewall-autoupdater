@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/alcaprophet/fwalizer/config"
-	"github.com/alcaprophet/fwalizer/syncer"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 )
 
 // stubSyncer 测试用模拟 Syncer（实现 api.Syncer 接口）

@@ -15,7 +15,7 @@ COPY . .
 COPY --from=frontend-builder /src/webui/frontend/dist ./webui/frontend/dist
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build \
-    -ldflags="-s -w -X github.com/alcaprophet/fwalizer/version.Version=${VERSION}" \
+    -ldflags="-s -w -X github.com/alcaprophet/cloudhost-firewall-autoupdater/version.Version=${VERSION}" \
     -o /fwalizer .
 
 # 运行阶段

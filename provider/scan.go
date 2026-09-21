@@ -8,7 +8,7 @@ import (
 	ecs "github.com/alibabacloud-go/ecs-20140526/v7/client"
 	swas "github.com/alibabacloud-go/swas-open-20200601/v3/client"
 	"github.com/alibabacloud-go/tea/tea"
-	"github.com/alcaprophet/fwalizer/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/profile"
 	lighthouse "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/lighthouse/v20200324"

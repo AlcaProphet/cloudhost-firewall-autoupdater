@@ -8,14 +8,14 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/alcaprophet/fwalizer/app"
-	"github.com/alcaprophet/fwalizer/config"
-	"github.com/alcaprophet/fwalizer/dns"
-	"github.com/alcaprophet/fwalizer/notifier"
-	"github.com/alcaprophet/fwalizer/provider"
-	"github.com/alcaprophet/fwalizer/syncer"
-	"github.com/alcaprophet/fwalizer/webui"
-	webapi "github.com/alcaprophet/fwalizer/webui/api"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/app"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/webui"
+	webapi "github.com/alcaprophet/cloudhost-firewall-autoupdater/webui/api"
 )
 
 func main() {
@@ -198,21 +198,12 @@ func main() {
 			cfg.WebUIPort = actualPort
 		}()
 
-		// 启动系统托盘（桌面端功能已搁置，见 FutureDesktopDevelop.md）
-		// url := fmt.Sprintf("http://127.0.0.1:%d", cfg.WebUIPort)
-		// go app.RunSystray(url, func() { s.TriggerSync() })
-
 		go s.Run()
 
 		// 等待停止信号（Ctrl+C）
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 		<-sigCh
-		// 桌面端功能已搁置，不再监听托盘退出 channel；见 FutureDesktopDevelop.md
-		// select {
-		// case <-sigCh:
-		// case <-app.QuitCh():
-		// }
 		slog.Info("收到停止信号，等待当前轮次完成...")
 		s.Stop()
 		s.Wait()

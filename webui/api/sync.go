@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/alcaprophet/fwalizer/syncer"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 )
 
 func (d *Deps) handleSyncStatus(w http.ResponseWriter, r *http.Request) {

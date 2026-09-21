@@ -1,5 +1,5 @@
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
-LDFLAGS := -s -w -X github.com/alcaprophet/fwalizer/version.Version=$(VERSION)
+LDFLAGS := -s -w -X github.com/alcaprophet/cloudhost-firewall-autoupdater/version.Version=$(VERSION)
 
 .PHONY: build test vet clean docker-build all frontend
 

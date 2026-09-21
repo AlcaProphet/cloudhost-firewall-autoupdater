@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/alcaprophet/fwalizer/config"
-	"github.com/alcaprophet/fwalizer/notifier"
-	"github.com/alcaprophet/fwalizer/syncer"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 )
 
 // Syncer 同步引擎接口（避免 api 包直接依赖 syncer 包的具体实现）

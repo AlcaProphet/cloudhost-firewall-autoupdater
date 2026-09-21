@@ -4,8 +4,8 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/alcaprophet/fwalizer/config"
-	"github.com/alcaprophet/fwalizer/notifier"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
 )
 
 // StoreLogWriter 将同步事件写入 SQLite 同步日志

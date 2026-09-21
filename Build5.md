@@ -18,8 +18,7 @@
 
 | Step | 内容 | 设计依据 | 状态 |
 |------|------|---------|------|
-| — | 当前无进行中的构建 Step（Build4 已全部验收通过并归档） | — | — |
-| 1 | 候选构建项（见五、候选列表，待用户决策后逐项转 Step） | Design4 §三 | ☐ 未开始 |
+| 1 | 仓库身份收束与 Desktop 正式移除 | Design4 §二-17、§二-18 | ✅ 验收通过 |
 
 > 状态标记：☐ 未开始 / ◧ 进行中 / ✅ 验收通过
 
@@ -29,21 +28,33 @@
 
 | Step | 涉及文件 | 要点 |
 |------|---------|------|
-| 1 | 候选转 Step 后填写 | — |
+| 1 | `AGENTS.md`、`Design4.md`、`Build5.md`、`README.md`、`.env.example`、`go.mod`、Go 导入、构建与 CI 文件、Desktop 归档文件 | 更新仓库/module 身份；保留运行时兼容标识；移除 Desktop 范围 |
 
 ---
 
 ## 三、构建顺序依赖图
 
 ```
-候选项（Design4 §三）逐项经用户确认 → 转为 Step（含目标/前置/参考代码/验收命令）→ 按序执行
+Step 1 仓库身份收束与 Desktop 正式移除 → 候选项（Design4 §三）逐项经用户确认后转为后续 Step
 ```
 
 ---
 
 ## 四、分步构建计划
 
-当前无进行中的构建 Step。候选构建项经用户确认后在本节追加，每个 Step 包含：**目标 / 前置条件 / 产出文件与操作（可直接使用的参考代码）/ 测试与验收命令**。
+### Step 1：仓库身份收束与 Desktop 正式移除
+
+- **目标：** 将仓库与 Go module 身份统一为 `cloudhost-firewall-autoupdater`，删除 Desktop 源码及未来开发计划。
+- **兼容边界：** 保留 `FWAlizer` 产品名、`fwalizer` 二进制、`FWALIZER_*` 环境变量、原数据目录、pidfile、配置导出文件名及 `ghcr.io/alcaprophet/fwalizer` 镜像名。
+- **历史边界：** `HistoryDocs/` 保留当时事实，不批量改写历史代码片段或 Desktop 记录。
+- **验收命令：**
+  - `npm run build`（`webui/frontend/`）
+  - `go test ./... -race`
+  - `go vet ./...`
+  - `go build -ldflags="-X github.com/alcaprophet/cloudhost-firewall-autoupdater/version.Version=dev" ./...`
+  - 活跃文件旧 module、旧仓库 URL 及已移除 Desktop 实现引用静态检查
+  - `git diff --check`
+- **验收结果（2026-09-21）：** 前端生产构建、`go test ./... -race`、`go vet ./...`、新 module 路径版本注入编译、静态残留检查与 `git diff --check` 全部通过；GitHub 仓库已重命名，本地 `origin` 已更新并验证可访问。
 
 ---
 
@@ -65,3 +76,4 @@
 | 版本 | 日期 | 说明 |
 |------|------|------|
 | v1.0 | 2026-08-02 | 初始版本：作为当前构建方案（承接已存档 Build1-4），候选构建项见第五节 |
+| v1.1 | 2026-09-21 | Step 1 验收通过：仓库身份收束与 Desktop 正式移除 |

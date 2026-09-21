@@ -8,8 +8,8 @@ import (
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
 	swas "github.com/alibabacloud-go/swas-open-20200601/v3/client"
 	"github.com/alibabacloud-go/tea/tea"
-	"github.com/alcaprophet/fwalizer/config"
-	"github.com/alcaprophet/fwalizer/internal/portconv"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/portconv"
 )
 
 func init() {

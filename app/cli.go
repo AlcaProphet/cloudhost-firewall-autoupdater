@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alcaprophet/fwalizer/config"
-	"github.com/alcaprophet/fwalizer/version"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/version"
 
 	_ "modernc.org/sqlite"
 )

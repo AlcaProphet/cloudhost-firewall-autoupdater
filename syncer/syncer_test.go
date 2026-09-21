@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alcaprophet/fwalizer/config"
-	"github.com/alcaprophet/fwalizer/dns"
-	"github.com/alcaprophet/fwalizer/internal/portconv"
-	"github.com/alcaprophet/fwalizer/provider"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/portconv"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
 
 // stubProvider 测试用模拟 Provider（GetRules 返回空，可计数调用次数）

@@ -4,9 +4,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/alcaprophet/fwalizer/config"
-	"github.com/alcaprophet/fwalizer/dns"
-	"github.com/alcaprophet/fwalizer/internal/tag"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/tag"
 )
 
 // OwnedRules 筛选本工具管理的规则（描述以 [TAG] 开头）

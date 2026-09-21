@@ -7,7 +7,9 @@
 
 ## 一、项目基本信息
 
-- **模块路径**：`github.com/alcaprophet/fwalizer`
+- **模块路径**：`github.com/alcaprophet/cloudhost-firewall-autoupdater`
+- **仓库名称**：`cloudhost-firewall-autoupdater`
+- **产品与兼容标识**：产品显示名、二进制名、环境变量前缀、数据目录及 GHCR 镜像继续使用 `FWAlizer` / `fwalizer`，避免破坏现有部署
 - **Go 版本**：`go 1.25`
 - **文档定位与优先级**：编码前先阅读本文件（强要求）。设计记录见 [Design4.md](./Design4.md)（当前，非强制，供参考）；详细构建方案见 [Build5.md](./Build5.md)（当前）；当前问题记录见 [Issue4.md](./Issue4.md)；历史文档（Design1-3、Build1-4、Issue1-3）见 [HistoryDocs/](./HistoryDocs/)（已存档，仅记录，不再用于构建，仅用于核查等情况）
 
@@ -148,7 +150,7 @@
 - 注释使用**中文**（面向国内开发者）
 - 遵守 `PlatformAPIDocs/` 中的 API 文档要求（参数格式、字段长度限制、频率限制）
 - 多云抽象基于 Provider 接口 + 工厂注册模式（详见 HistoryDocs/Build1.md）
-- 桌面端系统托盘功能**已搁置**（代码归档至 `desktop/`，详见 [FutureDesktopDevelop.md](./FutureDesktopDevelop.md)）
+- 项目交付范围仅包含 WebUI 单二进制、`.env` headless 与 Docker；不包含桌面托盘、开机自启或原生桌面打包计划
 - 日志多路复用器 `MultiHandler` 统一定义在 `app/logutil.go`（消除与 `webui/api/logstream.go` 的重复）
 - WebUI 模式通过 pidfile（`config/pidfile.go` + 平台文件）防止多实例运行
 - 事件类型：全局同步完成用 `EventSyncComplete`，逐域名同步完成用 `EventDomainSyncComplete`（定义于 `notifier/bus.go`）
@@ -186,9 +188,8 @@
 |------|---------|------|------|
 | AGENTS.md（本文件） | AI 编码助手 | 编码指令与约束（**唯一强要求**） | 活跃 |
 | [Design4.md](./Design4.md) | 人类（开发者/用户） | 当前设计记录：功能全景、设计决策记录、后续候选（设计构想） | 活跃 |
-| [Build5.md](./Build5.md) | 开发者 | 当前构建方案：文档体系重构（Step 1）+ 候选构建项 | 活跃 |
+| [Build5.md](./Build5.md) | 开发者 | 当前构建方案与候选构建项 | 活跃 |
 | [Issue4.md](./Issue4.md) | 开发者 | 当前问题追踪：进行中问题 + 已知遗留/候选事项 | 活跃 |
-| [FutureDesktopDevelop.md](./FutureDesktopDevelop.md) | 开发者 | 桌面端功能搁置记录与后续重启思路 | 归档 |
 | [HistoryDocs/](./HistoryDocs/) | 开发者 | Build1-4、Issue1-3、Design1-3 共 10 份历史文档（已存档，仅记录，不再用于构建，仅用于核查等情况） | 已存档 |
 
 ### 12.3 API 使用要求文档（PlatformAPIDocs/）

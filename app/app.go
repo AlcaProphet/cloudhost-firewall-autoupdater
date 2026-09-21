@@ -5,10 +5,10 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/alcaprophet/fwalizer/config"
-	"github.com/alcaprophet/fwalizer/dns"
-	"github.com/alcaprophet/fwalizer/provider"
-	"github.com/alcaprophet/fwalizer/syncer"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 )
 
 // Run 应用主入口

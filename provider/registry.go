@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/alcaprophet/fwalizer/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
 
 // Factory 创建 Provider 的工厂函数

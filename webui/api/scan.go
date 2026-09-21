@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/alcaprophet/fwalizer/config"
-	"github.com/alcaprophet/fwalizer/provider"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
 
 // scanResourcesReq 扫描资源请求

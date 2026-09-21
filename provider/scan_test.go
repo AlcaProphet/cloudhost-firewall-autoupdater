@@ -3,7 +3,7 @@ package provider
 import (
 	"testing"
 
-	"github.com/alcaprophet/fwalizer/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
 
 // TestScanResourcesUnknownType 未知云产品类型返回错误（不触发真实云 API 调用）

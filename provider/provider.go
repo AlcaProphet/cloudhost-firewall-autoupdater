@@ -1,8 +1,8 @@
 package provider
 
 import (
-	"github.com/alcaprophet/fwalizer/config"
-	"github.com/alcaprophet/fwalizer/dns"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
 )
 
 // Provider 多云抽象接口

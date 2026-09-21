@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/alcaprophet/fwalizer/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
 
 func (d *Deps) handleGetSettings(w http.ResponseWriter, r *http.Request) {

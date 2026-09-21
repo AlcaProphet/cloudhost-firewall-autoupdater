@@ -344,7 +344,7 @@ docker run --rm fwalizer version
 ### 目录结构
 
 ```
-fwalizer/
+cloudhost-firewall-autoupdater/
 ├── main.go                  # 入口：模式判定 + 启动
 ├── app/                     # 应用生命周期（CLI、模式检测、日志初始化）
 ├── config/                  # 配置模型、.env 解析器、SQLite 存储、校验
@@ -369,8 +369,8 @@ fwalizer/
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/alcaprophet/fwalizer.git
-cd fwalizer
+git clone https://github.com/alcaprophet/cloudhost-firewall-autoupdater.git
+cd cloudhost-firewall-autoupdater
 
 # 2. 编译后端
 make build
@@ -441,31 +441,27 @@ make build
 
 使用 `./fwalizer backup` 备份 SQLite 数据库，`./fwalizer restore <文件>` 恢复。恢复前需先停止 FWAlizer 进程。
 
-### 9. 桌面端托盘不出现？
-
-桌面端功能已**暂时搁置**（代码归档至 `desktop/`，详见 [FutureDesktopDevelop.md](./FutureDesktopDevelop.md)）。请使用 WebUI 模式或 Docker 模式。
-
-### 10. 如何配置告警通知？
+### 9. 如何配置告警通知？
 
 启动 WebUI 模式后，在左侧菜单进入「告警配置」页面，填写 SMTP 或 Webhook 信息并启用即可。Webhook 支持在配置页选择「通知渠道」（钉钉/飞书/Slack），程序会自动适配各平台的消息格式。配置保存后即时生效。
 
-### 11. 后端服务端口被占用怎么办？
+### 10. 后端服务端口被占用怎么办？
 
 默认端口 `60200` 被占用时，程序会自动在 `50000–65535` 范围内随机选择一个可用端口，并在日志中输出 WARN 提示和实际端口号。您也可以显式设置 `WEBUI_PORT` 环境变量指定其他端口。
 
-### 12. WebUI 模式能否同时启动多个实例？
+### 11. WebUI 模式能否同时启动多个实例？
 
 **不能。** 程序通过 pidfile（`<数据目录>/fwalizer.pid`）检测已有实例，若检测到另一个 FWAlizer 进程正在运行，会拒绝启动并提示 PID。这避免了多实例操作同一 SQLite 数据库可能引起的问题。
 
-### 13. 如何切换明暗主题？
+### 12. 如何切换明暗主题？
 
 侧边栏顶部 FWAlizer 标题右侧的 ☀️/🌙 开关即可切换；主题偏好持久化保存，重启后保持。
 
-### 14. 如何快速扫描并添加云资源？
+### 13. 如何快速扫描并添加云资源？
 
 在「全局设置」的云厂商凭据卡片中选择云产品与地域，点击「扫描资源」列出该地域下的实例/安全组（仅只读查询，不修改任何云端配置）。随后在「云资源管理」添加目标时，资源 ID 可直接从扫描结果下拉选择，所选资源的地域会自动联动填入；未扫描或无结果时也可手动输入任意资源 ID 与地域（地域支持下拉补全或自由输入，兼容云平台新区域）。
 
-### 15. 清空所有数据会删除什么？
+### 14. 清空所有数据会删除什么？
 
 「全局设置」页底部的「清空所有数据」按钮（红色警告，需二次确认）会清空全部业务数据：目标、规则、凭据、同步日志与扫描结果，数据库回到全新初始化状态。此操作不可恢复，操作前请确认或先使用 `./fwalizer backup` 备份。
 

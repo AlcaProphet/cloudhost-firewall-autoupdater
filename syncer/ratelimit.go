@@ -3,7 +3,7 @@ package syncer
 import (
 	"time"
 
-	"github.com/alcaprophet/fwalizer/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
 
 // rateLimitInterval 频率控制：保留充足余量，确保不易触发限流

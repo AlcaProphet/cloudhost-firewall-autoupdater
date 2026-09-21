@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alcaprophet/fwalizer/config"
-	"github.com/alcaprophet/fwalizer/notifier"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
 )
 
 // TestStoreLogWriter_Counts 成功事件携带计数 → 落库 added/deleted 正确

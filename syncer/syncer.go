@@ -11,11 +11,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/alcaprophet/fwalizer/config"
-	"github.com/alcaprophet/fwalizer/dns"
-	"github.com/alcaprophet/fwalizer/internal/tag"
-	"github.com/alcaprophet/fwalizer/notifier"
-	"github.com/alcaprophet/fwalizer/provider"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/tag"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
 
 // Syncer 同步引擎
