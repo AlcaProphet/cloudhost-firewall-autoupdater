@@ -4,6 +4,9 @@
 
 > 默认推荐使用 **WebUI 模式**（浏览器可视化管理，零配置文件）；`.env` 模式作为**备用/进阶/极简**模式，适合服务器无界面场景。
 
+> [!IMPORTANT]
+> **Build6 过渡状态：** 当前代码和本 README 的使用章节仍如实记录 CLI 和 `.env` Headless 现行行为；它们将在 [Build6 Step 2](./Build6.md#step-2移除-cli-与-env-headless-业务模式) 与代码同批移除，目前不得视为已实施。当前文档体系为 [Design5](./Design5.md)、[Build6](./Build6.md) 和 [Issue5](./Issue5.md)。
+
 ![仪表盘](./ReadmeAsset/dashboard.png)
 
 ---
@@ -388,10 +391,10 @@ cloudhost-firewall-autoupdater/
 ├── internal/                # 内部工具（端口转换、标签解析）
 ├── ReadmeAsset/             # README 截图资源
 ├── PlatformAPIDocs/          # 各云平台 API 使用要求 + 地域可用区指南文档
-├── HistoryDocs/             # 历史工程文档（Design1-3/Build1-4/Issue1-3，已存档）
-├── Design4.md               # 当前设计记录
-├── Build5.md                # 当前构建方案
-├── Issue4.md                # 当前问题追踪
+├── HistoryDocs/             # 历史工程文档（Design1-4/Build1-5/Issue1-4，共 13 份）
+├── Design5.md               # 当前设计记录
+├── Build6.md                # 当前构建方案
+├── Issue5.md                # 当前问题追踪
 ├── version/                 # 版本信息（ldflags 注入）
 └── build/                   # Dockerfile
 ```

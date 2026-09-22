@@ -1,13 +1,13 @@
-# FWAlizer 功能构建计划（Build6：待实施方案）
+# FWAlizer 功能构建计划（Build6：当前构建方案）
 
-> **文档定位：** 本文档是 FWAlizer 下一阶段已固定口径的构建前实施方案（Build 文档仍为非强制执行建议，唯一强要求是 AGENTS.md），整合完整配置导入导出、CLI 与 `.env` Headless 业务模式移除，以及 [Issue5.md](./Issue5.md) 中 R5-01～R5-03、O5-01～O5-06、A5-01 的处理计划。
+> **文档定位：** 本文档是 FWAlizer 当前已固定口径的分步实施方案（Build 文档仍为非强制执行建议，唯一强要求是 AGENTS.md），整合完整配置导入导出、CLI 与 `.env` Headless 业务模式移除，以及 [Issue5.md](./Issue5.md) 中 R5-01～R5-03、O5-01～O5-06、A5-01 的处理计划。
 >
-> - 编码指令：[AGENTS.md](./AGENTS.md)（当前唯一强要求；在 Step 0 获批并完成前，本文档不得覆盖其现行要求）
-> - 当前设计记录：[Design4.md](./Design4.md)
-> - 当前已完成构建方案：[Build5.md](./Build5.md)
-> - 本阶段问题输入：[Issue5.md](./Issue5.md)
+> - 编码指令：[AGENTS.md](./AGENTS.md)（当前唯一强要求）
+> - 当前设计记录：[Design5.md](./Design5.md)
+> - 当前问题记录：[Issue5.md](./Issue5.md)
+> - 已完成构建与设计记录：[HistoryDocs/](./HistoryDocs/)
 >
-> **授权边界：** 用户已于 2026-09-22 确认本文档的规划方向，并于同日确认本次核验补充的五项固定口径。本文档完善不代表 Step 0 或任一代码 Step 已获实施授权；正式构建必须从 Step 0 开始，每次只实施一个 Step，并在该 Step 验收完成后等待下一步授权。
+> **授权边界：** 用户已于 2026-09-22 确认本文档的规划方向与 Step 0 文档改动方案。Step 0 完成不代表任一代码 Step 已获实施授权；后续必须每次只实施一个 Step，并在该 Step 验收完成后等待下一步授权。
 
 ---
 
@@ -304,7 +304,7 @@ log_level, theme
 
 | Step | 内容 | 主要依据 | 状态 |
 |------|------|---------|------|
-| 0 | 文档体系切换与设计契约固定 | 本文档 §一～四、Issue5 A5-01 | ☐ 未开始 |
+| 0 | 文档体系切换与设计契约固定 | 本文档 §一～四、Issue5 A5-01 | ✅ 验收通过 |
 | 1 | 并发正确性基线与 CI race 门禁 | Issue5 R5-02、R5-03、O5-02 | ☐ 未开始 |
 | 2 | 移除 CLI 与 `.env` Headless 业务模式 | Issue5 A5-01、本文件 §一 | ☐ 未开始 |
 | 3 | HTTP Listener、Server 生命周期与优雅关闭 | Issue5 O5-04、O5-05 | ☐ 未开始 |
@@ -367,6 +367,14 @@ Step 7 高影响测试与总验收
   - README 明确区分“当前仍可用”和“Build6 目标”，不声称未实施功能已经完成；
   - `git diff --check` 通过。
 - **授权门禁：** 完成后先由用户审阅文档，再决定是否授权 Step 1。
+
+**实际验收（2026-09-22）：**
+
+- `Design4.md`、`Build5.md`、`Issue4.md` 原文迁入 `HistoryDocs/`，历史文档合计 13 份；
+- 新建 `Design5.md`，`AGENTS.md`、本文档、`Issue5.md` 和 README 当前文档指针已切换；
+- AGENTS、Design5、Build6 和 Issue5 对唯一运行形态、三个部署变量、version 2 敏感快照、数据保留、校验和实施顺序表述一致；
+- README 保留现行 CLI/Headless 使用说明，并增加 Build6 目标尚未实施的阶段警示；
+- 根目录当前文档链接检查和 `git diff --check` 通过；本 Step 未修改代码、依赖或运行时行为。
 
 ### Step 1：并发正确性基线与 CI race 门禁
 
@@ -638,7 +646,7 @@ git diff --check
 | O5-06 持久化校验 | Step 4、Step 5 | 普通 API 与导入共用轻量领域校验 |
 | A5-01 Headless 模式 | Step 0、Step 2 | 文档先固定，代码和 README 同步移除 |
 
-Issue5 R5-01 中“凭据不导入”的旧安全边界已被本阶段用户决策明确替代为“version 2 导出并导入完整凭据”；实施时应在 Step 0 更新当前 Issue5 说明，历史记录只保留在 Git 历史，不让当前 Issue 与 Build6 相互矛盾。
+Issue5 R5-01 中“凭据不导入”的旧安全边界已被本阶段用户决策明确替代为“version 2 导出并导入完整凭据”；Step 0 已更新当前 Issue5，旧口径只保留在 Git 历史。
 
 ---
 
@@ -724,7 +732,10 @@ git diff --check
 |--------|------|---------|
 | Git 工作树 | 核验开始时干净，`main` 与 `origin/main` 同步 | 不代表远端后续不会变化 |
 | `go test ./... -race` | 通过 | 当前已有测试通过；不覆盖本文列出的新增并发/事务场景 |
-| 本机工具链 | Go 1.26.4、Node 26.7.0、npm 11.19.0 | 项目 CI/Docker 仍按 Go 1.25、Node 24 验收 |
+| 本机工具链 | Go 1.26.6、Node 26.7.0、npm 11.19.0 | 项目 CI/Docker 仍按 Go 1.25、Node 24 验收 |
+| 前端生产构建 | `npm ci` 和 `npm run build` 通过 | 本机 `~/.npm` 有 root 所有文件，本次使用临时 cache 绕过；不是仓库问题 |
+| Go 静态与编译门禁 | `go vet ./...` 和 `go build ./...` 通过 | 仅证明当前代码基线 |
+| Compose 配置 | `docker compose -f docker-compose.yml.example config --quiet` 通过 | 未在本 Step 构建镜像或运行容器 |
 | `npm audit` | 3 high、1 moderate | 当前 lockfile 基线；Step 6 前不声称已修复 |
 | `npm audit --omit=dev` | 1 high | `nanoid` 经依赖链被统计；需 Step 6 修复 |
 | `npm audit fix --dry-run` | 可将 nanoid 3.3.16→3.3.19、brace-expansion 2.1.2→2.1.7 | dry-run 未修改 lockfile；Vite/esbuild 仍需主版本升级 |
@@ -741,3 +752,4 @@ git diff --check
 |------|------|------|
 | v1.0 | 2026-09-22 | 建立构建前方案：整合完整配置包、CLI/Headless 移除及 Issue5 全部事项；所有 Step 均未开始 |
 | v1.1 | 2026-09-22 | 完成逐 Step 构建前核验；固定 version 2 Schema、目标删除 409、TAG/JSON/HTTP 边界、SSE 关闭、原子运行时切换和 Vite 8 升级口径；补齐研究证据、测试矩阵与授权门禁 |
+| v1.2 | 2026-09-22 | Step 0 验收通过：切换当前文档体系，建立 Design5，同步 AGENTS/Issue5/README 边界并存档 Design4/Build5/Issue4 |

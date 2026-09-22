@@ -1,7 +1,7 @@
 # AGENTS.md — FWAlizer AI 编码指令
 
 > 本文档是给 AI 编码助手的指令集，也是项目**唯一的强要求文档**（详见「十二、文档体系与优先级」）。
-> 项目设计方向见 [Design4.md](./Design4.md)（设计记录，当前），当前构建方案见 [Build5.md](./Build5.md)，当前问题记录见 [Issue4.md](./Issue4.md)；历史文档（Design1-3、Build1-4、Issue1-3）已移入 [HistoryDocs/](./HistoryDocs/)（已存档，仅记录，不再用于构建，仅用于核查等情况）。
+> 项目设计方向见 [Design5.md](./Design5.md)（设计记录，当前），当前构建方案见 [Build6.md](./Build6.md)，当前问题记录见 [Issue5.md](./Issue5.md)；历史文档（Design1-4、Build1-5、Issue1-4）已移入 [HistoryDocs/](./HistoryDocs/)（已存档，仅记录，不再用于构建，仅用于核查等情况）。
 
 ---
 
@@ -9,9 +9,10 @@
 
 - **模块路径**：`github.com/alcaprophet/cloudhost-firewall-autoupdater`
 - **仓库名称**：`cloudhost-firewall-autoupdater`
-- **产品与兼容标识**：产品显示名、二进制名、环境变量前缀、数据目录及 GHCR 镜像继续使用 `FWAlizer` / `fwalizer`，避免破坏现有部署
+- **产品与兼容标识**：产品显示名、二进制名、`FWALIZER_DATA_DIR` 部署变量、数据目录及 GHCR 镜像继续使用 `FWAlizer` / `fwalizer`，避免破坏保留的部署边界
 - **Go 版本**：`go 1.25`
-- **文档定位与优先级**：编码前先阅读本文件（强要求）。设计记录见 [Design4.md](./Design4.md)（当前，非强制，供参考）；详细构建方案见 [Build5.md](./Build5.md)（当前）；当前问题记录见 [Issue4.md](./Issue4.md)；历史文档（Design1-3、Build1-4、Issue1-3）见 [HistoryDocs/](./HistoryDocs/)（已存档，仅记录，不再用于构建，仅用于核查等情况）
+- **文档定位与优先级**：编码前先阅读本文件（强要求）。设计记录见 [Design5.md](./Design5.md)（当前，非强制，供参考）；详细构建方案见 [Build6.md](./Build6.md)（当前）；当前问题记录见 [Issue5.md](./Issue5.md)；历史文档（Design1-4、Build1-5、Issue1-4）见 [HistoryDocs/](./HistoryDocs/)（已存档，仅记录，不再用于构建，仅用于核查等情况）
+- **Build6 过渡边界**：当前目标形态已固定为 WebUI 单二进制 + SQLite；但 Step 2 验收前，仓库中仍可能存在 CLI、`.env` Headless 和业务环境变量的旧实现。文档目标不得被表述为这些代码已经移除。
 
 ---
 
@@ -36,7 +37,7 @@
 - 网络安全边界由用户自己控制（防火墙、VPN、反向代理等）
 - WebUI 默认绑定 `127.0.0.1`，可通过 `WEBUI_HOST` 配置监听地址（Docker 内使用 `0.0.0.0`）；端口通过 `WEBUI_PORT` 配置（默认 `60200`，若被占用则由 OS 随机选择可用端口；参见 `webui/server.go` 的 `findAvailablePort`）
 - Docker 用户通过 `-p` 自行决定暴露范围
-- 凭据通过独立环境变量传入，不与资源声明混合
+- 凭据作为独立业务设置存入 SQLite，不与资源声明混合，不接受环境变量 override
 
 ### 开箱即用
 
@@ -74,13 +75,13 @@
 
 ## 四、DNS 解析约束
 
-- 使用自定义 DNS 服务器（`DNS` 环境变量指定）
+- 使用 SQLite `dns` 业务设置指定的自定义 DNS 服务器
 - 通过 Go `net.Resolver` 的 `Dial` 函数指定上游 DNS
 - 同时解析 **A 记录（IPv4）** 和 **AAAA 记录（IPv6）**
 - IPv4 → `CidrBlock` 字段（格式 `1.2.3.4/32`）
 - IPv6 → `Ipv6CidrBlock` 字段（格式 `2001:db8::1/128`）
 - 域名解析失败：记录 WARN 日志，保留现有规则不变（不删除）
-- 超时统一为 **10s**（连接 + 整体，可通过 `DNS_TIMEOUT` 配置）
+- 超时默认为 **10s**（连接 + 整体，由 SQLite `dns_timeout` 业务设置配置）
 - 渐进式熔断：连续失败达阈值后熔断，半开状态每轮探测一次，成功后解除
 - ⚠️ 仅支持单台服务器场景（少量 IP），不支持 CDN 等返回大量 IP 的域名
 
@@ -89,10 +90,10 @@
 ## 五、同步调度约束
 
 - 使用 `time.Ticker`，不依赖外部 cron
-- 间隔由 `INTERVAL` 环境变量控制（如 `5m`、`30m`、`1h`）
+- 间隔由 SQLite `interval` 业务设置控制（如 `5m`、`30m`、`1h`）
 - 优雅退出：收到 `SIGTERM`/`SIGINT` 后，完成当前轮次再退出
 - 支持配置热重载（WebUI 修改后通过 channel 通知 Syncer）
-- 同步全局开关（`SYNC_ENABLED`/`sync_enabled`，默认 true）：暂停时 ticker 与手动 trigger 均不触发同步；模拟测试与连接测试不受影响（独立于 Run() 主循环）
+- 同步全局开关（SQLite `sync_enabled`，默认 true）：暂停时 ticker 与手动 trigger 均不触发同步；模拟测试与连接测试不受影响（独立于 Run() 主循环）
 
 ---
 
@@ -120,16 +121,30 @@
 - `CGO_ENABLED=0` 静态编译（Docker 构建）
 - 非 root 用户运行（`adduser -D appuser`）
 - 日志输出到 stdout（Text 格式，`docker logs` 查看）
-- 支持 `HEALTHCHECK`（WebUI 模式用 HTTP 端点，`.env` 模式用进程检测）
+- `HEALTHCHECK` 统一使用 WebUI HTTP `/api/health` 端点，不使用进程存活检查掩盖 HTTP 服务失效
 
 ---
 
 ## 九、配置约束
 
-- `.env` 文件**不提交 Git**
-- 提供 `.env.example` 模板
+- SQLite 是唯一业务配置源，目标、规则、云凭据、同步/DNS/TAG/日志/主题设置和告警均只通过 WebUI 管理
+- 仅保留 `FWALIZER_DATA_DIR`、`WEBUI_HOST`、`WEBUI_PORT` 三个部署环境变量；它们不写入 SQLite、不进入配置包且不被配置导入覆盖
+- `FWALIZER_DATA_DIR` 空白值按未设置处理；`WEBUI_HOST` 默认 `127.0.0.1`；`WEBUI_PORT` 默认 `60200` 且必须是 `1～65535` 的十进制整数
+- 不保留云凭据或其他业务设置的 ENV override，不提供 `.env` 业务模式、`.env.example` 或隐藏兼容开关
 - 密钥使用云厂商 **CAM 子账号 + 最小权限**
-- 凭据按云厂商独立环境变量（不嵌入 TARGETS）
+
+### 9.1 Build6 已固定实施契约
+
+- 配置导出只生成明文 JSON version 2 完整敏感快照，包含云凭据、SMTP 密码和 Webhook URL；version 1 及其他版本明确拒绝
+- 配置导入为强类型、严格解码、覆盖式原子事务；使用 `export_id → 新数据库 ID` 映射重建规则引用
+- 导入保留 `sync_logs`，清空 `scanned_resources`，不重置 SQLite 自增序列，不处理部署参数或数据库内部状态
+- 被任一规则引用的目标不得直接删除，API 返回 HTTP 409；不静默删除引用或把规则扩大为“适用于全部目标”
+- TAG Trim 后必须非空，禁止 `[` / `]` 和控制字符，最多 48 个 Unicode 字符
+- 配置导入 JSON 最大 10 MiB，其他 JSON 请求最大 1 MiB，超限返回 413；固定结构 DTO 拒绝未知字段、尾随 JSON 和多个顶层值
+- HTTP Server 使用 `ReadHeaderTimeout=5s`、`IdleTimeout=120s`，不设置全局 `ReadTimeout` / `WriteTimeout`；HTTP shutdown 上限 10s
+- 两类 SSE 必须监听服务器级 shutdown 信号显式退出，不依赖 `http.Server.Shutdown()` 自动取消长连接
+- 运行时 `cfg + providers + resolver` 必须一次原子替换；当前同步轮次继续使用旧完整快照，下一轮完整使用新快照
+- 完整 Schema、字段校验、事务顺序和验收矩阵以 [Build6.md](./Build6.md) 为当前实施方案
 
 ---
 
@@ -150,7 +165,7 @@
 - 注释使用**中文**（面向国内开发者）
 - 遵守 `PlatformAPIDocs/` 中的 API 文档要求（参数格式、字段长度限制、频率限制）
 - 多云抽象基于 Provider 接口 + 工厂注册模式（详见 HistoryDocs/Build1.md）
-- 项目交付范围仅包含 WebUI 单二进制、`.env` headless 与 Docker；不包含桌面托盘、开机自启或原生桌面打包计划
+- 项目交付范围仅包含 WebUI 单二进制 + SQLite 以及 Docker/服务器部署；不包含 `.env` Headless 业务模式、CLI 子命令、桌面托盘、开机自启或原生桌面打包计划
 - 日志多路复用器 `MultiHandler` 统一定义在 `app/logutil.go`（消除与 `webui/api/logstream.go` 的重复）
 - WebUI 模式通过 pidfile（`config/pidfile.go` + 平台文件）防止多实例运行
 - 事件类型：全局同步完成用 `EventSyncComplete`，逐域名同步完成用 `EventDomainSyncComplete`（定义于 `notifier/bus.go`）
@@ -170,9 +185,9 @@
 | 文档类型 | 文件 | 定位 | 约束力 |
 |---------|------|------|--------|
 | **强要求** | **AGENTS.md（本文件）** | AI 编码指令与约束 | **唯一强要求，尽量不违背** |
-| 设计构想 | [Design4.md](./Design4.md)（当前）；历史：[HistoryDocs/](./HistoryDocs/)（Design1-3 已存档） | 设计大方向、架构构想、决策记录 | 非强制，供参考 |
-| 构建方案 | [Build5.md](./Build5.md)（当前）；历史：[HistoryDocs/](./HistoryDocs/)（Build1-4 已存档） | 详细的分步构建方案与验收命令 | 非强制，执行建议 |
-| 问题记录 | [Issue4.md](./Issue4.md)（当前）；历史：[HistoryDocs/](./HistoryDocs/)（Issue1-3 已存档） | 记录的错误与修复方案 | 非强制，经验参考 |
+| 设计构想 | [Design5.md](./Design5.md)（当前）；历史：[HistoryDocs/](./HistoryDocs/)（Design1-4 已存档） | 设计大方向、架构构想、决策记录 | 非强制，供参考 |
+| 构建方案 | [Build6.md](./Build6.md)（当前）；历史：[HistoryDocs/](./HistoryDocs/)（Build1-5 已存档） | 详细的分步构建方案与验收命令 | 非强制，执行建议 |
+| 问题记录 | [Issue5.md](./Issue5.md)（当前）；历史：[HistoryDocs/](./HistoryDocs/)（Issue1-4 已存档） | 记录的错误与修复方案 | 非强制，经验参考 |
 
 **执行规则：**
 
@@ -180,17 +195,17 @@
 - **Design 文档**描述设计大方向与构想；**Build 文档**描述详细的构建方案；**Issue 文档**记录错误与修复方案
 - 若 Design / Build / Issue 文档之间存在冲突，或与 AGENTS.md 冲突：**提示用户并让用户做决策**，不擅自选择遵守哪一份
 - 若构想本身存在冲突，同样**提示用户**，由用户决策
-- Design 文档（如 [Design4.md](./Design4.md)）中的内容不是强制性规定，仅是设计类构想
+- Design 文档（如 [Design5.md](./Design5.md)）中的内容不是强制性规定，仅是设计类构想
 
 ### 12.2 文档清单
 
 | 文档 | 目标读者 | 内容 | 状态 |
 |------|---------|------|------|
 | AGENTS.md（本文件） | AI 编码助手 | 编码指令与约束（**唯一强要求**） | 活跃 |
-| [Design4.md](./Design4.md) | 人类（开发者/用户） | 当前设计记录：功能全景、设计决策记录、后续候选（设计构想） | 活跃 |
-| [Build5.md](./Build5.md) | 开发者 | 当前构建方案与候选构建项 | 活跃 |
-| [Issue4.md](./Issue4.md) | 开发者 | 当前问题追踪：进行中问题 + 已知遗留/候选事项 | 活跃 |
-| [HistoryDocs/](./HistoryDocs/) | 开发者 | Build1-4、Issue1-3、Design1-3 共 10 份历史文档（已存档，仅记录，不再用于构建，仅用于核查等情况） | 已存档 |
+| [Design5.md](./Design5.md) | 人类（开发者/用户） | 当前设计记录：Build6 目标形态、配置边界与安全决策 | 活跃 |
+| [Build6.md](./Build6.md) | 开发者 | 当前构建方案：Step 0-7 的分步实施与验收 | 活跃 |
+| [Issue5.md](./Issue5.md) | 开发者 | 当前问题追踪：R5、O5 与 A5 事项 | 活跃 |
+| [HistoryDocs/](./HistoryDocs/) | 开发者 | Build1-5、Issue1-4、Design1-4 共 13 份历史文档（已存档，仅记录，不再用于构建，仅用于核查等情况） | 已存档 |
 
 ### 12.3 API 使用要求文档（PlatformAPIDocs/）
 

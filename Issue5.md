@@ -1,23 +1,23 @@
-# Issue5.md — FWAlizer 项目审查问题记录
+# Issue5.md — FWAlizer 问题追踪（当前）
 
-> **文档定位：** 本文档记录 2026-09-22 对当前仓库进行只读审查时发现的问题与优化项，作为后续决策和构建规划的输入；本文档本身不代表修复方案已获批准，也不改变 [Issue4.md](./Issue4.md)、[Build5.md](./Build5.md) 或 [Design4.md](./Design4.md) 的当前状态。
-> 编码指令以 [AGENTS.md](./AGENTS.md) 为唯一强要求。存在方案取舍时，先由用户确认，再将获批事项写入 Build 文档并实施。
+> **文档定位：** 本文档是 FWAlizer 的当前问题记录（非强制，经验参考），记录 2026-09-22 只读审查发现的 R5-01～R5-03、O5-01～O5-06 和 A5-01。已确认的修复口径由 [Build6.md](./Build6.md) 分步实施，未经对应 Step 验收不得标记为已修复。
+> 编码指令以 [AGENTS.md](./AGENTS.md) 为唯一强要求；设计记录见 [Design5.md](./Design5.md)；上一阶段的 Design4、Build5 和 Issue4 已原文移入 [HistoryDocs/](./HistoryDocs/)。
 
 ---
 
 ## 一、审查结论与建议顺序
 
-本次审查确认 3 个应优先修复的实现问题，另记录依赖、CI、测试、HTTP 生命周期、输入边界，以及是否移除 `.env` headless 模式的架构候选。建议顺序如下：
+本次审查确认 3 个应优先修复的实现问题，另记录依赖、CI、测试、HTTP 生命周期、输入边界和 `.env` Headless 架构收敛。用户已确认 Build6 口径，实施顺序固定为：
 
-1. 修复配置导入时目标 ID 与规则 `targets` 的关联丢失；
-2. 修复 EventBus 在 SSE 取消订阅与发布并发时向已关闭 channel 发送的问题；
-3. 修复同步轮次配置快照未覆盖重试路径的问题；
-4. 为以上问题补充回归测试，并在 CI 中启用 race detector；
-5. 在上述正确性问题形成稳定基线后，再决定并实施 `.env` headless 模式移除；
-6. 评估并升级前端构建依赖；
-7. 再处理 HTTP 服务生命周期、输入边界和测试覆盖优化。
+1. Step 1：修复 EventBus 并发取消和 TAG 快照，并启用 CI race detector；
+2. Step 2：移除全部 CLI 和 `.env` Headless 业务模式；
+3. Step 3：完成 HTTP listener、Server 生命周期和优雅关闭；
+4. Step 4：建立 API 最小持久化校验边界；
+5. Step 5：实施 version 2 完整配置包、ID 映射和原子运行时切换；
+6. Step 6：分阶段修复前端依赖并升级 Vite 8；
+7. Step 7：补齐高影响路径测试、真实验收和文档闭环。
 
-上述顺序只表示推荐的依赖关系，不表示各项已获实施授权。其中 R5-01～R5-03 与 O5-02 建议作为第一批正确性修复；A5-01 属于架构决策，应在修改 `AGENTS.md` 并明确环境变量边界后单独实施；其余优化不阻塞 A5-01。
+上述顺序已纳入 Build6，但 Step 1-7 仍必须逐步获得用户授权；Step 0 的文档固定不代表代码已修复。
 
 ---
 
@@ -37,22 +37,22 @@
   3. 写入规则前创建规则副本；`targets` 为空时保持“适用于全部目标”的语义不变，非空时逐项按映射替换，不直接修改原始请求对象。
   4. 任一规则引用不存在于本次导入目标列表中的旧 ID 时，整个导入失败并回滚，不允许静默删除引用，也不允许保留无法匹配的新旧混合 ID。
   5. 导入前执行不写库的结构检查：目标导出 ID 必须为正数且不能重复；规则引用必须能在目标集合中解析。此类外部输入错误返回 HTTP 400；数据库执行失败仍返回 HTTP 500。
-  6. 保持“凭据不导入”的现有安全边界，且不重置 `sqlite_sequence`；扫描结果、告警和同步日志仍不属于配置导入范围。
-  7. `BatchAddTargetsTx` 若不再适合配置导入，可继续保留给其他调用方，不为了本项修复扩大无关重构；配置导入明确走需要返回 ID 的专用路径。
+  6. 按 version 2 完整快照替换凭据、设置和告警；空凭据字段可明确清除旧值。导入保留 `sync_logs`、清空 `scanned_resources`，不重置 `sqlite_sequence`。
+  7. 在事务提交前构造候选 Provider / ClientPool / Resolver / Config / Notifier；候选构造失败时回滚，提交后只做无失败分支的运行时原子替换。
 - **回归测试设计：**
   - 同一数据库先制造自增历史，再导出、清空并导入，验证规则最终关联的是同一业务目标；
   - 使用来源 ID 与目标数据库当前 ID 完全不同的导入文件，验证跨实例导入语义；
   - 覆盖一条规则引用多个目标、空目标列表、多个规则复用同一目标；
   - 覆盖重复目标 ID、零/负目标 ID、未知目标引用，验证返回 400 且旧配置保持不变；
   - 人为制造目标或规则写入失败，验证事务回滚后目标、规则和设置均保持导入前状态；
-  - 验证凭据字段仍被忽略，不因导入覆盖现有凭据。
+  - 验证完整凭据和告警被覆盖，空凭据字段能清除旧值，且响应和日志不泄露敏感值。
 - **验收建议：**
   - 在已有自增历史的数据库中创建多个目标和限定目标规则；
   - 导出后重新导入；
   - 验证每条规则关联到与导出前相同的目标，而不是只比较数字 ID；
   - 验证导入事务失败时旧配置不被部分替换；
   - 运行 `go test ./... -race`、`go vet ./...` 与 `git diff --check`。
-- **状态：** ☐ 待决策 / 待修复
+- **状态：** ☐ 已决策 / 待 Build6 Step 5 实施
 
 ### R5-02 EventBus 发布与 SSE 取消订阅并发时可能触发进程 panic
 
@@ -80,7 +80,7 @@
   - 覆盖重复取消的幂等性；
   - 使用 `go test ./... -race` 重复运行；
   - 人工验证 SSE 连接断开后不会泄漏订阅或 goroutine。
-- **状态：** ☐ 待决策 / 待修复
+- **状态：** ☐ 已决策 / 待 Build6 Step 1 实施
 
 ### R5-03 同步配置快照未覆盖 retrySync 的 TAG 读取
 
@@ -108,7 +108,7 @@
   - 验证同一轮 Describe → Diff → Create/Delete 始终使用同一个 TAG；
   - 使用 `go test ./... -race` 验证无竞态；
   - 验证下一轮同步才使用新 TAG。
-- **状态：** ☐ 待决策 / 待修复
+- **状态：** ☐ 已决策 / 待 Build6 Step 1 实施
 
 ---
 
@@ -136,12 +136,12 @@
   - `npm audit` 的剩余条目逐项记录接受、升级或上游等待理由；
   - 人工打开仪表盘、目标、规则、设置、日志、模拟测试和告警页面，检查路由、主题、弹窗和表单；
   - 随后运行 Go race 测试、vet 和 Docker 构建，确认嵌入前端产物仍可被单二进制提供。
-- **状态：** ☐ 待评估
+- **状态：** ☐ 已决策 / 待 Build6 Step 6 实施
 
 ### O5-02 CI 未运行 Go race detector
 
 - **优先级：** 中
-- **现状：** `.github/workflows/docker-publish.yml` 使用 `go test -v ./...`，未启用 `-race`；Build5 的既有验收记录多次使用 `go test ./... -race`。
+- **现状：** `.github/workflows/docker-publish.yml` 使用 `go test -v ./...`，未启用 `-race`；已存档 Build5 的既有验收记录多次使用 `go test ./... -race`。
 - **影响：** 普通测试无法持续发现 EventBus、热重载和同步并发路径中的数据竞态，CI 门禁弱于当前人工验收口径。
 - **推荐处理方向：** 将 CI 测试门禁调整为 `go test -race ./...`。项目规模较小，预计额外成本可控；若未来耗时明显增加，再拆分普通测试与 race job。
 - **具体修复内容：**
@@ -154,7 +154,7 @@
   - 本地执行 `go test -race ./...`；
   - 在 PR 工作流确认 race 命令真实运行且失败会阻止后续镜像构建；
   - 检查 tag 构建仍只在所有编译、vet、race 测试通过后登录并推送镜像。
-- **状态：** ☐ 待决策
+- **状态：** ☐ 已决策 / 待 Build6 Step 1 实施
 
 ---
 
@@ -196,7 +196,7 @@
   6. 前端：只为高风险交互引入最小测试设施；若当前没有前端测试框架，应先评估引入成本，不为了覆盖率数字一次性建立重型 E2E 系统。配置导入、清空数据等仍保留人工浏览器验收清单。
   7. 每项修复在同一变更中补对应回归测试；不创建脱离具体风险的“覆盖率冲刺”。覆盖率报告用于发现空白，不设置任意全仓百分比目标。
 - **证据边界：** 单元测试与 `httptest` 只能证明本地代码语义；Provider mock 不证明真实云 API，前端构建不证明浏览器交互，均不得替代相应人工或外部链路验收。
-- **状态：** ☐ 待规划
+- **状态：** ☐ 已纳入 Build6 各 Step 与 Step 7 / 待实施
 
 ---
 
@@ -221,7 +221,7 @@
   - 使用不可绑定地址验证返回错误而不是随机降级；
   - 并发启动测试中确认不会出现“探测成功但正式监听失败”的时间窗口；
   - 测试结束统一 Shutdown/Close，避免遗留 goroutine 和监听端口。
-- **状态：** ☐ 待评估
+- **状态：** ☐ 已决策 / 待 Build6 Step 3 实施
 
 ### O5-05 HTTP 服务缺少显式超时与优雅关闭
 
@@ -243,7 +243,7 @@
   - 构造一个进行中的普通请求，验证在超时内完成；构造超时请求，验证 Shutdown 有界返回；
   - 模拟监听失败，验证 main 能感知并进入退出路径；
   - 模拟正在运行的同步轮次收到 SIGTERM，验证 HTTP 停止接收新请求且同步轮次仍完成后退出。
-- **状态：** ☐ 待评估
+- **状态：** ☐ 已决策 / 待 Build6 Step 3 实施
 
 ### O5-06 API 与配置导入缺少最小持久化边界校验
 
@@ -260,7 +260,7 @@
   1. 在 `config` 包增加轻量、可复用的目标、规则和设置值校验函数，不引入第三方 validation 框架；POST、PUT 与配置导入共用相同业务规则，避免 handler 各写一份。
   2. 目标校验：`cloud_type` 只允许四个已支持枚举；`region`、`resource_id` 去除首尾空白后必须非空；不校验地域是否存在于预填列表，也不臆测各云资源 ID 的完整格式。
   3. 规则校验：`host` 非空；协议只允许 TCP/UDP/TCP+UDP/ICMP；action 只允许 ACCEPT/DROP；非 ICMP 的端口必须非空，ICMP 统一归一化为 `ALL`；目标 ID 必须为正数且引用当前数据库或本次导入中存在的目标。
-  4. 设置接口采用允许列表，只接受实际可编辑键及 `theme`；`interval`、`dns_timeout` 使用 `time.ParseDuration` 且必须大于零，`dns_fail_threshold` 和 `webui_port` 必须是正整数，`log_level` 限定为 debug/info/warn/error，`sync_enabled` 限定为 true/false。
+  4. 设置接口采用允许列表；`interval`、`dns_timeout` 使用 `time.ParseDuration` 且必须大于零，`dns_fail_threshold` 必须是正整数，`log_level` 限定为 debug/info/warn/error，`theme` 限定为 light/dark。`sync_enabled` 只由 pause/resume 端点和配置导入写入；`webui_port` 不再属于 SQLite 业务设置。
   5. DNS 字段只做“非空且能形成有效 host:port”的最小解析检查；仍允许域名或 IP 形式的自定义 DNS，不验证服务器是否在线。
   6. 导入请求先完成全量结构与引用校验，再进入清空旧数据的事务；即使事务本身会回滚，也应尽早以 HTTP 400 返回明确的外部输入错误。
   7. JSON 解码增加单个顶层对象和未知字段策略的明确约束：建议对固定结构请求使用 `DisallowUnknownFields`，但 settings map 仍由允许列表控制；同时限制请求体大小，避免内部工具也可被异常大文件耗尽内存。
@@ -272,34 +272,31 @@
   - 验证规则引用不存在目标时不写库、不触发 reload；
   - 验证配置导入的所有校验都发生在旧配置清除前，并与 R5-01 的 ID 映射测试共用场景；
   - 验证非法请求返回 400，数据库模拟失败返回 500，响应不包含凭据。
-- **状态：** ☐ 待决策
+- **状态：** ☐ 已决策 / 待 Build6 Step 4 与 Step 5 实施
 
 ---
 
-## 六、架构候选
+## 六、架构决策
 
 ### A5-01 移除 `.env` headless 业务配置模式
 
-- **优先级：** 架构决策；建议在 R5-01～R5-03 与 O5-02 完成后实施
+- **优先级：** 已确认架构决策；按 Build6 Step 2 实施
 - **现状：** 项目同时维护 SQLite/WebUI 与 `.env` 两套业务配置入口。自动检测依据进程环境中的 `TARGETS`，进入 env 模式后却固定读取工作目录下 `.env`；WebUI 模式只应用 `WEBUI_HOST`/`WEBUI_PORT` 环境覆盖，而 Compose 示例还列出 `INTERVAL`、`DNS`、`LOG_LEVEL` 等容易被误解为 WebUI 覆盖项的变量。两套模式的功能也已不对等：`.env` 不具备配置热重载、历史记录、告警、资源扫描、配置导入导出和完整的每规则能力。
-- **已知前提：** 当前不存在存量用户、历史部署或向后兼容要求；若用户正式批准移除，不需要弃用周期、自动迁移命令或双模式过渡版本。
-- **决策前必须确认：**
-  1. 是否保留 `TC_ACCESS_ID`、`TC_ACCESS_KEY`、`ALI_ACCESS_ID`、`ALI_ACCESS_KEY` 作为 WebUI 模式的运行时 Secret 注入；推荐保留，并规定“进程环境变量 > SQLite”优先级。
-  2. 推荐无条件保留 `FWALIZER_DATA_DIR`、`WEBUI_HOST`、`WEBUI_PORT`，因为它们属于进程启动和部署边界，而不是业务配置。
-  3. `TARGETS`、`RULES`、`TAG`、`INTERVAL`、`DNS`、`DNS_TIMEOUT`、`DNS_FAIL_THRESHOLD`、`SYNC_ENABLED`、`LOG_LEVEL` 是否全部收束到 SQLite；推荐收束，避免再次形成双配置源。
-- **文档前置变更：**
-  1. `AGENTS.md` 是唯一强要求，必须先移除 `.env` headless 交付范围、双模式 HEALTHCHECK、`.env.example` 要求和相关配置表述，并写清最终保留的环境变量边界。
-  2. `Design4.md` 记录“SQLite + WebUI 是唯一业务配置源；服务本身仍可在无桌面服务器和容器中 headless 运行”的设计决策。
-  3. 在当前 Build 文档新增独立 Step，列出删除文件、保留边界、测试和 Docker 验收；历史文档保持不动。
-  4. 同步 README、Compose 示例和当前 Issue/Build/Design 文档指针，避免文档继续宣称可切换到 `.env` 模式。
+- **已知前提：** 当前不存在存量用户、历史部署或向后兼容要求；不需要弃用周期、自动迁移命令或双模式过渡版本。
+- **已固定决策：**
+  1. 最终只保留 WebUI + SQLite 业务形态，服务仍可在 Linux 或 Docker 无图形桌面环境运行。
+  2. 仅保留 `FWALIZER_DATA_DIR`、`WEBUI_HOST`、`WEBUI_PORT` 三个部署变量。
+  3. 不保留 `TC_ACCESS_ID`、`TC_ACCESS_KEY`、`ALI_ACCESS_ID`、`ALI_ACCESS_KEY` 或其他业务 ENV override；云凭据和全部业务设置收束到 SQLite。
+  4. 删除全部 CLI，包括 `version`、`validate`、`backup`、`restore`；不提供替代 CLI。
+  5. Step 0 只完成文档前置切换；代码、README 使用说明和部署示例在 Step 2 同批收敛。
 - **具体实施内容：**
   1. `main.go` 删除 `DetectMode` 和 env/WebUI switch，启动时直接创建数据目录、pidfile、SQLite、WebUI 和 Syncer。
   2. 删除 `app/mode.go`；若 `app.Run` 仅由 env 模式使用，则删除该 headless runner，并保留仍由 WebUI 使用的日志公共能力。
   3. 删除 `config.LoadEnv`、`ParseEnv`、TARGETS/RULES 语法解析及对应专用测试；不能直接删除整个 `config/env.go`，应先把 `ApplyWebUIEnv` 拆到语义明确的运行时配置文件。
-  4. 删除 `fwalizer validate .env` 子命令及相关 README；保留 `version`、`backup`、`restore`。
+  4. 删除 `version`、`validate`、`backup`、`restore` 及相关 README、`version` 包和编译期版本注入。
   5. 删除 `.env.example`、Compose 中 `.env` 文件挂载和 headless 说明；健康检查统一为 HTTP `/api/health`，不再使用 `pgrep` fallback 掩盖 WebUI 启动失败。
   6. 删除 `FWALIZER_MODE`、`TARGETS` 自动切换语义。即使进程环境中意外存在 `TARGETS`，也必须继续启动唯一 WebUI 模式或明确忽略该变量。
-  7. 若保留凭据 ENV，新增集中式 runtime override，在首次创建 Provider、连接测试、资源扫描和热重载时使用同一有效凭据来源；WebUI 应显示“由运行环境提供”，且不得把环境变量明文写回 SQLite 或导出文件。
+  7. 删除四个云凭据和全部业务设置的环境变量入口，不建立 ENV > SQLite 优先级。
   8. Compose 示例只保留实际生效的启动变量。业务设置由 WebUI/SQLite 管理，不再展示看似可覆盖但运行时被忽略的 `INTERVAL`、`DNS`、`LOG_LEVEL` 等项。
   9. 保持 stdout 日志、Docker 非 root、SQLite 数据卷、WebUI 默认 `127.0.0.1`、容器内显式 `0.0.0.0` 等现有部署约束。
 - **明确不包含：**
@@ -312,11 +309,11 @@
   - 源码和当前文档中除历史说明外，不再存在 `ModeEnv`、`FWALIZER_MODE`、`.env` 业务模式和 TARGETS/RULES 解析入口；
   - 空数据库可正常启动，WebUI 提示用户配置目标和规则；
   - 存在无关 `TARGETS` 环境变量时也不会切换模式或尝试读取 `.env`；
-  - `FWALIZER_DATA_DIR`、`WEBUI_HOST`、`WEBUI_PORT` 继续生效；若保留凭据 ENV，验证其优先级、页面状态、连接测试、扫描和热重载一致；
+  - `FWALIZER_DATA_DIR`、`WEBUI_HOST`、`WEBUI_PORT` 继续生效；无关业务环境变量不得改变 SQLite 配置；
   - Compose 配置校验通过，容器启动后只能通过 HTTP 健康检查判定健康，并实际请求 `/api/health`；
   - 执行前端构建、`go test ./... -race`、`go vet ./...`、Compose 配置校验、Docker 镜像构建和 `git diff --check`；
   - 人工检查首次配置、保存、重启后持久化、暂停/恢复、模拟测试、同步日志及告警页面。
-- **状态：** ☐ 待用户最终决策；未授权实现
+- **状态：** ☐ 已决策 / 待 Build6 Step 2 实施
 
 ---
 
@@ -339,11 +336,10 @@
 
 ## 八、后续处理约定
 
-1. 本文档仅记录问题与推荐方向，不代表已授权修改代码；
-2. 处理前按优先级逐项确认，不将多个独立问题自动合并为一个 Build Step；
-3. 方案确认后，在当前 Build 文档中新增对应 Step，并明确文件范围、测试和验收命令；
-4. 修复完成后更新对应条目的状态和实际验收结果；
-5. 若需要将 Issue5 升格为项目“当前问题记录”，再同步更新 AGENTS.md、Design4.md、Build5.md 和 Issue4.md 的文档指针及归档状态。
+1. 本文档是当前问题记录，方案口径已纳入 Build6，但不代表 Step 1-7 已获代码实施授权；
+2. 每次只实施 Build6 一个 Step，不跳步、不并行构建；
+3. 对应 Step 验收完成后，再更新本文档的问题状态和实际证据；
+4. 源码核验、自动测试、race、build/vet、Docker、浏览器与真实外部链路证据分层记录，不得互相替代。
 
 ---
 
@@ -353,3 +349,4 @@
 |---|---|---|
 | v1.0 | 2026-09-22 | 新建项目审查问题记录：3 个待修复问题，以及依赖、CI、测试、HTTP 生命周期与输入边界优化项 |
 | v1.1 | 2026-09-22 | 为 R5-01～R5-03、O5-01～O5-06 补充具体实施内容与回归测试；新增 A5-01 headless 模式移除候选及推荐执行顺序 |
+| v1.2 | 2026-09-22 | 升格为当前问题记录；按 Build6 更新完整敏感配置包、全 CLI 移除、三个部署变量和各问题的已决策/待实施状态 |
