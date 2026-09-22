@@ -8,6 +8,8 @@
 > - 已完成构建与设计记录：[HistoryDocs/](./HistoryDocs/)
 >
 > **授权边界：** 用户已于 2026-09-22 确认本文档的规划方向与 Step 0 文档改动方案。Step 0 完成不代表任一代码 Step 已获实施授权；后续必须每次只实施一个 Step，并在该 Step 验收完成后等待下一步授权。
+>
+> **实施解释：** 本文中的数据契约、状态码、事务边界、并发不变量、Step 顺序和验收边界是 Build6 的固定口径；第十二节代码为贴合当前仓库的参考实现/伪代码，函数名和文件拆分可做等价调整，但不得改变其标注的不变量。若实现者认为必须改变固定口径，应停止当前 Step，记录冲突、影响和推荐方案，等待用户决策，不得用“实现方便”代替设计决策。
 
 ---
 
@@ -343,6 +345,48 @@ Step 7 高影响测试与总验收
 6. 前端依赖升级单独成步，避免锁文件和构建器变化污染业务审查；
 7. 各 Step 随改随测，最终 Step 只补剩余高影响空白并记录分层证据。
 
+### 5.1 AI 构建执行协议
+
+后续参与构建的 AI 助手必须按以下协议执行，避免把整份 Build6 当作一次性改造清单：
+
+1. 开始一个 Step 前，重新读取 `AGENTS.md`、本 Step、相关 `Issue5.md` 条目和当前 Git 状态；不得只依据历史会话摘要施工；
+2. 先核查本文“当前基线”是否仍与源码一致；如源码已变化，记录差异并判断是否影响固定契约，不直接照抄伪代码；
+3. 一次只把一个 Step 标记为 `◧ 进行中`，不得并行进入下一 Step，也不得在当前 Step 顺手完成后续 Step 的重构；
+4. 修改前列出本 Step 的文件范围、不变量和专项测试；发现超出范围的必要改动时先说明因果关系；
+5. 实现中保留用户已有改动，禁止用 reset/checkout 覆盖工作树；出现与用户改动重叠且无法安全合并时停止并报告；
+6. 专项测试通过后再运行该 Step 的完整验收；失败必须保留真实结果，不得用较窄命令替代原门禁后宣称通过；
+7. 只有代码、自动门禁和该 Step 明确要求的人工证据都满足时，才可标记 `✅ 验收通过`；缺真实云、SMTP、Webhook 或浏览器证据时保持 `◧ 进行中`；
+8. 每个 Step 完成时在本文件追加“实际改动、自动证据、人工证据、未完成项、偏差/决策”五类记录，并同步 `Issue5.md` 对应状态；
+9. 文档更新只能描述已经发生的事实。不得把“目标代码”“伪代码”“测试计划”写成已实现或已验证；
+10. 当前 Step 验收完成后停止，等待用户授权下一 Step。
+
+### 5.2 每个 Step 的开始/结束模板
+
+开始施工时在对应 Step 下临时加入或更新：
+
+```markdown
+**实施状态：** ◧ 进行中（YYYY-MM-DD）
+
+- 当前 HEAD：`<commit>`
+- 工作树基线：干净 / 有以下用户改动：`...`
+- 本 Step 文件范围：`...`
+- 固定不变量：`...`
+- 本轮不处理：`...`
+```
+
+完成或暂停时使用：
+
+```markdown
+**实际证据（YYYY-MM-DD）：**
+
+- 实际改动：...
+- 自动检查：`命令` → 通过/失败（关键结果）
+- 人工检查：已执行/未执行；证据边界为 ...
+- 未完成项：无 / ...
+- 与计划偏差：无 / 原因、影响、用户决定
+- 状态：✅ 验收通过 / ◧ 进行中
+```
+
 ---
 
 ## 六、分步构建计划
@@ -379,6 +423,7 @@ Step 7 高影响测试与总验收
 ### Step 1：并发正确性基线与 CI race 门禁
 
 - **目标：** 修复 EventBus 取消订阅竞态和同步轮次 TAG 快照越界，并让 CI 持续运行 race detector。
+- **实施参照：** §12.2 当前基线、§12.14 EventBus 参考修复；本 Step 只传递本轮 TAG，不提前实现 §12.5 的完整运行时状态。
 - **R5-02 EventBus：**
   1. `Publish` 在读锁内分别复制接口订阅者 slice 和 channel 订阅表快照，锁外只遍历独立副本；
   2. `SubscribeChan` 取消时只删除订阅表记录，不关闭 channel；
@@ -414,6 +459,7 @@ git diff --check
 ### Step 2：移除 CLI 与 `.env` Headless 业务模式
 
 - **目标：** 运行时收束为唯一 WebUI + SQLite 模式，同时保持 Docker/服务器无桌面部署能力。
+- **实施参照：** §12.3 的 `DeploymentConfig` 边界和 §12.13 的 main 目标顺序；本 Step 只完成参数/配置源收束，显式 HTTP 生命周期留给 Step 3。
 - **主要文件：** `main.go`、`app/`、`config/`、`.env.example`、`.gitignore`、`Makefile`、`build/Dockerfile`、`.github/workflows/docker-publish.yml`、`docker-compose.yml.example`、README 和相关测试。
 - **处理内容：**
   1. 删除 `app/cli.go`、`app/mode.go` 和只服务 Headless runner 的代码；日志公共能力保留在语义明确的文件中；
@@ -451,6 +497,7 @@ git diff --check
 ### Step 3：HTTP Listener、Server 生命周期与优雅关闭
 
 - **目标：** 合并处理 O5-04 和 O5-05，一次形成最终 HTTP 生命周期，消除端口 TOCTOU，并使 main 可感知服务失败。
+- **实施参照：** §12.13；SSE 必须由同一个 server shutdown channel 退出，但 EventBus 仍沿用 Step 1 的“不关闭订阅 channel”契约。
 - **Listener 和启动：**
   1. `Server.Start()` 同步执行 `net.Listen`、保存 listener 和 `http.Server`、启动 Serve goroutine，然后返回实际端口；绑定失败时 Start 直接返回错误；
   2. 首选 `host:preferredPort`；只有 `errors.Is(err, syscall.EADDRINUSE)` 时才降级到 `host:0`；权限、非法地址等错误原样返回；
@@ -493,6 +540,7 @@ git diff --check
 ### Step 4：API 最小持久化校验边界
 
 - **目标：** 让普通 API 和 Step 5 配置导入复用 §四的轻量校验，避免只依赖前端，同时保持“不实时验证地域/资源”的不过度防御边界。
+- **实施参照：** §12.4、§12.7～12.10、§12.15；先形成严格 DTO、事务/引用边界和配置变更协调器骨架，不提前切换 version 2 或显式 Provider 凭据。
 - **实现边界：**
   1. 在 `config` 包中定义可复用的目标、规则、设置和告警校验/归一化函数；不引入第三方 validation 框架；
   2. handler 使用独立请求 DTO，避免客户端写入数据库 ID 或内部字段；
@@ -527,6 +575,7 @@ git diff --check
 ### Step 5：version 2 完整配置包与原子运行时切换
 
 - **目标：** 端到端实现 §三的完整敏感配置快照、R5-01 ID 关联恢复、事务覆盖以及一致的运行时切换。
+- **实施参照：** §12.3～12.12；必须把 Step 4 协调器骨架收束成完整不可变状态发布，删除分次 reload 和包级可变凭据，不能只实现配置包 JSON 表面协议。
 - **显式凭据与候选运行时：**
   1. 用不可变 `provider.Credentials` 值取代进程级全局凭据；
   2. `ClientPool` 在创建时接收凭据，Provider 工厂和资源扫描从该 pool/显式参数取得凭据；
@@ -746,10 +795,543 @@ git diff --check
 
 ---
 
-## 十二、变更记录
+## 十二、实现基线、固定不变量与参考伪代码
+
+### 12.1 如何使用本节
+
+本节用于把 §一～十的设计落到当前仓库，降低后续 AI 构建时自行补全设计的空间。
+
+- 标注“**必须**”的是 Build6 固定不变量；实现可以改名、拆文件或选择等价标准库写法，但结果必须满足；
+- 标注“**参考**”的代码只表达依赖方向、锁边界、事务顺序和错误边界，不要求逐字复制；
+- 伪代码省略的 error 处理在真实实现中仍必须补全，不能因为示例简化而忽略；
+- 当前源码仍处于 Step 0 完成、Step 1 未开始的过渡状态；本节的“目标接口”不代表已经存在；
+- 如当前代码与本节基线不同，先判断是仓库后来已实现、文档过期，还是出现偏离；不得同时保留两套语义。
+
+### 12.2 2026-09-22 当前源码基线映射
+
+| 关注点 | 当前实现位置 | 当前问题 | Build6 目标归属 |
+|--------|-------------|---------|-----------------|
+| 启动模式与信号 | `main.go`、`app/mode.go`、`app/cli.go`、`app/app.go` | CLI、env/WebUI 双模式并存；HTTP 启动错误无法反馈给 main | Step 2、3 |
+| 部署/业务 ENV | `config/env.go` | `.env` 同时承载业务配置和监听参数 | Step 2 |
+| SQLite Schema/CRUD | `config/store.go` | 写入方法多为单语句；RowsAffected、跨表事务和一致快照不足 | Step 4、5 |
+| 运行时配置 | `config.Config` | 业务配置与 `WebUIHost/WebUIPort/Mode` 混合 | Step 2 |
+| 云凭据 | `provider/credentials.go` | 包级可变全局值，连接测试/扫描会覆盖同步使用的凭据 | Step 5 |
+| SDK Client 复用 | `provider/common.go` 的 `ClientPool` | pool 不持有不可变凭据，client 创建闭包读取全局值 | Step 5 |
+| 同步热重载 | `syncer/syncer.go` | `Reload`、`ReloadProviders`、`ReloadResolver` 分次应用；`retrySync` 越过快照读取 TAG | Step 1、5 |
+| EventBus/SSE | `notifier/bus.go`、`webui/api/sync.go` | 取消时关闭 channel，可与锁外 Publish 发送竞态；SSE 只看 request context | Step 1、3 |
+| 日志 SSE | `webui/api/logstream.go` | 广播器自身锁内发送/关闭无同类 panic，但 handler 没有 server shutdown 信号 | Step 3 |
+| HTTP listener | `webui/server.go` | 先探测端口再 `ListenAndServe`，存在 TOCTOU；无显式 `http.Server` 生命周期 | Step 3 |
+| 普通 API 解码 | `webui/api/*.go` | 无统一大小限制、未知字段/尾随值未拒绝、路径 ID 宽松解析 | Step 4 |
+| settings/alerts | `webui/api/settings.go`、`alerts.go` | map 任意键、多次独立写入，可能部分成功 | Step 4 |
+| version 1 导入导出 | `webui/api/settings.go` | GET 导出、无敏感配置、直接复用 DB ID，导入会破坏规则引用 | Step 5 |
+| 前端导入导出 | `webui/frontend/src/views/Settings.vue` | `window.open` GET 下载、旧安全文案、成功后非完整刷新 | Step 5 |
+| 前端依赖 | `webui/frontend/package*.json` | 审计基线见 §十一 | Step 6 |
+
+实施者应优先在这些现有边界上收束，不创建第二套 store、第二个事件总线或平行 Web server。删除旧实现后再更新本表的“当前问题”，不能让旧/新入口长期共存。
+
+### 12.3 最终配置模型和所有权边界
+
+最终必须明确区分三类数据，不再用一个 `config.Config` 混装：
+
+```go
+// 参考：仅启动时读取，不进入 SQLite、不热重载、不导入导出。
+type DeploymentConfig struct {
+    DataDir string
+    Host    string
+    Port    int
+}
+
+// 参考：SQLite 业务配置的完整、已归一化值。
+// 发布到运行时后视为不可变；切片必须深拷贝后再发布。
+type RuntimeConfig struct {
+    Credentials     provider.Credentials
+    Targets         []TargetConfig
+    DomainRules     []DomainRule
+    Tag             string
+    Interval        time.Duration
+    DNS             string
+    DNSTimeout      time.Duration
+    DNSFailThreshold int
+    LogLevel        string
+    SyncEnabled     bool
+    Theme           string
+    Email           AlertEmailConfig
+    Webhook         AlertWebhookConfig
+}
+
+// 参考：一次构建并一次发布的完整运行时状态。
+type RuntimeState struct {
+    Config    RuntimeConfig
+    Pool      *provider.ClientPool
+    Providers []provider.Provider
+    Resolver  *dns.Resolver
+    Breaker   *dns.CircuitBreaker
+}
+```
+
+固定所有权：
+
+1. `DeploymentConfig` 由 main 启动时读取一次；`WEBUI_HOST/PORT` 变化必须重启进程才生效；
+2. `RuntimeConfig` 只由已校验的 SQLite 快照或已校验的导入 DTO 构造；handler 不直接拼半套配置；
+3. `RuntimeState` 发布后不可修改。同步轮次、Dry Run、连接测试和资源扫描开始时各获取一次指针快照，并在该操作全程使用同一快照；
+4. `Providers`、`Targets`、`DomainRules` 等 slice 在发布前深拷贝；不得把可继续 append/修改的请求 DTO slice 直接放入状态；
+5. `ClientPool` 持有创建时的不可变 `Credentials`，SDK client 的 cache key 至少区分 cloud type、region 和账户标识；不得再读取包级全局凭据；
+6. 连接测试和扫描可按请求目标临时创建 Provider，但必须使用请求开始时取得的同一 `RuntimeState.Pool/Credentials`；不得重新从数据库零散读取四个密钥；
+7. 普通配置变更保留既有 DNS 熔断计数；阈值变更通过线程安全 clone/setter 生效。完整导入允许创建新 breaker 并清空计数；
+8. `theme` 是业务配置但不参与同步器；仍属于导入导出完整快照；
+9. `sync_enabled` 的持久化真值在 SQLite，运行时镜像由统一协调器在 commit 后应用；pause/resume 不绕开该协调器。
+
+### 12.4 所有业务配置写入必须经过同一个协调器
+
+**必须新增一个进程内配置变更协调器**（名称可不同），串行覆盖以下入口：目标/规则增删改、settings、alerts、pause/resume、reset、配置导入。仅在 Store 各自方法内加 SQLite 事务还不够，因为会出现“后提交先应用、先提交后应用”的运行时回退。
+
+```go
+// 参考：锁覆盖 DB 事务、候选状态构造、commit 和运行时 apply。
+// buildCandidate 只构造本地对象和 SDK client，不访问云 API/DNS/SMTP/Webhook。
+type ConfigCoordinator struct {
+    mu      sync.Mutex
+    store   *config.Store
+    runtime *RuntimeManager
+    alerts  *AlertManager
+    level   *slog.LevelVar
+}
+
+func (c *ConfigCoordinator) Mutate(
+    mutate func(tx *sql.Tx) error,
+    breakerPolicy BreakerPolicy,
+) error {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    tx, err := c.store.BeginTx()
+    if err != nil { return err }
+    committed := false
+    defer func() {
+        if !committed {
+            if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+                slog.Error("回滚配置事务失败", "error", rbErr)
+            }
+        }
+    }()
+
+    if err := mutate(tx); err != nil { return err }
+
+    snapshot, err := c.store.LoadBusinessSnapshotTx(tx)
+    if err != nil { return err }
+    candidate, err := BuildRuntimeState(snapshot, breakerPolicy)
+    if err != nil { return err }
+    alertSet := BuildAlertSet(snapshot.Alerts) // 不发网络请求，构造后应用不失败
+
+    if err := tx.Commit(); err != nil { return err }
+    committed = true
+
+    // 以下步骤必须是无 error 的内存操作；顺序固定且在返回 HTTP 成功前完成。
+    c.level.Set(parseSlogLevel(snapshot.LogLevel))
+    c.alerts.Apply(alertSet)
+    // RuntimeState 最后发布：任何取得新状态的操作都必然看见新日志/告警配置。
+    c.runtime.Apply(candidate)
+    return nil
+}
+```
+
+固定要求：
+
+- handler 在调用 `Mutate` 前完成 JSON 解码；领域校验既可在锁前做一次快速拒绝，也必须在事务内对依赖数据库的引用/存在性再检查；
+- 协调器锁内禁止真实云 API、DNS、SMTP、Webhook 和任意可能长期阻塞的外部 I/O；SDK client 构造必须确认是本地操作；
+- 候选构造失败则 rollback，数据库和旧运行时均不变；commit 失败不得 apply；
+- commit 之后不能再调用会返回 error 的 reload 函数；若某组件当前只能失败式重载，先重构为“预构造候选 + 无失败 Apply”；日志级别和告警集合先应用，`RuntimeState` 最后发布，避免新运行时操作观察到旧告警/日志配置；
+- HTTP 成功响应只能在 Apply 完成后写出，因此响应完成后启动的新操作必然取得新状态；响应前已开始的操作允许继续使用旧状态；
+- reset 与 import 使用同一协调器；不得保留一个直接 `ResetAll()` 后异步 `notifyReload()` 的旁路；
+- 只读导出不使用变更锁，但必须使用独立只读事务取得内部一致快照；
+- 若以后支持多进程共享同一个 SQLite，本进程 mutex 不再足够，必须另行设计；Build6 仍以 pidfile 保证单实例为前提。
+
+### 12.5 不可变运行时状态与同步轮次快照
+
+参考接口：
+
+```go
+type RuntimeManager struct {
+    mu    sync.RWMutex
+    state *RuntimeState
+}
+
+func (m *RuntimeManager) Snapshot() *RuntimeState {
+    m.mu.RLock()
+    defer m.mu.RUnlock()
+    return m.state // state 发布后不可变，允许共享指针
+}
+
+func (m *RuntimeManager) Apply(next *RuntimeState) {
+    m.mu.Lock()
+    m.state = next
+    m.mu.Unlock()
+}
+
+func (s *Syncer) syncAll() {
+    state := s.runtime.Snapshot()
+    // 本轮只传 state.Config.Tag、state.Providers、state.Resolver、state.Breaker。
+    // 禁止下游函数再次读取 s.runtime、s.cfg 或全局凭据。
+    forEachCloudInParallel(state, func(p provider.Provider, rule config.DomainRule) {
+        s.syncDomain(state, p, rule)
+    })
+}
+
+func (s *Syncer) retrySync(
+    p provider.Provider,
+    rule config.DomainRule,
+    resolved []dns.ResolvedIP,
+    tag string,
+) (added, deleted int, err error) {
+    // 每次重试重新 Describe/Diff，但 owned/description 始终只使用参数 tag。
+}
+```
+
+调度控制与状态快照是两个概念：
+
+- 状态 Apply 一次替换完整指针；ticker reset、pause/resume/立即触发通过单个带版本/状态的 control message 交给 `Run()` goroutine；
+- control channel 应可合并重复通知，但不能因 buffer 满而永久丢失最终状态。参考做法是容量 1 的“最新状态通知”加原子/锁内当前状态，消费时重新读取最新快照；
+- `false → true`：更新 ticker 后立即触发一轮；`true → true`：只按新 interval reset ticker，不立即同步；`true → false`：停止后续 ticker/trigger，当前轮完成；
+- `TriggerSync` 在暂停状态返回 409，排队中的 trigger 在消费前也重新检查 enabled，不能在暂停后意外启动；
+- `Stop()` 必须通过 `sync.Once` 幂等关闭；`Wait()` 可多次安全等待；停止开始后 reload/control 不得造成新一轮同步；
+- Dry Run 不受暂停开关影响，但与同步一样取得一个完整不可变快照；同一时刻仍只允许一个 Dry Run。
+
+必须测试的顺序场景：A/B 两个 settings 请求、settings 与 import、pause 与 import、reset 与 target create 并发。测试通过 channel/barrier 强制交错，最终 SQLite、`RuntimeManager.Snapshot()`、ticker/enabled、日志级别和告警订阅必须全部对应最后一次成功提交，且 `go test -race` 通过。
+
+### 12.6 显式凭据与 ClientPool 参考形态
+
+```go
+package provider
+
+type Credentials struct {
+    TencentSecretID  string
+    TencentSecretKey string
+    AliyunAccessKeyID string
+    AliyunAccessKeySecret string
+}
+
+type ClientPool struct {
+    mu          sync.Mutex
+    credentials Credentials // 构造后不变，不提供 setter
+    clients     map[string]any
+}
+
+func NewClientPool(credentials Credentials) *ClientPool {
+    return &ClientPool{credentials: credentials, clients: make(map[string]any)}
+}
+```
+
+Provider factory 可以继续接收 pool，但各 provider 的 client 创建闭包只能读取 `pool` 内凭据。必须删除 `provider.SetCredentials` 和四个包级凭据变量；测试中也不得通过重设全局值模拟账户切换。
+
+以下场景必须覆盖：旧状态使用账户 A 正在同步时导入账户 B；连接测试/扫描在导入响应后只能使用 B；旧同步重试仍只能使用 A 的已有 Provider/ClientPool，不得中途切换到 B。
+
+### 12.7 Store 查询边界和事务内复用
+
+为避免导出/导入事务中意外调用 `s.db` 跳出事务，Store 的底层查询和写入 helper 必须接收最小接口：
+
+```go
+type DBTX interface {
+    ExecContext(context.Context, string, ...any) (sql.Result, error)
+    QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+    QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func loadTargets(ctx context.Context, q DBTX) ([]TargetConfig, error) { /* ... */ }
+func loadRules(ctx context.Context, q DBTX) ([]DomainRule, error) { /* ... */ }
+```
+
+固定要求：
+
+- 只读导出使用 `BeginTx(ctx, &sql.TxOptions{ReadOnly: true})`，所有读取都传该 tx；读取完成后 commit；
+- 导入、settings、alerts 和引用检查的全部语句都传同一写事务；
+- `AddTargetTx` 必须返回 `LastInsertId()`，不得只返回 error；
+- Update/Delete 检查 `RowsAffected()`：0 → 404 领域错误，不能把不存在当成功；
+- 删除目标时，在同一事务中检查规则 `targets` JSON 引用再删除；当前 Schema 未建关系表，因此必须有覆盖所有规则的可靠查询/解析测试；
+- 规则写入前在同一事务中确认每个 target ID 存在；正数、去重检查先于查询；
+- 所有 rows 都要 `defer rows.Close()` 并返回 `rows.Err()`；Rollback/Commit/Close error 按适用语义处理，不能裸忽略；
+- 不引入级联删除；不修改 `sqlite_sequence`；
+- Step 5 可以重构现有 Tx helper，但不得保留会跳出事务的同名旁路供导入调用。
+
+### 12.8 严格 JSON 解码 helper
+
+普通 JSON 请求和配置导入必须共用同一语义，只有 size limit 不同。
+
+```go
+func decodeJSON(w http.ResponseWriter, r *http.Request, limit int64, dst any) error {
+    r.Body = http.MaxBytesReader(w, r.Body, limit)
+    dec := json.NewDecoder(r.Body)
+    dec.DisallowUnknownFields()
+
+    if err := dec.Decode(dst); err != nil {
+        var tooLarge *http.MaxBytesError
+        if errors.As(err, &tooLarge) { return ErrBodyTooLarge }
+        return ErrInvalidJSON
+    }
+    var extra json.RawMessage
+    if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+        if err == nil { return ErrMultipleJSONValues }
+        var tooLarge *http.MaxBytesError
+        if errors.As(err, &tooLarge) { return ErrBodyTooLarge }
+        return ErrInvalidJSON
+    }
+    return nil
+}
+```
+
+真实实现的错误类型要保留安全的字段路径/原因，并按以下顺序处理：大小超限 413；语法、类型、未知字段、尾随值 400；领域校验 400；不存在 404；引用/状态冲突 409；内部错误 500。500 响应使用通用文案并带服务端 request/error ID（如实现），详细 error 只写服务日志；任何层级都不得记录请求 body。
+
+必需字段不能只依赖 Go 零值判断。导入 wire DTO 对 scalar 使用指针，对 object 使用指针，对 array 使用 `*[]T` 或自定义 presence 类型；缺失与 `null` 均拒绝，空数组则接受。例如：
+
+```go
+type RuleWire struct {
+    Host            *string `json:"host"`
+    Protocol        *string `json:"protocol"`
+    Ports           *string `json:"ports"`
+    Action          *string `json:"action"`
+    TargetExportIDs *[]int  `json:"target_export_ids"`
+    Comment         *string `json:"comment"`
+    EnableIPv6      *bool   `json:"enable_ipv6"`
+}
+```
+
+导出使用非 pointer 的 value DTO，保证所有字段必然出现、数组编码为 `[]` 而非 `null`。不得为了导入 presence 检查而让导出产生 `null`。
+
+### 12.9 普通 API 的精确请求/响应边界
+
+为避免前端把 GET 响应原样回传后夹带内部键，Step 4 固定以下口径：
+
+- `GET /api/settings` 只返回 §4.4 中 11 个可编辑键，并补齐默认值；不返回 `sync_enabled`、`webui_port` 或数据库未知键；
+- `PUT /api/settings` 是部分更新：使用 11 个 pointer 字段的固定 DTO，至少出现一个字段；省略字段保持不变，显式空字符串只对四个凭据字段合法；未知字段 400；
+- `sync_enabled` 只通过 pause/resume 或 version 2 导入修改，通过 `GET /api/sync/status` 读取；
+- `GET /api/alerts` 返回完整 `email` 与 `webhook` 对象；`PUT /api/alerts` 两个对象均为必需字段且每个子字段都必需，一次事务覆盖保存，不能用 `null` 表示“不改”；
+- 目标/规则 POST/PUT 使用不含 `id` 的 request DTO；响应中的持久化对象可包含 DB ID；客户端提交 `id` 属于未知字段并返回 400；
+- test-connection request 固定为 `cloud_type/region/resource_id` 三字段；scan request 固定为 `cloud_type/region` 两字段；均走 1 MiB/严格解码和 §四基础校验；
+- `POST /api/config/reset` 接受单一空对象 `{}`；未知字段或非对象返回 400；成功前通过协调器完成新空状态 Apply；
+- 成功消息可保持现有 `{ "message": "..." }` 形态；错误统一为 `{ "error": "安全文案" }`，前端不得依赖数据库/SDK 原始错误全文。
+
+设置部分更新的参考 DTO：
+
+```go
+type SettingsPatch struct {
+    TCAccessID       *string `json:"tc_access_id"`
+    TCAccessKey      *string `json:"tc_access_key"`
+    AliAccessID      *string `json:"ali_access_id"`
+    AliAccessKey     *string `json:"ali_access_key"`
+    Tag              *string `json:"tag"`
+    Interval         *string `json:"interval"`
+    DNS              *string `json:"dns"`
+    DNSTimeout       *string `json:"dns_timeout"`
+    DNSFailThreshold *string `json:"dns_fail_threshold"`
+    LogLevel         *string `json:"log_level"`
+    Theme            *string `json:"theme"`
+}
+```
+
+`dns_fail_threshold` 在普通 settings API 中继续使用字符串是为了维持当前前端表单/API 形态；进入领域层后必须严格转为正整数。version 2 配置包中它仍是 JSON number，不能混为字符串。
+
+### 12.10 校验、归一化和旧数据库行为
+
+固定执行顺序为：presence/type → Trim/大写等归一化 → 单字段校验 → 跨字段校验 → 数据库引用/存在性校验 → 写入。Store 只接收已归一化领域值，但仍返回底层错误；不能依靠前端验证。
+
+- Trim 后保存的字段：target region/resource ID、rule host/ports、TAG、DNS、邮件 host/port/from/to、Webhook URL/channel；rule comment、四个云凭据、SMTP username/password 作为用户文本或不透明凭据按原值保存；
+- 枚举比较先 Trim 再转固定大小写；存储使用文档规定的规范值；
+- 配置包内 `export_id` 必须全局唯一；普通规则的 `targets` 数组和导入规则的 `target_export_ids` 数组中，每项都必须为正数且同一数组内唯一，重复时返回 400，不静默去重；不额外禁止两个目标记录指向相同云资源；
+- `comment` 允许空；禁止控制字符只针对 TAG，不扩展成未批准的全局文本限制；
+- 邮件 `to_addr` 的多收件人语法继续由现有 notifier 约定处理，本阶段不引入新的邮箱解析器；
+- URL 校验只接受 absolute `http/https` 且 host 非空，不主动发请求；
+- 新安装缺失 setting 使用 §3.1 默认值。已有数据库中“缺失或空白的非凭据默认键”按缺失处理；已有非空但非法值不得静默改成默认值，应返回带键名但不含值的启动/重载错误；
+- 四个云凭据允许缺失/空值；禁用状态下告警其他字段仍需类型正确，只有启用时才要求 host/from/to 或 URL 非空；
+- `LoadBusinessSnapshotTx` 与 API/import 必须调用同一组领域校验函数，避免“能写入但重启加载失败”。
+
+### 12.11 version 2 导出参考流程
+
+```go
+func (d *Deps) handleConfigExport(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+    tx, err := d.Store.BeginReadOnlyTx(ctx)
+    if err != nil { writeInternal(w); return }
+    defer rollbackUnlessCommitted(tx)
+
+    snapshot, err := d.Store.LoadBusinessSnapshotTx(ctx, tx)
+    if err != nil { writeInternal(w); return }
+    bundle := ToBundleV2(snapshot, time.Now().UTC())
+    if err := tx.Commit(); err != nil { writeInternal(w); return }
+
+    // 先完成所有可能失败的 marshal，再写 response header，避免半个附件。
+    body, err := json.MarshalIndent(bundle, "", "  ")
+    if err != nil { writeInternal(w); return }
+    body = append(body, '\n')
+
+    w.Header().Set("Content-Type", "application/json; charset=utf-8")
+    w.Header().Set("Content-Disposition", attachmentName(bundle.Metadata.ExportedAt))
+    w.Header().Set("Cache-Control", "no-store")
+    w.WriteHeader(http.StatusOK)
+    if _, err := w.Write(body); err != nil {
+        slog.Warn("发送配置导出失败", "error", err)
+    }
+}
+```
+
+附加固定点：导出数组按数据库 ID 升序稳定排序；每条规则的 `target_export_ids` 保留规则内目标顺序还是排序必须唯一化。Build6 固定为**按 export_id 升序输出**，以获得可审查的稳定文件；导入不依赖数组顺序表达优先级。metadata 时间精度按 `time.RFC3339` 输出 UTC `Z`。
+
+### 12.12 version 2 导入参考流程
+
+```go
+func (d *Deps) handleConfigImport(w http.ResponseWriter, r *http.Request) {
+    var wire BundleV2Wire
+    if err := decodeJSON(w, r, 10<<20, &wire); err != nil {
+        writeDecodeError(w, err)
+        return
+    }
+    bundle, err := ValidateAndNormalizeBundle(wire)
+    if err != nil { writeFieldError(w, err); return }
+
+    err = d.Coordinator.Mutate(func(tx *sql.Tx) error {
+        if err := clearImportOwnedTables(tx); err != nil { return err }
+
+        idMap := make(map[int]int64, len(bundle.Targets))
+        for _, target := range bundle.Targets {
+            newID, err := insertTargetTx(tx, target.Value())
+            if err != nil { return err }
+            idMap[target.ExportID] = newID
+        }
+        for _, rule := range bundle.Rules {
+            dbRule := rule.Value()
+            dbRule.Targets = remapIDs(rule.TargetExportIDs, idMap)
+            if err := insertRuleTx(tx, dbRule); err != nil { return err }
+        }
+        if err := replaceAllSettingsTx(tx, bundle.Settings); err != nil { return err }
+        if err := replaceAlertsTx(tx, bundle.Alerts); err != nil { return err }
+        if _, err := tx.Exec("DELETE FROM scanned_resources"); err != nil { return err }
+        // 不触碰 sync_logs，不触碰 sqlite_sequence。
+        return nil
+    }, ResetBreaker)
+    if err != nil { writeSafeMutationError(w, err); return }
+
+    writeJSON(w, http.StatusOK, map[string]string{"message": "导入成功"})
+}
+```
+
+`clearImportOwnedTables` 的概念顺序固定为先删 `rules` 再删 `targets`，再删 `settings/alert_email/alert_webhook`；即使当前 Schema 没有 foreign key，也按依赖顺序实现。`replaceAllSettingsTx` 必须显式写入 version 2 的完整键集合，不遍历任意 map；不能把未知键从旧数据库带入新快照。
+
+导入预校验必须在打开写事务前完成所有纯数据检查，包括 version、metadata、必需字段、枚举、时长、TAG、告警、export ID 唯一性和引用闭包。事务内只重复依赖数据库/写入结果的检查，并完成 ID 映射和候选构造。错误路径不得返回部分映射、部分写入或部分 reload。
+
+### 12.13 HTTP Server 和 main 生命周期参考
+
+```go
+type Server struct {
+    mu           sync.Mutex
+    httpServer   *http.Server
+    listener     net.Listener
+    serveDone    chan error
+    shutdownOnce sync.Once
+    shutdownCh   chan struct{}
+}
+
+func (s *Server) Start() (int, error) {
+    ln, err := net.Listen("tcp", net.JoinHostPort(s.host, strconv.Itoa(s.port)))
+    if errors.Is(err, syscall.EADDRINUSE) {
+        ln, err = net.Listen("tcp", net.JoinHostPort(s.host, "0"))
+    }
+    if err != nil { return 0, err }
+
+    hs := &http.Server{
+        Handler: s.mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 120 * time.Second,
+    }
+    s.publishStartedState(ln, hs)
+    go func() { s.serveDone <- normalizeServeError(hs.Serve(ln)) }()
+    return ln.Addr().(*net.TCPAddr).Port, nil
+}
+```
+
+main 的目标顺序固定：读取/校验部署参数 → 建数据目录/pidfile → 开数据库 → 加载并校验业务快照 → 预构造运行时/日志/告警 → 同步绑定 HTTP 成功 → 启动 Syncer → 等待 OS 信号或 Serve 错误 → 同时开始 HTTP shutdown 与 Syncer stop → HTTP 最多 10 秒、必要时 Close → Syncer 无超时 Wait 当前轮 → 关闭 Store/pidfile → 按原因返回 0 或非零。
+
+两个 SSE handler 的 select 都必须包含：数据 channel、`r.Context().Done()`、`serverShutdownCh`。server shutdown 分支只返回，由 defer unsubscribe；不得依赖关闭 EventBus/LogBroadcaster 的订阅 channel 来驱动退出。
+
+### 12.14 EventBus 参考修复
+
+```go
+func (b *EventBus) SubscribeChan() (<-chan Event, func()) {
+    b.mu.Lock()
+    id := b.nextID
+    b.nextID++
+    ch := make(chan Event, 32)
+    b.chanSubs[id] = ch
+    b.mu.Unlock()
+
+    var once sync.Once
+    return ch, func() {
+        once.Do(func() {
+            b.mu.Lock()
+            delete(b.chanSubs, id)
+            b.mu.Unlock()
+            // 必须不 close(ch)：Publish 可能已持有该 channel 的快照。
+        })
+    }
+}
+
+func (b *EventBus) Publish(event Event) {
+    b.mu.RLock()
+    subs := append([]Subscriber(nil), b.subscribers[event.Type]...)
+    chans := make([]chan Event, 0, len(b.chanSubs))
+    for _, ch := range b.chanSubs { chans = append(chans, ch) }
+    b.mu.RUnlock()
+    // 锁外通知；channel 满则丢本次事件。
+}
+```
+
+接口订阅者 slice 也必须复制，不能只复制 channel map。Subscriber 回调仍异步且错误隔离；本 Step 不改变事件顺序保证，也不新增可靠消息队列。
+
+### 12.15 Step 文件归属与禁止跨步清单
+
+| Step | 允许形成的核心结构 | 本 Step 禁止提前完成 |
+|------|-------------------|----------------------|
+| 1 | EventBus 快照/不关 channel；TAG 参数链；CI race | 不引入完整 RuntimeManager、凭据注入或 HTTP shutdown 重构 |
+| 2 | `DeploymentConfig`；零参数 WebUI-only main；删除旧入口 | 不顺手实现 listener 生命周期或 v2 导入 |
+| 3 | 显式 `http.Server/listener/Wait/Shutdown`；SSE shutdownCh | 不改变业务 DTO、配置包 Schema或 Provider 凭据结构 |
+| 4 | 严格解码、领域校验、RowsAffected/引用检查、事务 settings/alerts、协调器骨架 | 不提供半成品 version 2；不删除 version 1 后留下无导入导出状态，协议切换留给 Step 5 |
+| 5 | RuntimeState、显式 Credentials、v2 export/import、完整协调器应用、前端危险确认 | 不升级 Vite 主版本或扩张云 API 算法 |
+| 6 | lockfile/构建器受控升级 | 不混入业务 API/运行时重构 |
+| 7 | 剩余高影响测试、真实证据、文档闭环 | 不用 mock 关闭真实外部验收项 |
+
+如果 Step 4 的协调器骨架需要 RuntimeManager 才能保持编译，可先提供只封装现有 reload 的最小接口，但不得声称已达到 Step 5 的完整原子状态；Step 5 必须替换掉分次 reload。反之，不得为了“少改一次”在 Step 4 提前完成 Provider 全局凭据移除。
+
+### 12.16 测试夹具和失败注入基线
+
+为使验收可重复，新增测试优先采用以下轻量方式，不引入重型框架：
+
+- SQLite：每个测试独立 `t.TempDir()` 数据库；需要制造阶段失败时创建临时 trigger，例如对目标/规则/settings/alerts 某次 INSERT 执行 `RAISE(ABORT, 'fixture failure')`，测试结束自动随临时 DB 消失；
+- HTTP：`httptest.NewRecorder/NewRequest` 测 handler；Server listener/shutdown 使用 `127.0.0.1:0` 与真实 `net.Listener`；
+- 并发：barrier channel 精确控制 Publish/Unsubscribe、A/B mutation、reload/sync retry 的交错，避免只靠 `time.Sleep` 猜竞态；
+- 云 API：Provider mock 记录 Describe/Create/Delete 参数和调用顺序；不访问真实云时明确标为 mock；
+- 敏感信息：给四个云密钥、SMTP password、Webhook URL 放置唯一 sentinel，扫描 HTTP body、捕获日志和 error 文本，任何出现都失败；配置导出 body 是唯一允许包含这些 sentinel 的 HTTP 响应；
+- 前端：Blob 下载、filename fallback、导入失败不 reload、成功整页 reload 可抽成纯函数/最小组件测试；真实浏览器仍按 Step 5/7 单独验收；
+- 进程：用临时数据目录启动真实二进制，验证参数退出、信号、端口占用、Serve 失败和退出码；不得在单元测试中向测试宿主进程发 SIGTERM；
+- Docker：health 与 stop 使用实际容器；记录镜像 tag、启动命令、health 输出和停止耗时。
+
+失败注入至少覆盖：清表、目标插入、规则插入、settings、email、webhook、scanned_resources 清空、候选 Provider 构造、commit。每一项都断言旧数据库完整、旧 RuntimeState 指针仍生效、未改变日志级别/告警订阅、未发成功响应。
+
+### 12.17 文档和证据完成定义
+
+Build6 最终关闭前，必须能从本文追溯：
+
+```text
+固定契约
+  → 对应 Step 和代码入口
+  → 自动测试名称/命令
+  → 本地进程或浏览器证据
+  → 真实云/SMTP/Webhook 证据（适用时）
+  → Issue5 状态
+```
+
+“源码存在”“测试通过”“Docker build 成功”“浏览器打开”“真实云写入成功”是不同证据层。记录时必须写明环境和边界，不使用“全部验证完成”概括替代。任何用户尚未执行/确认的真实外部验收都保留为待办，不由 AI 推断通过。
+
+---
+
+## 十三、变更记录
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
 | v1.0 | 2026-09-22 | 建立构建前方案：整合完整配置包、CLI/Headless 移除及 Issue5 全部事项；所有 Step 均未开始 |
 | v1.1 | 2026-09-22 | 完成逐 Step 构建前核验；固定 version 2 Schema、目标删除 409、TAG/JSON/HTTP 边界、SSE 关闭、原子运行时切换和 Vite 8 升级口径；补齐研究证据、测试矩阵与授权门禁 |
 | v1.2 | 2026-09-22 | Step 0 验收通过：切换当前文档体系，建立 Design5，同步 AGENTS/Issue5/README 边界并存档 Design4/Build5/Issue4 |
+| v1.3 | 2026-09-22 | 进一步固定 AI 串行构建协议、当前源码映射、配置变更协调器、不可变运行时快照、严格 DTO/Store/HTTP/EventBus 边界，并加入贴合当前仓库的参考代码、失败注入和证据模板；未修改业务代码或 Step 状态 |
