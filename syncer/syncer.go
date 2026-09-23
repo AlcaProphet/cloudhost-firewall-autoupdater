@@ -249,11 +249,11 @@ type DryRunResponse struct {
 
 // DryRunResult 试运行结果（明细化：to_add/to_delete 为规则数组）
 type DryRunResult struct {
-	Provider string               `json:"provider"`
-	Domain   string               `json:"domain"`
+	Provider string                `json:"provider"`
+	Domain   string                `json:"domain"`
 	ToAdd    []provider.RuleChange `json:"to_add"`
 	ToDelete []provider.RuleChange `json:"to_delete"`
-	Error    string               `json:"error,omitempty"`
+	Error    string                `json:"error,omitempty"`
 }
 
 // DryRun 试运行：DNS 解析 + Diff，不写入不触发事件
@@ -325,6 +325,9 @@ func (s *Syncer) syncAll() {
 	resolver := s.resolver
 	s.mu.RUnlock()
 
+	// 本轮 TAG 快照：筛选、描述生成和全部重试只使用该值，热重载的新 TAG 从下一轮同步开始生效
+	roundTag := cfg.Tag
+
 	slog.Info("开始同步", "targets", len(providers), "rules", len(cfg.DomainRules))
 	start := time.Now()
 
@@ -345,7 +348,7 @@ func (s *Syncer) syncAll() {
 			for _, p := range ps {
 				rules := filterRulesForTarget(cfg.DomainRules, p.TargetIndex())
 				for _, rule := range rules {
-					s.syncDomain(p, rule, resolver)
+					s.syncDomain(p, rule, resolver, roundTag)
 					time.Sleep(rateLimitInterval(ct))
 				}
 			}
@@ -368,7 +371,8 @@ func (s *Syncer) syncAll() {
 }
 
 // syncDomain 同步单个域名到单个 Provider
-func (s *Syncer) syncDomain(p provider.Provider, rule config.DomainRule, resolver *dns.Resolver) {
+// tagStr 为本轮快照 TAG，由 syncAll 捕获后显式传递，避免下游越过快照读取可被替换的 s.cfg
+func (s *Syncer) syncDomain(p provider.Provider, rule config.DomainRule, resolver *dns.Resolver, tagStr string) {
 	// 0. DNS 解析（无论是否熔断都执行，熔断时作为半开探测）
 	resolved, err := resolver.Resolve(context.Background(), rule.Host)
 	if err != nil {
@@ -396,11 +400,12 @@ func (s *Syncer) syncDomain(p provider.Provider, rule config.DomainRule, resolve
 	}
 
 	// 2. 委托给内部方法执行同步
-	s.syncDomainInternal(p, rule, resolved)
+	s.syncDomainInternal(p, rule, resolved, tagStr)
 }
 
 // syncDomainInternal 执行 DNS 已解析后的同步流程（Describe → Diff → Create/Delete）
-func (s *Syncer) syncDomainInternal(p provider.Provider, rule config.DomainRule, resolved []dns.ResolvedIP) {
+// tagStr 为本轮快照 TAG，继续显式向下传递
+func (s *Syncer) syncDomainInternal(p provider.Provider, rule config.DomainRule, resolved []dns.ResolvedIP, tagStr string) {
 	// ECS ICMPv6 警告（仅当实际有 IPv6 地址时输出一次）
 	if rule.Protocol == "ICMP" && p.CloudType() == config.CloudAliECS {
 		for _, ip := range resolved {
@@ -411,7 +416,7 @@ func (s *Syncer) syncDomainInternal(p provider.Provider, rule config.DomainRule,
 		}
 	}
 
-	added, deleted, err := s.retrySync(p, rule, resolved)
+	added, deleted, err := s.retrySync(p, rule, resolved, tagStr)
 	if err != nil {
 		slog.Error("同步失败", "provider", p.Name(), "domain", rule.Host, "error", err)
 		s.bus.Publish(notifier.Event{

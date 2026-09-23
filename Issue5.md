@@ -66,13 +66,13 @@
   1. 修改 `notifier.EventBus.SubscribeChan` 返回的取消函数：在写锁内检查并删除 `chanSubs[id]`，但不再调用 `close(ch)`。
   2. 保留当前按 ID 删除和“未找到即无操作”的幂等语义；同一个取消函数被重复或并发调用时不能 panic。
   3. SSE handler 继续以 `r.Context().Done()` 作为连接生命周期终点。handler 返回时执行 `defer unsubscribe()`，EventBus 不再持有该 channel，随后由 GC 回收。
-  4. `Publish` 仍可在锁内复制订阅快照、锁外非阻塞投递；取消订阅与快照复制并发时，最多只会向已脱离订阅表但仍存活的 channel 多投递一个事件，不会阻塞或 panic。
+  4. `Publish` 仍可在锁内复制订阅快照、锁外非阻塞投递；取消订阅与快照复制并发时，**已经取得快照的一个或多个并发 Publish 都可能继续向仍存活的缓冲 channel 投递**，不承诺"最多一个在途事件"（并发 Publish 各自独立取得快照，无法正确保证数量上限）；只保证不 panic、不阻塞、取消后新的快照不再包含该订阅。
   5. 不使用 `recover` 吞掉 `send on closed channel`，也不把发送操作全部放进全局锁内，避免以隐藏错误或扩大锁持有时间的方式修复。
   6. 本项只修改 `EventBus`。`LogBroadcaster` 当前在同一把锁内完成发布和关闭，不存在相同的“锁外向已关闭快照发送”窗口，不顺手改变其生命周期语义。
 - **回归测试设计：**
   - 循环并发执行 `Publish` 和 `unsubscribe`，覆盖取消发生在复制前、复制后、发送前等时序；
   - 对同一取消函数进行重复及并发调用，验证幂等且无 panic；
-  - 取消后再次发布，验证该订阅者不再收到后续事件；允许取消竞态边界内已有的最多一个在途事件；
+  - 取消后再次发布，验证该订阅者不再收到后续事件；**不得断言"最多一个在途事件"**（并发 Publish 可各自取得快照）；
   - 建立真实 SSE 请求并取消 context，验证 handler 退出且订阅表恢复到连接前数量；
   - 对 `notifier` 相关测试使用 `go test -race -count=100` 重复运行，并最终执行全仓 race 测试。
 - **验收建议：**
@@ -80,7 +80,13 @@
   - 覆盖重复取消的幂等性；
   - 使用 `go test ./... -race` 重复运行；
   - 人工验证 SSE 连接断开后不会泄漏订阅或 goroutine。
-- **状态：** ☐ 已决策 / 待 Build6 Step 1 实施
+- **实施记录（2026-09-23，Build6 Step 1）：**
+  - 代码：`notifier/bus.go` 取消订阅只删除订阅表记录、不再 `close(ch)`，取消函数用 `sync.Once` 幂等；`Publish` 在读锁内复制接口订阅者 slice 与 channel 订阅快照，锁外异步回调 + 非阻塞投递。
+  - 修复前红灯（真实结果）：新测试 `TestEventBus_InFlightSnapshotStillDelivers` 直接 `panic: send on closed channel`；`TestEventBus_CancelDoesNotCloseChannel` 失败；接口订阅 slice 并发用例如实报出 2 处 `DATA RACE`（`Subscribe`/`Unsubscribe` 原地写 vs `Publish` 读），并发 Publish/取消用例报出 `close` vs `chansend` 竞态。
+  - 修复后：`go test ./... -race -count=1` 通过；`go test -race -count=100 ./notifier` 通过（`ok 45.358s`）。
+  - 新增 SSE 用例（`webui/api/sync_test.go`）锁定"request context 取消 / 真实连接断开后 handler 退出且 `defer unsubscribe()` 生效"契约；订阅表真实清理由 `notifier` 包内白盒断言覆盖。两用例在修复前即通过，属契约保护而非缺陷复现。
+  - 门禁（2026-09-23）：`go test -race -count=100 ./notifier` 通过（`ok 45.358s`）；`go test ./... -race -count=1` 通过；`go vet ./...`、`git diff --check` 通过。
+- **状态：** ✅ 已修复并验收通过（Build6 Step 1 四道门禁真实通过）
 
 ### R5-03 同步配置快照未覆盖 retrySync 的 TAG 读取
 
@@ -108,7 +114,13 @@
   - 验证同一轮 Describe → Diff → Create/Delete 始终使用同一个 TAG；
   - 使用 `go test ./... -race` 验证无竞态；
   - 验证下一轮同步才使用新 TAG。
-- **状态：** ☐ 已决策 / 待 Build6 Step 1 实施
+- **实施记录（2026-09-23，Build6 Step 1）：**
+  - 代码：`syncAll` 在既有读锁快照内捕获 `roundTag := cfg.Tag`，经 `syncDomain → syncDomainInternal → retrySync` 显式传参；`retrySync` 的 `OwnedRules`、描述生成与全部重试只使用该参数，删除对 `s.cfg.Tag` 的直接读取。Dry Run 保持使用其已捕获的 `cfg.Tag`。
+  - 修复前红灯（真实结果）：`TestSyncRound_TagSnapshotDuringReload` 在本轮首次 Describe 阻塞期间通过真实 `Reload` 替换 TAG 后，本轮改为使用**新** TAG（新增描述 `[new-tag] 测试`、旧 TAG 云端规则未被识别删除）；`TestRetrySync_TagSnapshotAcrossRetry` 在重试轮同样改用新 TAG；`TestSyncRound_ConcurrentReloadStress` 报出 `retry.go:40` 无锁读与 `syncer.go:143` 锁内写的 `DATA RACE`。
+  - 修复后：`go test ./... -race -count=1` 通过；`go test -race -count=20 ./syncer` 通过（`ok 134.735s`）。
+  - 可达性说明：`s.cfg` 仅由 Run goroutine 在锁内写入，而 Run 同步执行 `syncAll` 且 `Reload` 是阻塞式 channel 发送，因此"一轮同步进行中替换配置"在**当前生产流程中不可达**；本项是真实的锁旁路与单轮快照契约缺失，Step 5 的原子运行时替换会使其成为可达路径。相关测试交错为测试构造，已在 Build6 Step 1 记录中如实标注。
+  - 门禁（2026-09-23）：`go test -race -count=100 -timeout 40m ./syncer` 通过（`ok 665.887s`，0 次 DATA RACE；默认 10 分钟包级超时不足，需显式放宽 `-timeout`）；`go test ./... -race` 通过。
+- **状态：** ✅ 已修复并验收通过（Build6 Step 1 四道门禁真实通过）
 
 ---
 
@@ -154,7 +166,13 @@
   - 本地执行 `go test -race ./...`；
   - 在 PR 工作流确认 race 命令真实运行且失败会阻止后续镜像构建；
   - 检查 tag 构建仍只在所有编译、vet、race 测试通过后登录并推送镜像。
-- **状态：** ☐ 已决策 / 待 Build6 Step 1 实施
+- **实施记录（2026-09-23，Build6 Step 1）：**
+  - 代码：`.github/workflows/docker-publish.yml` 的 `go test -v ./...` 已改为 `go test -race -v ./...`；前端构建仍在 Go 测试之前，独立 `go build -v ./...` 与 `go vet ./...` 保留，Docker 产物仍为 `CGO_ENABLED=0`（`build/Dockerfile`）。
+  - 本地证据：`go test ./... -race -count=1` 通过；`go vet ./...` 通过；工作流经 YAML 解析确认步骤顺序为 前端构建 → build+vet → race 测试 → Docker 推送（推送仅在 tag 路径）。
+  - 证据边界：**未推向远端、未获得 GitHub Actions 运行结果**，因此不得声称 CI 已通过；远端验证已列入 `ProdTestList.md` 第三节第 1 项。
+  - 耗时说明：`./syncer -count=100` 会超出 Go 默认 10 分钟包级超时（需 `-timeout 40m`），因此 CI 侧维持单轮 race 测试；若后续需要 100 轮门禁，按本项第 5 条拆分为独立 job 并让发布依赖其成功。
+  - 门禁（2026-09-23）：Build6 Step 1 四道门禁在本机全部真实通过（含 `./notifier`、`./webui/api`、`./syncer` 各自 100 轮 race）。
+- **状态：** ◧ 代码已实施并有本地静态/命令证据 / 待远端 GitHub Actions 运行确认（远端验证见根目录 `ProdTestList.md` 第三节第 1 项）
 
 ---
 
@@ -350,3 +368,4 @@
 | v1.0 | 2026-09-22 | 新建项目审查问题记录：3 个待修复问题，以及依赖、CI、测试、HTTP 生命周期与输入边界优化项 |
 | v1.1 | 2026-09-22 | 为 R5-01～R5-03、O5-01～O5-06 补充具体实施内容与回归测试；新增 A5-01 headless 模式移除候选及推荐执行顺序 |
 | v1.2 | 2026-09-22 | 升格为当前问题记录；按 Build6 更新完整敏感配置包、全 CLI 移除、三个部署变量和各问题的已决策/待实施状态 |
+| v1.3 | 2026-09-23 | 同步 Build6 Step 1 实施证据：R5-02（取消不再关闭 channel、Publish 双重复制）、R5-03（本轮 TAG 显式传参）与 O5-02（CI 启用 race）落地并附真实结果；按用户确认口径修正 R5-02「最多一个在途事件」旧表述；未完成的 `./syncer -count=100` 门禁转入根目录 ProdTestList.md |

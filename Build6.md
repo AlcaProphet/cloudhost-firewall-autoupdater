@@ -307,7 +307,7 @@ log_level, theme
 | Step | 内容 | 主要依据 | 状态 |
 |------|------|---------|------|
 | 0 | 文档体系切换与设计契约固定 | 本文档 §一～四、Issue5 A5-01 | ✅ 验收通过 |
-| 1 | 并发正确性基线与 CI race 门禁 | Issue5 R5-02、R5-03、O5-02 | ☐ 未开始 |
+| 1 | 并发正确性基线与 CI race 门禁 | Issue5 R5-02、R5-03、O5-02 | ✅ 验收通过 |
 | 2 | 移除 CLI 与 `.env` Headless 业务模式 | Issue5 A5-01、本文件 §一 | ☐ 未开始 |
 | 3 | HTTP Listener、Server 生命周期与优雅关闭 | Issue5 O5-04、O5-05 | ☐ 未开始 |
 | 4 | API 最小持久化校验边界 | Issue5 O5-06、本文件 §四 | ☐ 未开始 |
@@ -455,6 +455,41 @@ go test ./... -race
 go vet ./...
 git diff --check
 ```
+
+**实施状态：** ✅ 验收通过（2026-09-23；施工基线见下）
+
+- 当前 HEAD：`6acd529770b4191187554b19190dfb2eed81d7e1`
+- 工作树基线：干净（`git status --short` 为空，`git diff --stat`/`git diff --check` 无输出，无用户改动）
+- 本 Step 文件范围：`notifier/bus.go`、`notifier/bus_test.go`、`syncer/syncer.go`、`syncer/retry.go`、`syncer/syncer_test.go`、`webui/api/sync_test.go`、`.github/workflows/docker-publish.yml`；验收通过后追加本文件与 `Issue5.md` 的真实状态记录
+- 固定不变量：取消 channel 订阅只删除订阅表记录且不关闭 channel；重复与并发取消幂等；`Publish` 在 `RLock` 内复制接口订阅者 slice 与 channel 订阅快照，锁外异步回调并以非阻塞方式投递；接口回调不在全局锁内执行；一轮同步的 `OwnedRules`、描述生成与全部重试只使用本轮捕获的 TAG（`syncAll → syncDomain → syncDomainInternal → retrySync` 显式传参）；CI 使用 `go test -race -v ./...`，前端构建仍在 Go 测试之前，独立 build/vet 与 Docker 产物 `CGO_ENABLED=0` 保持不变
+- 本轮不处理：RuntimeManager 与完整不可变 RuntimeState、Provider 显式凭据注入、HTTP listener 与 shutdown 生命周期重构、SSE 服务器级 shutdown channel、CLI 与 `.env` Headless 移除、version 2 配置导入导出、API 通用校验框架、Vite 及前端依赖升级、`LogBroadcaster` 生命周期语义
+
+**实际证据（2026-09-23）：**
+
+- **实际改动：**
+  1. `notifier/bus.go`：`SubscribeChan` 取消订阅改为写锁内 `delete(b.chanSubs, id)` 且**不再关闭 channel**，取消函数用 `sync.Once` 保证重复/并发调用幂等；`Publish` 在读锁内**复制接口订阅者 slice**（`append([]Subscriber(nil), ...)`）并复制 channel 订阅表快照，锁外异步回调、锁外非阻塞投递；`EventBus.chanSubs` 字段注释写明"取消订阅只删除记录，不关闭 channel"。
+  2. `syncer/syncer.go`：`syncAll` 在既有 `RLock` 快照内捕获 `roundTag := cfg.Tag`；`syncDomain`、`syncDomainInternal` 增加显式 `tagStr string` 参数并逐级传递。
+  3. `syncer/retry.go`：`retrySync` 增加 `tagStr string` 参数，`OwnedRules` 与 `tag.Format` 改用它，**删除对 `s.cfg.Tag` 的直接读取**。Dry Run 未改动（继续使用其已捕获的 `cfg.Tag`）。
+  4. 测试：`notifier/bus_test.go` 新增 8 个用例（取消不关 channel、在途快照投递、取消后不再投递、重复/并发取消幂等、并发 Publish/取消、接口订阅 slice 并发修改、满缓冲不阻塞、慢回调不占全局锁）；`syncer/syncer_test.go` 新增 7 个用例（本轮 Reload 中 TAG 快照、跨重试边界 TAG 快照、下一轮新 TAG、并发 Reload 压力、幂等错误不计数、空 comment 描述、描述截断）并更新 `TestRetrySync_Counts` 显式传 TAG；`webui/api/sync_test.go` 新增 2 个真实 SSE 用例（request context 取消、真实 TCP 客户端断开）。
+  5. `.github/workflows/docker-publish.yml`：`go test -v ./...` → `go test -race -v ./...`。
+- **自动检查（真实结果）：**
+  - 修复前红灯证据（先补测试、后改实现）：`TestEventBus_CancelDoesNotCloseChannel` 失败于"取消订阅后 channel 被关闭"；`TestEventBus_InFlightSnapshotStillDelivers` 直接 `panic: send on closed channel`（`Publish` 锁外发送命中被取消关闭的 channel）；`TestEventBus_InterfaceSubscribeConcurrentWithPublish` 报 2 处 `DATA RACE`（`Subscribe` bus.go:53 / `Unsubscribe` bus.go:65 原地写 vs `Publish` bus.go:101 读）；`TestEventBus_PublishCancelConcurrent` 报 `DATA RACE`（`close` bus.go:85 vs `chansend` bus.go:111）；`TestSyncRound_TagSnapshotDuringReload` 失败于本轮新增描述 `[new-tag] 测试` 且未删除旧 TAG 规则；`TestRetrySync_TagSnapshotAcrossRetry` 失败于重试轮同样改用新 TAG；`TestSyncRound_ConcurrentReloadStress` 报 `DATA RACE`（retry.go:40 无锁读 vs syncer.go:143 锁内写）。
+  - `go test ./... -race -count=1` → **通过**（全包 ok：notifier 1.576s、syncer 7.923s、webui/api 1.947s）。
+  - `go test -race -count=100 ./notifier` → **通过**（`ok 45.358s`）。
+  - `go test -race -count=100 ./webui/api` → **通过**（`ok 41.405s`）。
+  - `go test -race -count=20 ./syncer` → **通过**（`ok 134.735s`，短程补充证据）。
+  - `go test -race -count=100 ./syncer` → **通过**（`ok 665.887s`，`-timeout 40m`）。注意：Go 默认包级超时为 10 分钟，而本包 100 轮约需 11 分钟，因此**必须显式放宽 `-timeout`**；不带 `-timeout` 时会被框架超时中断（首次尝试在 `600.642s` 中断，当时已完成约 90 轮且 0 竞态 0 失败）。本项未删减任何测试或轮次。
+  - `go vet ./...` → **通过**；`git diff --check` → **通过**；`gofmt -l`（本 Step 修改文件）→ 无输出。
+  - CI 工作流：`ruby -e YAML.load_file` 解析通过，步骤顺序仍为 前端构建(4) → build+vet(5) → race 测试(6) → Docker 推送(10，仅 tag)；`go build -v ./...`、`go vet ./...` 与 `CGO_ENABLED=0` 产物约束未改动。
+- **人工检查：** 已执行的静态人工核验为 `grep` 确认 `retrySync` 不再出现 `s.cfg.Tag`、`bus.go` 中不再存在 `close(`、CI 为 `go test -race -v ./...`、新测试未使用 `recover`；**未执行**真实浏览器、真实云 API、SMTP/Webhook 与真实 GitHub Actions 远端运行，证据边界仅限本地源码、本地测试与工作流文件静态内容。
+- **未完成项：** GitHub Actions 是否真实通过未获得远端结果，不得声称 CI 已通过（已列入 `ProdTestList.md` 第三节第 1 项）；O5-02 因此保持 ◧。
+- **与计划偏差：**
+  1. 本 Step 门禁以**逐包**方式执行（`./notifier`、`./webui/api`、`./syncer` 各一次），且 `./syncer` 需显式 `-timeout 40m` 才能跑满 100 轮（默认 10 分钟上限不足）。测试集与轮次数未做任何削减。
+  2. 构建前报告预计 TAG 快照测试会在当前代码下被 `-race` 报告竞态；实际确定性交错用例（阻塞 Describe → 真实 Reload → 释放）因测试侧同步（`RLock` 轮询 + channel 释放）构成 happens-before 边而**不会**产生竞态报告，其红灯表现为**语义失败**（同一轮混用新旧 TAG）。为覆盖锁旁路本身，新增无严格交错点的 `TestSyncRound_ConcurrentReloadStress`，它在修复前确实报告了 `retry.go:40` 的竞态。两类证据均已如实记录，未互相替代。
+  3. `syncer/syncer.go` 运行 `gofmt` 时顺带修正了**改动前既已存在**的 `DryRunResult` 字段对齐（3 行纯格式，无行为变化）。
+  4. 两个 SSE 用例在修复前后均通过：它们锁定的是"handler 退出 + `defer unsubscribe()` 生效"契约，而非 R5-02 缺陷本身；订阅表真实清理由 `notifier` 包内白盒断言覆盖。
+  5. CI 只改测试命令，未改步骤名；`Makefile` 的 `go test ./... -v`（非 CI 门禁）未改动。
+- **状态：** ✅ 验收通过（四道规定门禁全部真实通过；GitHub Actions 远端运行与真实外部链路属本 Step 之外，保持待办并已登记）
 
 ### Step 2：移除 CLI 与 `.env` Headless 业务模式
 
