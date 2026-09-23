@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"log/slog"
+	"os"
 )
 
 // MultiHandler 将日志同时写入多个 Handler
@@ -49,4 +50,28 @@ func (m *MultiHandler) WithGroup(name string) slog.Handler {
 		handlers[i] = h.WithGroup(name)
 	}
 	return &MultiHandler{Handlers: handlers}
+}
+
+// InitLoggerWithBroadcaster 初始化日志系统：stdout 文本日志 + WebUI 日志流。
+//
+// 这是唯一运行形态（WebUI + SQLite）使用的日志入口；Headless 模式已随
+// Build6 Step 2 移除，不再提供只写 stdout 的 InitLogger。
+func InitLoggerWithBroadcaster(level string, extra slog.Handler) {
+	opts := &slog.HandlerOptions{Level: parseLogLevel(level)}
+	stdout := slog.NewTextHandler(os.Stdout, opts)
+	slog.SetDefault(slog.New(NewMultiHandler(stdout, extra)))
+}
+
+// parseLogLevel 将业务设置中的日志级别字符串转为 slog 级别，未知值按 info 处理
+func parseLogLevel(level string) slog.Level {
+	switch level {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }

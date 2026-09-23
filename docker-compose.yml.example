@@ -1,8 +1,8 @@
 # FWAlizer Docker Compose 示例
 # 复制此文件为 docker-compose.yml 并根据需要修改
 #
-# ⚠️ 默认推荐 WebUI 模式（浏览器可视化管理，配置存于 SQLite）；
-#    .env 模式为备用/进阶/极简模式（挂载 .env，见下方注释）。
+# FWAlizer 只有一种运行形态：WebUI 单二进制 + SQLite。
+# 容器内不需要图形桌面，通过浏览器访问 WebUI 完成全部业务配置。
 
 services:
   fwalizer:
@@ -12,37 +12,24 @@ services:
     # build:
     #   context: .
     #   dockerfile: build/Dockerfile
-    #   args:
-    #     VERSION: local
 
     container_name: fwalizer
 
-    # ---- 环境变量 ----
+    # ---- 部署环境变量（全部仅三个） ----
+    # 业务配置（凭据、目标、规则、TAG、间隔、DNS、日志级别、告警）全部由
+    # WebUI 写入 SQLite，不存在环境变量 override。
     environment:
-      # 数据目录路径（可选，默认按平台自动选择）
-      # 在 Docker 中建议显式指定，避免依赖 HOME 目录
+      # 数据目录路径（SQLite 与 pidfile；镜像已预置并授权给 appuser）
       - FWALIZER_DATA_DIR=/app/data
-
-      # 同步间隔（可选，默认 5m）
-      - INTERVAL=5m
-
-      # 同步全局开关（可选，默认 true；false 时启动不执行同步）
-      # - SYNC_ENABLED=true
-
-      # 自定义 DNS 服务器（可选，默认 223.5.5.5）
-      # - DNS=223.5.5.5
-
-      # WebUI 端口（可选，默认 60200）
-      - WEBUI_PORT=60200
 
       # 容器内需监听所有接口，才能接收 Docker 端口映射的请求
       - WEBUI_HOST=0.0.0.0
 
-      # 日志级别（可选，默认 info）
-      - LOG_LEVEL=info
+      # WebUI 监听端口（默认 60200）
+      - WEBUI_PORT=60200
 
     # ---- 端口映射 ----
-    # WebUI 模式：默认发布到宿主机所有接口；仅同机反向代理访问可改为 127.0.0.1:60200:60200
+    # 默认发布到宿主机所有接口；仅同机反向代理访问可改为 127.0.0.1:60200:60200
     ports:
       - "60200:60200"
 
@@ -51,15 +38,15 @@ services:
       # 数据持久化（SQLite 数据库存储于此）
       - fwalizer_data:/app/data
 
-      # .env 模式：挂载配置文件（二选一，与上方 ports 互斥）
-      # - ./config/.env:/app/.env:ro
-
     # ---- 健康检查 ----
+    # 只认 HTTP /api/health，不使用进程存活（pgrep）fallback：
+    # 进程存活但 WebUI 不可用时必须判为 unhealthy。
+    # 若修改上面的 WEBUI_PORT，必须同步修改这里的端口。
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "wget -q -O /dev/null http://localhost:60200/api/health 2>/dev/null || pgrep fwalizer || exit 1",
+          "wget -q -O /dev/null \"http://127.0.0.1:${WEBUI_PORT:-60200}/api/health\" || exit 1",
         ]
       interval: 30s
       timeout: 3s
@@ -69,10 +56,9 @@ services:
     # ---- 重启策略 ----
     restart: unless-stopped
 
-    # ---- 运行模式说明 ----
-    # 默认（上方配置）为 WebUI 模式（推荐）：浏览器访问 http://127.0.0.1:60200 完成全部配置
-    # .env 模式（备用/进阶）：取消注释下方 volumes 中的 .env 挂载并注释 ports，
-    # 需在 ./config/.env 提供 TARGETS/RULES/凭据等（模板见 .env.example）
+    # ---- 访问 ----
+    # 浏览器访问 http://127.0.0.1:60200 完成全部配置。
+    # 默认只监听容器内 0.0.0.0；宿主机暴露范围由上方 ports 决定。
 
 volumes:
   fwalizer_data:

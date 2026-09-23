@@ -331,7 +331,13 @@
   - Compose 配置校验通过，容器启动后只能通过 HTTP 健康检查判定健康，并实际请求 `/api/health`；
   - 执行前端构建、`go test ./... -race`、`go vet ./...`、Compose 配置校验、Docker 镜像构建和 `git diff --check`；
   - 人工检查首次配置、保存、重启后持久化、暂停/恢复、模拟测试、同步日志及告警页面。
-- **状态：** ☐ 已决策 / 待 Build6 Step 2 实施
+- **实施记录（2026-09-23，Build6 Step 2）：**
+  - 代码：`main.go` 收束为 `os.Exit(run(...))`，新增 `run.go`（`run(args,...) int` + `runWebUI`）；删除 `app/cli.go`、`app/mode.go`、`app/app.go`（Headless `Run`）与 `config/env.go`、`config/validate.go`、`config/env_test.go`、`version/`、`.env.example`；新增 `config/deployment.go` 承载 `DeploymentConfig`（数据目录/监听地址/端口，空白 `FWALIZER_DATA_DIR` 按未设置、`WEBUI_PORT` 仅接受十进制 `1～65535`）；`Config` 删除 `Mode`/`WebUIHost`/`WebUIPort`；`/api/settings` 不再返回或落库 `webui_port`，导入含该键在写事务前返回 400；Makefile/Dockerfile/工作流删除版本注入；Dockerfile 与 Compose 健康检查只走 `/api/health`（动态 `WEBUI_PORT` 拼接，无 `pgrep`）；README 与代码同批删除 CLI/backup/restore/`.env`/业务变量说明。
+  - 自动门禁：`go test ./... -race`、`go vet ./...`、`go build ./...`、`git diff --check` 全部通过；修改文件 `gofmt -l` 无输出；`npm ci && npm run build` 通过；`docker compose -f docker-compose.yml.example config --quiet` 通过；`docker build -f build/Dockerfile -t fwalizer:build6-step2 .` 通过。
+  - 专项测试：`config/deployment_test.go`（默认值、空白数据目录、Host/Port 独立生效、边界与非法端口、业务 ENV 不影响部署参数）、`main_test.go`（空库无参数启动并响应 `/api/health`、11 种参数非零退出且不创建数据目录、非法端口失败、`TARGETS`/`TC_ACCESS_ID`/`INTERVAL`/`FWALIZER_MODE` 不改变 SQLite 配置）、`webui/api/settings_policy_test.go`（GET/PUT/导入/导出与残留键）。
+  - Docker 证据：真实容器健康检查 `healthy`；进程存活但 HTTP 不可达时容器为 `unhealthy`（`Connection refused`，无进程 fallback）；`WEBUI_PORT=61234` 覆盖生效且健康检查跟随；`docker stop` 日志显示完成当前轮次后 `ExitCode=0`。临时容器与 `fwalizer:build6-step2` 镜像已清理。
+  - 证据边界：**未执行真实浏览器交互**，**未推向远端**（GitHub Actions 工作流改动无远端运行结果）；两项均登记为待办，未把本地命令结果表述为远端 CI 或浏览器已通过。
+- **状态：** ✅ 已修复并验收通过（Build6 Step 2 规定门禁与 Docker 容器验收真实通过；浏览器人工复核与远端 CI 为登记待办）
 
 ---
 
@@ -369,3 +375,4 @@
 | v1.1 | 2026-09-22 | 为 R5-01～R5-03、O5-01～O5-06 补充具体实施内容与回归测试；新增 A5-01 headless 模式移除候选及推荐执行顺序 |
 | v1.2 | 2026-09-22 | 升格为当前问题记录；按 Build6 更新完整敏感配置包、全 CLI 移除、三个部署变量和各问题的已决策/待实施状态 |
 | v1.3 | 2026-09-23 | 同步 Build6 Step 1 实施证据：R5-02（取消不再关闭 channel、Publish 双重复制）、R5-03（本轮 TAG 显式传参）与 O5-02（CI 启用 race）落地并附真实结果；按用户确认口径修正 R5-02「最多一个在途事件」旧表述；未完成的 `./syncer -count=100` 门禁转入根目录 ProdTestList.md |
+| v1.4 | 2026-09-23 | 同步 Build6 Step 2 实施证据：A5-01（CLI/`.env` Headless 移除、三个部署变量收束、`webui_port` 退出业务配置、健康检查去 `pgrep`）落地并附本地门禁与 Docker 容器结果；浏览器人工复核与远端 CI 保持待办 |

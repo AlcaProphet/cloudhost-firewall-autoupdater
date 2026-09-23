@@ -308,7 +308,7 @@ log_level, theme
 |------|------|---------|------|
 | 0 | 文档体系切换与设计契约固定 | 本文档 §一～四、Issue5 A5-01 | ✅ 验收通过 |
 | 1 | 并发正确性基线与 CI race 门禁 | Issue5 R5-02、R5-03、O5-02 | ✅ 验收通过 |
-| 2 | 移除 CLI 与 `.env` Headless 业务模式 | Issue5 A5-01、本文件 §一 | ☐ 未开始 |
+| 2 | 移除 CLI 与 `.env` Headless 业务模式 | Issue5 A5-01、本文件 §一 | ✅ 验收通过 |
 | 3 | HTTP Listener、Server 生命周期与优雅关闭 | Issue5 O5-04、O5-05 | ☐ 未开始 |
 | 4 | API 最小持久化校验边界 | Issue5 O5-06、本文件 §四 | ☐ 未开始 |
 | 5 | version 2 完整配置包与原子运行时切换 | Issue5 R5-01、本文件 §三 | ☐ 未开始 |
@@ -496,6 +496,14 @@ git diff --check
 - **目标：** 运行时收束为唯一 WebUI + SQLite 模式，同时保持 Docker/服务器无桌面部署能力。
 - **实施参照：** §12.3 的 `DeploymentConfig` 边界和 §12.13 的 main 目标顺序；本 Step 只完成参数/配置源收束，显式 HTTP 生命周期留给 Step 3。
 - **主要文件：** `main.go`、`app/`、`config/`、`.env.example`、`.gitignore`、`Makefile`、`build/Dockerfile`、`.github/workflows/docker-publish.yml`、`docker-compose.yml.example`、README 和相关测试。
+
+**实施状态：** ◧ 进行中（2026-09-23；本机时间以仓库文件为准）
+
+- 当前 HEAD：`ff10eae601fbeb783cd940f0457673e857dfd74f`（`git log -1 --oneline --decorate` = `ff10eae (HEAD -> main, origin/main, origin/HEAD) fix(build6): Step 1 并发正确性基线与 CI race 门禁落地`）
+- 工作树基线：干净（`git status --short --branch` 仅 `## main...origin/main`，`git diff --stat`/`git diff --check` 无输出，无用户改动、无未跟踪文件）
+- 本 Step 文件范围：`main.go`、`main_test.go`（新增）、`app/app.go`（删除）、`app/logutil.go`、`app/cli.go`（删除）、`app/mode.go`（删除）、`config/config.go`、`config/store.go`、`config/deployment.go`（新增）、`config/deployment_test.go`（新增）、`config/env.go`（删除）、`config/env_test.go`（删除）、`config/validate.go`（删除）、`version/`（删除）、`webui/api/settings.go`、`webui/api/settings_policy_test.go`（新增）、`webui/frontend/src/views/Settings.vue`、`.env.example`（删除）、`.gitignore`、`Makefile`、`build/Dockerfile`、`.github/workflows/docker-publish.yml`、`docker-compose.yml.example`、`README.md`、`syncer/syncer.go`（仅删除已无调用方的 `WaitForSignal`）；验收通过后追加本文件与 `Issue5.md` 的真实状态记录
+- 固定不变量：`FWALIZER_DATA_DIR` 未设置或 Trim 后为空使用平台默认目录；`WEBUI_HOST` 默认 `127.0.0.1`；`WEBUI_PORT` 默认 `60200` 且只接受十进制 `1～65535`；三者仅启动时读取、不写入 SQLite、不进入配置包、不参与热重载、不接受业务 ENV override；无参数直接进入唯一 WebUI + SQLite 启动路径，`len(os.Args) > 1` 打印错误并以非零状态退出且不初始化数据目录、不监听端口；业务 `Config` 不再包含 `Mode`/`WebUIHost`/`WebUIPort`；`GET /api/settings` 不返回 `webui_port`，`PUT /api/settings` 不落库 `webui_port`/`sync_enabled`，导入含 `webui_port` 在打开写事务前返回 400；数据库残留 `webui_port` 只忽略，不迁移、不清库；Dockerfile/Compose 健康检查只请求 `/api/health`，无 `pgrep` fallback
+- 本轮不处理：显式 listener/`http.Server`/`Wait`/`Shutdown`/SSE 服务器级 shutdown channel（Step 3）；统一严格 JSON 解码、字段校验、目标引用 409、RowsAffected、settings/alerts 事务协调器（Step 4）；version 2 配置包、`export_id` 映射、Provider 显式凭据注入、`RuntimeState` 原子替换（Step 5）；Vite 及前端依赖升级（Step 6）；高影响路径补测与真实外部链路验收（Step 7）；云防火墙规则算法与 Provider API 行为；`HistoryDocs/` 正文
 - **处理内容：**
   1. 删除 `app/cli.go`、`app/mode.go` 和只服务 Headless runner 的代码；日志公共能力保留在语义明确的文件中；
   2. 删除 `.env` 加载、TARGETS/RULES 解析、旧 `Config.Validate()` 和专用测试；Step 4 将建立新的持久化 DTO 校验；
@@ -528,6 +536,45 @@ git diff --check
 ```
 
 同时静态检查活跃源码和当前文档不再提供 CLI、Headless、业务 ENV 或 `webui_port` 入口；`HistoryDocs/` 中历史记录不参与残留判定。
+
+**实际证据（2026-09-23）：**
+
+- **实际改动：**
+  1. `main.go` 收束为 `func main() { os.Exit(run(os.Args, os.Stdout, os.Stderr)) }`；新增 `run.go` 承载 `run(args, stdout, stderr) int` 与 `runWebUI`：任意参数打印「不支持命令行参数」并返回 2，部署参数无效返回 1，无参数直接进入唯一 WebUI + SQLite 路径（原 CLI 优先分流、`DetectMode` 与 env/webui switch 全部删除）。`srv.Start()` 不再回写监听端口，日志改用部署参数。
+  2. 删除 `app/cli.go`（`RunCLI`/`copyFile`/`cleanOldBackups`/`verifyBackup`，含 SQLite 完整性校验）、`app/mode.go`（`Mode`/`ModeEnv`/`ModeWebUI`/`DetectMode`）、`app/app.go`（Headless `Run` 与只写 stdout 的 `InitLogger`）；`app/logutil.go` 保留并补齐 `InitLoggerWithBroadcaster` + `MultiHandler` 与内部 `parseLogLevel`，`app` 包只承担日志多路复用。
+  3. 删除 `config/env.go`（`.env` 加载/解析、TARGETS/RULES 解析器、`ApplyWebUIEnv`）、`config/validate.go`（旧 `Config.Validate()`）、`config/env_test.go`；新增 `config/deployment.go` 定义 `DeploymentConfig{DataDir,Host,Port}` 与 `LoadDeploymentConfig()`（含 `DefaultDataDir()`），空白 `FWALIZER_DATA_DIR` 按未设置处理、`WEBUI_HOST` 默认 `127.0.0.1`、`WEBUI_PORT` 默认 `60200` 且只接受十进制 `1～65535`；`store.go` 的 `GetDataDir` 迁出，`LoadConfig` 不再读取 `settings["webui_port"]`；`Config` 删除 `WebUIHost`/`WebUIPort`/`Mode`。
+  4. `webui/api/settings.go` 增加 `settingsEditableKeys`/`settingsReservedKeys`：GET 只返回可编辑键并补齐默认值（不返回 `webui_port`、`sync_enabled`、数据库未知键）；PUT 只落库可编辑键（忽略 `webui_port`/`sync_enabled`/未知键）；导出剔除保留键；导入在打开写事务前对含 `webui_port` 的配置包返回 400。
+  5. 删除 `version/version.go`、Makefile `VERSION`/`LDFLAGS` 注入与 `--build-arg VERSION`、Dockerfile `ARG VERSION` 与 `-X ...version.Version`、工作流 buildx `build-args` 与 `BUILD_VERSION`。Dockerfile 健康检查改为 `wget ... http://127.0.0.1:${WEBUI_PORT:-60200}/api/health`，删除 `pgrep`，并显式声明 `WEBUI_HOST`/`WEBUI_PORT`/`FWALIZER_DATA_DIR` 三个默认值。
+  6. 删除 `.env.example` 与 `.gitignore` 的 `.env` 条目；Compose 环境变量只保留三个部署变量，删除 `.env` 挂载、`INTERVAL`/`DNS`/`LOG_LEVEL`/`SYNC_ENABLED` 与 Headless 说明，健康检查只走 HTTP 并注明改端口需同步改 healthcheck。
+  7. `syncer/syncer.go` 删除已无调用方的 `WaitForSignal` 及其 `os`/`os/signal`/`syscall` 导入。
+  8. README 改为唯一运行形态说明：删除运行模式章节、CLI backup/restore 章节、`.env` 变量表与 RULES 语法、Docker `.env` 段、模式切换/backup FAQ；新增三个部署参数的默认值与校验、配置包是配置迁移方式而非 SQLite 在线备份、`unhealthy` 排查说明；保留 Docker/服务器部署、非 root、数据卷与网络暴露提示。
+  9. 新增测试：`config/deployment_test.go`（默认值、空白数据目录、Host/Port 独立生效、`1`/`65535` 通过、`0`/`65536`/负数/`1e3`/`abc`/夹杂空格等失败、业务 ENV 不影响部署参数）、`main_test.go`（真实二进制进程级：空库无参数启动并响应 `/api/health`、11 种参数组合非零退出且不创建数据目录、非法端口非零退出、`TARGETS`/`TC_ACCESS_ID`/`INTERVAL`/`FWALIZER_MODE` 不改变 SQLite 配置）、`webui/api/settings_policy_test.go`（GET 不返回 `webui_port`/未知键、PUT 不落库 `webui_port`/`sync_enabled`、残留键不影响业务配置、导入含 `webui_port` 返回 400 且旧配置不变、导出不含 `webui_port`）。
+- **自动检查（真实结果）：**
+  - `go test ./... -race` → **通过**（根包 4.464s、config 1.551s、syncer 8.143s、webui 1.456s、webui/api 2.028s、provider 1.488s，其余 cached）。
+  - `go vet ./...` → **通过**；`go build ./...` → **通过**；`git diff --check` → **通过**。
+  - 对本 Step 修改/新增的 Go 文件运行 `gofmt -l` → 无输出。
+  - `cd webui/frontend && npm ci && npm run build` → **通过**（vue-tsc + vite 5.4.21，2818 模块，产物含 `assets/Settings-WJf_NgHo.js`）。
+  - `docker compose -f docker-compose.yml.example config --quiet` → **通过**；渲染结果确认 `environment` 仅 `FWALIZER_DATA_DIR`/`WEBUI_HOST`/`WEBUI_PORT`，healthcheck 解析为 `http://127.0.0.1:60200/api/health`。
+  - `docker build -f build/Dockerfile -t fwalizer:build6-step2 .` → **通过**（node/golang/alpine 三阶段，`CGO_ENABLED=0`，无 VERSION 注入）。
+  - 静态残留搜索（排除 `HistoryDocs/`、`PlatformAPIDocs/`、`dist/`）：活跃源码与当前文档已无 `RunCLI`/`DetectMode`/`ModeEnv`/`FWALIZER_MODE`/`LoadEnv`/`ParseEnv`/`ApplyWebUIEnv`/`WebUIHost`/`WebUIPort`/`version.Version`/`ARG VERSION`/`build-args`/`.env.example`/`WaitForSignal` 入口；剩余命中仅为：`Build6.md`/`Issue5.md`/`AGENTS.md`/`Design5.md` 中对被移除项的契约描述、`docker-compose.yml.example` 注释里的 “pgrep”（说明不使用该 fallback）、以及测试中刻意构造的 `TARGETS`/`TC_ACCESS_ID`/`INTERVAL`/`FWALIZER_MODE`/`webui_port` 输入。
+- **Docker 运行证据（真实容器，`fwalizer:build6-step2`）：**
+  1. 正常容器 `-p 127.0.0.1:60200:60200`：容器内日志 `host=0.0.0.0 port=60200`，宿主 `curl /api/health` → `{"status":"ok"}`，`docker inspect` 健康状态 → `healthy`（`ExitCode:0`）。
+  2. 反向容器（`--entrypoint sleep` 保持进程存活，容器内确认 60200 无监听）：健康状态 → **`unhealthy`**，`FailingStreak=2`，健康日志 `wget: can't connect to remote host (127.0.0.1): Connection refused`；证明健康检查不依赖进程存活 fallback。
+  3. `WEBUI_PORT=61234` 覆盖容器：日志 `访问地址=http://0.0.0.0:61234`，宿主 61234 端口 `/api/health` 正常，镜像自带健康检查在覆盖端口上仍为 `healthy`。
+  4. 真实容器 `docker stop -t 15`：日志出现「收到停止信号，等待当前轮次完成...」「同步引擎停止」，`ExitCode=0`、`OOMKilled=false`，停止耗时约 0 秒。
+  5. 清理：仅删除本轮创建的 `fwalizer-hc-pos`/`fwalizer-hc-neg`/`fwalizer-stop`/`fwalizer-port` 容器与 `fwalizer:build6-step2` 镜像，确认当前已无 fwalizer 容器与镜像。
+- **人工检查：** 未执行真实浏览器交互。已执行的是对真实二进制的本地 HTTP 探测（`/api/health` 200、`/` 返回内嵌 SPA 的 `index.html` 并引用新构建的 `assets/index-DLe-uTEM.js`、`/api/settings` 响应中无 `webui_port`）；`/settings` 等前端路由直接 GET 返回 404 属现有 SPA 静态服务行为，与 Step 2 无关（未在浏览器中加载路由）。
+- **未完成项：**
+  1. 未在浏览器中打开设置页并手动执行一次配置导入/导出（本 Step 修改了 `/api/settings`、导出内容与导出确认文案，建议人工复核，已登记到 `ProdTestList.md`）；
+  2. 未推向远端，未获得 GitHub Actions 运行结果，因此不得声称 CI 已通过（工作流 race 命令由 Step 1 引入，其远端确认仍属 O5-02 未完成项）；
+  3. 未执行真实云 API、SMTP、Webhook 验收（不属本 Step）。
+- **与计划偏差：**
+  1. `config/env.go` 未按 Issue5 第 3 条拆分为“语义明确的运行时配置文件”，而是整体删除并在新文件 `config/deployment.go` 中重建部署参数读取；结果语义与固定口径一致（`FWALIZER_DATA_DIR` 空白按未设置、端口 `1～65535`），仅文件命名不同。
+  2. `config/store.go` 中 `INTERVAL 格式无效，保留默认值` 的 WARN 文案保留未改动，仍使用 `.env` 时代的变量名习惯（属既有可读性瑕疵，不影响行为）。
+  3. 按用户确认口径，`PUT /api/settings` 不引入完整允许列表否决/400（留待 Step 4），而是明确忽略 `webui_port`/`sync_enabled`/未知键；`GET /api/settings` 顺带只返回 11 个可编辑键，与 §12.9 最终口径一致。
+  4. 按用户确认口径，健康检查采用 `http://127.0.0.1:${WEBUI_PORT:-60200}/api/health` 动态拼接，并在 Compose 注释说明改端口需同步改 healthcheck。
+  5. 本地对真实二进制做 HTTP 探测时未设置 `FWALIZER_DATA_DIR`，导致本次探测读取了本机默认真实数据目录（macOS `~/Library/Application Support/fwalizer/config.db`）中的现有业务配置；仅发出 GET 请求，未写库、未触发热重载、未修改任何文件，事后确认无残留进程、pidfile 已由进程清理、`config.db` 修改时间未变化。此为本轮操作瑕疵，不影响 Step 2 代码与验收结论，后续本地探测必须显式指定临时数据目录。
+- **状态：** ✅ 验收通过（Step 2 规定门禁全部真实通过；Docker 健康检查与 SIGTERM 容器证据均已取得；浏览器人工复核与远端 CI 属本 Step 之外的待办并已登记，不阻塞本 Step 结论）
 
 ### Step 3：HTTP Listener、Server 生命周期与优雅关闭
 
@@ -1369,4 +1416,4 @@ Build6 最终关闭前，必须能从本文追溯：
 | v1.0 | 2026-09-22 | 建立构建前方案：整合完整配置包、CLI/Headless 移除及 Issue5 全部事项；所有 Step 均未开始 |
 | v1.1 | 2026-09-22 | 完成逐 Step 构建前核验；固定 version 2 Schema、目标删除 409、TAG/JSON/HTTP 边界、SSE 关闭、原子运行时切换和 Vite 8 升级口径；补齐研究证据、测试矩阵与授权门禁 |
 | v1.2 | 2026-09-22 | Step 0 验收通过：切换当前文档体系，建立 Design5，同步 AGENTS/Issue5/README 边界并存档 Design4/Build5/Issue4 |
-| v1.3 | 2026-09-22 | 进一步固定 AI 串行构建协议、当前源码映射、配置变更协调器、不可变运行时快照、严格 DTO/Store/HTTP/EventBus 边界，并加入贴合当前仓库的参考代码、失败注入和证据模板；未修改业务代码或 Step 状态 |
+| v1.4 | 2026-09-23 | Step 2 验收通过：唯一 WebUI + SQLite 运行时，删除 CLI/`.env` Headless/`version` 与编译期注入，三个部署变量收束，`webui_port` 从 API 与配置包移除，健康检查去 `pgrep`；附真实进程、Compose、Docker 构建与容器健康证据 |

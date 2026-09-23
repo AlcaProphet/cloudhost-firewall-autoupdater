@@ -5,9 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -18,30 +15,6 @@ import (
 // Store SQLite 配置持久化
 type Store struct {
 	db *sql.DB
-}
-
-// GetDataDir 获取数据存储目录
-func GetDataDir() string {
-	if dir := os.Getenv("FWALIZER_DATA_DIR"); dir != "" {
-		return dir
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		// 回退到当前目录（极端情况）
-		return "."
-	}
-	switch runtime.GOOS {
-	case "darwin":
-		return filepath.Join(home, "Library", "Application Support", "fwalizer")
-	case "windows":
-		appdata := os.Getenv("APPDATA")
-		if appdata == "" {
-			appdata = filepath.Join(home, "AppData", "Roaming")
-		}
-		return filepath.Join(appdata, "fwalizer")
-	default:
-		return filepath.Join(home, ".config", "fwalizer")
-	}
 }
 
 // SyncLog 同步日志记录
@@ -593,9 +566,6 @@ func (s *Store) LoadConfig() (*Config, error) {
 		DNSTimeout:       10 * time.Second,
 		DNSFailThreshold: 5,
 		LogLevel:         "info",
-		WebUIHost:        "127.0.0.1",
-		WebUIPort:        60200,
-		Mode:             "webui",
 		SyncEnabled:      true, // 默认开启（向后兼容：老用户无该键时保持启动即同步）
 		TCAccessID:       settings["tc_access_id"],
 		TCAccessKey:      settings["tc_access_key"],
@@ -619,11 +589,7 @@ func (s *Store) LoadConfig() (*Config, error) {
 	if v := settings["log_level"]; v != "" {
 		cfg.LogLevel = v
 	}
-	if v := settings["webui_port"]; v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.WebUIPort = n
-		}
-	}
+	// webui_port 已不是业务设置：数据库中的残留键一律忽略，不做迁移或清理
 	if v := settings["dns_fail_threshold"]; v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.DNSFailThreshold = n

@@ -140,7 +140,7 @@ async function save() {
   }
 }
 
-// ─── 导出配置（卡片式确认后下载；配置文件不含凭据） ───
+// ─── 导出配置（卡片式确认后下载；配置文件不含凭据，也不是 SQLite 在线备份） ───
 const showExportConfirm = ref(false)
 
 function doExport() {
@@ -338,7 +338,7 @@ async function confirmImport() {
     <!-- 导出确认弹窗 -->
     <NModal v-model:show="showExportConfirm" preset="card" title="确认导出配置" style="width: 420px">
       <p style="margin: 0 0 16px; line-height: 1.7">
-        配置文件不包含云厂商凭据（安全设计），后续导入恢复后需重新填写凭据。是否继续导出？
+        配置文件不包含云厂商凭据（安全设计），后续导入恢复后需重新填写凭据；它是目标、规则与设置的配置迁移方式，不是 SQLite 数据库备份。是否继续导出？
       </p>
       <NSpace justify="end">
         <NButton size="large" @click="showExportConfirm = false">取消</NButton>

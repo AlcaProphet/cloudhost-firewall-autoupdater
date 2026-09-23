@@ -4,11 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"os"
-	"os/signal"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
@@ -471,14 +468,4 @@ func filterIPv4(ips []dns.ResolvedIP) []dns.ResolvedIP {
 		}
 	}
 	return v4
-}
-
-// WaitForSignal 等待停止信号，并等待 Run 完全退出（确保当前轮次完成）
-func WaitForSignal(s *Syncer) {
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	<-sigCh
-	slog.Info("收到停止信号，等待当前轮次完成...")
-	s.Stop()
-	<-s.doneCh // 等待 Run 完全退出
 }

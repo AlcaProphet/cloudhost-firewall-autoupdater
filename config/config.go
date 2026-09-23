@@ -7,9 +7,9 @@ type CloudType string
 
 const (
 	CloudTCLighthouse CloudType = "tc_lighthouse"
-	CloudTCCVM       CloudType = "tc_cvm"
-	CloudAliSWAS     CloudType = "ali_swas"
-	CloudAliECS      CloudType = "ali_ecs"
+	CloudTCCVM        CloudType = "tc_cvm"
+	CloudAliSWAS      CloudType = "ali_swas"
+	CloudAliECS       CloudType = "ali_ecs"
 )
 
 // RuleInfo 云端查询回来的规则
@@ -46,10 +46,10 @@ type TargetConfig struct {
 type DomainRule struct {
 	ID         int    `json:"id"`
 	Host       string `json:"host"`
-	Protocol   string `json:"protocol"`    // TCP / UDP / TCP+UDP / ICMP
-	Ports      string `json:"ports"`       // 单端口、逗号分隔、范围、ALL
-	Action     string `json:"action"`      // ACCEPT / DROP
-	Targets    []int  `json:"targets"`     // 目标编号（空 = 全部）
+	Protocol   string `json:"protocol"` // TCP / UDP / TCP+UDP / ICMP
+	Ports      string `json:"ports"`    // 单端口、逗号分隔、范围、ALL
+	Action     string `json:"action"`   // ACCEPT / DROP
+	Targets    []int  `json:"targets"`  // 目标编号（空 = 全部）
 	Comment    string `json:"comment"`
 	EnableIPv6 bool   `json:"enable_ipv6"` // 是否解析 AAAA 记录，默认 false
 }
@@ -72,7 +72,9 @@ type AlertWebhookConfig struct {
 	Channel string `json:"channel"` // dingtalk / feishu / slack，默认 dingtalk
 }
 
-// Config 全局配置
+// Config 全局业务配置（唯一来源为 SQLite）。
+//
+// 监听地址和端口属于部署参数（见 DeploymentConfig），不在这里保存。
 type Config struct {
 	TCAccessID       string
 	TCAccessKey      string
@@ -86,8 +88,5 @@ type Config struct {
 	DNSTimeout       time.Duration // 默认 10s
 	DNSFailThreshold int           // 默认 5
 	LogLevel         string        // debug / info / warn / error
-	WebUIHost        string        // 默认 127.0.0.1
-	WebUIPort        int           // 默认 60200
-	Mode             string        // env / webui / 空=自动
 	SyncEnabled      bool          // 同步开关：true=开启，false=暂停；默认 true
 }

@@ -1,6 +1,3 @@
-# ─── 敏感文件 ───
-.env
-
 # ─── 编译产物 ───
 fwalizer
 fwalizer.exe
