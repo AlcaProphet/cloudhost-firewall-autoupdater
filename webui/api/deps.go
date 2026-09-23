@@ -25,11 +25,16 @@ type EventSubscriber interface {
 
 // Deps API handler 共享依赖
 type Deps struct {
-	Store        *config.Store
-	Syncer       Syncer          // 可为 nil（无配置时）
-	EventBus     EventSubscriber // 可为 nil
+	Store          *config.Store
+	Syncer         Syncer          // 可为 nil（无配置时）
+	EventBus       EventSubscriber // 可为 nil
 	LogBroadcaster *LogBroadcaster // 可为 nil
-	ReloadFunc   func()
+	ReloadFunc     func()
+
+	// ShutdownCh 服务器级 shutdown 信号：由 webui.Server 拥有并关闭，
+	// 两类 SSE handler（/api/sync/events、/api/logs/stream）据此主动退出；
+	// 只读、永不写入，handler 退出后由既有 defer unsubscribe() 取消订阅。
+	ShutdownCh <-chan struct{}
 }
 
 // Register 注册所有 API 路由到 mux

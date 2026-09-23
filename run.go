@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -8,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/app"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
@@ -190,23 +193,80 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 		}
 	})
 
-	if len(providers) == 0 {
-		slog.Info("WebUI 已启动，请通过浏览器配置云资源凭据和目标", "host", deploy.Host, "port", deploy.Port)
+	// 信号监听必须在 HTTP 绑定前建立：绑定失败时的极早信号也不会丢失。
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+
+	// 同步绑定 HTTP：绑定成功后才启动 Syncer，确保“WebUI 可用”与“同步在跑”一致
+	actualPort, err := srv.Start()
+	if err != nil {
+		signal.Stop(sigCh)
+		fmt.Fprintf(stderr, "WebUI 监听失败: %v\n", err)
+		return 1
 	}
-	go func() {
-		if _, err := srv.Start(); err != nil {
-			slog.Error("WebUI 服务器启动失败", "error", err)
-		}
-	}()
+	if actualPort != deploy.Port {
+		slog.Warn("WebUI 未使用请求端口", "请求端口", deploy.Port, "实际端口", actualPort)
+	}
+
+	if len(providers) == 0 {
+		slog.Info("WebUI 已启动，请通过浏览器配置云资源凭据和目标", "访问地址", srv.Addr())
+	}
 
 	go s.Run()
 
-	// 等待停止信号（Ctrl+C）
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	<-sigCh
-	slog.Info("收到停止信号，等待当前轮次完成...")
+	// Serve 结果通道：非正常退出必须能被 main 感知（关闭流程内的收尾会被归一化为 nil）
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- srv.Wait() }()
+
+	// 同时等待 OS 信号与 Serve 结果；两者进入同一收尾路径，退出码按原因区分
+	var serveErr error
+	select {
+	case sig := <-sigCh:
+		slog.Info("收到停止信号，等待当前轮次完成...", "signal", sig.String())
+	case serveErr = <-serveErrCh:
+		if serveErr != nil {
+			slog.Error("HTTP 服务异常退出，进入收尾", "error", serveErr)
+		}
+	}
+	signal.Stop(sigCh)
+
+	// 立即在 goroutine 中启动有界 HTTP shutdown（先关闭监听入口，再等待普通请求与 SSE 退出）；
+	// 随后立即停止 Syncer，阻止当前轮次结束后再开始新一轮。
+	httpDone := make(chan error, 1)
+	shutdownStarted := make(chan struct{})
+	go func() {
+		// 先记录并置位“HTTP 关闭已启动”，再让出调度：收尾顺序在日志与语义上可确定
+		slog.Info("开始 HTTP 关闭")
+		close(shutdownStarted)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		shutdownErr := srv.Shutdown(shutdownCtx)
+		if shutdownErr != nil {
+			if errors.Is(shutdownErr, context.DeadlineExceeded) {
+				slog.Warn("HTTP 收尾超时，已强制关闭剩余连接；同步轮次不受影响")
+			} else {
+				slog.Warn("HTTP 收尾出错", "error", shutdownErr)
+			}
+		} else {
+			slog.Info("HTTP 关闭完成")
+		}
+		httpDone <- shutdownErr
+	}()
+	<-shutdownStarted
 	s.Stop()
+
+	// HTTP 收尾最多等待 10s；超时后强制关闭已在 Shutdown 内完成，这里不再无限等待
+	select {
+	case <-httpDone:
+	case <-time.After(10 * time.Second):
+		slog.Warn("等待 HTTP 收尾超过 10 秒")
+	}
+
+	// 无论 HTTP 是否超时，都无超时等待当前同步轮次完成（强要求）
 	s.Wait()
+
+	if serveErr != nil {
+		return 1
+	}
 	return 0
 }

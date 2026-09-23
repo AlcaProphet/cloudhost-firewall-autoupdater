@@ -121,8 +121,8 @@ func TestHandleSyncPauseResume(t *testing.T) {
 
 // ─── Step 1（R5-02）：SSE 请求生命周期与订阅清理测试 ───
 //
-// 固定口径（Build6 Step 1）：SSE 连接生命周期只由 request context 决定；
-// 本 Step 不引入服务器级 shutdown channel（Step 3）。
+// 固定口径（Build6 Step 1）：SSE 连接生命周期由 request context 决定；
+// Step 3 追加服务器级 shutdown channel，两类 SSE 必须同时监听二者。
 
 // countingEventSubscriber 包装真实 EventBus，记录 SubscribeChan 与取消订阅调用次数
 // 用于在 webui/api 包内观察 SSE handler 是否执行了 defer unsubscribe()（不新增生产 API）
@@ -130,6 +130,7 @@ type countingEventSubscriber struct {
 	bus         *notifier.EventBus
 	subscribes  atomic.Int32
 	cancels     atomic.Int32
+	active      atomic.Int32  // 当前活跃订阅数（Subscribe +1 / unsubscribe -1）
 	firstCancel chan struct{} // 首次取消时关闭
 }
 
@@ -142,10 +143,12 @@ func newCountingEventSubscriber() *countingEventSubscriber {
 
 func (c *countingEventSubscriber) SubscribeChan() (<-chan notifier.Event, func()) {
 	c.subscribes.Add(1)
+	c.active.Add(1)
 	ch, cancel := c.bus.SubscribeChan()
 	var once sync.Once
 	return ch, func() {
 		c.cancels.Add(1)
+		c.active.Add(-1)
 		cancel()
 		once.Do(func() { close(c.firstCancel) })
 	}
@@ -251,4 +254,51 @@ func TestHandleSyncEvents_ClientDisconnectUnsubscribes(t *testing.T) {
 	if got := sub.cancels.Load(); got != 1 {
 		t.Errorf("取消订阅调用次数 = %d, want 1", got)
 	}
+}
+
+// ─── Step 3（O5-05）：服务器级 shutdown channel 驱动的 SSE 退出 ───
+
+// TestHandleSyncEvents_ServerShutdownExitsSubscriber 服务器级 shutdown channel 关闭后，
+// handler 必须立即退出、执行 defer unsubscribe()，且订阅数恢复到建立连接前的值。
+// 不关闭 EventBus 订阅 channel（保持 Step 1 契约），只依赖服务器 shutdown 信号。
+func TestHandleSyncEvents_ServerShutdownExitsSubscriber(t *testing.T) {
+	shutdownCh := make(chan struct{})
+	sub := newCountingEventSubscriber()
+	d := &Deps{EventBus: sub, ShutdownCh: shutdownCh}
+	mux := http.NewServeMux()
+	d.Register(mux)
+
+	before := sub.active.Load()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/sync/events", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	handlerDone := make(chan struct{})
+	go func() {
+		defer close(handlerDone)
+		mux.ServeHTTP(w, req)
+	}()
+
+	waitForSSESubscribe(t, sub)
+	if got := sub.active.Load(); got != before+1 {
+		t.Fatalf("建立订阅后活跃订阅数 = %d, want %d", got, before+1)
+	}
+
+	// 关闭服务器级 shutdown channel：handler 必须据此主动退出
+	close(shutdownCh)
+
+	select {
+	case <-handlerDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("服务器 shutdown 后同步事件 SSE handler 未退出")
+	}
+	if got := sub.cancels.Load(); got != 1 {
+		t.Errorf("取消订阅调用次数 = %d, want 1（defer unsubscribe 必须生效）", got)
+	}
+	if got := sub.active.Load(); got != before {
+		t.Errorf("活跃订阅数 = %d, want 恢复到建立连接前的 %d", got, before)
+	}
+	// request context 与 shutdown 是两条独立退出路径，此处主动取消以避免泄漏
+	cancel()
 }

@@ -309,7 +309,7 @@ log_level, theme
 | 0 | 文档体系切换与设计契约固定 | 本文档 §一～四、Issue5 A5-01 | ✅ 验收通过 |
 | 1 | 并发正确性基线与 CI race 门禁 | Issue5 R5-02、R5-03、O5-02 | ✅ 验收通过 |
 | 2 | 移除 CLI 与 `.env` Headless 业务模式 | Issue5 A5-01、本文件 §一 | ✅ 验收通过 |
-| 3 | HTTP Listener、Server 生命周期与优雅关闭 | Issue5 O5-04、O5-05 | ☐ 未开始 |
+| 3 | HTTP Listener、Server 生命周期与优雅关闭 | Issue5 O5-04、O5-05 | ✅ 验收通过 |
 | 4 | API 最小持久化校验边界 | Issue5 O5-06、本文件 §四 | ☐ 未开始 |
 | 5 | version 2 完整配置包与原子运行时切换 | Issue5 R5-01、本文件 §三 | ☐ 未开始 |
 | 6 | 前端依赖受控升级 | Issue5 O5-01 | ☐ 未开始 |
@@ -584,6 +584,46 @@ git diff --check
 - **状态：** ✅ 验收通过（Step 2 规定门禁全部真实通过；Docker 健康检查与 SIGTERM 容器证据均已取得；浏览器人工复核与远端 CI 属本 Step 之外的待办并已登记，不阻塞本 Step 结论）
 
 ### Step 3：HTTP Listener、Server 生命周期与优雅关闭
+
+**实施状态：** ◧ 进行中（2026-09-23）
+
+- 当前 HEAD：`55fa1fb`（`main` 领先 `origin/main` 2 个提交）
+- 工作树基线：干净（`git status --short --branch` 仅分支行；无未跟踪文件，无用户已有改动）
+- 本 Step 文件范围：`webui/server.go`、`webui/api/deps.go`、`webui/api/sync.go`、`webui/api/logstream.go`、`run.go`、`webui/server_test.go`、`webui/api/sync_test.go`、`webui/api/logstream_test.go`、`main_test.go`；文档 `Build6.md`、`Issue5.md`、`AGENTS.md`、`Design5.md`、`ProdTestList.md`（仅在取得实测证据后更新）
+- 固定不变量：仅 `EADDRINUSE` 降级随机端口且同一个 listener 直接交给 `Serve`；`ReadHeaderTimeout=5s` / `IdleTimeout=120s` / 读写超时为零；Serve 非正常错误经 `Wait()` 交给 main，`ErrServerClosed`/`net.ErrClosed` 仅在已进入关闭流程时归一化；main 在 HTTP 绑定成功后才启动 Syncer；`Shutdown(ctx)` 用 `sync.Once` 幂等且不手工提前关 listener；两类 SSE 显式监听服务器级 shutdown channel 并保持 Step 1 的 EventBus 取消订阅语义；HTTP 收尾上限 10s、超时强制 `Close`；无论 HTTP 是否超时都无超时 `Syncer.Wait()`；信号正常收尾退出码 0、Serve 异常退出码非零
+- 本轮不处理：Step 4 严格 JSON DTO/大小限制/领域校验/RowsAffected/409/事务协调器、Step 5 version 2 配置包与显式凭据/原子运行时、Step 6 前端依赖升级、Step 7 非 Step 3 高影响测试扩张与总验收；不调整云防火墙规则算法、Provider API 行为与配置导入导出协议；不再次重构 EventBus
+- 开工前核验（2026-09-23，只读）：HEAD/工作树与上文一致；`go test -race -count=1 ./webui ./webui/api ./...`、`go vet ./...`、`git diff --check`、`docker build -t fwalizer:build6-step3-baseline .` 均通过；基线容器 `healthy`、`docker stop` 0.18s/`ExitCode=0` 且日志中**没有任何** HTTP 收尾行，确认 O5-04/O5-05 现状成立
+
+**实际证据（2026-09-23）：**
+
+- 实际改动：
+  1. `webui/server.go`：删除 `findAvailablePort` 与 `http.ListenAndServe`；`Start()` 同步 `net.Listen(host:preferred)`，**仅** `errors.Is(err, syscall.EADDRINUSE)` 时降级 `host:0`，其余错误原样返回；同一个 listener 直接交给 `http.Server.Serve`；显式 `http.Server{ReadHeaderTimeout:5s, IdleTimeout:120s}`（`ReadTimeout`/`WriteTimeout` 保持零）；新增 `Wait()`、`Shutdown(ctx)`、`ShutdownCh()`、`ServeStarted()`、`Addr()`；`Shutdown` 用 `sync.Once` 关服务器级 shutdown channel，再 `http.Server.Shutdown`，`context.DeadlineExceeded` 时 `http.Server.Close()` 强制断连并返回超时错误；未启动/重复/已退出调用均安全；`normalizeServeError` 仅在已进入关闭流程时把 `http.ErrServerClosed`/`net.ErrClosed` 归一化为 nil；新增 `accessURL` 保证日志访问地址始终带端口（`0.0.0.0:60200` 不再丢失端口）。
+  2. `webui/api/deps.go`：`Deps` 新增只读 `ShutdownCh <-chan struct{}`，由 `webui.Server` 拥有并关闭。
+  3. `webui/api/sync.go`、`webui/api/logstream.go`：两类 SSE 的 `select` 同时包含数据 channel、`r.Context().Done()` 与 `d.ShutdownCh`；shutdown 分支只 `return`，由既有 `defer unsubscribe()` 取消订阅；订阅建立后立即 `flusher.Flush()` 写出响应头，使连接建立可被调用方观测（推送语义不变）；未关闭 EventBus/LogBroadcaster 订阅 channel，Step 1 契约保持。
+  4. `run.go`：`signal.Notify` 提前到 HTTP 绑定之前；`srv.Start()` 改为同步调用，**绑定成功后才** `go s.Run()`；同一 `select` 同时等待 SIGTERM/SIGINT 与 `srv.Wait()`；进入收尾后先在 goroutine 中启动 10s `Shutdown`（`close(shutdownStarted)` 后才 `s.Stop()`，使“先启动 HTTP 关闭、后停止 Syncer”在语义与日志上确定），再 `s.Stop()`；HTTP 最多等 10s；最后无超时 `s.Wait()`；Serve 非正常错误返回 1，信号正常收尾返回 0；绑定失败时打印 `WebUI 监听失败` 并以 1 退出（不启动 Syncer）。
+- 自动检查：
+  - `go test -race -count=1 ./webui ./webui/api ./...` → **通过**（webui 2.235s、webui/api 1.777s、root 9.494s、config 1.277s、syncer 7.921s 等，0 次 `DATA RACE`）
+  - `go vet ./...` → 通过；`go build ./...` → 通过；`git diff --check` → 通过；改动文件 `gofmt -l` 无输出
+  - 关键测试名称：`TestStartUsesPreferredPort`、`TestStartFallsBackOnlyAfterEADDRINUSE`、`TestStartReturnsNonPortErrorsUnchanged`、`TestStartDoesNotReleaseBoundListener`、`TestServerTimeoutContract`、`TestShutdownNormalizesServeResult`、`TestShutdownIdempotent`、`TestShutdownBeforeStart`、`TestShutdownTwiceBeforeStart`、`TestWaitBeforeStartBlocksUntilServeExits`、`TestServeRuntimeErrorSurfacedToCaller`、`TestShutdownDrainsInflightRequest`、`TestShutdownTimeoutForcesCloseOfInflightRequest`、`TestServerAcceptsNoNewRequestsAfterShutdown`、`TestHTTPRoutesRegression`、`TestAccessURLAlwaysIncludesPort`、`TestHandleSyncEvents_ServerShutdownExitsSubscriber`、`TestHandleLogStream_ServerShutdownExitsSubscriber`、`TestHandleLogStream_ContextCancelExitsSubscriber`、`TestProcessSIGTERMGracefulShutdown`、`TestProcessSIGINTGracefulShutdown`、`TestProcessCompletesInFlightRoundAfterSignal`、`TestProcessBindFailureDoesNotStartSyncer`、`TestProcessSSEExitsOnServerShutdown`
+- 人工/进程证据：
+  - 真实二进制 SIGTERM：`exit=0`；日志顺序 `收到停止信号… → 开始 HTTP 关闭 → 同步引擎停止 → HTTP 关闭完成`；退出后 60413 端口 `curl` 失败、`lsof` 监听 0 行；pidfile 已清理，无残留进程
+  - 真实二进制 SIGINT：`exit=0`，同一收尾路径（`signal=interrupt`）
+  - 同步轮次在途时发信号（预先写入 1 目标 1 规则，`dns=192.0.2.1` 使解析/重试耗时 5.1s）：`开始同步 targets=1 rules=1` → `收到停止信号` → `同步失败（ERROR）` → `同步完成 耗时=5.117s` → `同步引擎停止`，`exit=0`，**证明“完成当前轮次再退出”未被 HTTP 收尾破坏**
+  - 真实 SSE：`/api/sync/events` 建立长连接后发 SIGTERM，日志出现 `服务器关闭，同步事件 SSE 退出`，`HTTP 关闭完成`，信号到退出 0.04s，未出现“强制关闭剩余连接”，客户端连接被正常结束
+  - 绑定失败：`WEBUI_HOST=fwalizer-step3.invalid WEBUI_PORT=60200` → `exit=1`，输出 `WebUI 监听失败: … bind: can't assign requested address`，日志无 `开始同步`，pidfile 已清理
+- Docker 证据：镜像 `fwalizer:build6-step3`（本 Step 代码新建，`sha256:1583753f…`）；隔离 named volume + `-p 127.0.0.1:60422:60200`；`/api/health` → `{"status":"ok"}`、`health=healthy`（5s）；`docker stop` 耗时 **0.19s**、`ExitCode=0`；日志顺序 `收到停止信号… → 开始 HTTP 关闭 → 同步引擎停止 → HTTP 关闭完成`；容器与 volume 已清理，无残留
+- 未完成项：
+  1. **远端 CI**：仍无 GitHub Actions 运行结果（属 O5-02 收尾，非本 Step 门禁）；
+  2. **Docker stop 的证据边界**：空库轮次为 0 targets，容器日志的“同步完成 耗时=0s”不能证明有真实同步负载时的“完成当前轮次”；该语义由上文真实二进制的在途轮次证据支撑，容器侧未重复构造；
+  3. **`EACCES` 权限错误**未能构造（需低端口 + 非 root），以 `EADDRNOTAVAIL` 等非占用类错误代替“非 EADDRINUSE 不随机降级”的证据；
+  4. **进程级 Serve 运行错误**只覆盖到“绑定失败非零退出”与自动测试中的 `Wait()` 错误传播；未在进程外制造 listener 被关闭的 Serve 异常并断言退出码 1（受进程边界限制）。
+- 与计划偏差：
+  1. 新增两条 INFO 日志（`开始 HTTP 关闭`、`HTTP 关闭完成`）与两条 SSE 退出 INFO；这是为让 Docker/进程日志可确定性验证关闭顺序，已获用户事前确认；
+  2. `Shutdown` 内部完成超时后的强制 `Close`（而非 main 调用 `http.Server.Close()`），已获用户事前确认；main 因此不接触 `listener`/`*http.Server`；
+  3. SSE handler 在订阅建立后新增 `flusher.Flush()`：原实现要等到第一条事件才写出响应头，导致“连接已建立”对调用方不可观测（测试中 `http.Get` 阻塞）；该改动不改变推送语义；
+  4. `accessURL` 修正 `0.0.0.0:60200` 丢失端口的日志瑕疵（不改监听行为）；
+  5. `webui/api/logstream.go` 的 `WithGroup` 单行对齐由 `gofmt` 修正（该文件已有既存格式偏差，本次改动使其进入检查范围）。
+- **状态：** ✅ 验收通过（Step 3 规定门禁、真实进程 SIGTERM/SIGINT、在途轮次完成、SSE 主动退出与 Docker health/stop 证据均真实取得；上列未完成项均不阻塞 Step 3 验收，且已如实登记）
 
 - **目标：** 合并处理 O5-04 和 O5-05，一次形成最终 HTTP 生命周期，消除端口 TOCTOU，并使 main 可感知服务失败。
 - **实施参照：** §12.13；SSE 必须由同一个 server shutdown channel 退出，但 EventBus 仍沿用 Step 1 的“不关闭订阅 channel”契约。
@@ -893,7 +933,7 @@ git diff --check
 - 标注“**必须**”的是 Build6 固定不变量；实现可以改名、拆文件或选择等价标准库写法，但结果必须满足；
 - 标注“**参考**”的代码只表达依赖方向、锁边界、事务顺序和错误边界，不要求逐字复制；
 - 伪代码省略的 error 处理在真实实现中仍必须补全，不能因为示例简化而忽略；
-- 当前源码已处于 Step 2 验收通过、Step 3 未开始的过渡状态；本节的“目标接口”不代表已经存在；
+- 当前源码已处于 Step 3 验收通过、Step 4 未开始的过渡状态；本节其余“目标接口”仍不代表已经存在（EventBus 不关 channel、Step 3 的 HTTP 生命周期与 SSE shutdown channel 已实现）；
 - 如当前代码与本节基线不同，先判断是仓库后来已实现、文档过期，还是出现偏离；不得同时保留两套语义。
 
 ### 12.2 源码边界映射（2026-09-23 更新；原 2026-09-22 基线版本见 Git 历史）
@@ -902,16 +942,16 @@ git diff --check
 
 | 关注点 | 当前实现位置 | 当前问题 | Build6 目标归属 | 状态 |
 |--------|-------------|---------|-----------------|------|
-| 启动模式与信号 | `main.go`、`run.go` | CLI、env/WebUI 双模式已删除，零参数进入唯一 WebUI 路径；HTTP 启动错误仍只记日志、无法反馈给 main | Step 2、3 | 模式并存**已解除（Step 2）**；HTTP 错误反馈**仍存在**（Step 3） |
+| 启动模式与信号 | `main.go`、`run.go` | CLI、env/WebUI 双模式已删除，零参数进入唯一 WebUI 路径；HTTP 启动错误已改为同步感知，Serve 错误经 `Wait()` 与信号进入同一收尾路径 | Step 2、3 | 模式并存**已解除（Step 2）**；HTTP 错误反馈**已解除（Step 3）** |
 | 部署/业务 ENV | `config/deployment.go` | `.env` 与业务 ENV 入口已删除，只保留三个部署变量；`config/env.go` 已删除 | Step 2 | **已解除（Step 2）** |
 | SQLite Schema/CRUD | `config/store.go` | 写入方法多为单语句；RowsAffected、跨表事务和一致快照不足 | Step 4、5 | **仍存在** |
 | 运行时配置 | `config.Config` | `Mode`/`WebUIHost`/`WebUIPort` 已移除，监听参数改由 `DeploymentConfig` 提供；业务配置仍是分次 reload | Step 2、5 | 字段混装**已解除（Step 2）**；分次 reload**仍存在**（Step 5） |
 | 云凭据 | `provider/credentials.go` | 包级可变全局值，连接测试/扫描会覆盖同步使用的凭据 | Step 5 | **仍存在** |
 | SDK Client 复用 | `provider/common.go` 的 `ClientPool` | pool 不持有不可变凭据，client 创建闭包读取全局值 | Step 5 | **仍存在** |
 | 同步热重载 | `syncer/syncer.go`、`syncer/retry.go` | 本轮 TAG 已显式传参；`Reload`/`ReloadProviders`/`ReloadResolver` 仍分次应用 | Step 1、5 | TAG 快照**已解除（Step 1）**；分次应用**仍存在**（Step 5） |
-| EventBus/SSE | `notifier/bus.go`、`webui/api/sync.go` | 取消订阅不再关闭 channel，锁外投递已消除 panic 窗口；SSE 仍只看 request context | Step 1、3 | panic 窗口**已解除（Step 1）**；SSE shutdown 信号**仍存在**（Step 3） |
-| 日志 SSE | `webui/api/logstream.go` | 广播器自身锁内发送/关闭无同类 panic，但 handler 没有 server shutdown 信号 | Step 3 | **仍存在** |
-| HTTP listener | `webui/server.go` | 先探测端口再 `ListenAndServe`，存在 TOCTOU；无显式 `http.Server` 生命周期 | Step 3 | **仍存在** |
+| EventBus/SSE | `notifier/bus.go`、`webui/api/sync.go` | 取消订阅不再关闭 channel；SSE 的 `select` 已加入服务器级 shutdown channel，关闭时主动退出并 `defer unsubscribe()` | Step 1、3 | panic 窗口**已解除（Step 1）**；SSE shutdown 信号**已解除（Step 3）** |
+| 日志 SSE | `webui/api/logstream.go` | 广播器锁内发送/关闭无同类 panic；handler 已监听服务器级 shutdown channel 并主动退出 | Step 3 | **已解除（Step 3）** |
+| HTTP listener | `webui/server.go` | 已改为 `Start()` 同步 `net.Listen` + 同一 listener 交给 `Serve`，仅 `EADDRINUSE` 降级；显式 `http.Server`、`Wait()`、幂等 `Shutdown()`、超时强制 `Close` 齐备 | Step 3 | **已解除（Step 3）** |
 | 普通 API 解码 | `webui/api/*.go` | 无统一大小限制、未知字段/尾随值未拒绝、路径 ID 宽松解析 | Step 4 | **仍存在** |
 | settings/alerts | `webui/api/settings.go`、`alerts.go` | `webui_port` 与 `sync_enabled` 已移出 PUT/GET 的落库路径（Step 2 最小清理）；仍无统一严格 DTO、仍为多次独立写入、可能部分成功 | Step 2、4 | `webui_port` 入口**已解除（Step 2）**；任意 map 键与部分成功**仍存在**（Step 4） |
 | version 1 导入导出 | `webui/api/settings.go` | 仍为 GET 导出、不含敏感配置、直接复用 DB ID 会破坏规则引用；Step 2 仅移除 `webui_port` 并拒绝含该键的导入 | Step 5 | **仍存在**（version 2 完整替换属 Step 5） |
@@ -1427,3 +1467,4 @@ Build6 最终关闭前，必须能从本文追溯：
 | v1.2 | 2026-09-22 | Step 0 验收通过：切换当前文档体系，建立 Design5，同步 AGENTS/Issue5/README 边界并存档 Design4/Build5/Issue4 |
 | v1.4 | 2026-09-23 | Step 2 验收通过：唯一 WebUI + SQLite 运行时，删除 CLI/`.env` Headless/`version` 与编译期注入，三个部署变量收束，`webui_port` 从 API 与配置包移除，健康检查去 `pgrep`；附真实进程、Compose、Docker 构建与容器健康证据 |
 | v1.5 | 2026-09-23 | Step 2 独立复检：记录用户侧提交 `0975f95`、冷缓存门禁与从该提交重建镜像的容器复核；修正本 Step 起始状态行、参数用例计数与残留搜索表述；登记 `AGENTS.md`/`Design5.md`/README 的陈旧表述为待办 |
+| v1.6 | 2026-09-23 | Step 3 验收通过：HTTP 生命周期收束为同步 `net.Listen` + 同一 listener 交给 `Serve`（仅 `EADDRINUSE` 降级）、显式 `http.Server` 超时、`Wait`、幂等 `Shutdown`（超时强制 `Close`）、两类 SSE 服务器级 shutdown 退出、main 信号与 Serve 错误统一收尾（HTTP 10s 上限、Syncer 无超时完成当前轮次）；附门禁、真实进程信号/在途轮次/SSE 与 Docker health/stop 证据及证据边界；同步 §12.2 状态映射并关闭 Issue5 O5-04/O5-05 |

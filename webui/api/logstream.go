@@ -126,7 +126,7 @@ func (b *LogBroadcaster) Handle(_ context.Context, r slog.Record) error {
 }
 
 func (b *LogBroadcaster) WithAttrs(attrs []slog.Attr) slog.Handler { return b }
-func (b *LogBroadcaster) WithGroup(name string) slog.Handler     { return b }
+func (b *LogBroadcaster) WithGroup(name string) slog.Handler       { return b }
 
 // ─── LogBroadcaster 已使用 app.MultiHandler（定义于 app/logutil.go） ───
 
@@ -151,6 +151,9 @@ func (d *Deps) handleLogStream(w http.ResponseWriter, r *http.Request) {
 	ch, unsubscribe := d.LogBroadcaster.Subscribe()
 	defer unsubscribe()
 
+	// 立即写出响应头：客户端可在 Subscribe（含历史回放）完成后确认连接已建立。
+	flusher.Flush()
+
 	for {
 		select {
 		case line, ok := <-ch:
@@ -160,6 +163,11 @@ func (d *Deps) handleLogStream(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "data: %s\n\n", line)
 			flusher.Flush()
 		case <-r.Context().Done():
+			return
+		case <-d.ShutdownCh:
+			// 服务器级 shutdown：主动返回，由 defer unsubscribe() 取消订阅。
+			// 不通过关闭 LogBroadcaster 订阅 channel 驱动退出（保持既有订阅语义）。
+			slog.Info("服务器关闭，日志流 SSE 退出")
 			return
 		}
 	}

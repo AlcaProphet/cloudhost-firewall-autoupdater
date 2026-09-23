@@ -1,6 +1,7 @@
 # Issue5.md — FWAlizer 问题追踪（当前）
 
 > **文档定位：** 本文档是 FWAlizer 的当前问题记录（非强制，经验参考），记录 2026-09-22 只读审查发现的 R5-01～R5-03、O5-01～O5-06 和 A5-01。已确认的修复口径由 [Build6.md](./Build6.md) 分步实施，未经对应 Step 验收不得标记为已修复。
+> **当前进度（2026-09-23）：** Build6 Step 0～3 已验收通过；O5-04、O5-05 随 Step 3 关闭。Step 4～7 仍未实施，相关事项（O5-01、O5-03、O5-06、R5-01）保持未关闭。
 > 编码指令以 [AGENTS.md](./AGENTS.md) 为唯一强要求；设计记录见 [Design5.md](./Design5.md)；上一阶段的 Design4、Build5 和 Issue4 已原文移入 [HistoryDocs/](./HistoryDocs/)。
 
 ---
@@ -239,7 +240,12 @@
   - 使用不可绑定地址验证返回错误而不是随机降级；
   - 并发启动测试中确认不会出现“探测成功但正式监听失败”的时间窗口；
   - 测试结束统一 Shutdown/Close，避免遗留 goroutine 和监听端口。
-- **状态：** ☐ 已决策 / 待 Build6 Step 3 实施
+- **实施记录（2026-09-23，Build6 Step 3）：**
+  - 代码：`webui/server.go` 删除 `findAvailablePort` 与 `http.ListenAndServe`；`Start()` 同步 `net.Listen(host:preferred)`，仅 `errors.Is(err, syscall.EADDRINUSE)` 时降级 `host:0`，权限/非法地址等错误原样返回；成功创建的同一个 listener 直接交给 `http.Server.Serve`；实际端口取自 `listener.Addr()` 并作为 `Start()` 返回值；`run.go` 改为同步绑定成功后才 `go s.Run()`，绑定失败打印 `WebUI 监听失败` 并以退出码 1 结束（不启动 Syncer）；`accessURL` 保证日志访问地址始终含端口。
+  - 专项测试：`TestStartUsesPreferredPort`（首选端口可用时实际端口等于首选）、`TestStartFallsBackOnlyAfterEADDRINUSE`（真实 listener 占用后降级随机端口且健康端点可访问）、`TestStartReturnsNonPortErrorsUnchanged`（`EADDRNOTAVAIL` 等非占用错误原样返回、不降级）、`TestStartDoesNotReleaseBoundListener`（Start 成功后端口仍被同一 listener 占用，其他绑定得到 `EADDRINUSE`，证明无释放重绑窗口）、`TestAccessURLAlwaysIncludesPort`。
+  - 真实进程：`WEBUI_HOST=fwalizer-step3.invalid WEBUI_PORT=60200` → `exit=1` 且输出 `bind: can't assign requested address`，日志无 `开始同步`，pidfile 已清理。
+  - 证据边界：`EACCES` 权限错误需低端口 + 非 root 才能构造，本轮以非占用类错误（`EADDRNOTAVAIL`）代表“非 EADDRINUSE 不随机降级”。
+- **状态：** ✅ 已修复并验收通过（Build6 Step 3；门禁与进程级证据见 Build6.md Step 3 记录）
 
 ### O5-05 HTTP 服务缺少显式超时与优雅关闭
 
@@ -261,7 +267,13 @@
   - 构造一个进行中的普通请求，验证在超时内完成；构造超时请求，验证 Shutdown 有界返回；
   - 模拟监听失败，验证 main 能感知并进入退出路径；
   - 模拟正在运行的同步轮次收到 SIGTERM，验证 HTTP 停止接收新请求且同步轮次仍完成后退出。
-- **状态：** ☐ 已决策 / 待 Build6 Step 3 实施
+- **实施记录（2026-09-23，Build6 Step 3）：**
+  - 代码：`webui/server.go` 持有显式 `http.Server`、持久 `net.Listener`、`serveDone` 结果通道与 `sync.Once` 保护的服务器级 `shutdownCh`；固定 `ReadHeaderTimeout=5s`、`IdleTimeout=120s`，`ReadTimeout`/`WriteTimeout` 保持 0；新增 `Wait()`（`ErrServerClosed`/`net.ErrClosed` 仅在已进入关闭流程时归一化为 nil）、幂等 `Shutdown(ctx)`（先关 SSE shutdown channel，再 `http.Server.Shutdown`，`context.DeadlineExceeded` 时 `http.Server.Close()` 强制断连并记 WARN）、`ShutdownCh()`、`ServeStarted()`、`Addr()`。`webui/api/deps.go` 新增只读 `ShutdownCh`；`webui/api/sync.go` 与 `webui/api/logstream.go` 的 SSE `select` 同时监听数据 channel、`r.Context().Done()` 与 `d.ShutdownCh`，shutdown 分支只返回并执行既有 `defer unsubscribe()`（未关闭 EventBus/LogBroadcaster 订阅 channel）。`run.go` 把 `signal.Notify` 提前到绑定前，`select` 同时等待 SIGTERM/SIGINT 与 Serve 结果，收尾顺序为：启动 10s HTTP shutdown goroutine → `s.Stop()` → 最多等 10s → 无超时 `s.Wait()` → 关 Store/pidfile；信号正常收尾 0、Serve 非正常错误非零。
+  - 自动门禁：`go test -race -count=1 ./webui ./webui/api ./...`、`go vet ./...`、`go build ./...`、`git diff --check` 全部通过（0 次 `DATA RACE`）。
+  - 专项测试：`TestServerTimeoutContract`、`TestShutdownNormalizesServeResult`、`TestShutdownIdempotent`、`TestShutdownBeforeStart`、`TestShutdownTwiceBeforeStart`、`TestWaitBeforeStartBlocksUntilServeExits`、`TestServeRuntimeErrorSurfacedToCaller`、`TestShutdownDrainsInflightRequest`、`TestShutdownTimeoutForcesCloseOfInflightRequest`、`TestServerAcceptsNoNewRequestsAfterShutdown`、`TestHTTPRoutesRegression`、`TestHandleSyncEvents_ServerShutdownExitsSubscriber`、`TestHandleLogStream_ServerShutdownExitsSubscriber`、`TestHandleLogStream_ContextCancelExitsSubscriber`、`TestProcessSIGTERMGracefulShutdown`、`TestProcessSIGINTGracefulShutdown`、`TestProcessCompletesInFlightRoundAfterSignal`、`TestProcessSSEExitsOnServerShutdown`。
+  - 进程/Docker 证据：真实二进制 SIGTERM/SIGINT 均 `exit=0` 且日志顺序为 `收到停止信号 → 开始 HTTP 关闭 → 同步引擎停止 → HTTP 关闭完成`，退出后端口不再监听、pidfile 已清理、无残留进程；同步轮次在途（1 目标 1 规则、重试 5.1s）时发 SIGTERM，先完成 `同步完成 耗时=5.117s` 才出现 `同步引擎停止`；真实 `/api/sync/events` 长连接在 shutdown 时输出 `服务器关闭，同步事件 SSE 退出` 且未触发强制关闭。镜像 `fwalizer:build6-step3` 容器 `healthy`、`docker stop` 0.19s/`ExitCode=0`，容器与 volume 已清理。
+  - 证据边界：容器为 0 targets 空库轮次，`docker stop` 只证明 HTTP/进程收尾，不证明有真实同步负载时“完成当前轮次”（该语义由真实二进制的在途轮次证据支撑）；远端 CI 仍无运行结果。
+- **状态：** ✅ 已修复并验收通过（Build6 Step 3；门禁、进程级与 Docker 证据见 Build6.md Step 3 记录）
 
 ### O5-06 API 与配置导入缺少最小持久化边界校验
 
@@ -376,3 +388,4 @@
 | v1.2 | 2026-09-22 | 升格为当前问题记录；按 Build6 更新完整敏感配置包、全 CLI 移除、三个部署变量和各问题的已决策/待实施状态 |
 | v1.3 | 2026-09-23 | 同步 Build6 Step 1 实施证据：R5-02（取消不再关闭 channel、Publish 双重复制）、R5-03（本轮 TAG 显式传参）与 O5-02（CI 启用 race）落地并附真实结果；按用户确认口径修正 R5-02「最多一个在途事件」旧表述；未完成的 `./syncer -count=100` 门禁转入根目录 ProdTestList.md |
 | v1.4 | 2026-09-23 | 同步 Build6 Step 2 实施证据：A5-01（CLI/`.env` Headless 移除、三个部署变量收束、`webui_port` 退出业务配置、健康检查去 `pgrep`）落地并附本地门禁与 Docker 容器结果；浏览器人工复核与远端 CI 保持待办 |
+| v1.5 | 2026-09-23 | 同步 Build6 Step 3 实施证据：O5-04（同步 listener、仅 EADDRINUSE 降级、无释放重绑窗口）与 O5-05（显式 http.Server/超时、Wait、幂等 Shutdown、超时强制 Close、两类 SSE 服务器级退出、main 统一收尾顺序）关闭；附自动门禁、真实进程信号/在途轮次/SSE、Docker health/stop 结果与证据边界；Step 4～7 事项状态不变 |

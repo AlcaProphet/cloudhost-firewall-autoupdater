@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
@@ -95,6 +96,10 @@ func (d *Deps) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 	ch, unsubscribe := d.EventBus.SubscribeChan()
 	defer unsubscribe()
 
+	// 立即写出响应头并建立订阅：客户端 http.Get 在收到头后即可确认“连接已建立”。
+	// 不影响任何既有事件推送语义，只让连接建立与订阅建立对调用方可见。
+	flusher.Flush()
+
 	for {
 		select {
 		case ev, ok := <-ch:
@@ -108,6 +113,11 @@ func (d *Deps) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
 		case <-r.Context().Done():
+			return
+		case <-d.ShutdownCh:
+			// 服务器级 shutdown：主动返回，由 defer unsubscribe() 取消订阅。
+			// 不通过关闭 EventBus 订阅 channel 驱动退出（保持 Step 1 契约）。
+			slog.Info("服务器关闭，同步事件 SSE 退出")
 			return
 		}
 	}

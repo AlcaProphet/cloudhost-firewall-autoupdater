@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -114,5 +116,95 @@ func TestLogBroadcaster_LevelFilter(t *testing.T) {
 			t.Errorf("debug 日志不应进入缓冲: %q", line)
 		}
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// ─── Step 3（O5-05）：服务器级 shutdown channel 驱动的日志 SSE 退出 ───
+
+// subCount 返回当前日志订阅者数量（测试同包内省，不新增生产 API）
+func (b *LogBroadcaster) subCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.subs)
+}
+
+// TestHandleLogStream_ServerShutdownExitsSubscriber 服务器级 shutdown channel 关闭后，
+// handler 必须立即退出、执行 defer unsubscribe()，订阅数恢复到建立连接前的值。
+func TestHandleLogStream_ServerShutdownExitsSubscriber(t *testing.T) {
+	shutdownCh := make(chan struct{})
+	b := NewLogBroadcaster("info")
+	d := &Deps{LogBroadcaster: b, ShutdownCh: shutdownCh}
+	mux := http.NewServeMux()
+	d.Register(mux)
+
+	before := b.subCount()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/logs/stream", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	handlerDone := make(chan struct{})
+	go func() {
+		defer close(handlerDone)
+		mux.ServeHTTP(w, req)
+	}()
+
+	// 等待 handler 建立订阅（不依赖固定 sleep 猜时序）
+	deadline := time.Now().Add(3 * time.Second)
+	for b.subCount() != before+1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := b.subCount(); got != before+1 {
+		t.Fatalf("建立订阅后订阅数 = %d, want %d", got, before+1)
+	}
+
+	close(shutdownCh)
+
+	select {
+	case <-handlerDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("服务器 shutdown 后日志流 SSE handler 未退出")
+	}
+	if got := b.subCount(); got != before {
+		t.Errorf("订阅数 = %d, want 恢复到建立连接前的 %d（defer unsubscribe 必须生效）", got, before)
+	}
+	cancel()
+}
+
+// TestHandleLogStream_ContextCancelExitsSubscriber request context 取消仍必须退出并取消订阅
+func TestHandleLogStream_ContextCancelExitsSubscriber(t *testing.T) {
+	b := NewLogBroadcaster("info")
+	d := &Deps{LogBroadcaster: b} // 不提供 shutdown channel：仍由 request context 驱动退出
+	mux := http.NewServeMux()
+	d.Register(mux)
+
+	before := b.subCount()
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/logs/stream", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	handlerDone := make(chan struct{})
+	go func() {
+		defer close(handlerDone)
+		mux.ServeHTTP(w, req)
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for b.subCount() != before+1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := b.subCount(); got != before+1 {
+		t.Fatalf("建立订阅后订阅数 = %d, want %d", got, before+1)
+	}
+
+	cancel()
+
+	select {
+	case <-handlerDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("取消 request context 后日志流 SSE handler 未退出")
+	}
+	if got := b.subCount(); got != before {
+		t.Errorf("订阅数 = %d, want 恢复到 %d", got, before)
 	}
 }

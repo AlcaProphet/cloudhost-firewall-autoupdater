@@ -12,7 +12,7 @@
 - **产品与兼容标识**：产品显示名、二进制名、`FWALIZER_DATA_DIR` 部署变量、数据目录及 GHCR 镜像继续使用 `FWAlizer` / `fwalizer`，避免破坏保留的部署边界
 - **Go 版本**：`go 1.25`
 - **文档定位与优先级**：编码前先阅读本文件（强要求）。设计记录见 [Design5.md](./Design5.md)（当前，非强制，供参考）；详细构建方案见 [Build6.md](./Build6.md)（当前）；当前问题记录见 [Issue5.md](./Issue5.md)；历史文档（Design1-4、Build1-5、Issue1-4）见 [HistoryDocs/](./HistoryDocs/)（已存档，仅记录，不再用于构建，仅用于核查等情况）
-- **Build6 过渡边界**：当前目标形态已固定为 WebUI 单二进制 + SQLite。截至 Build6 Step 2 验收通过（2026-09-23），CLI、`.env` Headless 与业务环境变量入口已从代码、部署示例和 README 中移除；Step 3-7 尚未实施，后续文档不得被表述为这些 Step 已经完成。
+- **Build6 过渡边界**：当前目标形态已固定为 WebUI 单二进制 + SQLite。截至 Build6 Step 2 验收通过（2026-09-23），CLI、`.env` Headless 与业务环境变量入口已从代码、部署示例和 README 中移除；Step 3（HTTP Listener、Server 生命周期与优雅关闭）已于 2026-09-23 验收通过，Step 4-7 尚未实施，后续文档不得被表述为这些 Step 已经完成。
 
 ---
 
@@ -35,7 +35,7 @@
 
 - 项目以**内部使用**为设计前提，WebUI 不针对公开访问设计
 - 网络安全边界由用户自己控制（防火墙、VPN、反向代理等）
-- WebUI 默认绑定 `127.0.0.1`，可通过 `WEBUI_HOST` 配置监听地址（Docker 内使用 `0.0.0.0`）；端口通过 `WEBUI_PORT` 配置（默认 `60200`，若被占用则由 OS 随机选择可用端口；参见 `webui/server.go` 的 `findAvailablePort`）
+- WebUI 默认绑定 `127.0.0.1`，可通过 `WEBUI_HOST` 配置监听地址（Docker 内使用 `0.0.0.0`）；端口通过 `WEBUI_PORT` 配置（默认 `60200`）；只有监听返回 `EADDRINUSE` 时才由 OS 随机选择可用端口并记录 WARN，权限、非法地址等其他监听错误原样返回并以非零状态退出（参见 `webui/server.go` 的 `Server.Start`）
 - Docker 用户通过 `-p` 自行决定暴露范围
 - 凭据作为独立业务设置存入 SQLite，不与资源声明混合，不接受环境变量 override
 
