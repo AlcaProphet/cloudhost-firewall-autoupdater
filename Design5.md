@@ -2,7 +2,7 @@
 
 > **文档定位：** 本文档是 FWAlizer 的当前设计记录（设计大方向、架构构想与决策记录，非强制，供参考），承接已存档的 [Design1-4](./HistoryDocs/)。
 > 编码约束遵循 [AGENTS.md](./AGENTS.md)（唯一强要求）；详细分步实施和验收见 [Build6.md](./Build6.md)；问题追踪见 [Issue5.md](./Issue5.md)。
-> **实施状态：** 2026-09-22 完成 Build6 Step 0 后，本文档记录的是已固定的目标契约；CLI、`.env` Headless 和后续运行时收敛仍须按 Build6 Step 1-7 实施和验收，不得把本文档视为代码已经完成。
+> **实施状态：** 2026-09-23 Build6 Step 1 与 Step 2 已验收通过：运行时已收束为唯一 WebUI + SQLite，CLI、`.env` Headless、业务环境变量入口和 `webui_port` 业务设置已从代码与当前文档移除，监听参数只由三个部署变量提供。本文档其余内容是已固定的目标契约；Step 3-7（HTTP 生命周期、API 校验、version 2 配置包与原子运行时切换、前端依赖、总验收）仍须按 Build6 实施，不得把本文档视为全部已完成。
 
 ---
 

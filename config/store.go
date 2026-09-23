@@ -580,7 +580,7 @@ func (s *Store) LoadConfig() (*Config, error) {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Interval = d
 		} else {
-			slog.Warn("INTERVAL 格式无效，保留默认值", "value", v, "default", 5*time.Minute)
+			slog.Warn("interval 格式无效，保留默认值", "value", v, "default", 5*time.Minute)
 		}
 	}
 	if v := settings["dns"]; v != "" {

@@ -497,7 +497,7 @@ git diff --check
 - **实施参照：** §12.3 的 `DeploymentConfig` 边界和 §12.13 的 main 目标顺序；本 Step 只完成参数/配置源收束，显式 HTTP 生命周期留给 Step 3。
 - **主要文件：** `main.go`、`app/`、`config/`、`.env.example`、`.gitignore`、`Makefile`、`build/Dockerfile`、`.github/workflows/docker-publish.yml`、`docker-compose.yml.example`、README 和相关测试。
 
-**实施状态：** ◧ 进行中（2026-09-23；本机时间以仓库文件为准）
+**实施状态：** ✅ 验收通过（2026-09-23；施工基线见下）
 
 - 当前 HEAD：`ff10eae601fbeb783cd940f0457673e857dfd74f`（`git log -1 --oneline --decorate` = `ff10eae (HEAD -> main, origin/main, origin/HEAD) fix(build6): Step 1 并发正确性基线与 CI race 门禁落地`）
 - 工作树基线：干净（`git status --short --branch` 仅 `## main...origin/main`，`git diff --stat`/`git diff --check` 无输出，无用户改动、无未跟踪文件）
@@ -548,7 +548,7 @@ git diff --check
   6. 删除 `.env.example` 与 `.gitignore` 的 `.env` 条目；Compose 环境变量只保留三个部署变量，删除 `.env` 挂载、`INTERVAL`/`DNS`/`LOG_LEVEL`/`SYNC_ENABLED` 与 Headless 说明，健康检查只走 HTTP 并注明改端口需同步改 healthcheck。
   7. `syncer/syncer.go` 删除已无调用方的 `WaitForSignal` 及其 `os`/`os/signal`/`syscall` 导入。
   8. README 改为唯一运行形态说明：删除运行模式章节、CLI backup/restore 章节、`.env` 变量表与 RULES 语法、Docker `.env` 段、模式切换/backup FAQ；新增三个部署参数的默认值与校验、配置包是配置迁移方式而非 SQLite 在线备份、`unhealthy` 排查说明；保留 Docker/服务器部署、非 root、数据卷与网络暴露提示。
-  9. 新增测试：`config/deployment_test.go`（默认值、空白数据目录、Host/Port 独立生效、`1`/`65535` 通过、`0`/`65536`/负数/`1e3`/`abc`/夹杂空格等失败、业务 ENV 不影响部署参数）、`main_test.go`（真实二进制进程级：空库无参数启动并响应 `/api/health`、11 种参数组合非零退出且不创建数据目录、非法端口非零退出、`TARGETS`/`TC_ACCESS_ID`/`INTERVAL`/`FWALIZER_MODE` 不改变 SQLite 配置）、`webui/api/settings_policy_test.go`（GET 不返回 `webui_port`/未知键、PUT 不落库 `webui_port`/`sync_enabled`、残留键不影响业务配置、导入含 `webui_port` 返回 400 且旧配置不变、导出不含 `webui_port`）。
+  9. 新增测试：`config/deployment_test.go`（默认值、空白数据目录、Host/Port 独立生效、`1`/`65535` 通过、`0`/`65536`/负数/`1e3`/`abc`/夹杂空格等失败、业务 ENV 不影响部署参数）、`main_test.go`（真实二进制进程级：空库无参数启动且 `/api/targets` 返回空数组、12 种参数组合非零退出且不创建数据目录、非法端口非零退出、`TARGETS`/`TC_ACCESS_ID`/`INTERVAL`/`FWALIZER_MODE` 不改变 SQLite 配置）、`webui/api/settings_policy_test.go`（GET 不返回 `webui_port`/未知键、PUT 不落库 `webui_port`/`sync_enabled`、残留键不影响业务配置、导入含 `webui_port` 返回 400 且旧配置不变、导出不含 `webui_port`）。
 - **自动检查（真实结果）：**
   - `go test ./... -race` → **通过**（根包 4.464s、config 1.551s、syncer 8.143s、webui 1.456s、webui/api 2.028s、provider 1.488s，其余 cached）。
   - `go vet ./...` → **通过**；`go build ./...` → **通过**；`git diff --check` → **通过**。
@@ -556,7 +556,7 @@ git diff --check
   - `cd webui/frontend && npm ci && npm run build` → **通过**（vue-tsc + vite 5.4.21，2818 模块，产物含 `assets/Settings-WJf_NgHo.js`）。
   - `docker compose -f docker-compose.yml.example config --quiet` → **通过**；渲染结果确认 `environment` 仅 `FWALIZER_DATA_DIR`/`WEBUI_HOST`/`WEBUI_PORT`，healthcheck 解析为 `http://127.0.0.1:60200/api/health`。
   - `docker build -f build/Dockerfile -t fwalizer:build6-step2 .` → **通过**（node/golang/alpine 三阶段，`CGO_ENABLED=0`，无 VERSION 注入）。
-  - 静态残留搜索（排除 `HistoryDocs/`、`PlatformAPIDocs/`、`dist/`）：活跃源码与当前文档已无 `RunCLI`/`DetectMode`/`ModeEnv`/`FWALIZER_MODE`/`LoadEnv`/`ParseEnv`/`ApplyWebUIEnv`/`WebUIHost`/`WebUIPort`/`version.Version`/`ARG VERSION`/`build-args`/`.env.example`/`WaitForSignal` 入口；剩余命中仅为：`Build6.md`/`Issue5.md`/`AGENTS.md`/`Design5.md` 中对被移除项的契约描述、`docker-compose.yml.example` 注释里的 “pgrep”（说明不使用该 fallback）、以及测试中刻意构造的 `TARGETS`/`TC_ACCESS_ID`/`INTERVAL`/`FWALIZER_MODE`/`webui_port` 输入。
+  - 静态残留搜索（排除 `HistoryDocs/`、`PlatformAPIDocs/`、`dist/`）：活跃源码已无 `RunCLI`/`DetectMode`/`ModeEnv`/`FWALIZER_MODE`/`LoadEnv`/`ParseEnv`/`ApplyWebUIEnv`/`WebUIHost`/`WebUIPort`/`version.Version`/`ARG VERSION`/`build-args`/`.env.example`/`WaitForSignal` 入口；剩余命中仅为：`Build6.md`/`Issue5.md`/`AGENTS.md`/`Design5.md` 中对已移除项的契约与实施记录、`docker-compose.yml.example` 健康检查注释中的 “pgrep” 一词（文字说明**不使用**该 fallback）、以及测试中刻意构造的 `TARGETS`/`TC_ACCESS_ID`/`INTERVAL`/`FWALIZER_MODE`/`webui_port` 输入。
 - **Docker 运行证据（真实容器，`fwalizer:build6-step2`）：**
   1. 正常容器 `-p 127.0.0.1:60200:60200`：容器内日志 `host=0.0.0.0 port=60200`，宿主 `curl /api/health` → `{"status":"ok"}`，`docker inspect` 健康状态 → `healthy`（`ExitCode:0`）。
   2. 反向容器（`--entrypoint sleep` 保持进程存活，容器内确认 60200 无监听）：健康状态 → **`unhealthy`**，`FailingStreak=2`，健康日志 `wget: can't connect to remote host (127.0.0.1): Connection refused`；证明健康检查不依赖进程存活 fallback。
@@ -574,6 +574,13 @@ git diff --check
   3. 按用户确认口径，`PUT /api/settings` 不引入完整允许列表否决/400（留待 Step 4），而是明确忽略 `webui_port`/`sync_enabled`/未知键；`GET /api/settings` 顺带只返回 11 个可编辑键，与 §12.9 最终口径一致。
   4. 按用户确认口径，健康检查采用 `http://127.0.0.1:${WEBUI_PORT:-60200}/api/health` 动态拼接，并在 Compose 注释说明改端口需同步改 healthcheck。
   5. 本地对真实二进制做 HTTP 探测时未设置 `FWALIZER_DATA_DIR`，导致本次探测读取了本机默认真实数据目录（macOS `~/Library/Application Support/fwalizer/config.db`）中的现有业务配置；仅发出 GET 请求，未写库、未触发热重载、未修改任何文件，事后确认无残留进程、pidfile 已由进程清理、`config.db` 修改时间未变化。此为本轮操作瑕疵，不影响 Step 2 代码与验收结论，后续本地探测必须显式指定临时数据目录。
+- **复检记录（2026-09-23，独立核验轮）：**
+  - 状态变化：本 Step 改动已由用户在对话外部提交为 `0975f9564e046b00b756cd04a8bb67ded288e3f2`（`fix(build6): Step 2 …`），`main` 领先 `origin/main` 1 个提交，工作树干净、无未跟踪文件；提交内容与上表改动清单一致；上表的施工基线 `ff10eae` 为**开工时** HEAD，保持原样不改写。未由 AI 执行 commit/push。
+  - 冷缓存复跑：`go test ./... -race -count=1`、`go vet ./...`、`go build ./...`、`git diff --check HEAD~1 HEAD`、修改文件 `gofmt -l` 全部通过。
+  - 从当前提交重新构建镜像 `fwalizer:verify-step2` 并复核：镜像内带参数执行 `version`/`--help`/`backup` 均 `exit=2`（`docker run` 返回值），映射同一宿主端口时退出后宿主端口无监听；`User=appuser`、`id` 为 `uid=1000(appuser)`；正常启动 `/api/health` 返回 `{"status":"ok"}`；进程存活但 HTTP 不可达时 `Health=unhealthy` 且 `Running=true`（健康日志 `Connection refused`）；`strings` 检查确认二进制内已无 `cloudhost-firewall-autoupdater/version` 包路径。
+  - 记录修正：本 Step 起始状态行由 `◧ 进行中` 改为 `✅ 验收通过`（与 Step 1 归档格式一致）；参数用例计数由 11 改为实测 12；修正"空库启动用例"的描述为断言 `/api/targets` 返回空数组；收紧残留搜索表述为"活跃源码无入口，文档中仅有已移除项的契约/记录文字"。
+  - 仍未执行：真实浏览器交互、远端 CI、真实云/SMTP/Webhook；"参数退出不监听"为间接证据（退出码 + 进程在 `os.MkdirAll`/`srv.Start()` 之前退出 + 宿主端口无监听），未使用 socket 级直接探测。
+  - 额外发现（非本 Step 代码缺陷，属文档陈旧，未擅自修改）：`AGENTS.md` 第 15 行仍以"Step 2 验收前仍可能存在 CLI/`.env` 旧实现"描述过渡边界；`Design5.md` 第 5 行实施状态仍停留在 Step 0 口径；`README.md` 第 5 行"不存在 `.env` Headless 模式"仅指该模式不可用，未说明磁盘上也不再存在 `.env.example`（文件已删除），措辞可再收紧。另 `config/store.go` 中 `INTERVAL 格式无效` 的 WARN 文案仍沿用旧变量名（既有瑕疵，同"与计划偏差"第 2 条）。
 - **状态：** ✅ 验收通过（Step 2 规定门禁全部真实通过；Docker 健康检查与 SIGTERM 容器证据均已取得；浏览器人工复核与远端 CI 属本 Step 之外的待办并已登记，不阻塞本 Step 结论）
 
 ### Step 3：HTTP Listener、Server 生命周期与优雅关闭
@@ -886,28 +893,30 @@ git diff --check
 - 标注“**必须**”的是 Build6 固定不变量；实现可以改名、拆文件或选择等价标准库写法，但结果必须满足；
 - 标注“**参考**”的代码只表达依赖方向、锁边界、事务顺序和错误边界，不要求逐字复制；
 - 伪代码省略的 error 处理在真实实现中仍必须补全，不能因为示例简化而忽略；
-- 当前源码仍处于 Step 0 完成、Step 1 未开始的过渡状态；本节的“目标接口”不代表已经存在；
+- 当前源码已处于 Step 2 验收通过、Step 3 未开始的过渡状态；本节的“目标接口”不代表已经存在；
 - 如当前代码与本节基线不同，先判断是仓库后来已实现、文档过期，还是出现偏离；不得同时保留两套语义。
 
-### 12.2 2026-09-22 当前源码基线映射
+### 12.2 源码边界映射（2026-09-23 更新；原 2026-09-22 基线版本见 Git 历史）
 
-| 关注点 | 当前实现位置 | 当前问题 | Build6 目标归属 |
-|--------|-------------|---------|-----------------|
-| 启动模式与信号 | `main.go`、`app/mode.go`、`app/cli.go`、`app/app.go` | CLI、env/WebUI 双模式并存；HTTP 启动错误无法反馈给 main | Step 2、3 |
-| 部署/业务 ENV | `config/env.go` | `.env` 同时承载业务配置和监听参数 | Step 2 |
-| SQLite Schema/CRUD | `config/store.go` | 写入方法多为单语句；RowsAffected、跨表事务和一致快照不足 | Step 4、5 |
-| 运行时配置 | `config.Config` | 业务配置与 `WebUIHost/WebUIPort/Mode` 混合 | Step 2 |
-| 云凭据 | `provider/credentials.go` | 包级可变全局值，连接测试/扫描会覆盖同步使用的凭据 | Step 5 |
-| SDK Client 复用 | `provider/common.go` 的 `ClientPool` | pool 不持有不可变凭据，client 创建闭包读取全局值 | Step 5 |
-| 同步热重载 | `syncer/syncer.go` | `Reload`、`ReloadProviders`、`ReloadResolver` 分次应用；`retrySync` 越过快照读取 TAG | Step 1、5 |
-| EventBus/SSE | `notifier/bus.go`、`webui/api/sync.go` | 取消时关闭 channel，可与锁外 Publish 发送竞态；SSE 只看 request context | Step 1、3 |
-| 日志 SSE | `webui/api/logstream.go` | 广播器自身锁内发送/关闭无同类 panic，但 handler 没有 server shutdown 信号 | Step 3 |
-| HTTP listener | `webui/server.go` | 先探测端口再 `ListenAndServe`，存在 TOCTOU；无显式 `http.Server` 生命周期 | Step 3 |
-| 普通 API 解码 | `webui/api/*.go` | 无统一大小限制、未知字段/尾随值未拒绝、路径 ID 宽松解析 | Step 4 |
-| settings/alerts | `webui/api/settings.go`、`alerts.go` | map 任意键、多次独立写入，可能部分成功 | Step 4 |
-| version 1 导入导出 | `webui/api/settings.go` | GET 导出、无敏感配置、直接复用 DB ID，导入会破坏规则引用 | Step 5 |
-| 前端导入导出 | `webui/frontend/src/views/Settings.vue` | `window.open` GET 下载、旧安全文案、成功后非完整刷新 | Step 5 |
-| 前端依赖 | `webui/frontend/package*.json` | 审计基线见 §十一 | Step 6 |
+> “状态”列区分：**已解除（Step 2）** 表示该项在当前源码中已按 Build6 口径收束；**仍存在** 表示问题仍在，按“Build6 目标归属”在后续 Step 处理。已解除项保留在表中作为历史对照，不代表后续 Step 的工作已完成。
+
+| 关注点 | 当前实现位置 | 当前问题 | Build6 目标归属 | 状态 |
+|--------|-------------|---------|-----------------|------|
+| 启动模式与信号 | `main.go`、`run.go` | CLI、env/WebUI 双模式已删除，零参数进入唯一 WebUI 路径；HTTP 启动错误仍只记日志、无法反馈给 main | Step 2、3 | 模式并存**已解除（Step 2）**；HTTP 错误反馈**仍存在**（Step 3） |
+| 部署/业务 ENV | `config/deployment.go` | `.env` 与业务 ENV 入口已删除，只保留三个部署变量；`config/env.go` 已删除 | Step 2 | **已解除（Step 2）** |
+| SQLite Schema/CRUD | `config/store.go` | 写入方法多为单语句；RowsAffected、跨表事务和一致快照不足 | Step 4、5 | **仍存在** |
+| 运行时配置 | `config.Config` | `Mode`/`WebUIHost`/`WebUIPort` 已移除，监听参数改由 `DeploymentConfig` 提供；业务配置仍是分次 reload | Step 2、5 | 字段混装**已解除（Step 2）**；分次 reload**仍存在**（Step 5） |
+| 云凭据 | `provider/credentials.go` | 包级可变全局值，连接测试/扫描会覆盖同步使用的凭据 | Step 5 | **仍存在** |
+| SDK Client 复用 | `provider/common.go` 的 `ClientPool` | pool 不持有不可变凭据，client 创建闭包读取全局值 | Step 5 | **仍存在** |
+| 同步热重载 | `syncer/syncer.go`、`syncer/retry.go` | 本轮 TAG 已显式传参；`Reload`/`ReloadProviders`/`ReloadResolver` 仍分次应用 | Step 1、5 | TAG 快照**已解除（Step 1）**；分次应用**仍存在**（Step 5） |
+| EventBus/SSE | `notifier/bus.go`、`webui/api/sync.go` | 取消订阅不再关闭 channel，锁外投递已消除 panic 窗口；SSE 仍只看 request context | Step 1、3 | panic 窗口**已解除（Step 1）**；SSE shutdown 信号**仍存在**（Step 3） |
+| 日志 SSE | `webui/api/logstream.go` | 广播器自身锁内发送/关闭无同类 panic，但 handler 没有 server shutdown 信号 | Step 3 | **仍存在** |
+| HTTP listener | `webui/server.go` | 先探测端口再 `ListenAndServe`，存在 TOCTOU；无显式 `http.Server` 生命周期 | Step 3 | **仍存在** |
+| 普通 API 解码 | `webui/api/*.go` | 无统一大小限制、未知字段/尾随值未拒绝、路径 ID 宽松解析 | Step 4 | **仍存在** |
+| settings/alerts | `webui/api/settings.go`、`alerts.go` | `webui_port` 与 `sync_enabled` 已移出 PUT/GET 的落库路径（Step 2 最小清理）；仍无统一严格 DTO、仍为多次独立写入、可能部分成功 | Step 2、4 | `webui_port` 入口**已解除（Step 2）**；任意 map 键与部分成功**仍存在**（Step 4） |
+| version 1 导入导出 | `webui/api/settings.go` | 仍为 GET 导出、不含敏感配置、直接复用 DB ID 会破坏规则引用；Step 2 仅移除 `webui_port` 并拒绝含该键的导入 | Step 5 | **仍存在**（version 2 完整替换属 Step 5） |
+| 前端导入导出 | `webui/frontend/src/views/Settings.vue` | 仍为 `window.open` GET 下载、凭据不导出；Step 2 仅校正导出/导入确认文案 | Step 5 | **仍存在**（敏感快照与整页刷新属 Step 5） |
+| 前端依赖 | `webui/frontend/package*.json` | 审计基线见 §十一 | Step 6 | **仍存在** |
 
 实施者应优先在这些现有边界上收束，不创建第二套 store、第二个事件总线或平行 Web server。删除旧实现后再更新本表的“当前问题”，不能让旧/新入口长期共存。
 
@@ -1417,3 +1426,4 @@ Build6 最终关闭前，必须能从本文追溯：
 | v1.1 | 2026-09-22 | 完成逐 Step 构建前核验；固定 version 2 Schema、目标删除 409、TAG/JSON/HTTP 边界、SSE 关闭、原子运行时切换和 Vite 8 升级口径；补齐研究证据、测试矩阵与授权门禁 |
 | v1.2 | 2026-09-22 | Step 0 验收通过：切换当前文档体系，建立 Design5，同步 AGENTS/Issue5/README 边界并存档 Design4/Build5/Issue4 |
 | v1.4 | 2026-09-23 | Step 2 验收通过：唯一 WebUI + SQLite 运行时，删除 CLI/`.env` Headless/`version` 与编译期注入，三个部署变量收束，`webui_port` 从 API 与配置包移除，健康检查去 `pgrep`；附真实进程、Compose、Docker 构建与容器健康证据 |
+| v1.5 | 2026-09-23 | Step 2 独立复检：记录用户侧提交 `0975f95`、冷缓存门禁与从该提交重建镜像的容器复核；修正本 Step 起始状态行、参数用例计数与残留搜索表述；登记 `AGENTS.md`/`Design5.md`/README 的陈旧表述为待办 |
