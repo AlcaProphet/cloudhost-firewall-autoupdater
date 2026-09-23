@@ -587,7 +587,7 @@ git diff --check
 
 **实施状态：** ◧ 进行中（2026-09-23）
 
-- 当前 HEAD：`55fa1fb`（`main` 领先 `origin/main` 2 个提交）
+- 当前 HEAD：开工时 `55fa1fb`；实施结果由用户提交为 `44bef2b`（`fix(build6): Step 3 HTTP 生命周期落地，同步 AGENTS/Build6/Design5/Issue5/ProdTestList 状态与源码边界映射`）；提交后复核改动见本 Step“与计划偏差”第 6～7 条
 - 工作树基线：干净（`git status --short --branch` 仅分支行；无未跟踪文件，无用户已有改动）
 - 本 Step 文件范围：`webui/server.go`、`webui/api/deps.go`、`webui/api/sync.go`、`webui/api/logstream.go`、`run.go`、`webui/server_test.go`、`webui/api/sync_test.go`、`webui/api/logstream_test.go`、`main_test.go`；文档 `Build6.md`、`Issue5.md`、`AGENTS.md`、`Design5.md`、`ProdTestList.md`（仅在取得实测证据后更新）
 - 固定不变量：仅 `EADDRINUSE` 降级随机端口且同一个 listener 直接交给 `Serve`；`ReadHeaderTimeout=5s` / `IdleTimeout=120s` / 读写超时为零；Serve 非正常错误经 `Wait()` 交给 main，`ErrServerClosed`/`net.ErrClosed` 仅在已进入关闭流程时归一化；main 在 HTTP 绑定成功后才启动 Syncer；`Shutdown(ctx)` 用 `sync.Once` 幂等且不手工提前关 listener；两类 SSE 显式监听服务器级 shutdown channel 并保持 Step 1 的 EventBus 取消订阅语义；HTTP 收尾上限 10s、超时强制 `Close`；无论 HTTP 是否超时都无超时 `Syncer.Wait()`；信号正常收尾退出码 0、Serve 异常退出码非零
@@ -622,7 +622,9 @@ git diff --check
   2. `Shutdown` 内部完成超时后的强制 `Close`（而非 main 调用 `http.Server.Close()`），已获用户事前确认；main 因此不接触 `listener`/`*http.Server`；
   3. SSE handler 在订阅建立后新增 `flusher.Flush()`：原实现要等到第一条事件才写出响应头，导致“连接已建立”对调用方不可观测（测试中 `http.Get` 阻塞）；该改动不改变推送语义；
   4. `accessURL` 修正 `0.0.0.0:60200` 丢失端口的日志瑕疵（不改监听行为）；
-  5. `webui/api/logstream.go` 的 `WithGroup` 单行对齐由 `gofmt` 修正（该文件已有既存格式偏差，本次改动使其进入检查范围）。
+  5. `webui/api/logstream.go` 的 `WithGroup` 单行对齐由 `gofmt` 修正（该文件已有既存格式偏差，本次改动使其进入检查范围）；
+  6. **提交后代码质量复核**：`readHeaderTimeout`/`idleTimeout`/`shutdownTimeout` 改为导出的 `ReadHeaderTimeout`/`IdleTimeout`/`ShutdownTimeout`，并让 `run.go` 的 `context.WithTimeout` 与第二道等待都直接引用 `webui.ShutdownTimeout`——原实现中该常量只用于日志文案、main 另写 `10*time.Second`，两者可能悄悄分叉；
+  7. 复核补测：`TestShutdownNoGoroutineLeak`（Shutdown + Wait 后无残留 `webui.(*Server).` goroutine）与 `TestShutdownAfterServeExitedRepeated`（Serve 已退出后重复 Shutdown 3 次、连续 5 轮无泄漏）；`webui ./webui/api` 以 `-race -count=10`、根包以 `-race -count=3` 复跑均通过，作为并发稳定性证据。
 - **状态：** ✅ 验收通过（Step 3 规定门禁、真实进程 SIGTERM/SIGINT、在途轮次完成、SSE 主动退出与 Docker health/stop 证据均真实取得；上列未完成项均不阻塞 Step 3 验收，且已如实登记）
 
 - **目标：** 合并处理 O5-04 和 O5-05，一次形成最终 HTTP 生命周期，消除端口 TOCTOU，并使 main 可感知服务失败。

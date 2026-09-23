@@ -238,7 +238,7 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 		// 先记录并置位“HTTP 关闭已启动”，再让出调度：收尾顺序在日志与语义上可确定
 		slog.Info("开始 HTTP 关闭")
 		close(shutdownStarted)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), webui.ShutdownTimeout)
 		defer cancel()
 		shutdownErr := srv.Shutdown(shutdownCtx)
 		if shutdownErr != nil {
@@ -255,11 +255,11 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 	<-shutdownStarted
 	s.Stop()
 
-	// HTTP 收尾最多等待 10s；超时后强制关闭已在 Shutdown 内完成，这里不再无限等待
+	// HTTP 收尾最多等待同一时限；超时后强制关闭已在 Shutdown 内完成，这里不再无限等待
 	select {
 	case <-httpDone:
-	case <-time.After(10 * time.Second):
-		slog.Warn("等待 HTTP 收尾超过 10 秒")
+	case <-time.After(webui.ShutdownTimeout):
+		slog.Warn("等待 HTTP 收尾超过上限", "timeout", webui.ShutdownTimeout)
 	}
 
 	// 无论 HTTP 是否超时，都无超时等待当前同步轮次完成（强要求）

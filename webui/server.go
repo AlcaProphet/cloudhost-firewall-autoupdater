@@ -20,12 +20,13 @@ import (
 
 // Listener 与 Serve 的固定参数（Build6 Step 3 契约）
 const (
-	// readHeaderTimeout 限制请求头读取时间，防止慢速请求头长期占用连接
-	readHeaderTimeout = 5 * time.Second
-	// idleTimeout 限制 keep-alive 空闲连接的存活时间；两类 SSE 连接处于活跃状态，不受该超时影响
-	idleTimeout = 120 * time.Second
-	// shutdownTimeout HTTP 收尾上限：超过后强制关闭剩余连接（由 main 以同值 context 传入）
-	shutdownTimeout = 10 * time.Second
+	// ReadHeaderTimeout 限制请求头读取时间，防止慢速请求头长期占用连接
+	ReadHeaderTimeout = 5 * time.Second
+	// IdleTimeout 限制 keep-alive 空闲连接的存活时间；两类 SSE 连接处于活跃状态，不受该超时影响
+	IdleTimeout = 120 * time.Second
+	// ShutdownTimeout HTTP 收尾上限：main 用它构造 Shutdown 的 context，超时后强制关闭剩余连接。
+	// 由本包导出，保证 main 实际使用的时限与日志/文档描述的常量是同一个来源。
+	ShutdownTimeout = 10 * time.Second
 )
 
 // Server WebUI HTTP 服务器。
@@ -144,8 +145,8 @@ func (s *Server) Start() (int, error) {
 
 	hs := &http.Server{
 		Handler:           s.mux,
-		ReadHeaderTimeout: readHeaderTimeout,
-		IdleTimeout:       idleTimeout,
+		ReadHeaderTimeout: ReadHeaderTimeout,
+		IdleTimeout:       IdleTimeout,
 		// ReadTimeout/WriteTimeout 保持零值：不设置会周期性切断
 		// /api/sync/events 与 /api/logs/stream 的全局短超时。
 	}
@@ -217,7 +218,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	if err := hs.Shutdown(ctx); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			slog.Warn("HTTP 收尾超时，强制关闭剩余连接", "timeout", shutdownTimeout)
+			slog.Warn("HTTP 收尾超时，强制关闭剩余连接", "timeout", ShutdownTimeout)
 			if closeErr := hs.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
 				slog.Warn("强制关闭 HTTP 服务器失败", "error", closeErr)
 			}

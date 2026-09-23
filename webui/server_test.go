@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -653,4 +654,61 @@ func TestServerAcceptsNoNewRequestsAfterShutdown(t *testing.T) {
 		t.Fatal("Shutdown 后新请求不应成功")
 	}
 	t.Logf("Shutdown 后新请求失败（符合预期）: %v", err)
+}
+
+// ─── goroutine 泄漏与 Serve 退出后重复关闭 ───
+
+// goroutineDump 返回所有 goroutine 的栈快照（用于泄漏检查）
+func goroutineDump() string {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	return string(buf[:n])
+}
+
+// TestShutdownNoGoroutineLeak Shutdown + Wait 后不得残留本 Server 的 Serve goroutine
+func TestShutdownNoGoroutineLeak(t *testing.T) {
+	s, port := startTestServer(t, newTestServer(t, freeTCPPort(t)))
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
+	if err != nil {
+		t.Fatalf("健康检查失败: %v", err)
+	}
+	if cerr := resp.Body.Close(); cerr != nil {
+		t.Errorf("关闭响应体失败: %v", cerr)
+	}
+
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown 失败: %v", err)
+	}
+	if err := s.Wait(); err != nil {
+		t.Fatalf("Shutdown 后 Wait 失败: %v", err)
+	}
+
+	// Serve goroutine 的栈必然包含 Server.normalizeServeError（gofmt 后的签名为 "webui.(*Server)."）
+	dump := goroutineDump()
+	if strings.Contains(dump, "webui.(*Server).") {
+		t.Errorf("Shutdown 后仍残留 Server 相关 goroutine:\n%s", dump)
+	}
+}
+
+// TestShutdownAfterServeExitedRepeated Serve 已退出后重复 Shutdown 必须安全且不泄漏
+func TestShutdownAfterServeExitedRepeated(t *testing.T) {
+	for i := 0; i < 5; i++ {
+		s, _ := startTestServer(t, newTestServer(t, freeTCPPort(t)))
+		if err := s.Shutdown(context.Background()); err != nil {
+			t.Fatalf("第 %d 轮首次 Shutdown 失败: %v", i, err)
+		}
+		if err := s.Wait(); err != nil {
+			t.Fatalf("第 %d 轮 Wait 失败: %v", i, err)
+		}
+		for j := 0; j < 3; j++ {
+			if err := s.Shutdown(context.Background()); err != nil {
+				t.Fatalf("第 %d 轮 Serve 退出后第 %d 次 Shutdown 失败: %v", i, j, err)
+			}
+		}
+	}
+	if dump := goroutineDump(); strings.Contains(dump, "webui.(*Server).") {
+		t.Errorf("重复 Shutdown 后残留 Server 相关 goroutine:\n%s", dump)
+	}
 }
