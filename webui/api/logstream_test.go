@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -207,4 +208,47 @@ func TestHandleLogStream_ContextCancelExitsSubscriber(t *testing.T) {
 	if got := b.subCount(); got != before {
 		t.Errorf("订阅数 = %d, want 恢复到 %d", got, before)
 	}
+}
+
+// TestLogBroadcaster_SetLevelDynamic 日志流级别可在运行时更新（Build6 Step 4）
+func TestLogBroadcaster_SetLevelDynamic(t *testing.T) {
+	b := NewLogBroadcaster("info")
+	if b.Enabled(context.Background(), slog.LevelDebug) {
+		t.Error("info 级别不应启用 debug")
+	}
+
+	b.SetLevel(slog.LevelDebug)
+	if !b.Enabled(context.Background(), slog.LevelDebug) {
+		t.Error("SetLevel(debug) 后应启用 debug")
+	}
+
+	b.SetLevel(slog.LevelError)
+	if b.Enabled(context.Background(), slog.LevelInfo) {
+		t.Error("error 级别不应启用 info")
+	}
+	if !b.Enabled(context.Background(), slog.LevelError) {
+		t.Error("error 级别应启用 error")
+	}
+}
+
+// TestLogBroadcaster_SetLevelConcurrent 级别更新与日志写入并发安全（race 检查）
+func TestLogBroadcaster_SetLevelConcurrent(t *testing.T) {
+	b := NewLogBroadcaster("info")
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				b.SetLevel(slog.LevelDebug)
+				b.SetLevel(slog.LevelInfo)
+				_ = b.Enabled(context.Background(), slog.LevelDebug)
+				if err := b.Handle(context.Background(), newRecord(slog.LevelInfo, "并发日志")); err != nil {
+					t.Errorf("Handle 失败: %v", err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

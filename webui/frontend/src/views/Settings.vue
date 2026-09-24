@@ -123,6 +123,23 @@ async function resetAll() {
   }
 }
 
+// 可编辑设置键：与后端 PUT /api/settings 的固定 11 字段 DTO 一一对应
+const editableKeys = [
+  'tc_access_id', 'tc_access_key', 'ali_access_id', 'ali_access_key',
+  'tag', 'interval', 'dns', 'dns_timeout', 'dns_fail_threshold', 'log_level', 'theme',
+] as const
+
+// buildSettingsPayload 构造仅含 11 个可编辑键的保存 payload
+// 不再整体回传 GET 响应对象，避免把数据库中的保留键/未知键提交给后端
+function buildSettingsPayload(src: Record<string, string>): Record<string, string> {
+  const payload: Record<string, string> = {}
+  for (const key of editableKeys) {
+    const value = src[key]
+    if (value !== undefined) payload[key] = value
+  }
+  return payload
+}
+
 async function save() {
   if (!intervalPattern.test(String(settings.value.interval || ''))) {
     message.error('同步间隔格式无效，示例：30s / 5m / 1h')
@@ -132,7 +149,7 @@ async function save() {
     await request('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settings.value),
+      body: JSON.stringify(buildSettingsPayload(settings.value)),
     })
     message.success('保存成功')
   } catch (e: any) {

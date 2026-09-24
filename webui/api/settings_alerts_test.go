@@ -1,0 +1,393 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+)
+
+// TestGetSettingsReturnsOnlyEditableKeys GET 只返回 11 个可编辑键并补齐默认值
+func TestGetSettingsReturnsOnlyEditableKeys(t *testing.T) {
+	e := newTestEnv(t)
+	for k, v := range map[string]string{"webui_port": "61234", "sync_enabled": "false", "unknown_key": "x"} {
+		if err := e.store.SetSetting(k, v); err != nil {
+			t.Fatalf("预置残留键失败: %v", err)
+		}
+	}
+
+	w := e.do(t, http.MethodGet, "/api/settings", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d, want 200", w.Code)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("解析响应失败: %v; body=%s", err, w.Body.String())
+	}
+	if len(got) != len(settingsEditableKeys) {
+		t.Errorf("返回键数 = %d, want %d: %+v", len(got), len(settingsEditableKeys), got)
+	}
+	for k := range got {
+		if !settingsEditableKeys[k] {
+			t.Errorf("不应返回非可编辑键 %q", k)
+		}
+	}
+	want := map[string]string{
+		"tag": "auto-dns", "interval": "5m", "dns": "223.5.5.5", "dns_timeout": "10s",
+		"dns_fail_threshold": "5", "log_level": "info", "theme": "light",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("默认值 %s = %q, want %q", k, got[k], v)
+		}
+	}
+	for _, k := range []string{"tc_access_id", "tc_access_key", "ali_access_id", "ali_access_key"} {
+		if got[k] != "" {
+			t.Errorf("未配置凭据 %s 应为空字符串，实际 %q", k, got[k])
+		}
+	}
+}
+
+// TestPutSettingsValidationErrors 逐字段非法值 → 400 且零写入零 reload
+func TestPutSettingsValidationErrors(t *testing.T) {
+	bodies := map[string]string{
+		"tag 含方括号":       `{"tag":"[bad]"}`,
+		"tag 空白":         `{"tag":"   "}`,
+		"tag 49 字符":      `{"tag":"` + strings.Repeat("a", 49) + `"}`,
+		"interval 不可解析":  `{"interval":"abc"}`,
+		"interval 零值":    `{"interval":"0s"}`,
+		"interval 负值":    `{"interval":"-5m"}`,
+		"dns 端口越界":       `{"dns":"8.8.8.8:0"}`,
+		"dns 未加括号 IPv6":  `{"dns":"2001:db8::1"}`,
+		"dns 空白":         `{"dns":"  "}`,
+		"dns_timeout 负值": `{"dns_timeout":"-1s"}`,
+		"threshold 零":    `{"dns_fail_threshold":"0"}`,
+		"threshold 非整数":  `{"dns_fail_threshold":"x"}`,
+		"log_level 未知":   `{"log_level":"trace"}`,
+		"theme 未知":       `{"theme":"blue"}`,
+		"空对象":            `{}`,
+		"未知字段":           `{"extra":"x"}`,
+		"webui_port":     `{"webui_port":"61234"}`,
+		"sync_enabled":   `{"sync_enabled":"false"}`,
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			e := newTestEnv(t)
+			w := e.do(t, http.MethodPut, "/api/settings", body)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("状态码 = %d, want 400; body=%s", w.Code, w.Body.String())
+			}
+			if settings, err := e.store.GetSettings(); err != nil || len(settings) != 0 {
+				t.Errorf("非法输入不应写库: %v %v", settings, err)
+			}
+			if got := e.applyCount(); got != 0 {
+				t.Errorf("非法输入不应触发运行时更新，实际 %d", got)
+			}
+		})
+	}
+}
+
+// TestPutSettingsTransactionRollback 多键 settings 中途失败必须完整回滚且不 reload
+func TestPutSettingsTransactionRollback(t *testing.T) {
+	e := newTestEnv(t)
+	e.execRaw(t, `CREATE TRIGGER fail_settings BEFORE INSERT ON settings BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;`)
+
+	w := e.do(t, http.MethodPut, "/api/settings", `{"tag":"new-tag","interval":"7m","dns":"1.1.1.1"}`)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("状态码 = %d, want 500; body=%s", w.Code, w.Body.String())
+	}
+	settings, err := e.store.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings 失败: %v", err)
+	}
+	if len(settings) != 0 {
+		t.Errorf("部分写入必须完整回滚: %+v", settings)
+	}
+	if got := e.applyCount(); got != 0 {
+		t.Errorf("失败事务不应触发运行时更新，实际 %d", got)
+	}
+}
+
+// TestPutSettingsSuccessOneReload 合法多键更新只触发一次运行时更新
+func TestPutSettingsSuccessOneReload(t *testing.T) {
+	e := newTestEnv(t)
+	w := e.do(t, http.MethodPut, "/api/settings", `{"tag":"my-tag","interval":"7m","dns_timeout":"3s"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got := e.applyCount(); got != 1 {
+		t.Errorf("运行时更新次数 = %d, want 1", got)
+	}
+	settings, _ := e.store.GetSettings()
+	if settings["tag"] != "my-tag" || settings["interval"] != "7m" || settings["dns_timeout"] != "3s" {
+		t.Errorf("设置未正确保存: %+v", settings)
+	}
+}
+
+// TestGetAlertsDefaultsOnEmptyDB 空库时补齐 port/channel 默认值
+func TestGetAlertsDefaultsOnEmptyDB(t *testing.T) {
+	e := newTestEnv(t)
+	w := e.do(t, http.MethodGet, "/api/alerts", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d, want 200", w.Code)
+	}
+	var got alertsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("解析失败: %v; body=%s", err, w.Body.String())
+	}
+	if got.Email == nil || got.Webhook == nil {
+		t.Fatalf("两个对象都必须返回: %s", w.Body.String())
+	}
+	if got.Email.Port != "587" {
+		t.Errorf("邮件端口默认值 = %q, want 587", got.Email.Port)
+	}
+	if got.Webhook.Channel != "dingtalk" {
+		t.Errorf("Webhook 渠道默认值 = %q, want dingtalk", got.Webhook.Channel)
+	}
+}
+
+// TestPutAlertsRequiresAllFields 两个对象与全部子字段必需
+func TestPutAlertsRequiresAllFields(t *testing.T) {
+	valid := `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`
+	cases := map[string]string{
+		"缺 webhook":         `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"}}`,
+		"email 为 null":      `{"email":null,"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
+		"webhook 为 null":    `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":null}`,
+		"缺 email.port":      `{"email":{"enabled":false,"host":"h","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
+		"缺 email.enabled":   `{"email":{"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
+		"缺 webhook.channel": `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":""}}`,
+		"空对象":               `{}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := newTestEnv(t)
+			w := e.do(t, http.MethodPut, "/api/alerts", body)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("状态码 = %d, want 400; body=%s", w.Code, w.Body.String())
+			}
+			if email, _ := e.store.GetAlertEmail(); email.Host != "" || email.Port != "" {
+				t.Errorf("非法输入不应写库: %+v", email)
+			}
+			if got := e.applyCount(); got != 0 {
+				t.Errorf("非法输入不应触发运行时更新，实际 %d", got)
+			}
+		})
+	}
+
+	// 合法请求作为对照
+	e := newTestEnv(t)
+	if w := e.do(t, http.MethodPut, "/api/alerts", valid); w.Code != http.StatusOK {
+		t.Fatalf("合法请求应通过: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestPutAlertsValidation 端口/渠道/URL 校验
+func TestPutAlertsValidation(t *testing.T) {
+	cases := map[string]string{
+		"端口为 0":      `{"email":{"enabled":false,"host":"h","port":"0","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
+		"端口非整数":      `{"email":{"enabled":false,"host":"h","port":"abc","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
+		"启用但 host 空": `{"email":{"enabled":true,"host":"","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
+		"启用但 from 空": `{"email":{"enabled":true,"host":"h","port":"587","username":"u","password":"p","from_addr":"","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
+		"启用但 to 空":   `{"email":{"enabled":true,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":""},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
+		"渠道未知":       `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"wecom"}}`,
+		"渠道为空":       `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":""}}`,
+		"启用但 URL 为空": `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":true,"url":"","channel":"dingtalk"}}`,
+		"启用但非 http":  `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":true,"url":"ftp://example.com","channel":"dingtalk"}}`,
+		"启用但无 host":  `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":true,"url":"https://","channel":"dingtalk"}}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := newTestEnv(t)
+			if w := e.do(t, http.MethodPut, "/api/alerts", body); w.Code != http.StatusBadRequest {
+				t.Errorf("状态码 = %d, want 400; body=%s", w.Code, w.Body.String())
+			}
+			if got := e.applyCount(); got != 0 {
+				t.Errorf("非法输入不应触发运行时更新，实际 %d", got)
+			}
+		})
+	}
+}
+
+// TestPutAlertsRollbackKeepsBothOld 邮件与 Webhook 必须同事务：任一阶段失败完整回滚
+func TestPutAlertsRollbackKeepsBothOld(t *testing.T) {
+	e := newTestEnv(t)
+	if w := e.do(t, http.MethodPut, "/api/alerts", alertsBody("old.example.com", "old-pass", "https://old.example.com/hook", "dingtalk")); w.Code != http.StatusOK {
+		t.Fatalf("预置旧告警失败: %d %s", w.Code, w.Body.String())
+	}
+	if got := e.applyCount(); got != 1 {
+		t.Fatalf("预置应触发一次运行时更新，实际 %d", got)
+	}
+
+	// 制造 webhook 写入失败：email 的写入必须随之回滚
+	e.execRaw(t, `CREATE TRIGGER fail_webhook BEFORE INSERT ON alert_webhook BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;`)
+	w := e.do(t, http.MethodPut, "/api/alerts", alertsBody("new.example.com", "new-pass", "https://new.example.com/hook", "feishu"))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("状态码 = %d, want 500; body=%s", w.Code, w.Body.String())
+	}
+
+	email, err := e.store.GetAlertEmail()
+	if err != nil {
+		t.Fatalf("GetAlertEmail 失败: %v", err)
+	}
+	if email.Host != "old.example.com" || email.Password != "old-pass" {
+		t.Errorf("邮件告警必须随 webhook 失败一起回滚: %+v", email)
+	}
+	webhook, err := e.store.GetAlertWebhook()
+	if err != nil {
+		t.Fatalf("GetAlertWebhook 失败: %v", err)
+	}
+	if webhook.URL != "https://old.example.com/hook" || webhook.Channel != "dingtalk" {
+		t.Errorf("Webhook 告警不应被部分更新: %+v", webhook)
+	}
+	if got := e.applyCount(); got != 1 {
+		t.Errorf("失败事务不应触发运行时更新，实际 %d", got)
+	}
+}
+
+// TestPutAlertsSuccessOneReload 合法的双告警保存只触发一次运行时更新
+func TestPutAlertsSuccessOneReload(t *testing.T) {
+	e := newTestEnv(t)
+	w := e.do(t, http.MethodPut, "/api/alerts", alertsBody("smtp.example.com", "pw", "https://example.com/hook", "feishu"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got := e.applyCount(); got != 1 {
+		t.Errorf("运行时更新次数 = %d, want 1", got)
+	}
+	webhook, _ := e.store.GetAlertWebhook()
+	if webhook.Channel != "feishu" {
+		t.Errorf("渠道未保存: %+v", webhook)
+	}
+}
+
+// TestConfigResetStrictBody 只接受单一空对象，且清空全部业务表并一次 reload
+func TestConfigResetStrictBody(t *testing.T) {
+	for _, body := range []string{`{"unknown":1}`, `{"webui_port":"1"}`, ``} {
+		e := newTestEnv(t)
+		e.seedTarget(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-1")
+		w := e.do(t, http.MethodPost, "/api/config/reset", body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("body=%q 状态码 = %d, want 400", body, w.Code)
+		}
+		if targets, _ := e.store.GetTargets(); len(targets) != 1 {
+			t.Errorf("body=%q 被拒绝后数据应保留", body)
+		}
+		if got := e.applyCount(); got != 0 {
+			t.Errorf("body=%q 被拒绝不应触发运行时更新，实际 %d", body, got)
+		}
+	}
+
+	e := newTestEnv(t)
+	e.seedTarget(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-1")
+	e.seedRule(t, config.DomainRule{Host: "a.example.com", Protocol: "TCP", Ports: "80", Action: "ACCEPT"})
+	if err := e.store.SetSetting("tag", "x"); err != nil {
+		t.Fatalf("预置设置失败: %v", err)
+	}
+	if err := e.store.SaveAlertEmail(&config.AlertEmailConfig{Enabled: true, Host: "h", Port: "587"}); err != nil {
+		t.Fatalf("预置邮件告警失败: %v", err)
+	}
+	if err := e.store.SaveAlertWebhook(&config.AlertWebhookConfig{Enabled: true, URL: "https://example.com/h"}); err != nil {
+		t.Fatalf("预置 Webhook 失败: %v", err)
+	}
+	if err := e.store.AddSyncLog(config.SyncLog{Timestamp: time.Now(), Result: "success"}); err != nil {
+		t.Fatalf("预置同步日志失败: %v", err)
+	}
+	if err := e.store.ReplaceScannedResources("tc_lighthouse", "ap-guangzhou", []config.ScannedResource{{ResourceID: "r"}}); err != nil {
+		t.Fatalf("预置扫描结果失败: %v", err)
+	}
+
+	w := e.do(t, http.MethodPost, "/api/config/reset", `{}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got := e.applyCount(); got != 1 {
+		t.Errorf("清空成功应触发一次运行时更新，实际 %d", got)
+	}
+	if targets, _ := e.store.GetTargets(); len(targets) != 0 {
+		t.Errorf("目标未清空: %+v", targets)
+	}
+	if rules, _ := e.store.GetRules(); len(rules) != 0 {
+		t.Errorf("规则未清空: %+v", rules)
+	}
+	if settings, _ := e.store.GetSettings(); len(settings) != 0 {
+		t.Errorf("设置未清空: %+v", settings)
+	}
+	if logs, _ := e.store.GetSyncLogs(10); len(logs) != 0 {
+		t.Errorf("同步日志未清空: %+v", logs)
+	}
+	if email, _ := e.store.GetAlertEmail(); email.Enabled || email.Host != "" {
+		t.Errorf("邮件告警未清空: %+v", email)
+	}
+	if webhook, _ := e.store.GetAlertWebhook(); webhook.Enabled || webhook.URL != "" {
+		t.Errorf("Webhook 未清空: %+v", webhook)
+	}
+	if scanned, _ := e.store.GetScannedResources("tc_lighthouse"); len(scanned) != 0 {
+		t.Errorf("扫描结果未清空: %+v", scanned)
+	}
+}
+
+// TestPauseResumeThroughCoordinator pause/resume 先提交 DB 再通知 Syncer，且各一次运行时更新
+func TestPauseResumeThroughCoordinator(t *testing.T) {
+	e := newTestEnv(t)
+	s := &stubSyncer{enabled: true}
+	e.deps.Syncer = s
+
+	if w := e.do(t, http.MethodPost, "/api/sync/pause", ""); w.Code != http.StatusOK {
+		t.Fatalf("pause 状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if settings, _ := e.store.GetSettings(); settings["sync_enabled"] != "false" {
+		t.Errorf("sync_enabled 应写为 false: %+v", settings)
+	}
+	if !s.paused.Load() {
+		t.Error("Syncer.Pause 应被调用")
+	}
+	if got := e.applyCount(); got != 1 {
+		t.Errorf("pause 应触发一次运行时更新，实际 %d", got)
+	}
+
+	if w := e.do(t, http.MethodPost, "/api/sync/resume", ""); w.Code != http.StatusOK {
+		t.Fatalf("resume 状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if settings, _ := e.store.GetSettings(); settings["sync_enabled"] != "true" {
+		t.Errorf("sync_enabled 应写为 true: %+v", settings)
+	}
+	if !s.resumed.Load() {
+		t.Error("Syncer.Resume 应被调用")
+	}
+	if got := e.applyCount(); got != 2 {
+		t.Errorf("resume 后累计运行时更新 = %d, want 2", got)
+	}
+}
+
+// TestScanResourcesValidation 扫描请求复用 cloud_type/region 基础校验
+func TestScanResourcesValidation(t *testing.T) {
+	cases := map[string]string{
+		"未知 cloud_type": `{"cloud_type":"aws_ec2","region":"gz"}`,
+		"region 空白":     `{"cloud_type":"tc_cvm","region":"  "}`,
+		"提交内部字段":        `{"cloud_type":"tc_cvm","region":"gz","id":1}`,
+		"未知字段":          `{"cloud_type":"tc_cvm","region":"gz","extra":1}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := newTestEnv(t)
+			if w := e.do(t, http.MethodPost, "/api/scan-resources", body); w.Code != http.StatusBadRequest {
+				t.Errorf("状态码 = %d, want 400; body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestTestConnectionValidation 连接测试复用目标基础校验，且缺凭据时不暴露 SDK 报错
+func TestTestConnectionValidation(t *testing.T) {
+	e := newTestEnv(t)
+	if w := e.do(t, http.MethodPost, "/api/test-connection", `{"cloud_type":"aws","region":"gz","resource_id":"x"}`); w.Code != http.StatusBadRequest {
+		t.Errorf("未知 cloud_type 状态码 = %d, want 400", w.Code)
+	}
+	w := e.do(t, http.MethodPost, "/api/test-connection", `{"cloud_type":"tc_lighthouse","region":"gz","resource_id":"x"}`)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "凭据未配置") {
+		t.Errorf("缺凭据应返回安全提示: %d %s", w.Code, w.Body.String())
+	}
+}

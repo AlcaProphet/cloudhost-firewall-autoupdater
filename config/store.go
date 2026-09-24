@@ -1,11 +1,12 @@
 package config
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,20 @@ import (
 // Store SQLite 配置持久化
 type Store struct {
 	db *sql.DB
+}
+
+// DBTX Store 底层查询所需的最小接口：*sql.DB 与 *sql.Tx 都满足。
+//
+// 事务内调用必须传 tx，避免语句跳出事务（Build6 §12.7）。
+type DBTX interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// BeginTx 开启写事务（配置变更协调器与配置导入共用）
+func (s *Store) BeginTx(ctx context.Context) (*sql.Tx, error) {
+	return s.db.BeginTx(ctx, nil)
 }
 
 // SyncLog 同步日志记录
@@ -168,7 +183,12 @@ func (s *Store) SetSetting(key, value string) error {
 
 // GetTargets 获取所有目标
 func (s *Store) GetTargets() ([]TargetConfig, error) {
-	rows, err := s.db.Query("SELECT id, cloud_type, region, resource_id FROM targets ORDER BY id")
+	return loadTargets(context.Background(), s.db)
+}
+
+// loadTargets 读取全部目标；传入 *sql.Tx 即可在事务内复用（Build6 §12.7）
+func loadTargets(ctx context.Context, q DBTX) ([]TargetConfig, error) {
+	rows, err := q.QueryContext(ctx, "SELECT id, cloud_type, region, resource_id FROM targets ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +224,12 @@ func (s *Store) DeleteTarget(id int) error {
 
 // GetRules 获取所有域名规则
 func (s *Store) GetRules() ([]DomainRule, error) {
-	rows, err := s.db.Query("SELECT id, host, protocol, ports, action, targets, comment, enable_ipv6 FROM rules ORDER BY id")
+	return loadRules(context.Background(), s.db)
+}
+
+// loadRules 读取全部域名规则；传入 *sql.Tx 即可在事务内复用（Build6 §12.7）
+func loadRules(ctx context.Context, q DBTX) ([]DomainRule, error) {
+	rows, err := q.QueryContext(ctx, "SELECT id, host, protocol, ports, action, targets, comment, enable_ipv6 FROM rules ORDER BY id")
 	if err != nil {
 		return nil, err
 	}
@@ -230,19 +255,31 @@ func (s *Store) GetRules() ([]DomainRule, error) {
 	return rules, rows.Err()
 }
 
-// AddRule 添加域名规则
-func (s *Store) AddRule(r DomainRule) error {
-	targetsJSON, err := json.Marshal(r.Targets)
-	if err != nil {
-		return fmt.Errorf("序列化规则目标失败: %w", err)
+// ruleColumns 把域名规则转换为数据库列值（targets JSON 文本、enable_ipv6 0/1）
+func ruleColumns(r DomainRule) (targetsJSON string, enableIPv6 int, err error) {
+	targets := r.Targets
+	if targets == nil {
+		targets = []int{}
 	}
-	enableIPv6 := 0
+	raw, err := json.Marshal(targets)
+	if err != nil {
+		return "", 0, fmt.Errorf("序列化规则目标失败: %w", err)
+	}
 	if r.EnableIPv6 {
 		enableIPv6 = 1
 	}
+	return string(raw), enableIPv6, nil
+}
+
+// AddRule 添加域名规则
+func (s *Store) AddRule(r DomainRule) error {
+	targetsJSON, enableIPv6, err := ruleColumns(r)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.Exec(
 		"INSERT INTO rules (host, protocol, ports, action, targets, comment, enable_ipv6) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		r.Host, r.Protocol, r.Ports, r.Action, string(targetsJSON), r.Comment, enableIPv6,
+		r.Host, r.Protocol, r.Ports, r.Action, targetsJSON, r.Comment, enableIPv6,
 	)
 	return err
 }
@@ -264,34 +301,30 @@ func (s *Store) UpdateTarget(id int, t TargetConfig) error {
 
 // UpdateRule 更新域名规则
 func (s *Store) UpdateRule(id int, r DomainRule) error {
-	targetsJSON, err := json.Marshal(r.Targets)
+	targetsJSON, enableIPv6, err := ruleColumns(r)
 	if err != nil {
-		return fmt.Errorf("序列化规则目标失败: %w", err)
-	}
-	enableIPv6 := 0
-	if r.EnableIPv6 {
-		enableIPv6 = 1
+		return err
 	}
 	_, err = s.db.Exec(
 		"UPDATE rules SET host = ?, protocol = ?, ports = ?, action = ?, targets = ?, comment = ?, enable_ipv6 = ? WHERE id = ?",
-		r.Host, r.Protocol, r.Ports, r.Action, string(targetsJSON), r.Comment, enableIPv6, id,
+		r.Host, r.Protocol, r.Ports, r.Action, targetsJSON, r.Comment, enableIPv6, id,
 	)
 	return err
 }
 
-// ClearAll 清空所有配置（用于配置导入前重置）
-func (s *Store) ClearAll() error {
-	_, err := s.db.Exec("DELETE FROM targets; DELETE FROM rules; DELETE FROM settings;")
-	return err
-}
+// resetAllSQL 清空全部业务表的语句（ResetAll 与事务内 ResetAllTx 共用）
+const resetAllSQL = "DELETE FROM targets; DELETE FROM rules; DELETE FROM settings; DELETE FROM sync_logs;" +
+	"DELETE FROM alert_email; DELETE FROM alert_webhook; DELETE FROM scanned_resources;"
 
 // ResetAll 清空全部业务数据（目标、规则、凭据、日志、告警、扫描结果），等效重新初始化
-// 与 ClearAll 的区别：ResetAll 覆盖全部表，用于「清空所有数据」功能
 func (s *Store) ResetAll() error {
-	_, err := s.db.Exec(
-		"DELETE FROM targets; DELETE FROM rules; DELETE FROM settings; DELETE FROM sync_logs;" +
-			"DELETE FROM alert_email; DELETE FROM alert_webhook; DELETE FROM scanned_resources;",
-	)
+	_, err := s.db.Exec(resetAllSQL)
+	return err
+}
+
+// ResetAllTx 在事务中清空全部业务数据（「清空所有数据」经协调器调用）
+func (s *Store) ResetAllTx(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, resetAllSQL)
 	return err
 }
 
@@ -354,81 +387,186 @@ func (s *Store) DeleteScannedResources(cloudType string) error {
 	return err
 }
 
-// BatchAddTargets 批量添加目标
-func (s *Store) BatchAddTargets(targets []TargetConfig) error {
-	for _, t := range targets {
-		if err := s.AddTarget(t); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// BatchAddRules 批量添加规则
-func (s *Store) BatchAddRules(rules []DomainRule) error {
-	for _, r := range rules {
-		if err := s.AddRule(r); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// ClearAllTx 在事务中清空所有配置
-func (s *Store) ClearAllTx(tx *sql.Tx) error {
-	_, err := tx.Exec("DELETE FROM targets; DELETE FROM rules; DELETE FROM settings;")
+// ClearAllTx 在事务中清空目标、规则与设置（配置导入的覆盖式替换第一部分）
+func (s *Store) ClearAllTx(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, "DELETE FROM targets; DELETE FROM rules; DELETE FROM settings;")
 	return err
 }
 
-// AddTargetTx 在事务中添加目标
-func (s *Store) AddTargetTx(tx *sql.Tx, t TargetConfig) error {
-	_, err := tx.Exec(
+// AddTargetTx 在事务中插入目标并返回数据库分配的 ID（Build6 §12.7）
+func (s *Store) AddTargetTx(ctx context.Context, tx *sql.Tx, t TargetConfig) (int64, error) {
+	res, err := tx.ExecContext(
+		ctx,
 		"INSERT INTO targets (cloud_type, region, resource_id) VALUES (?, ?, ?)",
 		string(t.CloudType), t.Region, t.ResourceID,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("获取新增目标 ID 失败: %w", err)
+	}
+	return id, nil
+}
+
+// UpdateTargetTx 在事务中更新目标，返回受影响行数（0 表示目标不存在）
+func (s *Store) UpdateTargetTx(ctx context.Context, tx *sql.Tx, id int, t TargetConfig) (int64, error) {
+	res, err := tx.ExecContext(
+		ctx,
+		"UPDATE targets SET cloud_type = ?, region = ?, resource_id = ? WHERE id = ?",
+		string(t.CloudType), t.Region, t.ResourceID, id,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeleteTargetTx 在事务中删除目标，返回受影响行数（0 表示目标不存在）
+func (s *Store) DeleteTargetTx(ctx context.Context, tx *sql.Tx, id int) (int64, error) {
+	res, err := tx.ExecContext(ctx, "DELETE FROM targets WHERE id = ?", id)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// TargetExistsTx 在同一事务内判断目标是否存在
+func (s *Store) TargetExistsTx(ctx context.Context, tx *sql.Tx, id int) (bool, error) {
+	return rowExists(ctx, tx, "SELECT 1 FROM targets WHERE id = ?", id)
+}
+
+// RuleExistsTx 在同一事务内判断规则是否存在
+func (s *Store) RuleExistsTx(ctx context.Context, tx *sql.Tx, id int) (bool, error) {
+	return rowExists(ctx, tx, "SELECT 1 FROM rules WHERE id = ?", id)
+}
+
+// rowExists 执行存在性查询
+func rowExists(ctx context.Context, tx *sql.Tx, query string, args ...any) (bool, error) {
+	var one int
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ReferencingRuleIDsTx 返回同一事务内引用了指定目标的规则 ID（按 id 升序）。
+//
+// rules.targets 以 JSON 数组文本保存，这里逐条解析后精确比较，
+// 避免 LIKE 子串匹配把目标 1 误判为命中目标 12（Build6 §12.7）。
+func (s *Store) ReferencingRuleIDsTx(ctx context.Context, tx *sql.Tx, targetID int) ([]int, error) {
+	rules, err := loadRules(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	var ids []int
+	for _, r := range rules {
+		for _, t := range r.Targets {
+			if t == targetID {
+				ids = append(ids, r.ID)
+				break
+			}
+		}
+	}
+	return ids, nil
+}
+
+// ValidateRuleTargetsTx 在同一事务内确认规则引用的目标都存在。
+//
+// 空数组继续表示“适用于全部目标”；正数与去重检查由调用方在领域层完成。
+func (s *Store) ValidateRuleTargetsTx(ctx context.Context, tx *sql.Tx, ids []int) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	targets, err := loadTargets(ctx, tx)
+	if err != nil {
+		return err
+	}
+	existing := make(map[int]bool, len(targets))
+	for _, t := range targets {
+		existing[t.ID] = true
+	}
+	for _, id := range ids {
+		if !existing[id] {
+			return invalidField("targets", fmt.Sprintf("引用了不存在的目标 #%d", id))
+		}
+	}
+	return nil
 }
 
 // AddRuleTx 在事务中添加域名规则
-func (s *Store) AddRuleTx(tx *sql.Tx, r DomainRule) error {
-	targetsJSON, err := json.Marshal(r.Targets)
+func (s *Store) AddRuleTx(ctx context.Context, tx *sql.Tx, r DomainRule) error {
+	targetsJSON, enableIPv6, err := ruleColumns(r)
 	if err != nil {
-		return fmt.Errorf("序列化规则目标失败: %w", err)
+		return err
 	}
-	enableIPv6 := 0
-	if r.EnableIPv6 {
-		enableIPv6 = 1
-	}
-	_, err = tx.Exec(
+	_, err = tx.ExecContext(
+		ctx,
 		"INSERT INTO rules (host, protocol, ports, action, targets, comment, enable_ipv6) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		r.Host, r.Protocol, r.Ports, r.Action, string(targetsJSON), r.Comment, enableIPv6,
+		r.Host, r.Protocol, r.Ports, r.Action, targetsJSON, r.Comment, enableIPv6,
 	)
 	return err
 }
 
+// UpdateRuleTx 在事务中更新规则，返回受影响行数（0 表示规则不存在）
+func (s *Store) UpdateRuleTx(ctx context.Context, tx *sql.Tx, id int, r DomainRule) (int64, error) {
+	targetsJSON, enableIPv6, err := ruleColumns(r)
+	if err != nil {
+		return 0, err
+	}
+	res, err := tx.ExecContext(
+		ctx,
+		"UPDATE rules SET host = ?, protocol = ?, ports = ?, action = ?, targets = ?, comment = ?, enable_ipv6 = ? WHERE id = ?",
+		r.Host, r.Protocol, r.Ports, r.Action, targetsJSON, r.Comment, enableIPv6, id,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// DeleteRuleTx 在事务中删除规则，返回受影响行数（0 表示规则不存在）
+func (s *Store) DeleteRuleTx(ctx context.Context, tx *sql.Tx, id int) (int64, error) {
+	res, err := tx.ExecContext(ctx, "DELETE FROM rules WHERE id = ?", id)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // SetSettingTx 在事务中写入单项配置
-func (s *Store) SetSettingTx(tx *sql.Tx, key, value string) error {
-	_, err := tx.Exec(
+func (s *Store) SetSettingTx(ctx context.Context, tx *sql.Tx, key, value string) error {
+	_, err := tx.ExecContext(
+		ctx,
 		"INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
 		key, value,
 	)
 	return err
 }
 
-// BatchAddTargetsTx 在事务中批量添加目标
-func (s *Store) BatchAddTargetsTx(tx *sql.Tx, targets []TargetConfig) error {
+// BatchAddTargetsTx 在事务中批量插入目标，返回“插入顺序 → 数据库 ID”的切片
+// （Step 5 的 export_id 映射会使用该结果）
+func (s *Store) BatchAddTargetsTx(ctx context.Context, tx *sql.Tx, targets []TargetConfig) ([]int64, error) {
+	ids := make([]int64, 0, len(targets))
 	for _, t := range targets {
-		if err := s.AddTargetTx(tx, t); err != nil {
-			return err
+		id, err := s.AddTargetTx(ctx, tx, t)
+		if err != nil {
+			return nil, err
 		}
+		ids = append(ids, id)
 	}
-	return nil
+	return ids, nil
 }
 
 // BatchAddRulesTx 在事务中批量添加规则
-func (s *Store) BatchAddRulesTx(tx *sql.Tx, rules []DomainRule) error {
+func (s *Store) BatchAddRulesTx(ctx context.Context, tx *sql.Tx, rules []DomainRule) error {
 	for _, r := range rules {
-		if err := s.AddRuleTx(tx, r); err != nil {
+		if err := s.AddRuleTx(ctx, tx, r); err != nil {
 			return err
 		}
 	}
@@ -451,17 +589,28 @@ func (s *Store) GetAlertEmail() (*AlertEmailConfig, error) {
 	return &cfg, nil
 }
 
-// SaveAlertEmail 保存邮件告警配置
-func (s *Store) SaveAlertEmail(cfg *AlertEmailConfig) error {
+// saveAlertEmailSQL 保存邮件告警配置的语句（单条写入与事务内写入共用）
+const saveAlertEmailSQL = `INSERT OR REPLACE INTO alert_email (id, enabled, host, port, username, password, from_addr, to_addr)
+		 VALUES (1, ?, ?, ?, ?, ?, ?, ?)`
+
+// alertEmailArgs 把邮件告警配置转换为 SQL 参数
+func alertEmailArgs(cfg *AlertEmailConfig) []any {
 	enabled := 0
 	if cfg.Enabled {
 		enabled = 1
 	}
-	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO alert_email (id, enabled, host, port, username, password, from_addr, to_addr)
-		 VALUES (1, ?, ?, ?, ?, ?, ?, ?)`,
-		enabled, cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.FromAddr, cfg.ToAddr,
-	)
+	return []any{enabled, cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.FromAddr, cfg.ToAddr}
+}
+
+// SaveAlertEmail 保存邮件告警配置
+func (s *Store) SaveAlertEmail(cfg *AlertEmailConfig) error {
+	_, err := s.db.Exec(saveAlertEmailSQL, alertEmailArgs(cfg)...)
+	return err
+}
+
+// SaveAlertEmailTx 在事务中保存邮件告警配置（PUT /api/alerts 与配置导入共用）
+func (s *Store) SaveAlertEmailTx(ctx context.Context, tx *sql.Tx, cfg *AlertEmailConfig) error {
+	_, err := tx.ExecContext(ctx, saveAlertEmailSQL, alertEmailArgs(cfg)...)
 	return err
 }
 
@@ -481,16 +630,27 @@ func (s *Store) GetAlertWebhook() (*AlertWebhookConfig, error) {
 	return &cfg, nil
 }
 
-// SaveAlertWebhook 保存 Webhook 告警配置
-func (s *Store) SaveAlertWebhook(cfg *AlertWebhookConfig) error {
+// saveAlertWebhookSQL 保存 Webhook 告警配置的语句（单条写入与事务内写入共用）
+const saveAlertWebhookSQL = `INSERT OR REPLACE INTO alert_webhook (id, enabled, url, channel) VALUES (1, ?, ?, ?)`
+
+// alertWebhookArgs 把 Webhook 告警配置转换为 SQL 参数
+func alertWebhookArgs(cfg *AlertWebhookConfig) []any {
 	enabled := 0
 	if cfg.Enabled {
 		enabled = 1
 	}
-	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO alert_webhook (id, enabled, url, channel) VALUES (1, ?, ?, ?)`,
-		enabled, cfg.URL, cfg.Channel,
-	)
+	return []any{enabled, cfg.URL, cfg.Channel}
+}
+
+// SaveAlertWebhook 保存 Webhook 告警配置
+func (s *Store) SaveAlertWebhook(cfg *AlertWebhookConfig) error {
+	_, err := s.db.Exec(saveAlertWebhookSQL, alertWebhookArgs(cfg)...)
+	return err
+}
+
+// SaveAlertWebhookTx 在事务中保存 Webhook 告警配置（PUT /api/alerts 与配置导入共用）
+func (s *Store) SaveAlertWebhookTx(ctx context.Context, tx *sql.Tx, cfg *AlertWebhookConfig) error {
+	_, err := tx.ExecContext(ctx, saveAlertWebhookSQL, alertWebhookArgs(cfg)...)
 	return err
 }
 
@@ -573,35 +733,64 @@ func (s *Store) LoadConfig() (*Config, error) {
 		AliAccessKey:     settings["ali_access_key"],
 	}
 
-	if v := settings["tag"]; v != "" {
-		cfg.Tag = v
-	}
-	if v := settings["interval"]; v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Interval = d
-		} else {
-			slog.Warn("interval 格式无效，保留默认值", "value", v, "default", 5*time.Minute)
+	// 设置校验（Build6 §12.10）：空白值按“缺失”处理并使用默认值；
+	// 已有非空但非法的值不得静默回退默认值，而是返回带键名（不含值）的错误。
+	if v := strings.TrimSpace(settings["tag"]); v != "" {
+		tag, err := NormalizeTag(v)
+		if err != nil {
+			return nil, err
 		}
+		cfg.Tag = tag
 	}
-	if v := settings["dns"]; v != "" {
-		cfg.DNS = v
+	if v := strings.TrimSpace(settings["interval"]); v != "" {
+		_, d, err := ParsePositiveDuration("interval", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Interval = d
 	}
-	if v := settings["log_level"]; v != "" {
-		cfg.LogLevel = v
+	if v := strings.TrimSpace(settings["dns"]); v != "" {
+		dnsAddr, err := NormalizeDNSAddress(v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.DNS = dnsAddr
+	}
+	if v := strings.TrimSpace(settings["log_level"]); v != "" {
+		level, err := NormalizeLogLevel(v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.LogLevel = level
 	}
 	// webui_port 已不是业务设置：数据库中的残留键一律忽略，不做迁移或清理
-	if v := settings["dns_fail_threshold"]; v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.DNSFailThreshold = n
+	if v := strings.TrimSpace(settings["dns_fail_threshold"]); v != "" {
+		_, n, err := NormalizeDNSFailThreshold(v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.DNSFailThreshold = n
+	}
+	if v := strings.TrimSpace(settings["dns_timeout"]); v != "" {
+		_, d, err := ParsePositiveDuration("dns_timeout", v)
+		if err != nil {
+			return nil, err
+		}
+		cfg.DNSTimeout = d
+	}
+	// theme 是业务设置但不进入同步器运行时配置（前端直接读 GET /api/settings），
+	// 这里只做合法性校验，避免非法值长期留在数据库中静默生效
+	if v := strings.TrimSpace(settings["theme"]); v != "" {
+		if _, err := NormalizeTheme(v); err != nil {
+			return nil, err
 		}
 	}
-	if v := settings["dns_timeout"]; v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.DNSTimeout = d
+	if v := strings.TrimSpace(settings["sync_enabled"]); v != "" {
+		enabled, err := NormalizeSyncEnabled(v)
+		if err != nil {
+			return nil, err
 		}
-	}
-	if v := settings["sync_enabled"]; v != "" {
-		cfg.SyncEnabled = v == "true"
+		cfg.SyncEnabled = enabled
 	}
 
 	return cfg, nil

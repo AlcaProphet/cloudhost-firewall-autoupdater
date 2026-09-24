@@ -13,14 +13,15 @@ import (
 const logRingSize = 1000
 
 // LogBroadcaster 将 slog 日志广播到 SSE 订阅者
-// level 与 stdout 日志级别一致（debug/info/warn/error，默认 info），保证 WebUI 日志流与终端输出级别一致
+// level 使用可动态更新的 slog.LevelVar：与 stdout 日志级别保持一致（debug/info/warn/error，默认 info），
+// 设置保存后经 SetLevel 即时生效且并发安全
 // 行格式与 stdout（slog.TextHandler）逐字符一致，保证 WebUI 与 docker compose logs 输出对齐（Build4 Step 2）
 // 支持历史回放：订阅时先回放环形缓冲中的最近 logRingSize 条，再进入增量推送（弥补"页面打开前的日志不显示"）
 type LogBroadcaster struct {
 	mu    sync.Mutex
 	subs  map[int]chan string
 	next  int
-	level slog.Level // 日志流级别（与 cfg.LogLevel 一致）
+	level *slog.LevelVar // 日志流级别（与 stdout 日志级别一致，可在运行时更新）
 
 	// 环形缓冲（最近 logRingSize 条）
 	ring    [logRingSize]string
@@ -30,10 +31,17 @@ type LogBroadcaster struct {
 
 // NewLogBroadcaster 创建日志广播器（level: debug/info/warn/error 字符串）
 func NewLogBroadcaster(level string) *LogBroadcaster {
-	return &LogBroadcaster{subs: make(map[int]chan string), level: parseLevel(level)}
+	lv := new(slog.LevelVar)
+	lv.Set(parseLevel(level))
+	return &LogBroadcaster{subs: make(map[int]chan string), level: lv}
 }
 
-// parseLevel 解析日志级别字符串（与 app.InitLogger 语义一致，默认 info）
+// SetLevel 线程安全地更新日志流级别（与 stdout 日志级别保持一致）
+func (b *LogBroadcaster) SetLevel(level slog.Level) {
+	b.level.Set(level)
+}
+
+// parseLevel 解析日志级别字符串（与 app.ParseLogLevel 语义一致，默认 info）
 func parseLevel(level string) slog.Level {
 	switch level {
 	case "debug":
@@ -90,7 +98,7 @@ func (b *LogBroadcaster) nextID() int {
 // ─── slog.Handler 实现 ───
 
 func (b *LogBroadcaster) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= b.level // 按日志流级别过滤，避免 debug 噪音
+	return level >= b.level.Level() // 按日志流级别过滤，避免 debug 噪音
 }
 
 // renderLine 用 slog.TextHandler 渲染单行（与 stdout 格式完全一致）
@@ -103,7 +111,7 @@ func renderLine(level slog.Level, r slog.Record) string {
 }
 
 func (b *LogBroadcaster) Handle(_ context.Context, r slog.Record) error {
-	line := renderLine(b.level, r)
+	line := renderLine(b.level.Level(), r)
 
 	b.mu.Lock()
 	defer b.mu.Unlock()

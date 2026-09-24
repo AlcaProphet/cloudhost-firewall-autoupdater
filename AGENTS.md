@@ -12,7 +12,7 @@
 - **产品与兼容标识**：产品显示名、二进制名、`FWALIZER_DATA_DIR` 部署变量、数据目录及 GHCR 镜像继续使用 `FWAlizer` / `fwalizer`，避免破坏保留的部署边界
 - **Go 版本**：`go 1.25`
 - **文档定位与优先级**：编码前先阅读本文件（强要求）。设计记录见 [Design5.md](./Design5.md)（当前，非强制，供参考）；详细构建方案见 [Build6.md](./Build6.md)（当前）；当前问题记录见 [Issue5.md](./Issue5.md)；历史文档（Design1-4、Build1-5、Issue1-4）见 [HistoryDocs/](./HistoryDocs/)（已存档，仅记录，不再用于构建，仅用于核查等情况）
-- **Build6 过渡边界**：当前目标形态已固定为 WebUI 单二进制 + SQLite。截至 Build6 Step 2 验收通过（2026-09-23），CLI、`.env` Headless 与业务环境变量入口已从代码、部署示例和 README 中移除；Step 3（HTTP Listener、Server 生命周期与优雅关闭）已于 2026-09-23 验收通过，Step 4-7 尚未实施，后续文档不得被表述为这些 Step 已经完成。
+- **Build6 过渡边界**：当前目标形态已固定为 WebUI 单二进制 + SQLite。截至 Build6 Step 2 验收通过（2026-09-23），CLI、`.env` Headless 与业务环境变量入口已从代码、部署示例和 README 中移除；Step 3（HTTP Listener、Server 生命周期与优雅关闭）已于 2026-09-23 验收通过；Step 4（API 最小持久化校验边界）已于 2026-09-24 验收通过。Step 5-7 尚未实施，后续文档不得被表述为这些 Step 已经完成。
 
 ---
 
@@ -143,7 +143,8 @@
 - 配置导入 JSON 最大 10 MiB，其他 JSON 请求最大 1 MiB，超限返回 413；固定结构 DTO 拒绝未知字段、尾随 JSON 和多个顶层值
 - HTTP Server 使用 `ReadHeaderTimeout=5s`、`IdleTimeout=120s`，不设置全局 `ReadTimeout` / `WriteTimeout`；HTTP shutdown 上限 10s
 - 两类 SSE 必须监听服务器级 shutdown 信号显式退出，不依赖 `http.Server.Shutdown()` 自动取消长连接
-- 运行时 `cfg + providers + resolver` 必须一次原子替换；当前同步轮次继续使用旧完整快照，下一轮完整使用新快照
+- 运行时 `cfg + providers + resolver` 必须一次原子替换（Step 5 目标）；当前同步轮次继续使用旧完整快照，下一轮完整使用新快照
+- 普通 API 与配置导入共用同一组最小领域校验（`config/validate.go`）：非法输入不写库、不触发 reload，合法事务提交后只应用一次运行时更新，删除被规则引用的目标返回 409
 - 完整 Schema、字段校验、事务顺序和验收矩阵以 [Build6.md](./Build6.md) 为当前实施方案
 
 ---
@@ -172,7 +173,10 @@
 - 同步全局开关：`POST /api/sync/pause|resume` 端点（先写 DB 后通知 Syncer）；`SyncStatus.enabled` 字段；前端「模拟测试」页（路由 `/dry-run`）承载变更预览（`DryRunResponse{results, warnings}` 包装、`to_add`/`to_delete` 为规则明细数组）；连接测试保留在目标添加/编辑弹窗（`POST /api/test-connection`）
 - 地域自动补全：数据源为 `PlatformAPIDocs/PlatformZoneGuide/`（后端 `webui/api/zones.go` 提供 `GET /api/zones`，文档更新时需同步数据）；后端仅提供预填数据、不校验地域合法性（允许输入列表外值，由云 API 自行报错，符合「不过度防御」）
 - 资源扫描：`provider/scan.go` 实现四平台只读列表查询（Lighthouse `DescribeInstances`、SWAS `ListInstances`、CVM/ECS `DescribeSecurityGroups`），`webui/api/scan.go` 提供 `POST /api/scan-resources`（凭据缺失快速失败）、`GET/DELETE /api/scanned-resources`；结果按 cloud_type+region 覆盖式入库（`scanned_resources` 表），仅供添加目标自动补全，同步流程不依赖
-- 清空所有数据：`POST /api/config/reset` 调 `Store.ResetAll()` 清空全部业务表（targets/rules/settings/sync_logs/alert_email/alert_webhook/scanned_resources），等效重新初始化；前端入口需红色警告按钮 + 卡片式二次确认
+- 清空所有数据：`POST /api/config/reset` 只接受单一空对象 `{}`，经配置变更协调器在单事务内调 `Store.ResetAllTx()` 清空全部业务表（targets/rules/settings/sync_logs/alert_email/alert_webhook/scanned_resources），等效重新初始化；前端入口需红色警告按钮 + 卡片式二次确认
+- 普通 API 最小校验边界：固定结构请求与配置导入统一走 `webui/api/decode.go` 的 `decodeJSONStrict`（拒绝未知字段/尾随 JSON/多个顶层值，超限 413；普通请求 1 MiB、配置导入 10 MiB），路径 ID 用 `strconv.Atoi` 严格解析且必须大于 0；请求 DTO 不含数据库 `id`；更新/删除按 `RowsAffected` 返回 404
+- 配置变更协调器：目标、规则、settings、alerts、pause/resume、reset 与配置导入的写入口统一经 `webui/api/ConfigCoordinator` 串行化（单事务 → commit → 一次 apply）；该结构是 Step 4 骨架，apply 仍封装既有分次 reload，Step 5 必须用完整 `RuntimeState` 原子发布替换
+- 运行时设置动态生效：日志级别使用 `app.LogLevelVar`（`slog.LevelVar`）与 `LogBroadcaster.SetLevel`；DNS 熔断阈值经 `Syncer.SetDNSFailThreshold` 线程安全更新并保留既有失败计数
 - 前端 UI 规范：全局字号 16px、页面级操作按钮统一 `size="large"`（44px，`App.vue` themeOverrides 按分尺寸变量覆盖）；表格内操作按钮（编辑/删除）保持小号；所有二次确认使用 `NModal preset="card"` 卡片式弹窗（危险操作确认按钮 `type="error"`）
 - 资源 ID 输入提示：按云类型区分文案（轻量云=实例 ID，CVM/ECS=安全组 ID），由 `constants.ts` 的 `resourceIdHint()` 统一承载（仅 placeholder，不引入额外说明块）
 

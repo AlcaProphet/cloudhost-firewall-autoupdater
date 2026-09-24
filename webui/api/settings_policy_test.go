@@ -74,28 +74,93 @@ func TestGetSettings_NoWebuiPort(t *testing.T) {
 	}
 }
 
-// TestPutSettings_DoesNotPersistWebuiPort PUT 含 webui_port（及前端回传的 sync_enabled）时不落库
-func TestPutSettings_DoesNotPersistWebuiPort(t *testing.T) {
-	d, store := newSettingsTestDeps(t)
+// TestPutSettings_RejectsReservedAndUnknownKeys PUT 含 webui_port / sync_enabled / 未知键一律 400
+//
+// Build6 Step 4 取代了 Step 2 的“静默忽略未知键”行为：固定 DTO + DisallowUnknownFields
+// 必须在任何写入前拒绝，且不留下部分写入。
+func TestPutSettings_RejectsReservedAndUnknownKeys(t *testing.T) {
+	for _, body := range []string{
+		`{"webui_port":"61234","tag":"my-tag"}`,
+		`{"sync_enabled":"false"}`,
+		`{"unknown_key":"x"}`,
+	} {
+		d, store := newSettingsTestDeps(t)
+		w := doJSON(t, d, http.MethodPut, "/api/settings", body)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("body=%s 状态码 = %d, want 400; body=%s", body, w.Code, w.Body.String())
+		}
+		settings, err := store.GetSettings()
+		if err != nil {
+			t.Fatalf("GetSettings 失败: %v", err)
+		}
+		if len(settings) != 0 {
+			t.Errorf("body=%s 被拒绝后不应写入任何设置: %+v", body, settings)
+		}
+	}
+}
 
-	body := `{"webui_port":"61234","sync_enabled":"false","tag":"my-tag","interval":"7m"}`
-	w := doJSON(t, d, http.MethodPut, "/api/settings", body)
+// TestPutSettings_PartialUpdate PUT 是部分更新：省略字段保持不变，合法字段落库
+func TestPutSettings_PartialUpdate(t *testing.T) {
+	d, store := newSettingsTestDeps(t)
+	if err := store.SetSetting("tag", "keep-tag"); err != nil {
+		t.Fatalf("预置设置失败: %v", err)
+	}
+
+	w := doJSON(t, d, http.MethodPut, "/api/settings", `{"interval":"7m"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
-
 	settings, err := store.GetSettings()
 	if err != nil {
 		t.Fatalf("GetSettings 失败: %v", err)
 	}
-	if _, ok := settings["webui_port"]; ok {
-		t.Errorf("webui_port 不应被 PUT 写入；settings=%+v", settings)
+	if settings["interval"] != "7m" {
+		t.Errorf("interval 应被更新: %+v", settings)
 	}
-	if _, ok := settings["sync_enabled"]; ok {
-		t.Errorf("sync_enabled 不应经 PUT /api/settings 写入；settings=%+v", settings)
+	if settings["tag"] != "keep-tag" {
+		t.Errorf("省略字段不应被改动: %+v", settings)
 	}
-	if settings["tag"] != "my-tag" || settings["interval"] != "7m" {
-		t.Errorf("合法业务键应正常保存；settings=%+v", settings)
+}
+
+// TestPutSettings_EmptyPatchRejected 空对象必须 400（至少提交一个字段）
+func TestPutSettings_EmptyPatchRejected(t *testing.T) {
+	d, _ := newSettingsTestDeps(t)
+	w := doJSON(t, d, http.MethodPut, "/api/settings", `{}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("状态码 = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestPutSettings_EmptyStringOnlyForCredentials 显式空字符串只对四个云凭据合法
+func TestPutSettings_EmptyStringOnlyForCredentials(t *testing.T) {
+	d, store := newSettingsTestDeps(t)
+	if err := store.SetSetting("tc_access_id", "AKIDold"); err != nil {
+		t.Fatalf("预置凭据失败: %v", err)
+	}
+
+	// 凭据允许显式空字符串（用于清除旧值）
+	w := doJSON(t, d, http.MethodPut, "/api/settings", `{"tc_access_id":""}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("凭据清空状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	settings, err := store.GetSettings()
+	if err != nil {
+		t.Fatalf("GetSettings 失败: %v", err)
+	}
+	if settings["tc_access_id"] != "" {
+		t.Errorf("凭据应被清空: %+v", settings)
+	}
+
+	// 非凭据字段显式空字符串必须 400，且不落库
+	w = doJSON(t, d, http.MethodPut, "/api/settings", `{"tag":""}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("tag 空值状态码 = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	if settings, err = store.GetSettings(); err != nil {
+		t.Fatalf("GetSettings 失败: %v", err)
+	}
+	if _, ok := settings["tag"]; ok {
+		t.Errorf("被拒绝的 tag 不应落库: %+v", settings)
 	}
 }
 

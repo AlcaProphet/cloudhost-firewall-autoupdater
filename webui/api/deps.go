@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
@@ -31,10 +32,25 @@ type Deps struct {
 	LogBroadcaster *LogBroadcaster // 可为 nil
 	ReloadFunc     func()
 
+	// Coord 配置变更协调器（Build6 Step 4 骨架）；未显式注入时按需惰性创建。
+	// apply 闭包动态读取 ReloadFunc，因此可在 SetReloadFunc 之后再创建。
+	Coord     *ConfigCoordinator
+	coordOnce sync.Once
+
 	// ShutdownCh 服务器级 shutdown 信号：由 webui.Server 拥有并关闭，
 	// 两类 SSE handler（/api/sync/events、/api/logs/stream）据此主动退出；
 	// 只读、永不写入，handler 退出后由既有 defer unsubscribe() 取消订阅。
 	ShutdownCh <-chan struct{}
+}
+
+// coordinator 返回配置变更协调器；未注入时惰性创建（测试与最小接线场景）。
+func (d *Deps) coordinator() *ConfigCoordinator {
+	d.coordOnce.Do(func() {
+		if d.Coord == nil {
+			d.Coord = NewConfigCoordinator(d.Store, func() { d.notifyReload() })
+		}
+	})
+	return d.Coord
 }
 
 // Register 注册所有 API 路由到 mux

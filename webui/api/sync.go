@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,28 +33,37 @@ func (d *Deps) handleSyncTrigger(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"message": "同步已触发"})
 }
 
-// handleSyncPause 暂停同步：先写 DB 后通知 Syncer（即使通知失败，持久化状态已正确写入）
+// handleSyncPause 暂停同步：经协调器写入 sync_enabled，提交后才通知 Syncer。
+//
+// 先写 DB 后通知的语义不变（协调器也是 commit 之后才 apply），
+// 即使通知失败，持久化状态已正确写入。
 func (d *Deps) handleSyncPause(w http.ResponseWriter, r *http.Request) {
 	if d.Syncer == nil {
 		writeError(w, http.StatusBadRequest, "同步引擎未启动")
 		return
 	}
-	if err := d.Store.SetSetting("sync_enabled", "false"); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	err := d.coordinator().Mutate(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return d.Store.SetSettingTx(ctx, tx, "sync_enabled", "false")
+	})
+	if err != nil {
+		writeMutationError(w, err)
 		return
 	}
 	d.Syncer.Pause()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "同步已暂停"})
 }
 
-// handleSyncResume 恢复同步：先写 DB 后通知 Syncer
+// handleSyncResume 恢复同步：经协调器写入 sync_enabled，提交后才通知 Syncer
 func (d *Deps) handleSyncResume(w http.ResponseWriter, r *http.Request) {
 	if d.Syncer == nil {
 		writeError(w, http.StatusBadRequest, "同步引擎未启动")
 		return
 	}
-	if err := d.Store.SetSetting("sync_enabled", "true"); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	err := d.coordinator().Mutate(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		return d.Store.SetSettingTx(ctx, tx, "sync_enabled", "true")
+	})
+	if err != nil {
+		writeMutationError(w, err)
 		return
 	}
 	d.Syncer.Resume()
@@ -70,7 +81,7 @@ func (d *Deps) handleSyncDryRun(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, "模拟测试失败", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -126,7 +137,7 @@ func (d *Deps) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 func (d *Deps) handleGetSyncLogs(w http.ResponseWriter, r *http.Request) {
 	logs, err := d.Store.GetSyncLogs(100)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, "读取同步日志失败", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, logs)
@@ -135,7 +146,7 @@ func (d *Deps) handleGetSyncLogs(w http.ResponseWriter, r *http.Request) {
 // handleClearSyncLogs 清空同步历史记录
 func (d *Deps) handleClearSyncLogs(w http.ResponseWriter, r *http.Request) {
 	if err := d.Store.ClearSyncLogs(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, "清空同步日志失败", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "历史记录已清空"})

@@ -579,3 +579,103 @@ func TestProcessSSEExitsOnServerShutdown(t *testing.T) {
 	assertPortClosed(t, base+"/api/health")
 	assertPidFileCleanup(t, dataDir, 3*time.Second)
 }
+
+// putJSON 发送 JSON PUT 请求并返回状态码（进程级用例专用）。
+func putJSON(t *testing.T, url, body string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPut, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("请求 %s 失败: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("读取 %s 响应失败: %v", url, err)
+	}
+	return resp.StatusCode
+}
+
+// TestProcessSecretsNotLogged 进程日志不得包含云凭据、SMTP 密码或 Webhook URL（Build6 Step 4）。
+//
+// 「不泄露 Webhook URL」的改动位于 main 包的启动分支与 reload 闭包，webui/api 的
+// sentinel 用例覆盖不到该层，因此这里用真实二进制 + 真实数据目录做进程级回归：
+// 预置启用态告警（带唯一 sentinel）→ 启动（启动分支）→ PUT 触发一次热重载（reload 分支）
+// → 断言日志只出现渠道名，六个敏感值一个都不出现。
+func TestProcessSecretsNotLogged(t *testing.T) {
+	const (
+		sentinelWebhookURL  = "https://sentinel-process-check.invalid/hook-abc123"
+		sentinelSMTPPass    = "sentinel-process-smtp-pass-xyz"
+		sentinelTCAccessID  = "AKIDsentinelProcessCheck"
+		sentinelTCAccessKey = "sentinelProcessKey"
+	)
+
+	dataDir := t.TempDir()
+	store, err := config.OpenStore(filepath.Join(dataDir, "config.db"))
+	if err != nil {
+		t.Fatalf("预置数据库失败: %v", err)
+	}
+	if err := store.SetSetting("tc_access_id", sentinelTCAccessID); err != nil {
+		_ = store.Close()
+		t.Fatalf("预置凭据失败: %v", err)
+	}
+	if err := store.SetSetting("tc_access_key", sentinelTCAccessKey); err != nil {
+		_ = store.Close()
+		t.Fatalf("预置凭据失败: %v", err)
+	}
+	if err := store.SaveAlertEmail(&config.AlertEmailConfig{
+		Enabled: true, Host: "smtp.example.com", Port: "587", Username: "u",
+		Password: sentinelSMTPPass, FromAddr: "f@example.com", ToAddr: "t@example.com",
+	}); err != nil {
+		_ = store.Close()
+		t.Fatalf("预置邮件告警失败: %v", err)
+	}
+	if err := store.SaveAlertWebhook(&config.AlertWebhookConfig{
+		Enabled: true, URL: sentinelWebhookURL, Channel: "dingtalk",
+	}); err != nil {
+		_ = store.Close()
+		t.Fatalf("预置 Webhook 失败: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("关闭预置数据库失败: %v", err)
+	}
+
+	port := freePort(t)
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	cmd, out := startProcess(t, dataDir, map[string]string{"WEBUI_PORT": fmt.Sprintf("%d", port)})
+	waitForHTTP(t, base+"/api/health")
+
+	// 启动分支：应记录“已启用”，但只带渠道名
+	waitForLog(t, out, "Webhook 告警已启用", 10*time.Second)
+
+	// 热重载分支：PUT 一次合法设置触发 reload，会重新注册告警订阅
+	if code := putJSON(t, base+"/api/settings", `{"theme":"dark"}`); code != http.StatusOK {
+		t.Fatalf("PUT /api/settings 状态码 = %d, want 200", code)
+	}
+	waitForLog(t, out, "Webhook 告警已更新", 10*time.Second)
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("发送 SIGTERM 失败: %v", err)
+	}
+	code, err := waitForProcessExit(t, cmd, 20*time.Second)
+	if err != nil {
+		t.Fatalf("等待进程退出失败: %v\n输出:\n%s", err, out.String())
+	}
+	if code != 0 {
+		t.Fatalf("退出码 = %d, want 0\n输出:\n%s", code, out.String())
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "channel=dingtalk") {
+		t.Errorf("Webhook 告警日志应只带渠道名；输出:\n%s", output)
+	}
+	for _, secret := range []string{sentinelWebhookURL, sentinelSMTPPass, sentinelTCAccessID, sentinelTCAccessKey} {
+		if strings.Contains(output, secret) {
+			t.Errorf("进程日志泄露敏感值 %q；输出:\n%s", secret, output)
+		}
+	}
+}

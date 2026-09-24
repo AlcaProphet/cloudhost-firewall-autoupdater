@@ -1,7 +1,7 @@
 # Issue5.md — FWAlizer 问题追踪（当前）
 
 > **文档定位：** 本文档是 FWAlizer 的当前问题记录（非强制，经验参考），记录 2026-09-22 只读审查发现的 R5-01～R5-03、O5-01～O5-06 和 A5-01。已确认的修复口径由 [Build6.md](./Build6.md) 分步实施，未经对应 Step 验收不得标记为已修复。
-> **当前进度（2026-09-23）：** Build6 Step 0～3 已验收通过；O5-04、O5-05 随 Step 3 关闭。Step 4～7 仍未实施，相关事项（O5-01、O5-03、O5-06、R5-01）保持未关闭。
+> **当前进度（2026-09-24）：** Build6 Step 0～4 已验收通过；O5-04、O5-05 随 Step 3 关闭，O5-06 随 Step 4 关闭。Step 5～7 仍未实施，相关事项（O5-01、O5-03、R5-01）保持未关闭。
 > 编码指令以 [AGENTS.md](./AGENTS.md) 为唯一强要求；设计记录见 [Design5.md](./Design5.md)；上一阶段的 Design4、Build5 和 Issue4 已原文移入 [HistoryDocs/](./HistoryDocs/)。
 
 ---
@@ -302,7 +302,14 @@
   - 验证规则引用不存在目标时不写库、不触发 reload；
   - 验证配置导入的所有校验都发生在旧配置清除前，并与 R5-01 的 ID 映射测试共用场景；
   - 验证非法请求返回 400，数据库模拟失败返回 500，响应不包含凭据。
-- **状态：** ☐ 已决策 / 待 Build6 Step 4 与 Step 5 实施
+- **实施记录（2026-09-24，Build6 Step 4）：**
+  - 代码：新增 `config/validate.go`（targets/rules/settings/alerts 的轻量校验与归一化，统一 `ValidationError` 只带字段名与原因）与 `webui/api/decode.go`（`decodeJSONStrict`：1 MiB `MaxBytesReader` + `DisallowUnknownFields` + 拒绝尾随 JSON/多顶层值，超限 413；`parsePathID` 用 `strconv.Atoi` 且必须 >0；500 统一安全文案，真实 error 只进服务日志）。`config/store.go` 新增最小 `DBTX` 接口、`BeginTx`、事务内 `loadTargets`/`loadRules`、`AddTargetTx`（返回 `LastInsertId`）、`Update*/Delete*Tx`（返回 `RowsAffected`）、`TargetExistsTx`/`RuleExistsTx`、`ReferencingRuleIDsTx`（逐条解析 `rules.targets` JSON，避免 LIKE 子串误判）、`ValidateRuleTargetsTx`、事务化 settings/alerts/reset 写方法，并让 `LoadConfig` 复用同一组校验（空白取默认值、非空非法值返回带键名错误）。targets/rules 改用不含 `id` 的独立 DTO；更新/删除 `RowsAffected=0`→404；删除被引用目标→409；规则目标 ID 正数/去重（领域层）+ 存在性（事务内）；settings PUT 改 11 pointer 字段 DTO + 单事务；alerts PUT 两对象全子字段必需 + 单事务覆盖；reset 只接受 `{}`；新增 `webui/api/coordinator.go` 配置变更协调器骨架（单事务 → commit → 一次 apply），targets/rules/settings/alerts/pause/resume/reset 与 version 1 导入全部经其写入；`app.LogLevelVar` + `LogBroadcaster.SetLevel` 实现日志级别即时生效；`dns.CircuitBreaker.SetThreshold`/`Syncer.SetDNSFailThreshold` 线程安全且保留既有失败计数；`run.go` 删除 Webhook URL 日志；前端 `Settings.vue` 保存改 11 键白名单 payload。
+  - 自动门禁（2026-09-24）：`go test -race -count=1 ./config ./webui/api`、`go test ./... -race`、`go vet ./...`、`git diff --check` 全部通过（无 `WARNING: DATA RACE`）；`go build ./...` 通过；`npm run build` 通过。
+  - 专项测试：严格解码/1 MiB/413/未知字段/尾随值/多顶层值、路径 ID 宽松值 400、Trim 与大写归一化、TAG 48/49 字符与方括号控制字符、DNS hostname/IPv4/括号 IPv6/端口边界、列表外地域可保存、零/负 duration 与 threshold、未知/重复/非正目标引用、被引用目标 409、不存在 404、settings 与双告警中途失败完整回滚、非法输入零 reload、合法事务一次 reload、协调器并发串行化、`slog.LevelVar` 即时生效、DNS 阈值保留计数、敏感值 sentinel 未出现在新增错误响应与日志中。
+  - 证据边界：未执行真实浏览器交互（仅 vue-tsc + 生产构建）；连接测试/扫描的 SDK 原始错误仍以 `200 + {"success":false}` 返回给操作者以便诊断，本 Step 只把 **500** 改为安全文案；version 2 完整快照、`export_id → 新 ID` 映射、显式凭据与原子运行时替换仍属 Step 5。
+  - 独立复核（2026-09-24，只读 + 真实二进制进程级）：门禁清缓存重跑全绿（`DATA RACE` 0）；52 项 HTTP 契约探测 49 通过；完整 stdout 日志（启动分支 + reload 分支）中 4 个云凭据、SMTP 密码、Webhook URL 六个 sentinel 命中数全为 0；`log_level=error` 期间触发与热重载均无 INFO 输出，恢复后立即恢复；Step 5 边界干净。
+  - 复核发现并处理：① version 1 导入原先沿用裸 `json.NewDecoder`（无大小上限、不拒绝未知字段/尾随 JSON），与 §12.8「普通请求与导入共用同一语义，只有 size limit 不同」不符 → 经用户确认改为共用 `decodeJSONStrict` + 10 MiB，并补 `TestConfigImportStrictDecoding`/`TestConfigImportWithin10MiBAllowed`；② `run.go` 的启动/reload 分支缺自动回归 → 补进程级 `TestProcessSecretsNotLogged`（红/绿已验证：临时恢复 `url=` 日志会失败并打印 URL，恢复后通过，`run.go` 还原经 sha256 校验）；③ 文档测试名拼写更正。遗留：DNS 阈值接线仍只有单测 + 代码审查覆盖；`scanned-resources` 的 `cloud_type` 未枚举校验；v2 包会以“未知字段”400 拒绝而非专门版本语义（Step 5 恢复）。
+- **状态：** ✅ 已修复并验收通过（Build6 Step 4 四道门禁真实通过；浏览器人工复核登记为待办）
 
 ---
 
@@ -388,4 +395,6 @@
 | v1.2 | 2026-09-22 | 升格为当前问题记录；按 Build6 更新完整敏感配置包、全 CLI 移除、三个部署变量和各问题的已决策/待实施状态 |
 | v1.3 | 2026-09-23 | 同步 Build6 Step 1 实施证据：R5-02（取消不再关闭 channel、Publish 双重复制）、R5-03（本轮 TAG 显式传参）与 O5-02（CI 启用 race）落地并附真实结果；按用户确认口径修正 R5-02「最多一个在途事件」旧表述；未完成的 `./syncer -count=100` 门禁转入根目录 ProdTestList.md |
 | v1.4 | 2026-09-23 | 同步 Build6 Step 2 实施证据：A5-01（CLI/`.env` Headless 移除、三个部署变量收束、`webui_port` 退出业务配置、健康检查去 `pgrep`）落地并附本地门禁与 Docker 容器结果；浏览器人工复核与远端 CI 保持待办 |
+| v1.7 | 2026-09-24 | Step 4 独立复核：记录 52 项进程级契约探测、完整日志 sentinel 扫描（0 命中）、日志级别即时生效与 Step 5 边界核验；按用户决定补齐 version 1 导入的共用严格解码 + 10 MiB 上限与 `run.go` 进程级脱敏回归，并更正文档测试名拼写 |
+| v1.6 | 2026-09-24 | 同步 Build6 Step 4 实施证据：O5-06（严格 JSON/1 MiB/未知字段与尾随值、领域校验与归一化、`LoadConfig` 非法值报错、RowsAffected/引用检查/事务化 settings·alerts、协调器骨架、500 安全文案、日志级别与 DNS 阈值动态更新）关闭；Step 5～7 事项状态不变 |
 | v1.5 | 2026-09-23 | 同步 Build6 Step 3 实施证据：O5-04（同步 listener、仅 EADDRINUSE 降级、无释放重绑窗口）与 O5-05（显式 http.Server/超时、Wait、幂等 Shutdown、超时强制 Close、两类 SSE 服务器级退出、main 统一收尾顺序）关闭；附自动门禁、真实进程信号/在途轮次/SSE、Docker health/stop 结果与证据边界；Step 4～7 事项状态不变 |

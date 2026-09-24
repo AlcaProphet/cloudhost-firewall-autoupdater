@@ -20,6 +20,20 @@ func NewCircuitBreaker(threshold int) *CircuitBreaker {
 	}
 }
 
+// SetThreshold 线程安全地更新熔断阈值，保留既有失败计数（Build6 Step 4）。
+//
+// 普通配置变更只改阈值、不重置熔断进度；非正数阈值会破坏 IsOpen 语义，
+// 因此忽略并记录 WARN（阈值由领域层保证为正整数）。
+func (cb *CircuitBreaker) SetThreshold(threshold int) {
+	if threshold <= 0 {
+		slog.Warn("忽略非正数 DNS 熔断阈值", "threshold", threshold)
+		return
+	}
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.threshold = threshold
+}
+
 // IsOpen 判断域名是否已熔断
 func (cb *CircuitBreaker) IsOpen(domain string) bool {
 	cb.mu.Lock()

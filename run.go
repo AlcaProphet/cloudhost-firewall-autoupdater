@@ -127,7 +127,8 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 		currentWebhookNotifier = notifier.NewWebhookNotifier(webhookCfg.URL, webhookCfg.Channel)
 		s.EventBus().Subscribe(notifier.EventSyncError, currentWebhookNotifier)
 		s.EventBus().Subscribe(notifier.EventDNSFailed, currentWebhookNotifier)
-		slog.Info("Webhook 告警已启用", "url", webhookCfg.URL)
+		// 不记录 Webhook URL（敏感配置只在 SQLite 中保存）
+		slog.Info("Webhook 告警已启用", "channel", webhookCfg.Channel)
 	}
 
 	// 接通热重载：WebUI 修改配置后重新加载并通知 Syncer
@@ -137,6 +138,11 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 			slog.Error("重载配置失败", "error", err)
 			return
 		}
+		// 日志级别即时生效：stdout（slog.LevelVar）与 WebUI 日志流保持同一级别
+		app.SetLogLevel(newCfg.LogLevel)
+		logBroadcaster.SetLevel(app.ParseLogLevel(newCfg.LogLevel))
+		// DNS 熔断阈值变更保留既有失败计数
+		s.SetDNSFailThreshold(newCfg.DNSFailThreshold)
 		// 更新凭据
 		provider.SetCredentials(newCfg.TCAccessID, newCfg.TCAccessKey, newCfg.AliAccessID, newCfg.AliAccessKey)
 		// 重建 ClientPool 和 Provider 列表
@@ -189,7 +195,8 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 			currentWebhookNotifier = notifier.NewWebhookNotifier(webhookCfg.URL, webhookCfg.Channel)
 			s.EventBus().Subscribe(notifier.EventSyncError, currentWebhookNotifier)
 			s.EventBus().Subscribe(notifier.EventDNSFailed, currentWebhookNotifier)
-			slog.Info("Webhook 告警已更新", "url", webhookCfg.URL)
+			// 不记录 Webhook URL（敏感配置只在 SQLite 中保存）
+			slog.Info("Webhook 告警已更新", "channel", webhookCfg.Channel)
 		}
 	})
 

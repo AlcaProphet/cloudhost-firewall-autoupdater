@@ -1,16 +1,14 @@
 package api
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
 
-// scanResourcesReq 扫描资源请求
+// scanResourcesReq 扫描资源请求（固定两字段，Build6 §12.9）
 type scanResourcesReq struct {
 	CloudType string `json:"cloud_type"`
 	Region    string `json:"region"`
@@ -19,27 +17,30 @@ type scanResourcesReq struct {
 // handleScanResources 扫描指定云厂商+地域的资源列表并持久化（供添加目标时自动补全）
 func (d *Deps) handleScanResources(w http.ResponseWriter, r *http.Request) {
 	var req scanResourcesReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+	if err := decodeJSONStrict(w, r, maxJSONBodyBytes, &req); err != nil {
+		writeRequestError(w, err)
 		return
 	}
-	if req.CloudType == "" || req.Region == "" {
-		writeError(w, http.StatusBadRequest, "cloud_type 与 region 不能为空")
+	// 与目标 CRUD 复用同一组基础校验（cloud_type 枚举 + region Trim 后非空）
+	ct, err := config.NormalizeCloudType(req.CloudType)
+	if err != nil {
+		writeRequestError(w, err)
+		return
+	}
+	region, err := config.NormalizeRegion(req.Region)
+	if err != nil {
+		writeRequestError(w, err)
 		return
 	}
 
 	// 从 Store 读取凭据（与 handleTestConnection 一致的凭据校验）
 	settings, err := d.Store.GetSettings()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "读取凭据失败")
+		writeInternalError(w, "读取凭据失败", err)
 		return
 	}
-	if strings.HasPrefix(req.CloudType, "tc_") && (settings["tc_access_id"] == "" || settings["tc_access_key"] == "") {
-		writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": "腾讯云凭据未配置，请先在全局设置中填写"})
-		return
-	}
-	if strings.HasPrefix(req.CloudType, "ali_") && (settings["ali_access_id"] == "" || settings["ali_access_key"] == "") {
-		writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": "阿里云凭据未配置，请先在全局设置中填写"})
+	if ready, hint := providerCredentialsReady(ct, settings); !ready {
+		writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": hint})
 		return
 	}
 	provider.SetCredentials(
@@ -49,9 +50,9 @@ func (d *Deps) handleScanResources(w http.ResponseWriter, r *http.Request) {
 
 	// 扫描资源
 	pool := provider.NewClientPool()
-	resources, err := provider.ScanResources(config.CloudType(req.CloudType), req.Region, pool)
+	resources, err := provider.ScanResources(ct, region, pool)
 	if err != nil {
-		slog.Warn("扫描资源失败", "cloud_type", req.CloudType, "region", req.Region, "error", err)
+		slog.Warn("扫描资源失败", "cloud_type", ct, "region", region, "error", err)
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": err.Error()})
 		return
 	}
@@ -60,14 +61,14 @@ func (d *Deps) handleScanResources(w http.ResponseWriter, r *http.Request) {
 	scanned := make([]config.ScannedResource, 0, len(resources))
 	for _, res := range resources {
 		scanned = append(scanned, config.ScannedResource{
-			CloudType:    req.CloudType,
+			CloudType:    string(ct),
 			Region:       res.Region,
 			ResourceID:   res.ResourceID,
 			ResourceName: res.Name,
 		})
 	}
-	if err := d.Store.ReplaceScannedResources(req.CloudType, req.Region, scanned); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if err := d.Store.ReplaceScannedResources(string(ct), region, scanned); err != nil {
+		writeInternalError(w, "保存扫描结果失败", err)
 		return
 	}
 
@@ -87,7 +88,7 @@ func (d *Deps) handleGetScannedResources(w http.ResponseWriter, r *http.Request)
 	}
 	resources, err := d.Store.GetScannedResources(cloudType)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, "读取扫描结果失败", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resources)
@@ -101,7 +102,7 @@ func (d *Deps) handleDeleteScannedResources(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if err := d.Store.DeleteScannedResources(cloudType); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeInternalError(w, "清理扫描结果失败", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "清理成功"})

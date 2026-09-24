@@ -200,6 +200,13 @@ func (s *Syncer) ReloadResolver(resolver *dns.Resolver) {
 	s.resolver = resolver
 }
 
+// SetDNSFailThreshold 线程安全地更新 DNS 熔断阈值，保留既有失败计数（Build6 Step 4）。
+//
+// 阈值变更不是完整运行时状态替换：Step 5 会把它并入 RuntimeState 的原子发布。
+func (s *Syncer) SetDNSFailThreshold(threshold int) {
+	s.cb.SetThreshold(threshold)
+}
+
 // TriggerSync 手动触发一次同步（非阻塞）
 func (s *Syncer) TriggerSync() {
 	select {
