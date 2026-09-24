@@ -33,24 +33,20 @@ func (d *Deps) handleScanResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 从 Store 读取凭据（与 handleTestConnection 一致的凭据校验）
-	settings, err := d.Store.GetSettings()
-	if err != nil {
-		writeInternalError(w, "读取凭据失败", err)
+	// 只取一次运行时快照，并使用其中的不可变凭据与 ClientPool：
+	// 不再从 Store 零散读取密钥，也不覆盖同步正在使用的凭据（Build6 §12.3 第 6 条）。
+	state := d.runtimeSnapshot()
+	if state == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": "运行时状态尚未就绪，请稍后重试"})
 		return
 	}
-	if ready, hint := providerCredentialsReady(ct, settings); !ready {
+	if ready, hint := providerCredentialsReady(ct, state.Config.Credentials); !ready {
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": hint})
 		return
 	}
-	provider.SetCredentials(
-		settings["tc_access_id"], settings["tc_access_key"],
-		settings["ali_access_id"], settings["ali_access_key"],
-	)
 
-	// 扫描资源
-	pool := provider.NewClientPool()
-	resources, err := provider.ScanResources(ct, region, pool)
+	// 扫描资源：使用快照中的 pool，同一请求全程只用一个快照
+	resources, err := provider.ScanResources(ct, region, state.Pool)
 	if err != nil {
 		slog.Warn("扫描资源失败", "cloud_type", ct, "region", region, "error", err)
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": err.Error()})

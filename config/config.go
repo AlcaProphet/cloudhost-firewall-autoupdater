@@ -72,14 +72,26 @@ type AlertWebhookConfig struct {
 	Channel string `json:"channel"` // dingtalk / feishu / slack，默认 dingtalk
 }
 
-// Config 全局业务配置（唯一来源为 SQLite）。
+// Credentials 四个云访问凭据的领域值（BusinessSnapshot 的组成部分）。
+//
+// 与 provider.Credentials 字段一一对应但**刻意不互相依赖**：config 保持零 provider
+// 依赖，由 syncer 在构造 RuntimeState 时做一次显式映射（Build6 §12.3、§12.6）。
+// 空字符串是合法值，表示凭据未配置或已被显式清除。
+type Credentials struct {
+	TencentSecretID       string
+	TencentSecretKey      string
+	AliyunAccessKeyID     string
+	AliyunAccessKeySecret string
+}
+
+// Config 启动期业务配置（唯一来源为 SQLite）。
 //
 // 监听地址和端口属于部署参数（见 DeploymentConfig），不在这里保存。
+// 业务配置的运行时形态是 RuntimeConfig（见 config/runtime.go）；本类型保留给
+// 需要一次性读取完整配置的调用方（测试与诊断），凭据只通过 Credentials 暴露，
+// 不再保留 `TCAccessID` 这类与 provider 旧全局变量同名的冗余字段。
 type Config struct {
-	TCAccessID       string
-	TCAccessKey      string
-	AliAccessID      string
-	AliAccessKey     string
+	Credentials      Credentials
 	Targets          []TargetConfig
 	DomainRules      []DomainRule
 	Tag              string
@@ -89,4 +101,5 @@ type Config struct {
 	DNSFailThreshold int           // 默认 5
 	LogLevel         string        // debug / info / warn / error
 	SyncEnabled      bool          // 同步开关：true=开启，false=暂停；默认 true
+	Theme            string        // light / dark（业务配置但不参与同步器）
 }

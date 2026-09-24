@@ -227,7 +227,7 @@ func TestConfigImport_RejectsWebuiPort(t *testing.T) {
 	}
 }
 
-// TestConfigExport_OmitsWebuiPort 导出配置包不含 webui_port
+// TestConfigExport_OmitsWebuiPort 导出配置包不含 webui_port，且只接受 POST
 func TestConfigExport_OmitsWebuiPort(t *testing.T) {
 	d, store := newSettingsTestDeps(t)
 	if err := store.SetSetting("webui_port", "61234"); err != nil {
@@ -237,21 +237,62 @@ func TestConfigExport_OmitsWebuiPort(t *testing.T) {
 		t.Fatalf("预置 tag 失败: %v", err)
 	}
 
-	w := doJSON(t, d, http.MethodGet, "/api/config/export", "")
+	// 旧 GET 端点必须已删除
+	if w := doJSON(t, d, http.MethodGet, "/api/config/export", ""); w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET 导出应已删除，状态码 = %d, want 405", w.Code)
+	}
+
+	w := doJSON(t, d, http.MethodPost, "/api/config/export", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d, want 200", w.Code)
 	}
 	var got struct {
-		Version  int               `json:"version"`
-		Settings map[string]string `json:"settings"`
+		Version  int `json:"version"`
+		Metadata struct {
+			ExportedAt string `json:"exported_at"`
+		} `json:"metadata"`
+		Settings struct {
+			Credentials struct {
+				Tencent struct {
+					SecretID  string `json:"secret_id"`
+					SecretKey string `json:"secret_key"`
+				} `json:"tencent"`
+				Aliyun struct {
+					AccessKeyID     string `json:"access_key_id"`
+					AccessKeySecret string `json:"access_key_secret"`
+				} `json:"aliyun"`
+			} `json:"credentials"`
+			Tag              string `json:"tag"`
+			Interval         string `json:"interval"`
+			DNS              string `json:"dns"`
+			DNSTimeout       string `json:"dns_timeout"`
+			DNSFailThreshold int    `json:"dns_fail_threshold"`
+			LogLevel         string `json:"log_level"`
+			SyncEnabled      bool   `json:"sync_enabled"`
+			Theme            string `json:"theme"`
+		} `json:"settings"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("解析导出响应失败: %v; body=%s", err, w.Body.String())
 	}
-	if _, ok := got.Settings["webui_port"]; ok {
-		t.Errorf("导出不应包含 webui_port；body=%s", w.Body.String())
+	if got.Version != 2 {
+		t.Errorf("version = %d, want 2", got.Version)
 	}
-	if got.Settings["tag"] != "exported" {
+	if got.Settings.Tag != "exported" {
 		t.Errorf("导出应包含业务设置: %+v", got.Settings)
+	}
+	// 导出必须补齐全部默认值
+	if got.Settings.Interval != "5m" || got.Settings.DNS != "223.5.5.5" || got.Settings.DNSTimeout != "10s" ||
+		got.Settings.DNSFailThreshold != 5 || got.Settings.LogLevel != "info" || !got.Settings.SyncEnabled ||
+		got.Settings.Theme != "light" {
+		t.Errorf("导出未补齐默认值: %+v", got.Settings)
+	}
+	// webui_port 作为未知设置键不得出现在导出的 settings 之外
+	if strings.Contains(w.Body.String(), "webui_port") {
+		t.Errorf("导出不应包含 webui_port: %s", w.Body.String())
+	}
+	// 导出必须包含完整凭据字段（此处为空串）与告警对象
+	if !strings.Contains(w.Body.String(), `"secret_id"`) || !strings.Contains(w.Body.String(), `"alerts"`) {
+		t.Errorf("导出缺少凭据或告警字段: %s", w.Body.String())
 	}
 }

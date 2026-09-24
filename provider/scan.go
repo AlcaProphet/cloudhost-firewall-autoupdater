@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
 	ecs "github.com/alibabacloud-go/ecs-20140526/v7/client"
 	swas "github.com/alibabacloud-go/swas-open-20200601/v3/client"
 	"github.com/alibabacloud-go/tea/tea"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/profile"
 	lighthouse "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/lighthouse/v20200324"
@@ -23,7 +23,8 @@ type ScannedCloudResource struct {
 }
 
 // ScanResources 扫描指定云厂商+地域的资源列表，供前端"扫描资源"按钮调用。
-// 凭据需先经 SetCredentials 注入（webui/api 层负责从 Store 读取）。
+// 凭据只取自传入 pool 持有的不可变 Credentials；调用方必须传请求开始时
+// 取得的同一个 RuntimeState.Pool，不得另行读取数据库或全局凭据。
 // 各平台对应 API：
 //   - tc_lighthouse: DescribeInstances（查询实例）
 //   - tc_cvm:        DescribeSecurityGroups（查询安全组）
@@ -46,8 +47,9 @@ func ScanResources(ct config.CloudType, region string, pool *ClientPool) ([]Scan
 
 // scanTCLighthouse 扫描腾讯云轻量云实例（DescribeInstances，Offset/Limit 分页）
 func scanTCLighthouse(region string, pool *ClientPool) ([]ScannedCloudResource, error) {
-	client, err := pool.GetOrCreate(string(config.CloudTCLighthouse)+"|"+region+"|"+getTCAccessID(), func() (any, error) {
-		credential := common.NewCredential(getTCAccessID(), getTCAccessKey())
+	creds := pool.Credentials()
+	client, err := pool.GetOrCreate(pool.CacheKey(config.CloudTCLighthouse, region), func() (any, error) {
+		credential := common.NewCredential(creds.TencentSecretID, creds.TencentSecretKey)
 		cpf := profile.NewClientProfile()
 		cpf.HttpProfile.Endpoint = "lighthouse.tencentcloudapi.com"
 		return lighthouse.NewClient(credential, region, cpf)
@@ -86,8 +88,9 @@ func scanTCLighthouse(region string, pool *ClientPool) ([]ScannedCloudResource, 
 
 // scanTCCVM 扫描腾讯云 CVM 安全组（DescribeSecurityGroups，Offset/Limit 分页，Offset 为字符串类型）
 func scanTCCVM(region string, pool *ClientPool) ([]ScannedCloudResource, error) {
-	client, err := pool.GetOrCreate(string(config.CloudTCCVM)+"|"+region+"|"+getTCAccessID(), func() (any, error) {
-		credential := common.NewCredential(getTCAccessID(), getTCAccessKey())
+	creds := pool.Credentials()
+	client, err := pool.GetOrCreate(pool.CacheKey(config.CloudTCCVM, region), func() (any, error) {
+		credential := common.NewCredential(creds.TencentSecretID, creds.TencentSecretKey)
 		cpf := profile.NewClientProfile()
 		cpf.HttpProfile.Endpoint = "vpc.tencentcloudapi.com"
 		return vpc.NewClient(credential, region, cpf)
@@ -125,13 +128,14 @@ func scanTCCVM(region string, pool *ClientPool) ([]ScannedCloudResource, error) 
 
 // scanAliSWAS 扫描阿里云轻量云实例（ListInstances，PageNumber/PageSize 分页）
 func scanAliSWAS(region string, pool *ClientPool) ([]ScannedCloudResource, error) {
-	client, err := pool.GetOrCreate(string(config.CloudAliSWAS)+"|"+region+"|"+getAliAccessID(), func() (any, error) {
-		cfg := &openapi.Config{
-			AccessKeyId:     tea.String(getAliAccessID()),
-			AccessKeySecret: tea.String(getAliAccessKey()),
+	creds := pool.Credentials()
+	client, err := pool.GetOrCreate(pool.CacheKey(config.CloudAliSWAS, region), func() (any, error) {
+		openCfg := &openapi.Config{
+			AccessKeyId:     tea.String(creds.AliyunAccessKeyID),
+			AccessKeySecret: tea.String(creds.AliyunAccessKeySecret),
 			Endpoint:        tea.String(fmt.Sprintf("swas.%s.aliyuncs.com", region)),
 		}
-		return swas.NewClient(cfg)
+		return swas.NewClient(openCfg)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 SWAS Client 失败: %w", err)
@@ -172,13 +176,14 @@ func scanAliSWAS(region string, pool *ClientPool) ([]ScannedCloudResource, error
 
 // scanAliECS 扫描阿里云 ECS 安全组（DescribeSecurityGroups，NextToken 分页）
 func scanAliECS(region string, pool *ClientPool) ([]ScannedCloudResource, error) {
-	client, err := pool.GetOrCreate(string(config.CloudAliECS)+"|"+region+"|"+getAliAccessID(), func() (any, error) {
-		cfg := &openapi.Config{
-			AccessKeyId:     tea.String(getAliAccessID()),
-			AccessKeySecret: tea.String(getAliAccessKey()),
+	creds := pool.Credentials()
+	client, err := pool.GetOrCreate(pool.CacheKey(config.CloudAliECS, region), func() (any, error) {
+		openCfg := &openapi.Config{
+			AccessKeyId:     tea.String(creds.AliyunAccessKeyID),
+			AccessKeySecret: tea.String(creds.AliyunAccessKeySecret),
 			Endpoint:        tea.String(fmt.Sprintf("ecs.%s.aliyuncs.com", region)),
 		}
-		return ecs.NewClient(cfg)
+		return ecs.NewClient(openCfg)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 ECS Client 失败: %w", err)

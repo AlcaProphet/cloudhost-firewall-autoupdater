@@ -26,12 +26,14 @@ type TCCVM struct {
 }
 
 func newTCCVM(cfg config.TargetConfig, dbID int, pool *ClientPool) (Provider, error) {
-	key := string(config.CloudTCCVM) + "|" + cfg.Region + "|" + getTCAccessID()
+	// 凭据只来自 pool 持有的不可变 Credentials，不再读取任何包级全局值
+	creds := pool.Credentials()
+	key := pool.CacheKey(config.CloudTCCVM, cfg.Region)
 
 	client, err := pool.GetOrCreate(key, func() (any, error) {
 		credential := common.NewCredential(
-			getTCAccessID(),
-			getTCAccessKey(),
+			creds.TencentSecretID,
+			creds.TencentSecretKey,
 		)
 		cpf := profile.NewClientProfile()
 		cpf.HttpProfile.Endpoint = "vpc.tencentcloudapi.com"

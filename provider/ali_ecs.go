@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/portconv"
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
 	ecs "github.com/alibabacloud-go/ecs-20140526/v7/client"
 	"github.com/alibabacloud-go/tea/tea"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/portconv"
 )
 
 func init() {
@@ -24,15 +24,17 @@ type AliECS struct {
 }
 
 func newAliECS(cfg config.TargetConfig, dbID int, pool *ClientPool) (Provider, error) {
-	key := string(config.CloudAliECS) + "|" + cfg.Region + "|" + getAliAccessID()
+	// 凭据只来自 pool 持有的不可变 Credentials，不再读取任何包级全局值
+	creds := pool.Credentials()
+	key := pool.CacheKey(config.CloudAliECS, cfg.Region)
 
 	client, err := pool.GetOrCreate(key, func() (any, error) {
-		config := &openapi.Config{
-			AccessKeyId:     tea.String(getAliAccessID()),
-			AccessKeySecret: tea.String(getAliAccessKey()),
+		openCfg := &openapi.Config{
+			AccessKeyId:     tea.String(creds.AliyunAccessKeyID),
+			AccessKeySecret: tea.String(creds.AliyunAccessKeySecret),
 			Endpoint:        tea.String(fmt.Sprintf("ecs.%s.aliyuncs.com", cfg.Region)),
 		}
-		return ecs.NewClient(config)
+		return ecs.NewClient(openCfg)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 ECS Client 失败: %w", err)
@@ -174,8 +176,8 @@ func (p *AliECS) DeleteRules(rules []config.RuleInfo) error {
 	}
 
 	req := &ecs.RevokeSecurityGroupRequest{
-		SecurityGroupId:   tea.String(p.securityGroupID),
-		RegionId:          tea.String(p.regionID),
+		SecurityGroupId:     tea.String(p.securityGroupID),
+		RegionId:            tea.String(p.regionID),
 		SecurityGroupRuleId: ruleIDs,
 	}
 

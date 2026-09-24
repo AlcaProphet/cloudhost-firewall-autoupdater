@@ -5,11 +5,11 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/portconv"
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
 	swas "github.com/alibabacloud-go/swas-open-20200601/v3/client"
 	"github.com/alibabacloud-go/tea/tea"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/portconv"
 )
 
 func init() {
@@ -25,15 +25,17 @@ type AliSWAS struct {
 }
 
 func newAliSWAS(cfg config.TargetConfig, dbID int, pool *ClientPool) (Provider, error) {
-	key := string(config.CloudAliSWAS) + "|" + cfg.Region + "|" + getAliAccessID()
+	// 凭据只来自 pool 持有的不可变 Credentials，不再读取任何包级全局值
+	creds := pool.Credentials()
+	key := pool.CacheKey(config.CloudAliSWAS, cfg.Region)
 
 	client, err := pool.GetOrCreate(key, func() (any, error) {
-		config := &openapi.Config{
-			AccessKeyId:     tea.String(getAliAccessID()),
-			AccessKeySecret: tea.String(getAliAccessKey()),
+		openCfg := &openapi.Config{
+			AccessKeyId:     tea.String(creds.AliyunAccessKeyID),
+			AccessKeySecret: tea.String(creds.AliyunAccessKeySecret),
 			Endpoint:        tea.String(fmt.Sprintf("swas.%s.aliyuncs.com", cfg.Region)),
 		}
-		return swas.NewClient(config)
+		return swas.NewClient(openCfg)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 SWAS Client 失败: %w", err)

@@ -1,0 +1,266 @@
+package api
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"log/slog"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/app"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
+)
+
+// alertConfig 构造带启用告警的运行时配置（SMTP/Webhook 指向必然不可达的地址）。
+func alertConfig(emailEnabled, webhookEnabled bool) config.RuntimeConfig {
+	rc := config.RuntimeConfig{
+		Tag: "auto-dns", Interval: 5 * time.Minute, DNS: "223.5.5.5", DNSTimeout: 10 * time.Second,
+		DNSFailThreshold: 5, LogLevel: "info", SyncEnabled: true, Theme: "light",
+	}
+	if emailEnabled {
+		rc.Email = config.AlertEmailConfig{
+			Enabled: true, Host: "127.0.0.1", Port: "1", Username: "u", Password: "smtp-password-secret",
+			FromAddr: "f@example.com", ToAddr: "t@example.com",
+		}
+	}
+	if webhookEnabled {
+		rc.Webhook = config.AlertWebhookConfig{Enabled: true, URL: "http://127.0.0.1:1/hook-secret", Channel: "dingtalk"}
+	}
+	return rc
+}
+
+// buildStateFromConfig 由运行时配置构造候选完整状态
+func buildStateFromConfig(t *testing.T, rc config.RuntimeConfig) (*syncer.RuntimeState, error) {
+	t.Helper()
+	return syncer.BuildRuntimeState(nil, rc, syncer.BreakerReset)
+}
+
+// TestBuildAlertSetSendsNothing 候选告警集合的构造阶段必须零网络副作用：
+// 构造完成后事件总线上不得出现任何告警订阅者。
+func TestBuildAlertSetSendsNothing(t *testing.T) {
+	bus := notifier.NewEventBus()
+
+	set := BuildAlertSet(alertConfig(true, true))
+	if set.email == nil || set.webhook == nil {
+		t.Fatalf("启用的渠道必须构造出 subscriber: %+v", set)
+	}
+
+	// 构造阶段没有 Apply，因此发布事件不得触发任何发送
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		bus.Publish(notifier.Event{Type: notifier.EventSyncError, Timestamp: time.Now()})
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("构造阶段不应触发任何网络发送（Publish 阻塞）")
+	}
+
+	// 安全日志元数据只含收件人与渠道名，不含密码/URL
+	if set.emailToAddr != "t@example.com" || set.webhookChannel != "dingtalk" {
+		t.Errorf("安全日志元数据错误: %+v", set)
+	}
+}
+
+// TestBuildAlertSetRespectsDisabledFlags 禁用的渠道不得构造 subscriber。
+func TestBuildAlertSetRespectsDisabledFlags(t *testing.T) {
+	set := BuildAlertSet(alertConfig(false, false))
+	if set.email != nil || set.webhook != nil {
+		t.Errorf("禁用渠道不得构造 subscriber: %+v", set)
+	}
+}
+
+// TestApplyAlertSetSwapsSubscriptions Apply 必须取消旧订阅并安装新订阅。
+func TestApplyAlertSetSwapsSubscriptions(t *testing.T) {
+	bus := notifier.NewEventBus()
+	manager := NewAlertManager(bus)
+
+	manager.Apply(BuildAlertSet(alertConfig(true, false)))
+	first := manager.Current()
+	if first.email == nil || first.webhook != nil {
+		t.Fatalf("首次 Apply 订阅集合错误: %+v", first)
+	}
+
+	// 换成只启用 webhook：旧的邮件订阅必须被取消
+	manager.Apply(BuildAlertSet(alertConfig(false, true)))
+	second := manager.Current()
+	if second.email != nil || second.webhook == nil {
+		t.Fatalf("二次 Apply 订阅集合错误: %+v", second)
+	}
+}
+
+// TestAlertManagerApplyIsIdempotent 重复 Apply 同一集合不 panic 且集合保持一致。
+func TestAlertManagerApplyIsIdempotent(t *testing.T) {
+	bus := notifier.NewEventBus()
+	manager := NewAlertManager(bus)
+	set := BuildAlertSet(alertConfig(true, true))
+
+	for i := 0; i < 5; i++ {
+		manager.Apply(set)
+	}
+	current := manager.Current()
+	if current.email == nil || current.webhook == nil {
+		t.Errorf("重复 Apply 后集合错误: %+v", current)
+	}
+}
+
+// TestAlertManagerWithoutBusIsSafe bus 为 nil 时 Apply/LogStatus 均安全（最小接线场景）。
+func TestAlertManagerWithoutBusIsSafe(t *testing.T) {
+	manager := NewAlertManager(nil)
+	manager.Apply(BuildAlertSet(alertConfig(true, true)))
+	manager.LogStatus("已启用")
+}
+
+// TestApplyCandidateOrderAndEffects 发布副作用：日志级别与 RuntimeState 都在 apply 返回前生效。
+func TestApplyCandidateOrderAndEffects(t *testing.T) {
+	e := newTestEnv(t)
+	e.deps.LogBroadcaster = NewLogBroadcaster("info")
+
+	app.SetLogLevel("info")
+	before := app.LogLevelVar.Level()
+
+	rc := alertConfig(true, true)
+	rc.LogLevel = "error"
+	rc.Tag = "published-tag"
+	rc.Theme = "dark"
+	state, err := buildStateFromConfig(t, rc)
+	if err != nil {
+		t.Fatalf("构造候选失败: %v", err)
+	}
+	candidate := Candidate{State: state, Alerts: BuildAlertSet(rc)}
+
+	if err := e.deps.applyCandidate(candidate); err != nil {
+		t.Fatalf("applyCandidate 失败: %v", err)
+	}
+
+	if got := app.LogLevelVar.Level(); got != slog.LevelError {
+		t.Errorf("日志级别未应用: %v → %v", before, got)
+	}
+	if st := e.snapshot(); st == nil || st.Config.Tag != "published-tag" || st.Config.Theme != "dark" {
+		t.Errorf("RuntimeState 未发布: %+v", st)
+	}
+	if current := e.alerts.Current(); current.email == nil || current.webhook == nil {
+		t.Errorf("告警集合未应用: %+v", current)
+	}
+	// 收尾：恢复全局日志级别，避免影响同包其它用例
+	app.SetLogLevel("info")
+}
+
+// TestApplyCandidateWithoutRuntimeIsNoop 无 Syncer/Runtime 时 applyCandidate 不得 panic。
+func TestApplyCandidateWithoutRuntimeIsNoop(t *testing.T) {
+	d := &Deps{}
+	if err := d.applyCandidate(Candidate{}); err != nil {
+		t.Errorf("空候选不得报错: %v", err)
+	}
+}
+
+// TestCoordinatorBuildsCandidateBeforeCommit 候选必须在 commit 之前构造，
+// 且 builder 看到的是本事务已写入、尚未提交的数据。
+func TestCoordinatorBuildsCandidateBeforeCommit(t *testing.T) {
+	e := newTestEnv(t)
+
+	var observedTag string
+	commitFinished := false
+	var appliedCount atomic.Int32
+	coord := NewConfigCoordinator(e.store, func(snapshot *config.BusinessSnapshot) (Candidate, error) {
+		if commitFinished {
+			t.Errorf("候选构造不得发生在 commit 之后")
+		}
+		observedTag = snapshot.Settings["tag"]
+		state, err := buildStateFromConfig(t, snapshot.ToRuntimeConfig())
+		if err != nil {
+			return Candidate{}, err
+		}
+		return Candidate{State: state, Alerts: BuildAlertSet(snapshot.ToRuntimeConfig())}, nil
+	}, func(c Candidate) error {
+		if c.State == nil {
+			t.Errorf("apply 收到空候选")
+		}
+		appliedCount.Add(1)
+		commitFinished = true
+		return nil
+	})
+
+	err := coord.Mutate(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
+		return e.store.SetSettingTx(ctx, tx, "tag", "in-transaction")
+	})
+	if err != nil {
+		t.Fatalf("Mutate 失败: %v", err)
+	}
+	if observedTag != "in-transaction" {
+		t.Errorf("候选构造必须看到事务内已写入的数据: %q", observedTag)
+	}
+	if appliedCount.Load() != 1 || !commitFinished {
+		t.Errorf("commit 后必须恰好 apply 一次: %d", appliedCount.Load())
+	}
+
+	settings, _ := e.store.GetSettings()
+	if settings["tag"] != "in-transaction" {
+		t.Errorf("设置未提交: %+v", settings)
+	}
+}
+
+// TestCoordinatorNoApplyOnCandidateError 候选构造失败：不提交、不 apply、数据库回滚。
+func TestCoordinatorNoApplyOnCandidateError(t *testing.T) {
+	e := newTestEnv(t)
+
+	applied := 0
+	coord := NewConfigCoordinator(e.store, func(*config.BusinessSnapshot) (Candidate, error) {
+		return Candidate{}, errors.New("candidate failed")
+	}, func(Candidate) error {
+		applied++
+		return nil
+	})
+
+	err := coord.Mutate(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
+		return e.store.SetSettingTx(ctx, tx, "tag", "should-rollback")
+	})
+	if err == nil {
+		t.Fatal("候选构造失败必须返回错误")
+	}
+	if applied != 0 {
+		t.Errorf("候选构造失败不得 apply，实际 %d", applied)
+	}
+	settings, _ := e.store.GetSettings()
+	if len(settings) != 0 {
+		t.Errorf("候选构造失败必须回滚: %+v", settings)
+	}
+}
+
+// TestCoordinatorWithoutRuntimeIsPureWrite 未注入运行时接线的协调器只提交事务、不做发布。
+func TestCoordinatorWithoutRuntimeIsPureWrite(t *testing.T) {
+	e := newTestEnv(t)
+	coord := NewConfigCoordinator(e.store, nil, nil)
+
+	if err := coord.Mutate(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
+		return e.store.SetSettingTx(ctx, tx, "tag", "pure-write")
+	}); err != nil {
+		t.Fatalf("纯写入 Mutate 失败: %v", err)
+	}
+	settings, _ := e.store.GetSettings()
+	if settings["tag"] != "pure-write" {
+		t.Errorf("纯写入未生效: %+v", settings)
+	}
+}
+
+// TestAlertManagerEnabledChannelsMetadata 安全日志元数据来自运行时配置，不含密钥本身。
+func TestAlertManagerEnabledChannelsMetadata(t *testing.T) {
+	manager := NewAlertManager(nil)
+	manager.Apply(BuildAlertSet(alertConfig(true, true)))
+
+	emailOn, webhookOn, toAddr, channel := manager.enabledChannels()
+	if !emailOn || !webhookOn {
+		t.Fatalf("渠道启用状态错误: %v %v", emailOn, webhookOn)
+	}
+	if toAddr != "t@example.com" || channel != "dingtalk" {
+		t.Errorf("安全日志元数据错误: to=%q channel=%q", toAddr, channel)
+	}
+	if toAddr == "smtp-password-secret" || channel == "http://127.0.0.1:1/hook-secret" {
+		t.Errorf("安全日志元数据不得包含密钥或 URL")
+	}
+}

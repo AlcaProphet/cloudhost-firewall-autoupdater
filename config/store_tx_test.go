@@ -353,8 +353,8 @@ func TestLoadConfigSettingValidation(t *testing.T) {
 		if cfg.SyncEnabled {
 			t.Error("sync_enabled=false 应生效")
 		}
-		if cfg.TCAccessID != "AKIDx" {
-			t.Errorf("凭据应按原值加载: %q", cfg.TCAccessID)
+		if cfg.Credentials.TencentSecretID != "AKIDx" {
+			t.Errorf("凭据应按原值加载: %q", cfg.Credentials.TencentSecretID)
 		}
 	})
 

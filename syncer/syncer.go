@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
@@ -15,48 +14,65 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
 
-// Syncer 同步引擎
+// Syncer 同步引擎。
+//
+// 运行时配置（Config + Providers + Resolver + Breaker）全部来自 RuntimeManager
+// 的一份不可变快照：每轮同步、每次 Dry Run 只在开始时取一次快照，全程不再
+// 读取其他来源，因此不会出现「同一轮混用新 TAG、新 Provider、旧 Resolver」。
+//
+// 状态替换与调度控制是两个不同问题：
+//   - ApplyState 原子替换状态并投递一条可合并的控制通知；
+//   - Run goroutine 消费通知时重新读取最新状态，据此决定是否启动新一轮、
+//     是否重置 ticker，因此最终状态不会因为 channel 满而永久丢失。
 type Syncer struct {
-	cfg       *config.Config
-	providers []provider.Provider
-	resolver  *dns.Resolver
-	cb        *dns.CircuitBreaker
-	bus       *notifier.EventBus
-	configCh  chan *config.Config
-	triggerCh chan struct{} // 手动触发同步
+	runtime *RuntimeManager
+	bus     *notifier.EventBus
+
+	triggerCh chan struct{} // 手动触发同步（容量 1，可合并）
+	controlCh chan struct{} // 状态变化通知（容量 1，可合并；只表示「请重新读取状态」）
 	stopCh    chan struct{}
-	doneCh    chan struct{} // Run 退出时关闭，用于等待当前轮次完成
+	stopOnce  sync.Once
+	doneCh    chan struct{}
 
 	// 状态追踪（保护以下字段）
 	mu       sync.RWMutex
 	running  bool
 	lastSync time.Time
+	// enabled 是「已提交开关」的调度镜像：唯一真值在 SQLite 与已发布的运行时状态。
+	//
+	// 由 ApplyState 在发布新状态时同步推进，用于两处判定：
+	//   - trigger 门控：暂停期间排队的陈旧 trigger 在恢复后不会额外多跑一轮
+	//     （Build6 §12.5「排队中的 trigger 在消费前重新检查 enabled」）；
+	//   - Run 的过渡判定：以「进入 select 阻塞之前记录的镜像」与「已发布真值」
+	//     比较，因此 false→true 的立即轮次只由 Run 执行一次，不会与调用方重复。
+	//
+	// 对外的 IsEnabled/Status 读的是已发布状态本身，保证 pause/resume 之后
+	// TriggerSync 的 409 判定立即正确。
+	enabled bool
 
 	dryRunMu sync.Mutex // Dry Run 防重入
 
-	// 同步开关（暂停门控）：运行时镜像，启动时从 cfg.SyncEnabled 初始化
-	// 使用 atomic.Bool 避免 Pause()/Resume()（API goroutine）与 Run() 主循环并发写竞态
-	syncEnabled atomic.Bool
-	pauseCh     chan struct{} // 接收暂停信号，容量 1
-	resumeCh    chan struct{} // 接收恢复信号，容量 1
+	// onStateApplied 在状态发布完成后调用（run.go 注入告警订阅的无失败替换与安全日志）。
+	// 必须是零 error、不访问网络的内存操作。
+	onStateApplied func(*RuntimeState)
 }
 
-// New 创建同步引擎
-func New(cfg *config.Config, providers []provider.Provider, resolver *dns.Resolver) *Syncer {
+// New 创建同步引擎。
+//
+// 初始运行时状态必须已经通过 RuntimeManager 发布（启动路径由 run.go 构造），
+// 因此 New 不再接收分散的 cfg/providers/resolver 参数。
+func New(runtime *RuntimeManager) *Syncer {
 	s := &Syncer{
-		cfg:       cfg,
-		providers: providers,
-		resolver:  resolver,
-		cb:        dns.NewCircuitBreaker(cfg.DNSFailThreshold),
+		runtime:   runtime,
 		bus:       notifier.NewEventBus(),
-		configCh:  make(chan *config.Config, 1),
 		triggerCh: make(chan struct{}, 1),
+		controlCh: make(chan struct{}, 1),
 		stopCh:    make(chan struct{}),
 		doneCh:    make(chan struct{}),
-		pauseCh:   make(chan struct{}, 1),
-		resumeCh:  make(chan struct{}, 1),
 	}
-	s.syncEnabled.Store(cfg.SyncEnabled) // 运行时镜像从配置初始化
+	if st := runtime.Snapshot(); st != nil {
+		s.enabled = st.Config.SyncEnabled
+	}
 	return s
 }
 
@@ -65,149 +81,232 @@ func (s *Syncer) EventBus() *notifier.EventBus {
 	return s.bus
 }
 
+// Runtime 返回运行时状态管理器（协调器与只读操作据此取得完整快照）
+func (s *Syncer) Runtime() *RuntimeManager {
+	return s.runtime
+}
+
+// ApplyState 原子替换完整运行时状态，并通知 Run goroutine 重新读取最新状态。
+//
+// 这是无失败操作：调用前候选状态必须已构造成功（Build6 §12.4）。通知可合并，
+// 但不会丢失最终状态——Run 消费时总是重新读取 RuntimeManager 的快照。
+func (s *Syncer) ApplyState(next *RuntimeState) {
+	s.runtime.Apply(next)
+
+	// 调度镜像在此同步推进，使 pause/resume 之后 trigger 门控立即反映已提交状态；
+	// Run 的过渡判定使用「进入 select 前记录的镜像」与「已发布真值」，因此
+	// false→true 的立即轮次只由 Run 执行一次，不会与调用方重复。
+	s.setEnabledMirror(next.Config.SyncEnabled)
+
+	select {
+	case s.controlCh <- struct{}{}:
+	default: // 已有待处理通知，最终状态在快照里，合并即可
+	}
+}
+
+// SetStateAppliedHook 注入「新状态已被 Run 消费」后的回调，用于重新读取生效中的
+// 告警集合并输出安全日志。回调必须是无失败的内存操作，且不得访问网络。
+//
+// 注意：回调由 Run 在消费控制消息并完成调度决策后触发，因此它同时可作为
+// 「状态已真正生效」的同步屏障（而不仅是「已被发布」）。
+func (s *Syncer) SetStateAppliedHook(fn func(*RuntimeState)) {
+	s.mu.Lock()
+	s.onStateApplied = fn
+	s.mu.Unlock()
+}
+
 // Run 启动同步主循环（阻塞，直到收到停止信号）
 func (s *Syncer) Run() {
 	defer close(s.doneCh)
 	s.setRunning(true)
 	defer s.setRunning(false)
 
-	ticker := time.NewTicker(s.cfg.Interval)
-	defer ticker.Stop()
-
-	// 启动门控：开关关闭时跳过首次 syncAll，进入暂停等待（Design2 §7.1）
-	// 注意：waitForResume 返回后必须继续进入主循环，不可 return（否则恢复后定时同步失效）
-	if !s.syncEnabled.Load() {
-		slog.Info("同步已暂停（SyncEnabled=false），等待开启")
-		s.waitForResume(ticker)
-	} else {
-		s.syncAll()
-	}
-
-	for {
+	initial := s.runtime.Snapshot()
+	if initial == nil {
+		// 尚无状态：等待第一条控制通知，避免 nil 解引用
 		select {
-		case <-ticker.C:
-			s.syncAll()
-		case <-s.triggerCh:
-			slog.Info("手动触发同步")
-			s.syncAll()
-		case newCfg := <-s.configCh:
-			slog.Info("配置热重载")
-			s.mu.Lock()
-			s.cfg = newCfg // 保持 Step 2 引入的锁结构
-			s.mu.Unlock()
-			ticker.Reset(newCfg.Interval)
-			// 5.6 开关同步：热重载变更 sync_enabled 时同步门控（DB 状态与运行时镜像一致）
-			if newCfg.SyncEnabled != s.syncEnabled.Load() {
-				if newCfg.SyncEnabled {
-					slog.Info("热重载开启同步")
-					s.syncEnabled.Store(true)
-					s.syncAll() // 立即执行首次
-				} else {
-					slog.Info("热重载暂停同步")
-					s.syncEnabled.Store(false)
-					s.pauseGate(ticker)
-				}
-			}
-		case <-s.pauseCh:
-			s.pauseGate(ticker)
+		case <-s.controlCh:
 		case <-s.stopCh:
 			slog.Info("同步引擎停止")
 			return
 		}
 	}
-}
 
-// pauseGate 暂停门控：停止 ticker，进入等待子循环（resume/热重载开启/stop 均返回后回到主循环）
-func (s *Syncer) pauseGate(ticker *time.Ticker) {
-	ticker.Stop()
-	s.waitForResume(ticker)
-}
+	state := s.runtime.Snapshot()
+	ticker := time.NewTicker(state.Config.Interval)
+	defer ticker.Stop()
 
-// waitForResume 暂停等待子循环（Run 启动时暂停与运行中暂停共用）
-// 返回条件：收到 resumeCh / 热重载开启（configCh 携带 SyncEnabled=true）→ 已恢复 ticker 并执行首次 syncAll；
-// 收到 stopCh → 直接返回（外层 Run 退出）
-func (s *Syncer) waitForResume(ticker *time.Ticker) {
+	s.setEnabledMirror(state.Config.SyncEnabled)
+	enabled := state.Config.SyncEnabled
+	if enabled {
+		s.syncAll()
+	} else {
+		slog.Info("同步已暂停（SyncEnabled=false），等待开启")
+	}
+
 	for {
-		select {
-		case <-s.resumeCh:
-			slog.Info("同步恢复")
-			s.syncEnabled.Store(true)
-			ticker.Reset(s.cfg.Interval)
-			s.syncAll() // 恢复后立即执行首次
-			return
-		case newCfg := <-s.configCh:
-			s.mu.Lock()
-			s.cfg = newCfg
-			s.mu.Unlock()
-			if newCfg.SyncEnabled {
-				s.syncEnabled.Store(true)
-				ticker.Reset(newCfg.Interval)
-				s.syncAll()
+		// 进入阻塞等待之前先记录「本次等待开始前已生效的开关」：
+		// 唤醒后据此判定 false→true / true→false 过渡（Build6 §12.5）。
+		wasEnabled := s.isEnabledMirror()
+
+		if !enabled {
+			// 暂停子循环：不接收 ticker/trigger，只在状态通知或停止时退出。
+			// 暂停期间排队的 trigger 不会在这里被消费，由恢复时的清空统一处理。
+			select {
+			case <-s.controlCh:
+			case <-s.stopCh:
+				slog.Info("同步引擎停止")
 				return
 			}
-			// SyncEnabled 仍为 false：继续等待（ticker 已停止，不触发同步）
-		case <-s.stopCh:
+		} else {
+			select {
+			case <-ticker.C:
+				s.syncAll()
+			case <-s.triggerCh:
+				// 排队中的 trigger 在消费前重新检查开关（Build6 §12.5）：
+				// 该分支只可能在本轮 select 阻塞期间处于启用相位时执行；若期间已暂停
+				// （enabled=false，例如本次循环刚处理完暂停通知），触发立即丢弃，
+				// 不得让它以同步进行中/已暂停的相位启动新的一轮。
+				if !enabled {
+					slog.Debug("丢弃暂停相位下的同步触发")
+					continue
+				}
+				slog.Info("手动触发同步")
+				s.syncAll()
+			case <-s.controlCh:
+			case <-s.stopCh:
+				slog.Info("同步引擎停止")
+				return
+			}
+		}
+
+		// 每轮循环结束都重新读取最新状态（控制通知消费后必须重新读取）
+		latest := s.runtime.Snapshot()
+		if latest == nil {
+			continue
+		}
+		// 控制消息消费之后，循环标志推进到已发布真值
+		// （调度镜像已由 ApplyState 在发布时同步推进，此处不重复写）
+		enabled = latest.Config.SyncEnabled
+
+		switch {
+		case !wasEnabled && enabled:
+			// false → true：更新 interval 并立即触发一轮（与 Resume 一致），
+			// 且先清空暂停期间排队的过期 trigger —— 本轮的立即同步已代表最新配置，
+			// 陈旧 trigger 再补一轮会造成「恢复多跑一轮」（Build6 §12.5）。
+			slog.Info("同步已开启")
+			ticker.Reset(latest.Config.Interval)
+			s.drainTrigger()
+			s.syncAll()
+		case wasEnabled && enabled:
+			// true → true：只按新 interval 重置 ticker，不额外立即同步
+			ticker.Reset(latest.Config.Interval)
+		case wasEnabled && !enabled:
+			// true → false：当前轮已完成，停止 ticker 并进入暂停等待
+			slog.Info("同步已暂停")
+			ticker.Stop()
+		default:
+			// false → false：暂停期间仍按最新 interval 准备，恢复后立即生效
+			ticker.Reset(latest.Config.Interval)
+		}
+
+		// 调度决策完成后通知观察者：此时新状态的开关/interval 已真正生效
+		s.logAppliedState(latest)
+	}
+}
+
+// Pause 暂停同步（非阻塞，幂等）。
+//
+// sync_enabled 的持久化真值在 SQLite，由协调器写入并发布新状态；本方法只把
+// 运行时状态里的同步开关置为 false，使 dispatch 立即停止启动新一轮。
+func (s *Syncer) Pause() {
+	s.setSyncEnabled(false)
+}
+
+// Resume 恢复同步（非阻塞，幂等）：与 Resume 语义一致，false → true 立即触发一轮。
+func (s *Syncer) Resume() {
+	s.setSyncEnabled(true)
+}
+
+// setSyncEnabled 在运行时状态的一次指针替换内翻转同步开关。
+//
+// 运行时快照始终是调度与业务逻辑的唯一真相来源，因此控制通知消费后读到的是
+// 最新状态；通知可合并，但最终状态不会因 channel 满而丢失。
+func (s *Syncer) setSyncEnabled(enabled bool) {
+	current := s.runtime.Snapshot()
+	if current == nil {
+		return
+	}
+	if current.Config.SyncEnabled == enabled {
+		return
+	}
+	next := *current
+	next.Config = current.Config.DeepCopy()
+	next.Config.SyncEnabled = enabled
+	s.ApplyState(&next)
+}
+
+// logAppliedState 在状态发布后触发回调（无回调时静默）。
+func (s *Syncer) logAppliedState(state *RuntimeState) {
+	s.mu.RLock()
+	fn := s.onStateApplied
+	s.mu.RUnlock()
+	if fn != nil {
+		fn(state)
+	}
+}
+
+// IsEnabled 返回当前开关状态。
+//
+// 真值取自已发布的运行时状态（SQLite 提交后即生效），因此 pause/resume 之后
+// 的 409 判定不会因为 Run goroutine 尚未消费控制消息而短暂出错。
+func (s *Syncer) IsEnabled() bool {
+	if state := s.runtime.Snapshot(); state != nil {
+		return state.Config.SyncEnabled
+	}
+	return s.isEnabledMirror()
+}
+
+// isEnabledMirror 读取**调度已生效**的开关镜像（供 Run 的过渡判定与 trigger 门控使用）。
+//
+// 该镜像只在控制消息被 Run 消费后推进，因此暂停期间排队的陈旧 trigger 不会
+// 在恢复通知消费前通过门控（Build6 §12.5）。
+func (s *Syncer) isEnabledMirror() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.enabled
+}
+
+// drainTrigger 清空暂停期间排队的过期同步触发（非阻塞）。
+//
+// 唯一调用点是 false → true 过渡：此时本轮立即同步已代表最新配置，陈旧
+// trigger 必须丢弃，否则恢复会额外多跑一轮（Build6 §12.5）。
+func (s *Syncer) drainTrigger() {
+	for {
+		select {
+		case <-s.triggerCh:
+		default:
 			return
 		}
 	}
 }
 
-// Pause 暂停同步（非阻塞）
-func (s *Syncer) Pause() {
-	s.syncEnabled.Store(false)
-	select {
-	case s.pauseCh <- struct{}{}:
-	default: // 已在暂停中
-	}
+// setEnabledMirror 推进已生效的开关镜像。
+func (s *Syncer) setEnabledMirror(enabled bool) {
+	s.mu.Lock()
+	s.enabled = enabled
+	s.mu.Unlock()
 }
 
-// Resume 恢复同步（非阻塞）
-func (s *Syncer) Resume() {
-	s.syncEnabled.Store(true)
-	select {
-	case s.resumeCh <- struct{}{}:
-	default: // 已在运行中
-	}
-}
-
-// IsEnabled 返回当前开关状态
-func (s *Syncer) IsEnabled() bool { return s.syncEnabled.Load() }
-
-// Stop 优雅停止
+// Stop 优雅停止（幂等：重复调用安全，不 panic）。
 func (s *Syncer) Stop() {
-	close(s.stopCh)
+	s.stopOnce.Do(func() { close(s.stopCh) })
 }
 
-// Wait 等待 Syncer 完全退出（Stop 后调用）
+// Wait 等待 Syncer 完全退出（Stop 后调用；可多次安全等待）
 func (s *Syncer) Wait() { <-s.doneCh }
 
-// Reload 热重载配置
-func (s *Syncer) Reload(cfg *config.Config) {
-	s.configCh <- cfg
-}
-
-// ReloadProviders 热重载 Provider 列表
-func (s *Syncer) ReloadProviders(providers []provider.Provider) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.providers = providers
-}
-
-// ReloadResolver 热重载 DNS 解析器（DNS 地址或超时变更时调用）
-func (s *Syncer) ReloadResolver(resolver *dns.Resolver) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.resolver = resolver
-}
-
-// SetDNSFailThreshold 线程安全地更新 DNS 熔断阈值，保留既有失败计数（Build6 Step 4）。
-//
-// 阈值变更不是完整运行时状态替换：Step 5 会把它并入 RuntimeState 的原子发布。
-func (s *Syncer) SetDNSFailThreshold(threshold int) {
-	s.cb.SetThreshold(threshold)
-}
-
-// TriggerSync 手动触发一次同步（非阻塞）
+// TriggerSync 手动触发一次同步（非阻塞；暂停期间的排队触发在消费前会被丢弃）
 func (s *Syncer) TriggerSync() {
 	select {
 	case s.triggerCh <- struct{}{}:
@@ -226,9 +325,10 @@ type SyncStatus struct {
 
 // Status 返回当前同步状态
 func (s *Syncer) Status() SyncStatus {
+	enabled := s.IsEnabled()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	status := SyncStatus{Running: s.running, Enabled: s.syncEnabled.Load()}
+	status := SyncStatus{Running: s.running, Enabled: enabled}
 	if !s.lastSync.IsZero() {
 		t := s.lastSync
 		status.LastSync = &t
@@ -260,35 +360,34 @@ type DryRunResult struct {
 	Error    string                `json:"error,omitempty"`
 }
 
-// DryRun 试运行：DNS 解析 + Diff，不写入不触发事件
-// 快照锁：RLock 保护 providers/cfg/resolver（与 Step 2 的 cfg 写锁配对，消除热重载并发竞态）
-// 防重入：dryRunMu.TryLock，冲突返回 ErrDryRunInProgress（handler 转 409）
-// 限速：与 syncAll 一致，同云厂商请求间加入间隔
+// DryRun 试运行：DNS 解析 + Diff，不写入不触发事件。
+//
+// 与同步一样只在开始时取**一次**完整运行时快照，全程使用该快照（不受并发状态替换影响）；
+// 不受同步暂停开关限制。
 func (s *Syncer) DryRun() (DryRunResponse, error) {
 	if !s.dryRunMu.TryLock() {
 		return DryRunResponse{}, ErrDryRunInProgress
 	}
 	defer s.dryRunMu.Unlock()
 
-	// 快照：RLock 保护 providers/cfg/resolver（整个遍历使用快照，期间热重载不影响本次结果）
-	s.mu.RLock()
-	providers := s.providers
-	cfg := s.cfg
-	resolver := s.resolver
-	s.mu.RUnlock()
-
+	state := s.runtime.Snapshot()
 	resp := DryRunResponse{Results: []DryRunResult{}}
-	if len(providers) == 0 {
+	if state == nil {
+		resp.Warnings = append(resp.Warnings, "运行时状态尚未就绪")
+		return resp, nil
+	}
+
+	if len(state.Providers) == 0 {
 		resp.Warnings = append(resp.Warnings, "暂无云资源目标，请先在云资源管理页配置")
 	}
-	if len(cfg.DomainRules) == 0 {
+	if len(state.Config.DomainRules) == 0 {
 		resp.Warnings = append(resp.Warnings, "暂无域名规则，请先在域名规则页配置")
 	}
-	for _, p := range providers {
-		rules := filterRulesForTarget(cfg.DomainRules, p.TargetIndex())
+	for _, p := range state.Providers {
+		rules := filterRulesForTarget(state.Config.DomainRules, p.TargetIndex())
 		for _, rule := range rules {
 			result := DryRunResult{Provider: p.Name(), Domain: rule.Host}
-			resolved, err := resolver.Resolve(context.Background(), rule.Host)
+			resolved, err := state.Resolver.Resolve(context.Background(), rule.Host)
 			if err != nil {
 				result.Error = err.Error()
 				resp.Results = append(resp.Results, result)
@@ -303,8 +402,8 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 				resp.Results = append(resp.Results, result)
 				continue
 			}
-			owned := provider.OwnedRules(allRules, cfg.Tag)
-			desc := truncateDesc(tag.Format(cfg.Tag, rule.Comment), p.CloudType())
+			owned := provider.OwnedRules(allRules, state.Config.Tag)
+			desc := truncateDesc(tag.Format(state.Config.Tag, rule.Comment), p.CloudType())
 			diff := provider.Diff(resolved, rule, desc, owned, p)
 			for _, a := range diff.ToAdd {
 				result.ToAdd = append(result.ToAdd, provider.RuleChangeFromAction(a))
@@ -319,40 +418,37 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 	return resp, nil
 }
 
-// syncAll 执行一轮完整同步
+// syncAll 执行一轮完整同步。
+//
+// 本轮开始时只取一次运行时快照：TAG、规则、Provider、Resolver 与熔断器全部
+// 来自该快照，下游函数一律显式接收参数，不再回读运行时状态。
 func (s *Syncer) syncAll() {
-	// 快照：RLock 保护 providers/cfg/resolver（与 DryRun 一致，消除热重载并发竞态）。
-	// 热重载（ReloadProviders/ReloadResolver/Reload）持写锁替换这些字段，本轮同步使用快照不受影响
-	s.mu.RLock()
-	providers := s.providers
-	cfg := s.cfg
-	resolver := s.resolver
-	s.mu.RUnlock()
+	state := s.runtime.Snapshot()
+	if state == nil {
+		return
+	}
 
-	// 本轮 TAG 快照：筛选、描述生成和全部重试只使用该值，热重载的新 TAG 从下一轮同步开始生效
-	roundTag := cfg.Tag
-
-	slog.Info("开始同步", "targets", len(providers), "rules", len(cfg.DomainRules))
+	slog.Info("开始同步", "targets", len(state.Providers), "rules", len(state.Config.DomainRules))
 	start := time.Now()
 
 	// 发布 sync:start 事件
 	s.bus.Publish(notifier.Event{
 		Type:      notifier.EventSyncStart,
 		Timestamp: time.Now(),
-		Data:      map[string]any{"targets": len(providers), "rules": len(cfg.DomainRules)},
+		Data:      map[string]any{"targets": len(state.Providers), "rules": len(state.Config.DomainRules)},
 	})
 
 	// 按云厂商分组，跨云并行
-	groups := s.groupByCloud(providers)
+	groups := s.groupByCloud(state.Providers)
 	var wg sync.WaitGroup
 	for ct, ps := range groups {
 		wg.Add(1)
 		go func(ct config.CloudType, ps []provider.Provider) {
 			defer wg.Done()
 			for _, p := range ps {
-				rules := filterRulesForTarget(cfg.DomainRules, p.TargetIndex())
+				rules := filterRulesForTarget(state.Config.DomainRules, p.TargetIndex())
 				for _, rule := range rules {
-					s.syncDomain(p, rule, resolver, roundTag)
+					s.syncDomain(state, p, rule)
 					time.Sleep(rateLimitInterval(ct))
 				}
 			}
@@ -374,17 +470,19 @@ func (s *Syncer) syncAll() {
 	slog.Info("同步完成", "耗时", time.Since(start).Round(time.Millisecond))
 }
 
-// syncDomain 同步单个域名到单个 Provider
-// tagStr 为本轮快照 TAG，由 syncAll 捕获后显式传递，避免下游越过快照读取可被替换的 s.cfg
-func (s *Syncer) syncDomain(p provider.Provider, rule config.DomainRule, resolver *dns.Resolver, tagStr string) {
+// syncDomain 同步单个域名到单个 Provider。
+//
+// state 是本轮开始的完整快照：TAG、Resolver 与熔断器都只从它读取，
+// 因此热重载产生的下一份状态不会影响正在执行的本轮。
+func (s *Syncer) syncDomain(state *RuntimeState, p provider.Provider, rule config.DomainRule) {
 	// 0. DNS 解析（无论是否熔断都执行，熔断时作为半开探测）
-	resolved, err := resolver.Resolve(context.Background(), rule.Host)
+	resolved, err := state.Resolver.Resolve(context.Background(), rule.Host)
 	if err != nil {
-		if s.cb.IsOpen(rule.Host) {
+		if state.Breaker.IsOpen(rule.Host) {
 			// 半开探测失败：维持熔断（不调用 RecordFailure，熔断中已停止计数）
 			slog.Debug("域名半开探测失败，维持熔断", "domain", rule.Host, "error", err)
 		} else {
-			s.cb.RecordFailure(rule.Host)
+			state.Breaker.RecordFailure(rule.Host)
 			slog.Warn("DNS 解析失败，保留现有规则", "domain", rule.Host, "error", err)
 		}
 		s.bus.Publish(notifier.Event{
@@ -396,7 +494,7 @@ func (s *Syncer) syncDomain(p provider.Provider, rule config.DomainRule, resolve
 	}
 
 	// 解析成功：解除熔断（RecordSuccess 内部处理计数并输出解除日志）
-	s.cb.RecordSuccess(rule.Host)
+	state.Breaker.RecordSuccess(rule.Host)
 
 	// 1. 按规则配置过滤 IPv6 地址
 	if !rule.EnableIPv6 {
@@ -404,7 +502,7 @@ func (s *Syncer) syncDomain(p provider.Provider, rule config.DomainRule, resolve
 	}
 
 	// 2. 委托给内部方法执行同步
-	s.syncDomainInternal(p, rule, resolved, tagStr)
+	s.syncDomainInternal(p, rule, resolved, state.Config.Tag)
 }
 
 // syncDomainInternal 执行 DNS 已解析后的同步流程（Describe → Diff → Create/Delete）

@@ -48,7 +48,7 @@ func localResolver(t *testing.T) *dns.Resolver {
 // TestDryRun_EmptyConfig 无 providers 无规则 → Warnings 两条、Results 为空数组
 func TestDryRun_EmptyConfig(t *testing.T) {
 	cfg := &config.Config{Tag: "auto-dns"}
-	s := New(cfg, nil, localResolver(t))
+	s := newSyncer(t, cfg, nil)
 
 	resp, err := s.DryRun()
 	if err != nil {
@@ -72,7 +72,7 @@ func TestDryRun_Detail(t *testing.T) {
 			{Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Comment: "测试", Targets: []int{0}},
 		},
 	}
-	s := New(cfg, []provider.Provider{p}, localResolver(t))
+	s := newSyncer(t, cfg, []provider.Provider{p})
 
 	resp, err := s.DryRun()
 	if err != nil {
@@ -117,7 +117,7 @@ func TestDryRun_Concurrent(t *testing.T) {
 			{Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Targets: []int{0}},
 		},
 	}
-	s := New(cfg, []provider.Provider{p}, localResolver(t))
+	s := newSyncer(t, cfg, []provider.Provider{p})
 
 	done := make(chan struct{})
 	go func() {
@@ -148,7 +148,7 @@ func newGateSyncer(t *testing.T, syncEnabled bool) (*Syncer, *stubProvider) {
 			{Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Targets: []int{0}},
 		},
 	}
-	return New(cfg, []provider.Provider{p}, localResolver(t)), p
+	return newSyncer(t, cfg, []provider.Provider{p}), p
 }
 
 // TestRun_DisabledStartup SyncEnabled=false 启动：不执行同步 → Resume 后执行一次
@@ -188,16 +188,24 @@ func TestPauseResume_Flow(t *testing.T) {
 		t.Fatalf("启动后应已同步, GetRules 调用次数 = %d, want >= 1", n0)
 	}
 
-	s.Pause()
+	pausedCfg := &config.Config{
+		Tag:         "auto-dns",
+		Interval:    time.Hour,
+		SyncEnabled: false,
+		DomainRules: []config.DomainRule{
+			{Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Targets: []int{0}},
+		},
+	}
+	s.ApplyState(newRoundState(t, s, pausedCfg))
 	time.Sleep(200 * time.Millisecond)
-	s.TriggerSync() // 暂停期间 trigger 信号不触发同步（等待主循环处理 pause 后进入 waitForResume）
+	s.TriggerSync() // 暂停期间的排队 trigger 在消费前复查开关，不得启动新一轮
 	time.Sleep(300 * time.Millisecond)
 	n1 := p.getRulesNum.Load()
 	if n1 != n0 {
 		t.Errorf("暂停后不应再同步, GetRules = %d → %d", n0, n1)
 	}
 	if s.IsEnabled() {
-		t.Error("Pause 后 IsEnabled 应为 false")
+		t.Error("暂停后 IsEnabled 应为 false")
 	}
 
 	s.Resume()
@@ -211,8 +219,8 @@ func TestPauseResume_Flow(t *testing.T) {
 	s.Wait()
 }
 
-// TestReload_SyncEnabledSync 热重载开关同步：Reload(false) 门控生效 → Reload(true) 恢复
-func TestReload_SyncEnabledSync(t *testing.T) {
+// TestApplyState_SyncEnabledSync 状态替换开关同步：ApplyState(false) 门控生效 → ApplyState(true) 恢复
+func TestApplyState_SyncEnabledSync(t *testing.T) {
 	s, p := newGateSyncer(t, true)
 
 	go s.Run()
@@ -222,7 +230,7 @@ func TestReload_SyncEnabledSync(t *testing.T) {
 		t.Fatalf("启动后应已同步, GetRules = %d", n0)
 	}
 
-	// 热重载关闭同步（携带 DomainRules，保证恢复后可计数）
+	// 状态替换关闭同步（携带 DomainRules，保证恢复后可计数）
 	pausedCfg := &config.Config{
 		Tag:         "auto-dns",
 		Interval:    time.Hour,
@@ -231,10 +239,10 @@ func TestReload_SyncEnabledSync(t *testing.T) {
 			{Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Targets: []int{0}},
 		},
 	}
-	s.Reload(pausedCfg)
+	s.ApplyState(newRoundState(t, s, pausedCfg))
 	time.Sleep(300 * time.Millisecond)
 	if s.IsEnabled() {
-		t.Error("Reload(false) 后 IsEnabled 应为 false")
+		t.Error("ApplyState(false) 后 IsEnabled 应为 false")
 	}
 	s.TriggerSync()
 	time.Sleep(300 * time.Millisecond)
@@ -242,15 +250,15 @@ func TestReload_SyncEnabledSync(t *testing.T) {
 		t.Errorf("暂停后 trigger 不应触发同步, GetRules = %d → %d", n0, n)
 	}
 
-	// 热重载开启同步（携带 DomainRules）
+	// 状态替换开启同步（携带 DomainRules）
 	pausedCfg.SyncEnabled = true
-	s.Reload(pausedCfg)
+	s.ApplyState(newRoundState(t, s, pausedCfg))
 	time.Sleep(600 * time.Millisecond)
 	if !s.IsEnabled() {
-		t.Error("Reload(true) 后 IsEnabled 应为 true")
+		t.Error("ApplyState(true) 后 IsEnabled 应为 true")
 	}
 	if n := p.getRulesNum.Load(); n <= n0 {
-		t.Errorf("Reload(true) 后应立即执行一次同步, GetRules = %d → %d", n0, n)
+		t.Errorf("ApplyState(true) 后应立即执行一次同步, GetRules = %d → %d", n0, n)
 	}
 
 	s.Stop()
@@ -259,7 +267,7 @@ func TestReload_SyncEnabledSync(t *testing.T) {
 
 // TestIsEnabled 状态镜像正确性
 func TestIsEnabled(t *testing.T) {
-	s1 := New(&config.Config{SyncEnabled: false}, nil, localResolver(t))
+	s1 := newSyncer(t, &config.Config{SyncEnabled: false}, nil)
 	if s1.IsEnabled() {
 		t.Error("SyncEnabled=false 初始化应 IsEnabled()==false")
 	}
@@ -272,7 +280,7 @@ func TestIsEnabled(t *testing.T) {
 		t.Error("Pause 后应 IsEnabled()==false")
 	}
 
-	s2 := New(&config.Config{SyncEnabled: true}, nil, localResolver(t))
+	s2 := newSyncer(t, &config.Config{SyncEnabled: true}, nil)
 	if !s2.IsEnabled() {
 		t.Error("SyncEnabled=true 初始化应 IsEnabled()==true")
 	}
@@ -302,9 +310,9 @@ func (m *countingProvider) DeleteRules(rules []config.RuleInfo) error {
 func TestRetrySync_Counts(t *testing.T) {
 	p := &countingProvider{stubProvider: &stubProvider{cloudType: config.CloudTCCVM, targetIndex: 0}}
 	cfg := &config.Config{Tag: "auto-dns"}
-	s := New(cfg, []provider.Provider{p}, localResolver(t))
+	s := newSyncer(t, cfg, []provider.Provider{p})
 
-	resolved, err := s.resolver.Resolve(context.Background(), "localhost")
+	resolved, err := s.runtime.Snapshot().Resolver.Resolve(context.Background(), "localhost")
 	if err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
@@ -421,6 +429,46 @@ func (m *fakeTagProvider) deletedDescs() []string {
 	return append([]string(nil), m.deleted...)
 }
 
+// testRuntimeConfig 把测试用 Config 映射为完整运行时配置（补齐同步所需的默认值）
+func testRuntimeConfig(cfg *config.Config) config.RuntimeConfig {
+	rc := config.RuntimeConfig{
+		Tag:              cfg.Tag,
+		Interval:         cfg.Interval,
+		DNS:              cfg.DNS,
+		DNSTimeout:       cfg.DNSTimeout,
+		DNSFailThreshold: cfg.DNSFailThreshold,
+		LogLevel:         cfg.LogLevel,
+		SyncEnabled:      cfg.SyncEnabled,
+		Theme:            cfg.Theme,
+		DomainRules:      config.DeepCopyRules(cfg.DomainRules),
+		Targets:          append([]config.TargetConfig(nil), cfg.Targets...),
+	}
+	if rc.Interval == 0 {
+		rc.Interval = time.Hour
+	}
+	if rc.DNSFailThreshold == 0 {
+		rc.DNSFailThreshold = 5
+	}
+	if rc.DNSTimeout == 0 {
+		rc.DNSTimeout = 10 * time.Second
+	}
+	return rc
+}
+
+// newSyncer 用给定配置与 Provider 构造 Syncer（内部发布一份初始运行时状态）
+func newSyncer(t *testing.T, cfg *config.Config, providers []provider.Provider) *Syncer {
+	t.Helper()
+	rc := testRuntimeConfig(cfg)
+	st, err := BuildRuntimeState(nil, rc, BreakerReset)
+	if err != nil {
+		t.Fatalf("构造初始运行时状态失败: %v", err)
+	}
+	if providers != nil {
+		st.Providers = providers
+	}
+	return New(NewRuntimeManager(st))
+}
+
 // newRoundConfig 构造替换用配置：同一目标与规则，仅 TAG 不同
 func newRoundConfig(tagStr string) *config.Config {
 	return &config.Config{
@@ -433,13 +481,27 @@ func newRoundConfig(tagStr string) *config.Config {
 	}
 }
 
-// newTagSnapshotSyncer 构造 TAG 快照测试用 Syncer（SyncEnabled=false 使 Run 只作为配置写入方）
-func newTagSnapshotSyncer(t *testing.T, tagStr string, p provider.Provider) *Syncer {
+// newRoundState 用给定 Config 构造替换用运行时状态（保留当前 Provider 列表）
+func newRoundState(t *testing.T, s *Syncer, cfg *config.Config) *RuntimeState {
 	t.Helper()
-	return New(newRoundConfig(tagStr), []provider.Provider{p}, localResolver(t))
+	st, err := BuildRuntimeState(s.runtime.Snapshot(), testRuntimeConfig(cfg), BreakerPreserve)
+	if err != nil {
+		t.Fatalf("构造候选运行时状态失败: %v", err)
+	}
+	// 测试用 Config 不含 Targets，Provider 由调用方以 stub 形式注入，这里沿用旧列表
+	if prev := s.runtime.Snapshot(); prev != nil {
+		st.Providers = prev.Providers
+	}
+	return st
 }
 
-// startConfigWriter 启动真实 Run 循环并通过真实 Reload 路径替换配置
+// newTagSnapshotSyncer 构造 TAG 快照测试用 Syncer（SyncEnabled=false 使 Run 只作为状态写入方）
+func newTagSnapshotSyncer(t *testing.T, tagStr string, p provider.Provider) *Syncer {
+	t.Helper()
+	return newSyncer(t, newRoundConfig(tagStr), []provider.Provider{p})
+}
+
+// startConfigWriter 启动真实 Run 循环并通过真实 ApplyState 路径替换运行时状态
 func startConfigWriter(t *testing.T, s *Syncer) {
 	t.Helper()
 	go s.Run()
@@ -449,21 +511,19 @@ func startConfigWriter(t *testing.T, s *Syncer) {
 	})
 }
 
-// reloadAndWait 触发真实 Reload 并等待 Run 循环完成锁内替换
-func reloadAndWait(t *testing.T, s *Syncer, cfg *config.Config) {
+// applyStateAndWait 触发真实 ApplyState 并等待 Run 循环消费通知
+func applyStateAndWait(t *testing.T, s *Syncer, cfg *config.Config) {
 	t.Helper()
-	s.Reload(cfg)
+	s.ApplyState(newRoundState(t, s, cfg))
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		s.mu.RLock()
-		cur := s.cfg
-		s.mu.RUnlock()
-		if cur == cfg {
+		st := s.runtime.Snapshot()
+		if st != nil && st.Config.Tag == cfg.Tag {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatal("等待 Run 循环应用 Reload 配置超时")
+	t.Fatal("等待运行时状态替换超时")
 }
 
 // waitSignal 等待受控交错信号（超时失败，不依赖固定 sleep）
@@ -501,7 +561,7 @@ func TestSyncRound_TagSnapshotDuringReload(t *testing.T) {
 	waitSignal(t, p.blocked, "本轮未进入首次 Describe")
 
 	// 轮次进行中替换 TAG（新 TAG 只能从下一轮生效）
-	reloadAndWait(t, s, newRoundConfig("new-tag"))
+	applyStateAndWait(t, s, newRoundConfig("new-tag"))
 
 	close(p.release)
 	waitSignal(t, roundDone, "同步轮次未结束")
@@ -535,7 +595,7 @@ func TestRetrySync_TagSnapshotAcrossRetry(t *testing.T) {
 
 	// 等重试轮进入 Describe（已完成退避）
 	waitSignal(t, p.blocked, "重试轮未进入 Describe")
-	reloadAndWait(t, s, newRoundConfig("new-tag"))
+	applyStateAndWait(t, s, newRoundConfig("new-tag"))
 
 	// 模拟云端出现旧 TAG 规则：重试轮若使用旧 TAG 必须识别并按描述精确删除
 	p.setRules([]config.RuleInfo{
@@ -570,7 +630,7 @@ func TestSyncRound_NextRoundUsesNewTag(t *testing.T) {
 		t.Fatalf("第一轮新增描述 = %v, want [[auto-dns] 测试]", got)
 	}
 
-	reloadAndWait(t, s, newRoundConfig("new-tag"))
+	applyStateAndWait(t, s, newRoundConfig("new-tag"))
 	s.syncAll()
 
 	created := p.createdDescs()
@@ -598,10 +658,10 @@ func TestSyncRound_ConcurrentReloadStress(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			if i%2 == 0 {
-				s.Reload(newRoundConfig("tag-a"))
+				s.ApplyState(newRoundState(t, s, newRoundConfig("tag-a")))
 				return
 			}
-			s.Reload(newRoundConfig("tag-b"))
+			s.ApplyState(newRoundState(t, s, newRoundConfig("tag-b")))
 		}(i)
 	}
 	wg.Wait()
@@ -612,7 +672,7 @@ func TestSyncRound_ConcurrentReloadStress(t *testing.T) {
 // resolveLocalhostIPv4 解析 localhost 并过滤 IPv6（与 syncDomain 实际执行路径一致）
 func resolveLocalhostIPv4(t *testing.T, s *Syncer) []dns.ResolvedIP {
 	t.Helper()
-	resolved, err := s.resolver.Resolve(context.Background(), "localhost")
+	resolved, err := s.runtime.Snapshot().Resolver.Resolve(context.Background(), "localhost")
 	if err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}

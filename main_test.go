@@ -679,3 +679,247 @@ func TestProcessSecretsNotLogged(t *testing.T) {
 		}
 	}
 }
+
+// ─── Build6 Step 5：真实二进制进程级 version 2 配置导入导出 ───
+
+// TestProcessConfigExportImportRoundTrip 真实二进制进程级验证：
+// POST 导出得到 v2 附件（含完整敏感快照）→ 在另一数据目录导入 → 业务关系重建。
+//
+// 这是「接口层 + 真实进程 + 真实 SQLite」的证据层，不使用 mock。
+func TestProcessConfigExportImportRoundTrip(t *testing.T) {
+	const (
+		tcSecretID  = "AKIDprocessRoundTrip"
+		tcSecretKey = "processRoundTripKey"
+		smtpPass    = "processRoundTripSmtpPass"
+		webhookURL  = "https://process-roundtrip.invalid/hook"
+	)
+
+	// 来源实例：预置带自增历史的目标、限定目标的规则与完整告警
+	srcDir := t.TempDir()
+	srcStore, err := config.OpenStore(filepath.Join(srcDir, "config.db"))
+	if err != nil {
+		t.Fatalf("预置数据库失败: %v", err)
+	}
+	if err := srcStore.AddTarget(config.TargetConfig{CloudType: config.CloudTCLighthouse, Region: "ap-guangzhou", ResourceID: "lhins-src-1"}); err != nil {
+		_ = srcStore.Close()
+		t.Fatalf("预置目标失败: %v", err)
+	}
+	if err := srcStore.AddTarget(config.TargetConfig{CloudType: config.CloudTCCVM, Region: "ap-beijing", ResourceID: "sg-src-2"}); err != nil {
+		_ = srcStore.Close()
+		t.Fatalf("预置目标失败: %v", err)
+	}
+	srcTargets, err := srcStore.GetTargets()
+	if err != nil {
+		_ = srcStore.Close()
+		t.Fatalf("GetTargets 失败: %v", err)
+	}
+	if err := srcStore.AddRule(config.DomainRule{
+		Host: "roundtrip.example.com", Protocol: "TCP", Ports: "443", Action: "ACCEPT",
+		Targets: []int{srcTargets[1].ID}, Comment: "跨实例",
+	}); err != nil {
+		_ = srcStore.Close()
+		t.Fatalf("预置规则失败: %v", err)
+	}
+	if err := srcStore.SetSetting("tc_access_id", tcSecretID); err != nil {
+		_ = srcStore.Close()
+		t.Fatalf("预置凭据失败: %v", err)
+	}
+	if err := srcStore.SetSetting("tc_access_key", tcSecretKey); err != nil {
+		_ = srcStore.Close()
+		t.Fatalf("预置凭据失败: %v", err)
+	}
+	if err := srcStore.SetSetting("theme", "dark"); err != nil {
+		_ = srcStore.Close()
+		t.Fatalf("预置主题失败: %v", err)
+	}
+	if err := srcStore.SaveAlertEmail(&config.AlertEmailConfig{
+		Enabled: true, Host: "smtp.example.com", Port: "587", Username: "u", Password: smtpPass,
+		FromAddr: "f@example.com", ToAddr: "t@example.com",
+	}); err != nil {
+		_ = srcStore.Close()
+		t.Fatalf("预置邮件告警失败: %v", err)
+	}
+	if err := srcStore.SaveAlertWebhook(&config.AlertWebhookConfig{
+		Enabled: true, URL: webhookURL, Channel: "dingtalk",
+	}); err != nil {
+		_ = srcStore.Close()
+		t.Fatalf("预置 Webhook 失败: %v", err)
+	}
+	if err := srcStore.Close(); err != nil {
+		t.Fatalf("关闭预置数据库失败: %v", err)
+	}
+
+	srcPort := freePort(t)
+	srcBase := fmt.Sprintf("http://127.0.0.1:%d", srcPort)
+	srcCmd, srcOut := startProcess(t, srcDir, map[string]string{"WEBUI_PORT": fmt.Sprintf("%d", srcPort)})
+	waitForHTTP(t, srcBase+"/api/health")
+	defer func() {
+		if srcCmd.ProcessState == nil || !srcCmd.ProcessState.Exited() {
+			_ = srcCmd.Process.Signal(syscall.SIGTERM)
+			if _, werr := waitForProcessExit(t, srcCmd, 20*time.Second); werr != nil {
+				t.Errorf("等待来源进程退出失败: %v", werr)
+			}
+		}
+	}()
+
+	// 1) POST 导出：旧 GET 端点必须已删除（静态文件兜底会给出 404/405，两者都表示路由不存在）
+	if code := getStatus(t, http.MethodGet, srcBase+"/api/config/export", ""); code != http.StatusNotFound && code != http.StatusMethodNotAllowed {
+		t.Errorf("GET 导出状态码 = %d, want 404 或 405（旧端点应删除）", code)
+	}
+	exportBody, headers := postRaw(t, srcBase+"/api/config/export", "")
+	if !strings.HasPrefix(headers.Get("Content-Type"), "application/json") {
+		t.Errorf("Content-Type = %q", headers.Get("Content-Type"))
+	}
+	if headers.Get("Cache-Control") != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", headers.Get("Cache-Control"))
+	}
+	if !strings.HasPrefix(headers.Get("Content-Disposition"), `attachment; filename="fwalizer-config-v2-`) {
+		t.Errorf("Content-Disposition = %q", headers.Get("Content-Disposition"))
+	}
+	if !strings.HasSuffix(exportBody, "}\n") {
+		t.Errorf("导出响应应以换行结束")
+	}
+	// 导出是唯一允许包含敏感值的响应
+	for _, secret := range []string{tcSecretKey, smtpPass, webhookURL} {
+		if !strings.Contains(exportBody, secret) {
+			t.Errorf("v2 导出应包含敏感值 %q", secret)
+		}
+	}
+
+	// 2) 目标实例：先写入不同自增历史，再导入
+	dstDir := t.TempDir()
+	dstStore, err := config.OpenStore(filepath.Join(dstDir, "config.db"))
+	if err != nil {
+		t.Fatalf("预置目标实例数据库失败: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := dstStore.AddTarget(config.TargetConfig{CloudType: config.CloudAliECS, Region: "cn-hangzhou", ResourceID: "sg-dst"}); err != nil {
+			_ = dstStore.Close()
+			t.Fatalf("预置目标失败: %v", err)
+		}
+	}
+	if err := dstStore.Close(); err != nil {
+		t.Fatalf("关闭预置数据库失败: %v", err)
+	}
+
+	dstPort := freePort(t)
+	dstBase := fmt.Sprintf("http://127.0.0.1:%d", dstPort)
+	dstCmd, dstOut := startProcess(t, dstDir, map[string]string{"WEBUI_PORT": fmt.Sprintf("%d", dstPort)})
+	waitForHTTP(t, dstBase+"/api/health")
+	defer func() {
+		if dstCmd.ProcessState == nil || !dstCmd.ProcessState.Exited() {
+			_ = dstCmd.Process.Signal(syscall.SIGTERM)
+			if _, werr := waitForProcessExit(t, dstCmd, 20*time.Second); werr != nil {
+				t.Errorf("等待目标进程退出失败: %v", werr)
+			}
+		}
+	}()
+
+	if code := postJSON(t, dstBase+"/api/config/import", exportBody); code != http.StatusOK {
+		t.Fatalf("导入状态码 = %d, want 200；来源日志:\n%s\n目标日志:\n%s", code, srcOut.String(), dstOut.String())
+	}
+
+	// 3) 通过 HTTP 校验业务关系与完整快照
+	targetsBody := getBody(t, dstBase+"/api/targets")
+	if !strings.Contains(targetsBody, "lhins-src-1") || !strings.Contains(targetsBody, "sg-src-2") {
+		t.Errorf("导入后目标缺失: %s", targetsBody)
+	}
+	if strings.Contains(targetsBody, "sg-dst") {
+		t.Errorf("导入应覆盖式替换旧目标: %s", targetsBody)
+	}
+	rulesBody := getBody(t, dstBase+"/api/rules")
+	if !strings.Contains(rulesBody, "roundtrip.example.com") {
+		t.Errorf("导入后规则缺失: %s", rulesBody)
+	}
+	settingsBody := getBody(t, dstBase+"/api/settings")
+	if !strings.Contains(settingsBody, tcSecretID) || !strings.Contains(settingsBody, "dark") {
+		t.Errorf("导入后凭据/主题缺失: %s", settingsBody)
+	}
+	alertsBody := getBody(t, dstBase+"/api/alerts")
+	if !strings.Contains(alertsBody, smtpPass) || !strings.Contains(alertsBody, webhookURL) {
+		t.Errorf("导入后告警缺失: %s", alertsBody)
+	}
+
+	// 4) 版本策略：version 1 必须 400
+	if code := postJSON(t, dstBase+"/api/config/import", `{"version":1,"targets":[],"rules":[],"settings":{}}`); code != http.StatusBadRequest {
+		t.Errorf("version 1 导入状态码 = %d, want 400", code)
+	}
+
+	// 5) 进程日志不得泄露任何敏感值（导出响应是唯一允许包含它们的 HTTP 响应）
+	for name, output := range map[string]string{"来源": srcOut.String(), "目标": dstOut.String()} {
+		for _, secret := range []string{tcSecretID, tcSecretKey, smtpPass, webhookURL} {
+			if strings.Contains(output, secret) {
+				t.Errorf("%s进程日志泄露敏感值 %q；输出:\n%s", name, secret, output)
+			}
+		}
+	}
+	if !strings.Contains(dstOut.String(), "导入成功") && !strings.Contains(dstOut.String(), "channel=dingtalk") {
+		// 仅作可读性提示：日志内容不构成断言失败
+		t.Logf("目标进程日志:\n%s", dstOut.String())
+	}
+}
+
+// getStatus 发送指定方法的请求并返回状态码（进程级用例专用）。
+func getStatus(t *testing.T, method, url, body string) int {
+	t.Helper()
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("请求 %s 失败: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("读取响应失败: %v", err)
+	}
+	return resp.StatusCode
+}
+
+// postRaw 发送 POST 并返回响应体与响应头（进程级用例专用）。
+func postRaw(t *testing.T, url, body string) (string, http.Header) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("请求 %s 失败: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读取响应失败: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST %s 状态码 = %d, want 200; body=%s", url, resp.StatusCode, string(raw))
+	}
+	return string(raw), resp.Header
+}
+
+// postJSON 发送 JSON POST 请求并返回状态码（进程级用例专用）。
+func postJSON(t *testing.T, url, body string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("请求 %s 失败: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("读取响应失败: %v", err)
+	}
+	return resp.StatusCode
+}

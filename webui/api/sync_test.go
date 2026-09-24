@@ -22,21 +22,46 @@ import (
 
 // stubSyncer 测试用模拟 Syncer（实现 api.Syncer 接口）
 type stubSyncer struct {
+	mu        sync.Mutex
 	enabled   bool
+	runtime   *syncer.RuntimeManager
+	applied   atomic.Int32
 	triggered atomic.Bool
 	paused    atomic.Bool
 	resumed   atomic.Bool
 }
 
 func (s *stubSyncer) Status() syncer.SyncStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return syncer.SyncStatus{Running: true, Enabled: s.enabled}
 }
 func (s *stubSyncer) TriggerSync() { s.triggered.Store(true) }
 func (s *stubSyncer) DryRun() (syncer.DryRunResponse, error) {
 	return syncer.DryRunResponse{Results: []syncer.DryRunResult{}}, nil
 }
-func (s *stubSyncer) Pause()  { s.enabled = false; s.paused.Store(true) }
-func (s *stubSyncer) Resume() { s.enabled = true; s.resumed.Store(true) }
+func (s *stubSyncer) Pause() {
+	s.mu.Lock()
+	s.enabled = false
+	s.mu.Unlock()
+	s.paused.Store(true)
+}
+func (s *stubSyncer) Resume() {
+	s.mu.Lock()
+	s.enabled = true
+	s.mu.Unlock()
+	s.resumed.Store(true)
+}
+func (s *stubSyncer) Runtime() *syncer.RuntimeManager { return s.runtime }
+func (s *stubSyncer) ApplyState(state *syncer.RuntimeState) {
+	s.mu.Lock()
+	s.enabled = state.Config.SyncEnabled
+	s.mu.Unlock()
+	if s.runtime != nil {
+		s.runtime.Apply(state)
+	}
+	s.applied.Add(1)
+}
 
 func doPost(t *testing.T, d *Deps, path string) *httptest.ResponseRecorder {
 	t.Helper()

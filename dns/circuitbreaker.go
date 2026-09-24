@@ -34,6 +34,21 @@ func (cb *CircuitBreaker) SetThreshold(threshold int) {
 	cb.threshold = threshold
 }
 
+// Clone 复制一个持有相同阈值与相同失败计数的熔断器（Build6 §12.3 第 7 条）。
+//
+// 普通配置变更必须保留既有 DNS 熔断进度，因此候选运行时状态用本方法复制
+// 旧 breaker，而不是新建一个（新建会清空计数，只允许完整配置导入使用）。
+func (cb *CircuitBreaker) Clone() *CircuitBreaker {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	failCount := make(map[string]int, len(cb.failCount))
+	for domain, n := range cb.failCount {
+		failCount[domain] = n
+	}
+	return &CircuitBreaker{failCount: failCount, threshold: cb.threshold}
+}
+
 // IsOpen 判断域名是否已熔断
 func (cb *CircuitBreaker) IsOpen(domain string) bool {
 	cb.mu.Lock()

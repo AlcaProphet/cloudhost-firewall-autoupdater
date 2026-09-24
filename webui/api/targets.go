@@ -156,25 +156,21 @@ func (d *Deps) handleTestConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 从 Store 读取凭据
-	settings, err := d.Store.GetSettings()
-	if err != nil {
-		writeInternalError(w, "读取凭据失败", err)
+	// 只取一次运行时快照：凭据与 ClientPool 都来自该快照，不再读取 Store
+	// 或覆盖进程级全局凭据（Build6 §12.3 第 6 条）。
+	state := d.runtimeSnapshot()
+	if state == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": "运行时状态尚未就绪，请稍后重试"})
 		return
 	}
 	// 凭据空值快速失败：避免暴露 SDK 原始报错
-	if ready, hint := providerCredentialsReady(target.CloudType, settings); !ready {
+	if ready, hint := providerCredentialsReady(target.CloudType, state.Config.Credentials); !ready {
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": hint})
 		return
 	}
-	provider.SetCredentials(
-		settings["tc_access_id"], settings["tc_access_key"],
-		settings["ali_access_id"], settings["ali_access_key"],
-	)
 
-	// 创建临时 Provider 测试连通性
-	pool := provider.NewClientPool()
-	p, err := provider.NewProvider(target, 0, pool)
+	// 创建临时 Provider 测试连通性（复用快照中的 ClientPool）
+	p, err := provider.NewProvider(target, 0, state.Pool)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"success": false, "error": err.Error()})
 		return
@@ -195,16 +191,16 @@ func (d *Deps) handleTestConnection(w http.ResponseWriter, r *http.Request) {
 
 // providerCredentialsReady 判断目标云厂商所需凭据是否已配置。
 //
-// 未配置时返回面向用户的安全提示；连接测试与资源扫描共用，
-// 与凭据的读取来源保持一致（SQLite 业务设置）。
-func providerCredentialsReady(ct config.CloudType, settings map[string]string) (bool, string) {
+// 未配置时返回面向用户的安全提示；连接测试与资源扫描共用。
+// 凭据来自请求开始时取得的运行时快照，而不是重新从数据库零散读取。
+func providerCredentialsReady(ct config.CloudType, creds config.Credentials) (bool, string) {
 	switch ct {
 	case config.CloudTCLighthouse, config.CloudTCCVM:
-		if settings["tc_access_id"] == "" || settings["tc_access_key"] == "" {
+		if creds.TencentSecretID == "" || creds.TencentSecretKey == "" {
 			return false, "腾讯云凭据未配置，请先在全局设置中填写"
 		}
 	case config.CloudAliSWAS, config.CloudAliECS:
-		if settings["ali_access_id"] == "" || settings["ali_access_key"] == "" {
+		if creds.AliyunAccessKeyID == "" || creds.AliyunAccessKeySecret == "" {
 			return false, "阿里云凭据未配置，请先在全局设置中填写"
 		}
 	}

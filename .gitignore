@@ -20,5 +20,9 @@ Thumbs.db
 *.log
 /tmp/
 
+# ─── 配置导出（version 2 明文完整敏感快照，安全等级等同生产密钥/数据库备份） ───
+fwalizer-config-v2-*.json
+fwalizer-config-v2.json
+
 # ─── 参考文档（本地 SDK 克隆等） ───
 Ref/

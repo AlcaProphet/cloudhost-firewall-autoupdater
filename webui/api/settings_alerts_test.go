@@ -329,20 +329,15 @@ func TestConfigResetStrictBody(t *testing.T) {
 	}
 }
 
-// TestPauseResumeThroughCoordinator pause/resume 先提交 DB 再通知 Syncer，且各一次运行时更新
+// TestPauseResumeThroughCoordinator pause/resume 先提交 DB，再经协调器发布一次运行时状态
 func TestPauseResumeThroughCoordinator(t *testing.T) {
 	e := newTestEnv(t)
-	s := &stubSyncer{enabled: true}
-	e.deps.Syncer = s
-
+	e.deps.Syncer = &stubSyncer{enabled: true, runtime: e.runtime}
 	if w := e.do(t, http.MethodPost, "/api/sync/pause", ""); w.Code != http.StatusOK {
 		t.Fatalf("pause 状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 	if settings, _ := e.store.GetSettings(); settings["sync_enabled"] != "false" {
 		t.Errorf("sync_enabled 应写为 false: %+v", settings)
-	}
-	if !s.paused.Load() {
-		t.Error("Syncer.Pause 应被调用")
 	}
 	if got := e.applyCount(); got != 1 {
 		t.Errorf("pause 应触发一次运行时更新，实际 %d", got)
@@ -353,9 +348,6 @@ func TestPauseResumeThroughCoordinator(t *testing.T) {
 	}
 	if settings, _ := e.store.GetSettings(); settings["sync_enabled"] != "true" {
 		t.Errorf("sync_enabled 应写为 true: %+v", settings)
-	}
-	if !s.resumed.Load() {
-		t.Error("Syncer.Resume 应被调用")
 	}
 	if got := e.applyCount(); got != 2 {
 		t.Errorf("resume 后累计运行时更新 = %d, want 2", got)
@@ -383,11 +375,46 @@ func TestScanResourcesValidation(t *testing.T) {
 // TestTestConnectionValidation 连接测试复用目标基础校验，且缺凭据时不暴露 SDK 报错
 func TestTestConnectionValidation(t *testing.T) {
 	e := newTestEnv(t)
+	resetEnvRuntimeForTest(t, e, config.RuntimeConfig{Tag: "auto-dns", Interval: time.Minute, DNS: "1.1.1.1"})
+
 	if w := e.do(t, http.MethodPost, "/api/test-connection", `{"cloud_type":"aws","region":"gz","resource_id":"x"}`); w.Code != http.StatusBadRequest {
 		t.Errorf("未知 cloud_type 状态码 = %d, want 400", w.Code)
 	}
 	w := e.do(t, http.MethodPost, "/api/test-connection", `{"cloud_type":"tc_lighthouse","region":"gz","resource_id":"x"}`)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "凭据未配置") {
 		t.Errorf("缺凭据应返回安全提示: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestTestConnectionUsesRuntimeSnapshotCredentials 连接测试只使用运行时快照的凭据：
+// 数据库里的凭据不生效（不再零散读 Store），且不覆盖同步凭据。
+func TestTestConnectionUsesRuntimeSnapshotCredentials(t *testing.T) {
+	e := newTestEnv(t)
+	// 数据库里有凭据，但运行时快照的凭据为空 → 必须按「未配置」快速失败
+	if err := e.store.SetSetting("tc_access_id", "AKID-from-db"); err != nil {
+		t.Fatalf("预置凭据失败: %v", err)
+	}
+	resetEnvRuntimeForTest(t, e, config.RuntimeConfig{Tag: "auto-dns", Interval: time.Minute, DNS: "1.1.1.1"})
+
+	w := e.do(t, http.MethodPost, "/api/test-connection", `{"cloud_type":"tc_lighthouse","region":"gz","resource_id":"x"}`)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "凭据未配置") {
+		t.Errorf("连接测试必须只用运行时快照凭据: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestScanUsesRuntimeSnapshotCredentials 资源扫描同样只使用运行时快照（不读 Store、不写全局凭据）。
+func TestScanUsesRuntimeSnapshotCredentials(t *testing.T) {
+	e := newTestEnv(t)
+	if err := e.store.SetSetting("ali_access_id", "LTAI-from-db"); err != nil {
+		t.Fatalf("预置凭据失败: %v", err)
+	}
+	if err := e.store.SetSetting("ali_access_key", "aks-from-db"); err != nil {
+		t.Fatalf("预置凭据失败: %v", err)
+	}
+	resetEnvRuntimeForTest(t, e, config.RuntimeConfig{Tag: "auto-dns", Interval: time.Minute, DNS: "1.1.1.1"})
+
+	w := e.do(t, http.MethodPost, "/api/scan-resources", `{"cloud_type":"ali_ecs","region":"cn-hangzhou"}`)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "凭据未配置") {
+		t.Errorf("资源扫描必须只用运行时快照凭据: %d %s", w.Code, w.Body.String())
 	}
 }

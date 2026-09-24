@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/webui/api"
 )
 
@@ -77,9 +78,13 @@ func (s *Server) SetSyncer(sync api.Syncer, bus api.EventSubscriber) {
 	s.deps.EventBus = bus
 }
 
-// SetReloadFunc 设置配置重载回调（WebUI 修改配置后通知 Syncer）
-func (s *Server) SetReloadFunc(fn func()) {
-	s.deps.ReloadFunc = fn
+// SetRuntimeWiring 注入运行时状态与告警管理器（Build6 Step 5）。
+//
+// 注入后，配置变更协调器即可在事务内构造候选完整运行时状态与候选告警集合，
+// 并在 commit 之后按「日志级别 → 告警集合 → RuntimeState」顺序无失败发布；
+// 连接测试与资源扫描也从同一 RuntimeManager 取一次完整快照。
+func (s *Server) SetRuntimeWiring(runtime *syncer.RuntimeManager, alerts *api.AlertManager) {
+	s.deps.SetRuntimeWiring(runtime, alerts)
 }
 
 // SetLogBroadcaster 设置日志广播器（实时日志流 SSE）

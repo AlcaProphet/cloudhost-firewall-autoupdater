@@ -311,7 +311,7 @@ log_level, theme
 | 2 | 移除 CLI 与 `.env` Headless 业务模式 | Issue5 A5-01、本文件 §一 | ✅ 验收通过 |
 | 3 | HTTP Listener、Server 生命周期与优雅关闭 | Issue5 O5-04、O5-05 | ✅ 验收通过 |
 | 4 | API 最小持久化校验边界 | Issue5 O5-06、本文件 §四 | ✅ 验收通过 |
-| 5 | version 2 完整配置包与原子运行时切换 | Issue5 R5-01、本文件 §三 | ☐ 未开始 |
+| 5 | version 2 完整配置包与原子运行时切换 | Issue5 R5-01、本文件 §三 | ◧ 进行中（工程实现与本地门禁完成；浏览器与真实外部链路待用户验收） |
 | 6 | 前端依赖受控升级 | Issue5 O5-01 | ☐ 未开始 |
 | 7 | 高影响路径补测、真实验收与文档闭环 | Issue5 O5-03 | ☐ 未开始 |
 
@@ -762,6 +762,15 @@ git diff --check
 
 ### Step 5：version 2 完整配置包与原子运行时切换
 
+**实施状态：** ◧ 进行中（2026-09-25；工程实现与本地自动门禁完成，浏览器人工复核与真实外部链路待用户执行）
+
+- 当前 HEAD：`c2897440c565a23ee1dc6492da4f5e5ace80dea4`（`c289744`），本地 `main` 比 `origin/main`（`f5c6ea7`）超前 1 个提交（即 Step 4 提交，未推送，保持不变）；Step 5 的改动尚未提交
+- 工作树基线：干净（`git status --short --branch` 仅分支行 `## main...origin/main [领先 1]`；`git status --porcelain`、`git diff --stat`、`git diff --check` 均为空，无用户已有改动）
+- 开工前只读核验（2026-09-25）全部通过：`go test -race ./config ./provider ./syncer ./webui/api`、`go test ./... -race`（11 包全 ok，0 次 `DATA RACE`）、`go vet ./...`、`go build ./...`、`git diff --check`、`cd webui/frontend && npm ci && npm run build`（vue-tsc + Vite 5.4.21，2818 模块；`package.json`/`package-lock.json` sha256 前后一致）；详见同轮开工前核验报告
+- 开工前已知既存债务（经用户确认的处理方式）：`provider/ali_ecs.go`、`provider/ali_swas.go`、`provider/common_test.go`、`provider/credentials.go`、`provider/scan.go`、`provider/tc_lighthouse.go` 在 `c289744` 即为 `gofmt` 未格式化状态（纯对齐空格差异，工作树无本地改动）。用户确认：本 Step 施工时把该 6 个文件全部 `gofmt` 一遍
+- 本 Step 文件范围：`config/config.go`、`config/store.go`、新增 `config/runtime.go`、`config/runtime_test.go`；`provider/credentials.go`（重写为不可变值类型）、`provider/common.go`、`provider/tc_lighthouse.go`、`provider/tc_cvm.go`、`provider/ali_swas.go`、`provider/ali_ecs.go`、`provider/scan.go` 及对应测试；新增 `syncer/state.go`、`syncer/state_test.go`，修改 `syncer/syncer.go`、`syncer/retry.go`、`syncer/syncer_test.go`；`dns/circuitbreaker.go`；`webui/api/coordinator.go`、`decode.go`、`deps.go`、`settings.go`、`alerts.go`、`targets.go`、`scan.go`、`sync.go`、新增 `webui/api/bundle_v2.go`、`webui/api/export.go`、`webui/api/alertset.go` 及对应测试、`webui/api/testenv_test.go`；`webui/server.go`；`run.go`、`main_test.go`；`webui/frontend/src/views/Settings.vue`；`.gitignore`、`README.md`；取证后更新 `Build6.md`、`Issue5.md`、`ProdTestList.md`
+- 固定不变量：version 2 唯一协议（version 1 及其他版本 400，不迁移、不猜测、不补全、无隐藏兼容入口）；导出为唯一只读事务快照、ID 与 `target_export_ids` 升序、marshal 先于写响应头、`no-store` 与固定附件文件名；导入先完成全部纯数据预校验（含 `export_id` 唯一性与引用闭包）再开写事务，事务内按依赖序清表并以 `LastInsertId` 建 `export_id → 新数据库 ID` 映射重写规则引用，显式写 v2 完整 settings 键集合，清 `scanned_resources`、保留 `sync_logs`、不碰 `sqlite_sequence`；`provider.Credentials` 为不可变值、`ClientPool` 构造时持有凭据且无 setter、删除包级可变凭据与 `SetCredentials`；`RuntimeState`（Config/Pool/Providers/Resolver/Breaker）发布后不可修改，同步轮次、Dry Run、连接测试与资源扫描各只取一次快照；协调器在 commit 前构造候选与候选告警集合（不访问云 API/DNS/SMTP/Webhook），commit 后只做无 error 内存操作且顺序为「日志级别 → 告警集合 → 发布 RuntimeState」；普通变更保留 DNS 熔断计数、完整导入允许新建并清空；提交失败或任一构造失败完整回滚且不 apply
+- 本轮不处理：Step 6 的 Vite 主版本升级与 lockfile 变更（不运行 `npm audit fix --force`）；Step 7 的总验收闭环与高影响补测；云 Provider 增量算法与云 API 业务行为；`HistoryDocs/` 正文；配置包加密/签名；前端登录鉴权；真实云 API、SMTP、Webhook 与浏览器人工验收（留待用户环境，不在本轮声称通过）
 - **目标：** 端到端实现 §三的完整敏感配置快照、R5-01 ID 关联恢复、事务覆盖以及一致的运行时切换。
 - **实施参照：** §12.3～12.12；必须把 Step 4 协调器骨架收束成完整不可变状态发布，删除分次 reload 和包级可变凭据，不能只实现配置包 JSON 表面协议。
 - **显式凭据与候选运行时：**
@@ -805,6 +814,49 @@ git diff --check
   - 当前同步轮次旧完整快照、下一轮新完整快照；
   - 响应、应用日志和运行日志无密钥泄露。
 - **人工验收：** 两个具有不同自增历史的数据库交叉导入；逐项核对业务关系、主题、同步状态和告警；再分别执行连接测试、资源扫描、真实云 API 同步、SMTP/收件箱和 Webhook。各证据单独记录。
+
+**实际证据（2026-09-25）：**
+
+- 实际改动：
+  1. `config/runtime.go`（新增）：`Credentials`、`BusinessSnapshot`（事务内完整快照）、`RuntimeConfig`（含 `Theme`/`Credentials`/Email/Webhook）、`SettingsKeysV2()`、`DeepCopyRules()`/`DeepCopy()`；`config/config.go` 的 `Config` 删除 `TCAccessID/TCAccessKey/AliAccessID/AliAccessKey` 冗余字段，只保留 `Credentials` 并新增 `Theme`。
+  2. `config/store.go`：新增 `BeginReadOnlyTx`、`LoadBusinessSnapshot`/`LoadBusinessSnapshotTx`（一次事务内读 targets/rules/settings/alerts 并复用 `validate.go` 归一化）、`loadSettings`/`loadSettingsByKeys`/`normalizeSettings`、`ReplaceBusinessSettingsTx`（显式逐键校验完整键集合）、`ReplaceBusinessAlertsTx`、`ClearScannedResourcesTx`、`DeleteImportOwnedTablesTx`（rules→targets→settings→alert_email→alert_webhook 固定顺序）；`LoadConfig` 改为同一快照路径的薄包装；删除 `ClearAllTx`/`BatchAddTargetsTx`/`BatchAddRulesTx` 与 `Config` 凭据冗余字段。
+  3. `provider/credentials.go` **删除**；`provider/common.go` 新增不可变 `Credentials` 值类型、`AccountKey()`、`CacheKey(cloudType, region)`，`ClientPool` 构造时接收凭据、提供 `Credentials()` 读取副本且**无 setter**；四个 Provider（`tc_lighthouse.go`/`tc_cvm.go`/`ali_swas.go`/`ali_ecs.go`）与 `provider/scan.go` 的 client 创建闭包只读 pool 内凭据并用 `pool.CacheKey`。
+  4. `syncer/state.go`（新增）：`RuntimeState{Config, Pool, Providers, Resolver, Breaker}`、`BreakerPolicy`（`BreakerPreserve`/`BreakerReset`）、`BuildRuntimeState`（只构造本地对象与 SDK client，深拷贝配置）、`RuntimeManager.Snapshot/Apply`、`ErrUnknownCloudType`。
+  5. `syncer/syncer.go`：改为持有 `RuntimeManager`；`syncAll`/`DryRun` 开始时各取**一次**快照并全程传参（`syncDomain`/`syncDomainInternal`/`retrySync` 只用本轮 TAG/Resolver/Breaker）；删除 `Reload`/`ReloadProviders`/`ReloadResolver` 与 `SetDNSFailThreshold`，新增 `ApplyState`、`Runtime()`、`SetStateAppliedHook`、`setSyncEnabled`；调度收敛为单一可合并控制通知（`controlCh` 容量 1 + `triggerCh`），暂停子循环不消费 ticker/trigger，`triggerCh` 消费前复查开关，`Stop()` 用 `sync.Once` 幂等。
+  6. `dns/circuitbreaker.go`：新增 `Clone()`（锁内复制阈值与失败计数），供普通变更保留熔断进度。
+  7. `webui/api/coordinator.go`：完整协调器（锁 → 单事务 → mutation → **事务内** `LoadBusinessSnapshotTx` → `buildCandidate`（候选 `RuntimeState` + 候选告警集合）→ commit → 无失败发布）；新增 `ErrRuntimeCandidateUnsupported`/`ErrInternalBuild`/`ErrNoSnapshotLoader`。
+  8. `webui/api/bundle_v2.go`（新增）：导出 value DTO（`bundleV2` 等）与导入 presence DTO（`bundleV2Wire` + `presenceSlice[T]`，其 `UnmarshalJSON` 使用**独立严格 decoder**，使任意层级未知字段也能被拒绝）、`toBundleV2`（ID 升序、`target_export_ids` 升序、数组为 `[]`、告警默认值）、`validateAndNormalizeBundle`（version/metadata/必需字段/枚举/时长/TAG/DNS/告警/export_id 唯一性与引用闭包）、`bundleSettingsToStore`（显式 12 键）。
+  9. `webui/api/export.go`（新增）：`handleConfigExport`（`POST` + 只读事务 + marshal 先于写响应头 + 三响应头 + `attachmentName`）与 `handleConfigImport`（10 MiB 严格解码 → 预校验 → 固定顺序事务 + `LastInsertId` 映射 + 规则副本重写引用 + 显式写 v2 完整设置 + 告警 + 清 `scanned_resources`）。
+  10. `webui/api/alertset.go`（新增）：`alertSet`/`BuildAlertSet`（零副作用构造）/`AlertManager.Apply`（取消旧订阅 → 安装新订阅）/`LogStatus`（只记录收件人与渠道名）。
+  11. `webui/api/deps.go`：`Syncer` 接口新增 `Runtime()`/`ApplyState()`；新增 `SetRuntimeWiring`、`buildCandidate`（普通变更用 `BreakerPreserve`）、`applyCandidate`（日志级别 → 告警集合 → `RuntimeState`）、`runtimeSnapshot`；删除 `ReloadFunc`/`notifyReload`；`GET /api/config/export` 改为 `POST`；`settingsReservedKeys` 与 v1 `configExport`/`configImport`/`validateImport`/`normalizeImportSetting` 全部删除。
+  12. `webui/api/targets.go`/`scan.go`：连接测试与资源扫描改为从请求开始时的**一次** `RuntimeState` 快照读取凭据与 `ClientPool`，删除 `SetCredentials`/`NewClientPool()`/`GetSettings()` 凭据读取。
+  13. `webui/server.go`/`run.go`：`SetReloadFunc` 改为 `SetRuntimeWiring`；启动路径一次构造初始 `RuntimeState`（`BreakerReset`）→ `RuntimeManager` → `Syncer` → `AlertManager`（`Apply` + `LogStatus("已启用")` + 发布后 `LogStatus("已更新")` hook）；删除分次 reload 闭包与 `provider.SetCredentials`。
+  14. `webui/frontend/src/views/Settings.vue`：导出改 `POST + fetch + Blob`（不交给通用 JSON 封装）、`parseAttachmentFilename` 解析安全文件名 + 固定 fallback `fwalizer-config-v2.json`、不再 `window.open`、不在 console 输出；导入/导出均为危险级卡片确认（`type="error"`）且文案明确列出腾讯云密钥/阿里云密钥/SMTP 密码/Webhook URL；导入前只做 JSON 语法预检查，成功显示消息并**整页 reload**，失败不 reload。
+  15. `.gitignore` 新增 `fwalizer-config-v2-*.json` 与 `fwalizer-config-v2.json`；README 的「配置导入导出」与 FAQ 第 8 条改写为 v2 完整敏感快照并新增安全警告。
+  16. 对 `provider/ali_ecs.go`、`ali_swas.go`、`common_test.go`、`credentials.go`（删除）、`scan.go`、`tc_lighthouse.go`、`tc_cvm.go` 执行 `gofmt -w`（按开工前用户确认处理既存格式债务）。
+- 自动检查（真实结果）：
+  - `go test -race ./config ./provider ./syncer ./webui/api` → **通过**（config 2.062s、provider 1.656s、syncer 11.163s、webui/api 5.034s，0 次 `DATA RACE`）
+  - `go test ./... -race -count=1`（冷缓存复跑）→ **通过**（11 包全 ok：root 10.402s、app 2.339s、config 3.027s、dns 3.319s、portconv 1.330s、tag 1.594s、notifier 2.512s、provider 2.862s、syncer 13.089s、webui 4.495s、webui/api 6.773s，0 次 `WARNING: DATA RACE`）
+  - `go vet ./...` → 通过；`go build ./...` → 通过；`git diff --check` → 通过；改动与新增 Go 文件 `gofmt -l` 无输出
+  - `cd webui/frontend && npm ci && npm run build`（vue-tsc + Vite 5.4.21，2818 模块）→ 通过；`package.json`/`package-lock.json` sha256 前后**完全一致**（未升级任何前端依赖）
+  - 关键新增用例：`config/runtime_test.go`（空库默认值与完整键集合、未知键丢弃、非空非法值带键名错误且不回显、同一事务内快照一致性、只读事务、`ToRuntimeConfig` 携带 Theme/凭据、`DeepCopy` 隔离、`ReplaceBusinessSettingsTx` 完整键集合、`DeleteImportOwnedTablesTx` 保留 `sync_logs`）；`syncer/state_test.go`（`false→true` 立即一轮、`true→true` 只按新 interval 触发、`true→false` 完成当前轮后不再启动、暂停期排队 trigger 不执行、`Stop` 幂等与并发、停止后不启动新一轮、单快照轮次、Dry Run 单快照与不受暂停限制、`RuntimeManager` 并发 Snapshot/Apply、`BreakerPreserve` 保留计数 vs `BreakerReset` 清空、新阈值即时生效、未知云类型构造失败、凭据进入 pool、发布配置深拷贝）；`webui/api/export_test.go`（空库 Schema 与数组非 null、三响应头与固定文件名、UTC metadata 与文件名时间一致、ID/`target_export_ids` 稳定排序、旧 GET 400/405、同实例自增历史后导出→清空→导入的业务关系重建、跨实例不同 ID、清空扫描缓存/保留同步日志/不重置自增序列、告警往返）；`webui/api/import_test.go`（v2 成功覆盖与归一化、空凭据清除旧值、35 项非法输入零写入零发布、错误指向 `targets[1].cloud_type`、事务失败回滚、严格解码含任意层级未知字段与 10 MiB 边界）；`webui/api/import_failure_test.go`（清表/目标/规则/settings/email/webhook/scanned 清空/commit 共 8 项失败注入 + 候选构造失败 + commit 失败，均断言旧库完整、旧状态指针保持、零发布、500 不回显底层错误）；`webui/api/alertset_test.go`（构造零副作用、禁用渠道不构造、订阅替换、幂等、无 bus 安全、apply 副作用顺序、候选在 commit 前构造、候选失败不 apply、安全日志元数据）；`main_test.go` 的 `TestProcessConfigExportImportRoundTrip`（真实二进制 + 真实 SQLite：POST 导出附件头与敏感值、跨数据目录导入、HTTP 校验目标/规则/设置/告警、version 1 → 400、两个进程日志均无敏感 sentinel）
+- 人工检查：**未执行真实浏览器交互**，**未执行真实云 API / SMTP / Webhook**。前端仅通过 `vue-tsc` 类型检查与生产构建；真实浏览器导入导出、连接测试、资源扫描、真实云同步、SMTP 收件箱与 Webhook 均留待用户环境执行（见 `ProdTestList.md`）。
+- 证据边界：
+  1. 版本 2 配置包与原子运行时切换的验证全部基于**本地 SQLite + httptest + 真实二进制进程**；未在真实云账号、真实 SMTP 或真实 Webhook 上验证；
+  2. 「普通变更保留 DNS 熔断失败计数」「完整导入重置计数」由 `syncer/state_test.go` 的 `BreakerPreserve`/`BreakerReset` 单测覆盖，未在长跑真实环境复现熔断进度；
+  3. `moderntc.org/sqlite` 驱动不强制 `sql.TxOptions.ReadOnly` 的写入拒绝，导出契约由「独立只读事务 + handler 不含写入语句」保证（测试只锁定可读取一致快照）；
+  4. 真实浏览器的 Blob 下载文件名与整页 reload 行为未在本轮验证。
+- 未完成项：
+  1. **浏览器人工复核**：导出附件下载与文件名、导入危险确认文案、导入成功后整页刷新、导入失败不刷新、设置保存、告警保存与目标 409 提示（同时承接 Step 4 遗留项）；
+  2. **真实外部链路**：连接测试/资源扫描、真实云 API 增量写入与精确删除、SMTP/收件箱、Webhook；
+  3. **远端 CI**：仍无 GitHub Actions 运行结果（O5-02 收尾，需用户授权推送）；
+  4. Step 5 改动尚未提交（等待用户验收决定）。
+- 与计划偏差：
+  1. 候选构造失败在 HTTP 路径上无法由 version 2 导入触发（未注册云类型在事务前的预校验即被 400 拒绝），因此该项改为对协调器直接注入失败 builder 验证防御路径，并在 `import_failure_test.go` 中说明；
+  2. `Config` 的四个凭据冗余字段（`TCAccessID` 等）随实现收尾一并删除（属「不保留全局/显式双凭据」的同一目标，未提前到 Step 4）；
+  3. 为保持既有「Webhook 告警已启用/已更新」日志行为，`AlertManager.LogStatus` 只记录收件人与渠道名（不含密码/URL），由 `Syncer.SetStateAppliedHook` 在状态发布后触发；
+  4. `export_test.go` 中旧 GET 端点的状态码断言在单元测试为 405、真实进程为 404/405（静态文件兜底差异），两处均只断言「路由已删除」。
+- **状态：** ◧ 进行中（工程实现与本地自动门禁已完成；浏览器人工复核与真实外部链路待用户执行，未标记验收通过）
 
 ### Step 6：前端依赖受控升级
 
@@ -880,7 +932,7 @@ git diff --check
 | O5-03 高影响测试不足 | 各 Step + Step 7 | 修复随测，末步补齐并分层记录 |
 | O5-04 端口 TOCTOU | Step 3 | 单一 listener 从绑定到 Serve 不释放 |
 | O5-05 HTTP 生命周期 | Step 3 | 显式 Server、SSE shutdown、10s HTTP 收尾 |
-| O5-06 持久化校验 | Step 4（已完成）、Step 5 | 普通 API 与 version 1 导入已共用同一组轻量领域校验；version 2 导入复用同一组函数 |
+| O5-06 持久化校验 | Step 4、Step 5 | 普通 API 与 version 2 导入共用同一组轻量领域校验（`config/validate.go`），导入在写事务前完成全部纯数据预校验 |
 | A5-01 Headless 模式 | Step 0、Step 2 | 文档先固定，代码和 README 同步移除 |
 
 Issue5 R5-01 中“凭据不导入”的旧安全边界已被本阶段用户决策明确替代为“version 2 导出并导入完整凭据”；Step 0 已更新当前 Issue5，旧口径只保留在 Git 历史。
@@ -992,7 +1044,7 @@ git diff --check
 - 标注“**必须**”的是 Build6 固定不变量；实现可以改名、拆文件或选择等价标准库写法，但结果必须满足；
 - 标注“**参考**”的代码只表达依赖方向、锁边界、事务顺序和错误边界，不要求逐字复制；
 - 伪代码省略的 error 处理在真实实现中仍必须补全，不能因为示例简化而忽略；
-- 当前源码已处于 Step 4 验收通过、Step 5 未开始的过渡状态；本节其余“目标接口”仍不代表已经存在（EventBus 不关 channel、Step 3 的 HTTP 生命周期与 SSE shutdown channel、Step 4 的严格解码/领域校验/事务与协调器骨架均已实现，但完整 `RuntimeState`、显式凭据与 version 2 协议仍属 Step 5）；
+- 当前源码已处于 Step 5 工程实现完成的过渡状态（Step 5 仍为 ◧：浏览器人工复核与真实外部链路待用户执行）；本节其余“目标接口”仍不代表已经存在（EventBus 不关 channel、Step 3 的 HTTP 生命周期与 SSE shutdown channel、Step 4 的严格解码/领域校验/事务、Step 5 的 `RuntimeState`/显式凭据/version 2 协议均已实现，但 Step 6 前端依赖升级与 Step 7 总验收尚未实施）；
 - 如当前代码与本节基线不同，先判断是仓库后来已实现、文档过期，还是出现偏离；不得同时保留两套语义。
 
 ### 12.2 源码边界映射（2026-09-24 更新；原 2026-09-22 基线版本见 Git 历史）
@@ -1003,11 +1055,11 @@ git diff --check
 |--------|-------------|---------|-----------------|------|
 | 启动模式与信号 | `main.go`、`run.go` | CLI、env/WebUI 双模式已删除，零参数进入唯一 WebUI 路径；HTTP 启动错误已改为同步感知，Serve 错误经 `Wait()` 与信号进入同一收尾路径；`run.go` 的 reload 闭包已统一应用日志级别、日志流级别与 DNS 阈值且不再记录 Webhook URL | Step 2、3、4 | 模式并存**已解除（Step 2）**；HTTP 错误反馈**已解除（Step 3）**；敏感值日志**已解除（Step 4）** |
 | 部署/业务 ENV | `config/deployment.go` | `.env` 与业务 ENV 入口已删除，只保留三个部署变量；`config/env.go` 已删除 | Step 2 | **已解除（Step 2）** |
-| SQLite Schema/CRUD | `config/store.go` | 已具备最小 `DBTX` 接口、事务内读取/写入、`RowsAffected`（0→404）、`LastInsertId`、规则引用查询与 `ValidateRuleTargetsTx`；导入的只读快照事务与 `export_id` 映射仍待补 | Step 4、5 | RowsAffected/跨表事务/引用检查**已解除（Step 4）**；只读导出事务与 ID 映射**仍存在**（Step 5） |
-| 运行时配置 | `config.Config` | `Mode`/`WebUIHost`/`WebUIPort` 已移除，监听参数改由 `DeploymentConfig` 提供；业务配置仍是分次 reload | Step 2、5 | 字段混装**已解除（Step 2）**；分次 reload**仍存在**（Step 5） |
-| 云凭据 | `provider/credentials.go` | 包级可变全局值，连接测试/扫描会覆盖同步使用的凭据 | Step 5 | **仍存在** |
-| SDK Client 复用 | `provider/common.go` 的 `ClientPool` | pool 不持有不可变凭据，client 创建闭包读取全局值 | Step 5 | **仍存在** |
-| 同步热重载 | `syncer/syncer.go`、`syncer/retry.go`、`webui/api/coordinator.go` | 本轮 TAG 已显式传参；普通配置写入已由协调器串行化并在 commit 后只 apply 一次；`Reload`/`ReloadProviders`/`ReloadResolver` 内部仍分次应用 | Step 1、4、5 | TAG 快照**已解除（Step 1）**；写入串行化**已解除（Step 4）**；完整原子替换**仍存在**（Step 5） |
+| SQLite Schema/CRUD | `config/store.go` | 具备最小 `DBTX`、事务内读写、`RowsAffected`（0→404）、`LastInsertId`、规则引用查询、`ValidateRuleTargetsTx`，以及 Step 5 新增的 `BeginReadOnlyTx`、`LoadBusinessSnapshot(Tx)`、显式 v2 键集合写入、固定顺序清表与扫描缓存清理；导出使用独立只读事务，导入使用 `export_id → 新数据库 ID` 映射 | Step 4、5 | **已解除（Step 4、Step 5）** |
+| 运行时配置 | `config/runtime.go`、`config/config.go` | 监听参数由 `DeploymentConfig` 提供；业务配置的运行时形态是 `RuntimeConfig`（含 Credentials/Targets/DomainRules/TAG/Interval/DNS/DNS timeout/DNS fail threshold/LogLevel/SyncEnabled/Theme/Email/Webhook），`Config` 只保留启动期读取用途且已删除凭据冗余字段 | Step 2、5 | 字段混装**已解除（Step 2）**；分次 reload**已解除（Step 5）** |
+| 云凭据 | `provider/common.go` | `provider.Credentials` 为不可变值类型；`credentials.go` 与 `SetCredentials`/四个 getter/包级变量已删除；连接测试、资源扫描、正式同步与 Dry Run 都只读同一显式凭据模型 | Step 5 | **已解除（Step 5）** |
+| SDK Client 复用 | `provider/common.go` 的 `ClientPool` | pool 在创建时接收不可变凭据、无 setter，`CacheKey` 至少区分 cloud type、region 与账户标识；四个 Provider 与 `scan.go` 的 client 闭包只读 pool 内凭据 | Step 5 | **已解除（Step 5）** |
+| 同步热重载与运行时状态 | `syncer/state.go`、`syncer/syncer.go`、`syncer/retry.go`、`webui/api/coordinator.go` | `RuntimeState`（Config/Pool/Providers/Resolver/Breaker）发布后不可修改，`RuntimeManager` 单锁替换指针；同步轮次、Dry Run、连接测试与资源扫描各只取一次快照；`Reload`/`ReloadProviders`/`ReloadResolver` 已删除；调度收敛为单一可合并控制通知 | Step 1、4、5 | TAG 快照**已解除（Step 1）**；写入串行化**已解除（Step 4）**；完整原子替换**已解除（Step 5）** |
 | EventBus/SSE | `notifier/bus.go`、`webui/api/sync.go` | 取消订阅不再关闭 channel；SSE 的 `select` 已加入服务器级 shutdown channel，关闭时主动退出并 `defer unsubscribe()` | Step 1、3 | panic 窗口**已解除（Step 1）**；SSE shutdown 信号**已解除（Step 3）** |
 | 日志 SSE | `webui/api/logstream.go` | 广播器锁内发送/关闭无同类 panic；handler 已监听服务器级 shutdown channel 并主动退出 | Step 3 | **已解除（Step 3）** |
 | 日志级别 | `app/logutil.go`、`webui/api/logstream.go` | stdout 使用 `slog.LevelVar`、日志流级别改为线程安全 `*slog.LevelVar`，设置保存后即时生效 | Step 4 | **已解除（Step 4）** |
@@ -1015,8 +1067,8 @@ git diff --check
 | HTTP listener | `webui/server.go` | 已改为 `Start()` 同步 `net.Listen` + 同一 listener 交给 `Serve`，仅 `EADDRINUSE` 降级；显式 `http.Server`、`Wait()`、幂等 `Shutdown()`、超时强制 `Close` 齐备 | Step 3 | **已解除（Step 3）** |
 | 普通 API 解码 | `webui/api/decode.go` | 已统一 `decodeJSONStrict`（`DisallowUnknownFields`、拒绝尾随/多顶层值；普通请求 1 MiB、配置导入 10 MiB，超限 413）与 `parsePathID`（`Atoi` 且 >0）；请求 DTO 不再含数据库 `id` | Step 4 | **已解除（Step 4）** |
 | settings/alerts | `webui/api/settings.go`、`alerts.go`、`coordinator.go` | settings 使用 11 个 pointer 字段固定 DTO 并在单事务写入（未知键 400、省略不变、仅凭据可显式空串）；alerts 要求两对象全子字段必需并单事务覆盖；两者均经协调器 commit 后只 apply 一次 | Step 2、4 | `webui_port` 入口**已解除（Step 2）**；任意 map 键与部分成功**已解除（Step 4）** |
-| version 1 导入导出 | `webui/api/settings.go` | 已接入配置变更协调器，写事务前复用同一组领域校验（targets/rules/settings，非法值 400 且零写入零 reload），并共用严格解码 + 10 MiB（拒绝未知字段/尾随 JSON/多顶层值，超限 413）；仍为 GET 导出、不含敏感配置、直接复用 DB ID 会破坏规则引用 | Step 4、5 | 协调器接入、字段校验与严格解码**已解除（Step 4）**；version 2 完整替换与 ID 映射**仍存在**（Step 5） |
-| 前端导入导出 | `webui/frontend/src/views/Settings.vue` | 设置保存已改为 11 键白名单 payload（Step 4）；导入导出仍为 `window.open` GET 下载、凭据不导出 | Step 4、5 | 设置保存 payload**已解除（Step 4）**；敏感快照与整页刷新**仍存在**（Step 5） |
+| 配置包协议 | `webui/api/bundle_v2.go`、`webui/api/export.go` | `POST /api/config/export` 在只读事务内导出 v2 完整敏感快照（ID 与 `target_export_ids` 升序、marshal 先于写头、`no-store`、固定附件名）；导入使用 presence DTO + 10 MiB 严格解码 + 预校验 + 固定顺序事务 + `LastInsertId` 映射；version 1 及其他版本 400 | Step 4、5 | 严格解码与协调器接入**已解除（Step 4）**；v2 协议与 ID 映射**已解除（Step 5）** |
+| 前端导入导出 | `webui/frontend/src/views/Settings.vue` | 设置保存为 11 键白名单 payload（Step 4）；导入/导出均为危险级卡片确认（`type="error"`，文案列出四类密钥），导出走 `POST + fetch + Blob` 并从 `Content-Disposition` 解析安全文件名（含固定 fallback），导入成功整页 reload、失败不 reload | Step 4、5 | 设置保存 payload**已解除（Step 4）**；敏感快照与整页刷新**已解除（Step 5）** |
 | 前端依赖 | `webui/frontend/package*.json` | 审计基线见 §十一 | Step 6 | **仍存在** |
 
 实施者应优先在这些现有边界上收束，不创建第二套 store、第二个事件总线或平行 Web server。删除旧实现后再更新本表的“当前问题”，不能让旧/新入口长期共存。
@@ -1530,5 +1582,6 @@ Build6 最终关闭前，必须能从本文追溯：
 | v1.2 | 2026-09-22 | Step 0 验收通过：切换当前文档体系，建立 Design5，同步 AGENTS/Issue5/README 边界并存档 Design4/Build5/Issue4 |
 | v1.4 | 2026-09-23 | Step 2 验收通过：唯一 WebUI + SQLite 运行时，删除 CLI/`.env` Headless/`version` 与编译期注入，三个部署变量收束，`webui_port` 从 API 与配置包移除，健康检查去 `pgrep`；附真实进程、Compose、Docker 构建与容器健康证据 |
 | v1.5 | 2026-09-23 | Step 2 独立复检：记录用户侧提交 `0975f95`、冷缓存门禁与从该提交重建镜像的容器复核；修正本 Step 起始状态行、参数用例计数与残留搜索表述；登记 `AGENTS.md`/`Design5.md`/README 的陈旧表述为待办 |
+| v1.8 | 2026-09-25 | Step 5 工程实现与本地自动门禁完成（状态 ◧ 进行中）：version 2 完整敏感快照导出（`POST /api/config/export`、只读事务、稳定排序、`no-store`、固定附件名）与 version 1 拒绝；presence DTO + 10 MiB 严格解码 + 引用闭包预校验 + 固定顺序事务 + `export_id → 新数据库 ID` 映射导入；不可变 `provider.Credentials` + 无 setter `ClientPool`（删除 `SetCredentials` 与包级凭据）；`syncer.RuntimeState`/`RuntimeManager`/`BuildRuntimeState` 原子发布与单一调度控制语义；告警候选集合与无失败 Apply；协调器收束为事务内快照 + 候选构造 + commit 后「日志级别 → 告警集合 → RuntimeState」；前端危险确认与 Blob 导出 + 整页 reload；README/`.gitignore` 同步；附门禁、专项测试矩阵、失败注入与证据边界；浏览器与真实外部链路待用户验收 |
 | v1.7 | 2026-09-24 | Step 4 验收通过：统一严格 JSON 解码（1 MiB/未知字段/尾随值与多顶层值）与严格路径 ID；新增 `config` 轻量领域校验/归一化并让 `LoadConfig` 对既有非法值返回带键名错误；Store 增加 `DBTX`/事务内读写/`RowsAffected`/`LastInsertId`/规则引用检查；新增配置变更协调器骨架并让 targets/rules/settings/alerts/pause/resume/reset 与 version 1 导入全部经其单事务写入、非法输入零 reload、合法事务一次 apply；settings 改 11 pointer DTO 单事务、alerts 两对象全字段单事务、删除被引用目标 409；500 改安全文案并移除 Webhook URL 日志；日志级别改为可动态更新的 `slog.LevelVar`、DNS 阈值提供保留计数的线程安全 setter；前端设置保存改 11 键白名单 payload；附四道门禁、专项测试矩阵与证据边界 |
 | v1.6 | 2026-09-23 | Step 3 验收通过：HTTP 生命周期收束为同步 `net.Listen` + 同一 listener 交给 `Serve`（仅 `EADDRINUSE` 降级）、显式 `http.Server` 超时、`Wait`、幂等 `Shutdown`（超时强制 `Close`）、两类 SSE 服务器级 shutdown 退出、main 信号与 Serve 错误统一收尾（HTTP 10s 上限、Syncer 无超时完成当前轮次）；附门禁、真实进程信号/在途轮次/SSE 与 Docker health/stop 证据及证据边界；同步 §12.2 状态映射并关闭 Issue5 O5-04/O5-05 |

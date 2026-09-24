@@ -157,23 +157,78 @@ async function save() {
   }
 }
 
-// ─── 导出配置（卡片式确认后下载；配置文件不含凭据，也不是 SQLite 在线备份） ───
-const showExportConfirm = ref(false)
+// ─── 配置导入导出（version 2 完整敏感快照，Build6 Step 5） ───
+//
+// 安全边界：配置包是**明文完整敏感快照**（含腾讯云/阿里云密钥、SMTP 密码、
+// Webhook URL），安全等级等同于生产 Secret 或 SQLite 数据库备份。
+// 因此导出使用 POST + fetch + Blob，不把响应交给通用 JSON 请求封装，
+// 不在 console 输出响应体；文件名从 Content-Disposition 解析，不可用时用固定安全名。
 
-function doExport() {
-  showExportConfirm.value = false
-  window.open('/api/config/export', '_blank')
+// 导出响应不可用时的固定安全文件名
+const EXPORT_FALLBACK_FILENAME = 'fwalizer-config-v2.json'
+
+// parseAttachmentFilename 从 Content-Disposition 中提取安全文件名。
+//
+// 只接受形如 attachment; filename="..." 的值，并剥离任何路径分隔符与
+// 控制字符，避免服务端/中间层注入不安全的文件名。解析失败返回 fallback。
+function parseAttachmentFilename(header: string | null): string {
+  if (!header) return EXPORT_FALLBACK_FILENAME
+  const match = /filename="([^"]+)"/i.exec(header)
+  if (!match) return EXPORT_FALLBACK_FILENAME
+  const raw = match[1].split(/[\\/]/).pop() || ''
+  const safe = raw.replace(/[\x00-\x1f\x7f]/g, '').trim()
+  if (!safe || !/^[\w.-]+$/.test(safe)) return EXPORT_FALLBACK_FILENAME
+  return safe
 }
 
-// ─── 导入配置（选中文件解析后弹卡片式确认，确认后执行；导入会清空现有凭据） ───
+const showExportConfirm = ref(false)
+const exporting = ref(false)
+
+async function doExport() {
+  showExportConfirm.value = false
+  exporting.value = true
+  try {
+    const res = await fetch('/api/config/export', { method: 'POST' })
+    if (!res.ok) {
+      let detail = ''
+      try {
+        const data = await res.json()
+        detail = data?.error || ''
+      } catch {
+        /* 非 JSON 错误响应：只用状态码 */
+      }
+      throw new Error(detail || `请求失败 (${res.status})`)
+    }
+    const blob = await res.blob()
+    const filename = parseAttachmentFilename(res.headers.get('Content-Disposition'))
+    const url = URL.createObjectURL(blob)
+    try {
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    } finally {
+      URL.revokeObjectURL(url)
+    }
+    message.success('配置已导出，请妥善保管（含全部密钥）')
+  } catch (e: any) {
+    message.error(`导出失败: ${e.message}`)
+  } finally {
+    exporting.value = false
+  }
+}
+
 const showImportConfirm = ref(false)
 const pendingImport = ref<any>(null)
+const importFilename = ref('')
 
 async function importConfig(e: Event) {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
-  // 先解析 JSON（独立 try/catch：格式错误与请求错误提示分离）
+  // 前端只做 JSON 语法预检查：结构、字段与引用校验的唯一边界在后端
   let data: any
   try {
     data = JSON.parse(await file.text())
@@ -183,6 +238,7 @@ async function importConfig(e: Event) {
     return
   }
   pendingImport.value = data
+  importFilename.value = file.name
   showImportConfirm.value = true
   input.value = '' // 重置文件选择，允许再次选择同一文件
 }
@@ -197,17 +253,14 @@ async function confirmImport() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     })
-    message.success('导入成功')
   } catch (err: any) {
-    message.error(`导入失败: ${err.message}`) // RequestError 携带后端 error 信息
+    // 失败时保持当前页面与运行时旧状态：不 reload
+    message.error(`导入失败: ${err.message}`)
     return
   }
-  // 导入成功后刷新设置表单（失败不影响导入结果）
-  try {
-    settings.value = await request<Record<string, string>>('/api/settings')
-  } catch (err: any) {
-    message.error(`导入成功，但刷新设置失败: ${err.message}`)
-  }
+  message.success('导入成功，正在刷新页面…')
+  // 成功后整页 reload，使主题、凭据、设置、告警、目标、规则与扫描缓存统一刷新
+  setTimeout(() => window.location.reload(), 600)
 }
 </script>
 
@@ -352,25 +405,42 @@ async function confirmImport() {
       </NFormItem>
     </NForm>
 
-    <!-- 导出确认弹窗 -->
-    <NModal v-model:show="showExportConfirm" preset="card" title="确认导出配置" style="width: 420px">
+    <!-- 导出确认弹窗（危险操作：配置包是明文完整敏感快照） -->
+    <NModal v-model:show="showExportConfirm" preset="card" title="确认导出完整配置" style="width: 460px">
+      <p style="margin: 0 0 8px; line-height: 1.7">
+        导出的配置文件是<b>明文完整敏感快照</b>，包含：
+      </p>
+      <ul style="margin: 0 0 12px; padding-left: 20px; line-height: 1.8">
+        <li>腾讯云密钥（SecretId / SecretKey）</li>
+        <li>阿里云密钥（AccessKeyId / AccessKeySecret）</li>
+        <li>SMTP 密码</li>
+        <li>Webhook URL</li>
+      </ul>
       <p style="margin: 0 0 16px; line-height: 1.7">
-        配置文件不包含云厂商凭据（安全设计），后续导入恢复后需重新填写凭据；它是目标、规则与设置的配置迁移方式，不是 SQLite 数据库备份。是否继续导出？
+        请勿提交到 Git、上传公共网盘或通过不可信渠道传输。该文件安全等级等同于生产密钥或数据库备份，
+        并且不是 SQLite 在线备份。确认继续导出？
       </p>
       <NSpace justify="end">
         <NButton size="large" @click="showExportConfirm = false">取消</NButton>
-        <NButton type="primary" size="large" @click="doExport">确认导出</NButton>
+        <NButton type="error" size="large" :loading="exporting" @click="doExport">确认导出</NButton>
       </NSpace>
     </NModal>
 
-    <!-- 导入确认弹窗 -->
-    <NModal v-model:show="showImportConfirm" preset="card" title="确认导入配置" style="width: 420px">
-      <p style="margin: 0 0 16px; line-height: 1.7">
-        导入将替换当前全部目标、规则与设置，并清空现有云厂商凭据（配置文件中不含凭据），导入完成后需重新填写凭据。确认继续？
+    <!-- 导入确认弹窗（危险操作：覆盖式替换全部业务配置） -->
+    <NModal v-model:show="showImportConfirm" preset="card" title="确认导入完整配置" style="width: 460px">
+      <p style="margin: 0 0 8px; line-height: 1.7">
+        导入将<b>整体覆盖</b>当前全部业务配置：目标、规则、设置、云凭据与告警。
+      </p>
+      <p style="margin: 0 0 12px; line-height: 1.7">
+        配置包是明文完整敏感快照，包含腾讯云密钥、阿里云密钥、SMTP 密码与 Webhook URL，
+        因此也会一并覆盖现有密钥。导入成功后页面会自动刷新；失败时保持当前配置不变。
+      </p>
+      <p v-if="importFilename" style="margin: 0 0 16px; color: #d03050; line-height: 1.7">
+        待导入文件：{{ importFilename }}
       </p>
       <NSpace justify="end">
         <NButton size="large" @click="showImportConfirm = false">取消</NButton>
-        <NButton type="primary" size="large" @click="confirmImport">确认导入</NButton>
+        <NButton type="error" size="large" @click="confirmImport">确认导入</NButton>
       </NSpace>
     </NModal>
 

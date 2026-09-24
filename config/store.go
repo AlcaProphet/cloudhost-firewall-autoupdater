@@ -32,6 +32,13 @@ func (s *Store) BeginTx(ctx context.Context) (*sql.Tx, error) {
 	return s.db.BeginTx(ctx, nil)
 }
 
+// BeginReadOnlyTx 开启 SQLite 只读事务（version 2 导出使用，Build6 §12.7）。
+//
+// 导出全部读取都传该 tx，保证配置包快照内部一致，且不进入变更锁。
+func (s *Store) BeginReadOnlyTx(ctx context.Context) (*sql.Tx, error) {
+	return s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+}
+
 // SyncLog 同步日志记录
 type SyncLog struct {
 	Timestamp time.Time `json:"timestamp"`
@@ -153,23 +160,9 @@ CREATE TABLE IF NOT EXISTS scanned_resources (
 	return nil
 }
 
-// GetSettings 获取全局设置
+// GetSettings 获取全局设置（非事务路径；完整快照读取请用 LoadBusinessSnapshotTx）
 func (s *Store) GetSettings() (map[string]string, error) {
-	rows, err := s.db.Query("SELECT key, value FROM settings")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	settings := make(map[string]string)
-	for rows.Next() {
-		var k, v string
-		if err := rows.Scan(&k, &v); err != nil {
-			return nil, err
-		}
-		settings[k] = v
-	}
-	return settings, rows.Err()
+	return loadSettings(context.Background(), s.db)
 }
 
 // SetSetting 设置单项配置
@@ -387,12 +380,6 @@ func (s *Store) DeleteScannedResources(cloudType string) error {
 	return err
 }
 
-// ClearAllTx 在事务中清空目标、规则与设置（配置导入的覆盖式替换第一部分）
-func (s *Store) ClearAllTx(ctx context.Context, tx *sql.Tx) error {
-	_, err := tx.ExecContext(ctx, "DELETE FROM targets; DELETE FROM rules; DELETE FROM settings;")
-	return err
-}
-
 // AddTargetTx 在事务中插入目标并返回数据库分配的 ID（Build6 §12.7）
 func (s *Store) AddTargetTx(ctx context.Context, tx *sql.Tx, t TargetConfig) (int64, error) {
 	res, err := tx.ExecContext(
@@ -549,44 +536,30 @@ func (s *Store) SetSettingTx(ctx context.Context, tx *sql.Tx, key, value string)
 	return err
 }
 
-// BatchAddTargetsTx 在事务中批量插入目标，返回“插入顺序 → 数据库 ID”的切片
-// （Step 5 的 export_id 映射会使用该结果）
-func (s *Store) BatchAddTargetsTx(ctx context.Context, tx *sql.Tx, targets []TargetConfig) ([]int64, error) {
-	ids := make([]int64, 0, len(targets))
-	for _, t := range targets {
-		id, err := s.AddTargetTx(ctx, tx, t)
-		if err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, nil
-}
-
-// BatchAddRulesTx 在事务中批量添加规则
-func (s *Store) BatchAddRulesTx(ctx context.Context, tx *sql.Tx, rules []DomainRule) error {
-	for _, r := range rules {
-		if err := s.AddRuleTx(ctx, tx, r); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // GetAlertEmail 获取邮件告警配置
 func (s *Store) GetAlertEmail() (*AlertEmailConfig, error) {
-	var cfg AlertEmailConfig
-	var enabled int
-	err := s.db.QueryRow("SELECT enabled, host, port, username, password, from_addr, to_addr FROM alert_email WHERE id = 1").
-		Scan(&enabled, &cfg.Host, &cfg.Port, &cfg.Username, &cfg.Password, &cfg.FromAddr, &cfg.ToAddr)
-	if err == sql.ErrNoRows {
-		return &AlertEmailConfig{}, nil
-	}
+	cfg, err := loadAlertEmail(context.Background(), s.db)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Enabled = enabled != 0
 	return &cfg, nil
+}
+
+// loadAlertEmail 读取邮件告警配置（事务内可复用；无行时返回零值配置）
+func loadAlertEmail(ctx context.Context, q DBTX) (AlertEmailConfig, error) {
+	var cfg AlertEmailConfig
+	var enabled int
+	err := q.QueryRowContext(ctx,
+		"SELECT enabled, host, port, username, password, from_addr, to_addr FROM alert_email WHERE id = 1").
+		Scan(&enabled, &cfg.Host, &cfg.Port, &cfg.Username, &cfg.Password, &cfg.FromAddr, &cfg.ToAddr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AlertEmailConfig{}, nil
+	}
+	if err != nil {
+		return AlertEmailConfig{}, err
+	}
+	cfg.Enabled = enabled != 0
+	return cfg, nil
 }
 
 // saveAlertEmailSQL 保存邮件告警配置的语句（单条写入与事务内写入共用）
@@ -616,18 +589,27 @@ func (s *Store) SaveAlertEmailTx(ctx context.Context, tx *sql.Tx, cfg *AlertEmai
 
 // GetAlertWebhook 获取 Webhook 告警配置
 func (s *Store) GetAlertWebhook() (*AlertWebhookConfig, error) {
-	var cfg AlertWebhookConfig
-	var enabled int
-	err := s.db.QueryRow("SELECT enabled, url, channel FROM alert_webhook WHERE id = 1").
-		Scan(&enabled, &cfg.URL, &cfg.Channel)
-	if err == sql.ErrNoRows {
-		return &AlertWebhookConfig{}, nil
-	}
+	cfg, err := loadAlertWebhook(context.Background(), s.db)
 	if err != nil {
 		return nil, err
 	}
-	cfg.Enabled = enabled != 0
 	return &cfg, nil
+}
+
+// loadAlertWebhook 读取 Webhook 告警配置（事务内可复用；无行时返回零值配置）
+func loadAlertWebhook(ctx context.Context, q DBTX) (AlertWebhookConfig, error) {
+	var cfg AlertWebhookConfig
+	var enabled int
+	err := q.QueryRowContext(ctx, "SELECT enabled, url, channel FROM alert_webhook WHERE id = 1").
+		Scan(&enabled, &cfg.URL, &cfg.Channel)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AlertWebhookConfig{}, nil
+	}
+	if err != nil {
+		return AlertWebhookConfig{}, err
+	}
+	cfg.Enabled = enabled != 0
+	return cfg, nil
 }
 
 // saveAlertWebhookSQL 保存 Webhook 告警配置的语句（单条写入与事务内写入共用）
@@ -652,6 +634,21 @@ func (s *Store) SaveAlertWebhook(cfg *AlertWebhookConfig) error {
 func (s *Store) SaveAlertWebhookTx(ctx context.Context, tx *sql.Tx, cfg *AlertWebhookConfig) error {
 	_, err := tx.ExecContext(ctx, saveAlertWebhookSQL, alertWebhookArgs(cfg)...)
 	return err
+}
+
+// GetAlertEmailConfigTx 在事务内读取邮件告警配置（配置导入的候选构造使用）。
+func (s *Store) GetAlertEmailConfigTx(ctx context.Context, q DBTX) (AlertEmailConfig, error) {
+	return loadAlertEmail(ctx, q)
+}
+
+// GetAlertWebhookConfigTx 在事务内读取 Webhook 告警配置（配置导入的候选构造使用）。
+func (s *Store) GetAlertWebhookConfigTx(ctx context.Context, q DBTX) (AlertWebhookConfig, error) {
+	return loadAlertWebhook(ctx, q)
+}
+
+// GetSettingsTx 在事务内按固定键集合读取设置（不返回数据库中的未知键）。
+func (s *Store) GetSettingsTx(ctx context.Context, q DBTX) (map[string]string, error) {
+	return loadSettingsByKeys(ctx, q, settingsKeysV2)
 }
 
 // AddSyncLog 添加同步日志
@@ -702,96 +699,290 @@ func (s *Store) ClearSyncLogs() error {
 	return err
 }
 
-// LoadConfig 从 SQLite 构建 Config
+// LoadConfig 从 SQLite 构建启动期 Config。
+//
+// 走与导出、导入、协调器完全相同的「事务内完整业务快照」路径（Build6 §12.10）：
+// 同一个 LoadBusinessSnapshotTx 负责读出 targets/rules/settings/alerts 并复用
+// validate.go 的归一化与校验，避免出现「API 能写入但重启加载失败」的双口径。
 func (s *Store) LoadConfig() (*Config, error) {
-	targets, err := s.GetTargets()
+	ctx := context.Background()
+	tx, err := s.BeginReadOnlyTx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("开始只读事务失败: %w", err)
+	}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.Error("回滚只读事务失败", "error", rbErr)
+		}
+	}()
+
+	snapshot, err := s.LoadBusinessSnapshotTx(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	rules, err := s.GetRules()
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("提交只读事务失败: %w", err)
+	}
+	return snapshot.ToConfig(), nil
+}
+
+// LoadBusinessSnapshot 读取一次完整业务配置快照（启动路径使用；内部走只读事务）。
+//
+// 与导出、导入、协调器共用同一读取与校验路径，避免出现第二套配置加载语义。
+func (s *Store) LoadBusinessSnapshot() (*BusinessSnapshot, error) {
+	ctx := context.Background()
+	tx, err := s.BeginReadOnlyTx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("开始只读事务失败: %w", err)
+	}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.Error("回滚只读事务失败", "error", rbErr)
+		}
+	}()
+
+	snapshot, err := s.LoadBusinessSnapshotTx(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	settings, err := s.GetSettings()
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("提交只读事务失败: %w", err)
+	}
+	return snapshot, nil
+}
+
+// LoadBusinessSnapshotTx 在调用方给定的事务内读取完整业务配置快照
+// （targets / rules / settings / alert_email / alert_webhook），并完成归一化与校验。
+//
+// 只读导出、导入候选构造、协调器候选构造与启动加载共用本方法：
+// 所有读取都走同一个 tx，绝不回退到 s.db，保证快照内部一致（Build6 §12.7、§12.11）。
+func (s *Store) LoadBusinessSnapshotTx(ctx context.Context, q DBTX) (*BusinessSnapshot, error) {
+	targets, err := loadTargets(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	rules, err := loadRules(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	settings, err := loadSettings(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	email, err := loadAlertEmail(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	webhook, err := loadAlertWebhook(ctx, q)
 	if err != nil {
 		return nil, err
 	}
 
-	cfg := &Config{
-		Targets:          targets,
-		DomainRules:      rules,
-		Tag:              "auto-dns",
-		Interval:         5 * time.Minute,
-		DNS:              "223.5.5.5",
-		DNSTimeout:       10 * time.Second,
-		DNSFailThreshold: 5,
-		LogLevel:         "info",
-		SyncEnabled:      true, // 默认开启（向后兼容：老用户无该键时保持启动即同步）
-		TCAccessID:       settings["tc_access_id"],
-		TCAccessKey:      settings["tc_access_key"],
-		AliAccessID:      settings["ali_access_id"],
-		AliAccessKey:     settings["ali_access_key"],
+	normalized, err := normalizeSettings(settings)
+	if err != nil {
+		return nil, err
 	}
 
-	// 设置校验（Build6 §12.10）：空白值按“缺失”处理并使用默认值；
-	// 已有非空但非法的值不得静默回退默认值，而是返回带键名（不含值）的错误。
-	if v := strings.TrimSpace(settings["tag"]); v != "" {
-		tag, err := NormalizeTag(v)
+	return &BusinessSnapshot{
+		Targets:  targets,
+		Rules:    rules,
+		Settings: normalized,
+		Email:    email,
+		Webhook:  webhook,
+	}, nil
+}
+
+// loadSettings 读取全部设置键值（事务内可复用）。
+func loadSettings(ctx context.Context, q DBTX) (map[string]string, error) {
+	rows, err := q.QueryContext(ctx, "SELECT key, value FROM settings")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	settings := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		settings[k] = v
+	}
+	return settings, rows.Err()
+}
+
+// loadSettingsByKeys 按固定键集合读取设置值（事务内可复用）。
+//
+// 显式指定键名，不依赖数据库里存在哪些未知键，因此导入与快照都不会把
+// 旧数据库的未知键带回新状态。
+func loadSettingsByKeys(ctx context.Context, q DBTX, keys []string) (map[string]string, error) {
+	settings := make(map[string]string, len(keys))
+	if len(keys) == 0 {
+		return settings, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",")
+	args := make([]any, 0, len(keys))
+	for _, k := range keys {
+		args = append(args, k)
+	}
+	rows, err := q.QueryContext(ctx, "SELECT key, value FROM settings WHERE key IN ("+placeholders+")", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		settings[k] = v
+	}
+	return settings, rows.Err()
+}
+
+// normalizeSettings 对原始设置 map 执行统一校验与归一化（Build6 §12.10）：
+//
+//   - 缺失或空白的非凭据默认键按「缺失」处理并使用固定默认值；
+//   - 已有非空但非法的值不静默回退，而是返回带键名（不含值）的错误；
+//   - webui_port 等已不是业务设置的残留键一律忽略，不做迁移或清理；
+//   - 返回的 map 只包含 version 2 的完整设置键集合，未知键被丢弃。
+func normalizeSettings(raw map[string]string) (map[string]string, error) {
+	out := make(map[string]string, len(settingsKeysV2))
+	// 默认值（Build6 §3.1）
+	out["tag"] = "auto-dns"
+	out["interval"] = "5m"
+	out["dns"] = "223.5.5.5"
+	out["dns_timeout"] = "10s"
+	out["dns_fail_threshold"] = "5"
+	out["log_level"] = "info"
+	out["theme"] = "light"
+	out["sync_enabled"] = "true"
+	// 四个云凭据允许缺失/空值，按原值保存
+	out["tc_access_id"] = raw["tc_access_id"]
+	out["tc_access_key"] = raw["tc_access_key"]
+	out["ali_access_id"] = raw["ali_access_id"]
+	out["ali_access_key"] = raw["ali_access_key"]
+
+	if v := strings.TrimSpace(raw["tag"]); v != "" {
+		normalized, err := NormalizeTag(v)
 		if err != nil {
 			return nil, err
 		}
-		cfg.Tag = tag
+		out["tag"] = normalized
 	}
-	if v := strings.TrimSpace(settings["interval"]); v != "" {
-		_, d, err := ParsePositiveDuration("interval", v)
+	if v := strings.TrimSpace(raw["interval"]); v != "" {
+		normalized, _, err := ParsePositiveDuration("interval", v)
 		if err != nil {
 			return nil, err
 		}
-		cfg.Interval = d
+		out["interval"] = normalized
 	}
-	if v := strings.TrimSpace(settings["dns"]); v != "" {
-		dnsAddr, err := NormalizeDNSAddress(v)
+	if v := strings.TrimSpace(raw["dns"]); v != "" {
+		normalized, err := NormalizeDNSAddress(v)
 		if err != nil {
 			return nil, err
 		}
-		cfg.DNS = dnsAddr
+		out["dns"] = normalized
 	}
-	if v := strings.TrimSpace(settings["log_level"]); v != "" {
-		level, err := NormalizeLogLevel(v)
+	if v := strings.TrimSpace(raw["dns_timeout"]); v != "" {
+		normalized, _, err := ParsePositiveDuration("dns_timeout", v)
 		if err != nil {
 			return nil, err
 		}
-		cfg.LogLevel = level
+		out["dns_timeout"] = normalized
 	}
-	// webui_port 已不是业务设置：数据库中的残留键一律忽略，不做迁移或清理
-	if v := strings.TrimSpace(settings["dns_fail_threshold"]); v != "" {
-		_, n, err := NormalizeDNSFailThreshold(v)
+	if v := strings.TrimSpace(raw["dns_fail_threshold"]); v != "" {
+		normalized, _, err := NormalizeDNSFailThreshold(v)
 		if err != nil {
 			return nil, err
 		}
-		cfg.DNSFailThreshold = n
+		out["dns_fail_threshold"] = normalized
 	}
-	if v := strings.TrimSpace(settings["dns_timeout"]); v != "" {
-		_, d, err := ParsePositiveDuration("dns_timeout", v)
+	if v := strings.TrimSpace(raw["log_level"]); v != "" {
+		normalized, err := NormalizeLogLevel(v)
 		if err != nil {
 			return nil, err
 		}
-		cfg.DNSTimeout = d
+		out["log_level"] = normalized
 	}
-	// theme 是业务设置但不进入同步器运行时配置（前端直接读 GET /api/settings），
-	// 这里只做合法性校验，避免非法值长期留在数据库中静默生效
-	if v := strings.TrimSpace(settings["theme"]); v != "" {
-		if _, err := NormalizeTheme(v); err != nil {
+	if v := strings.TrimSpace(raw["theme"]); v != "" {
+		normalized, err := NormalizeTheme(v)
+		if err != nil {
 			return nil, err
 		}
+		out["theme"] = normalized
 	}
-	if v := strings.TrimSpace(settings["sync_enabled"]); v != "" {
+	if v := strings.TrimSpace(raw["sync_enabled"]); v != "" {
 		enabled, err := NormalizeSyncEnabled(v)
 		if err != nil {
 			return nil, err
 		}
-		cfg.SyncEnabled = enabled
+		if enabled {
+			out["sync_enabled"] = "true"
+		} else {
+			out["sync_enabled"] = "false"
+		}
 	}
+	return out, nil
+}
 
-	return cfg, nil
+// writeSettingsTx 在事务内显式逐键写入给定设置（导入与候选写入共用）。
+//
+// 只写入调用方提供的键，不遍历数据库或请求中的任意 map。
+func (s *Store) writeSettingsTx(ctx context.Context, tx *sql.Tx, settings map[string]string) error {
+	for _, key := range settingsKeysV2 {
+		value, ok := settings[key]
+		if !ok {
+			continue
+		}
+		if err := s.SetSettingTx(ctx, tx, key, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ReplaceBusinessSettingsTx 在事务内显式写入 version 2 的完整设置键集合
+// （导入使用：调用方必须提供全部 12 个键，缺失键视为调用方错误）。
+func (s *Store) ReplaceBusinessSettingsTx(ctx context.Context, tx *sql.Tx, settings map[string]string) error {
+	for _, key := range settingsKeysV2 {
+		if _, ok := settings[key]; !ok {
+			return fmt.Errorf("缺少设置键 %s", key)
+		}
+	}
+	return s.writeSettingsTx(ctx, tx, settings)
+}
+
+// ReplaceBusinessAlertsTx 在事务内覆盖保存完整邮件与 Webhook 告警配置。
+func (s *Store) ReplaceBusinessAlertsTx(ctx context.Context, tx *sql.Tx, email AlertEmailConfig, webhook AlertWebhookConfig) error {
+	if err := s.SaveAlertEmailTx(ctx, tx, &email); err != nil {
+		return err
+	}
+	return s.SaveAlertWebhookTx(ctx, tx, &webhook)
+}
+
+// ClearScannedResourcesTx 在事务内清空扫描缓存（配置导入的保留/清空边界）。
+func (s *Store) ClearScannedResourcesTx(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, "DELETE FROM scanned_resources")
+	return err
+}
+
+// DeleteImportOwnedTablesTx 按依赖顺序清空导入覆盖的业务表（Build6 §12.12 固定顺序）：
+// rules → targets → settings → alert_email → alert_webhook。
+//
+// 即使当前 Schema 没有外键，也按依赖顺序实现；不触碰 sync_logs 与 sqlite_sequence。
+func (s *Store) DeleteImportOwnedTablesTx(ctx context.Context, tx *sql.Tx) error {
+	stmts := []string{
+		"DELETE FROM rules",
+		"DELETE FROM targets",
+		"DELETE FROM settings",
+		"DELETE FROM alert_email",
+		"DELETE FROM alert_webhook",
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }

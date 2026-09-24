@@ -14,9 +14,7 @@ import (
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/app"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/webui"
 	webapi "github.com/alcaprophet/cloudhost-firewall-autoupdater/webui/api"
@@ -70,135 +68,49 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 		}
 	}()
 
-	cfg, err := store.LoadConfig()
+	// 启动期只读一次完整业务快照：SQLite 是唯一业务配置源
+	snapshot, err := store.LoadBusinessSnapshot()
 	if err != nil {
 		fmt.Fprintf(stderr, "加载配置失败: %v\n", err)
 		return 1
 	}
+	runtimeCfg := snapshot.ToRuntimeConfig()
 
 	// 初始化日志（同时输出到 stdout 和 WebUI 日志流）
-	logBroadcaster := webapi.NewLogBroadcaster(cfg.LogLevel)
-	app.InitLoggerWithBroadcaster(cfg.LogLevel, logBroadcaster)
+	logBroadcaster := webapi.NewLogBroadcaster(runtimeCfg.LogLevel)
+	app.InitLoggerWithBroadcaster(runtimeCfg.LogLevel, logBroadcaster)
+
+	// 初始完整运行时状态：一次构造（凭据、Provider、Resolver、熔断器）
+	initialState, err := syncer.BuildRuntimeState(nil, runtimeCfg, syncer.BreakerReset)
+	if err != nil {
+		fmt.Fprintf(stderr, "创建运行时状态失败: %v\n", err)
+		return 1
+	}
+	runtimeManager := syncer.NewRuntimeManager(initialState)
 
 	// 监听地址和端口只来自部署参数，不参与 SQLite 业务配置
 	srv := webui.NewServer(store, deploy.Host, deploy.Port)
 	srv.SetLogBroadcaster(logBroadcaster)
 
-	// 创建同步引擎（初始 Provider 可为空，等待用户通过 WebUI 配置后热重载生效）
-	provider.SetCredentials(cfg.TCAccessID, cfg.TCAccessKey, cfg.AliAccessID, cfg.AliAccessKey)
-	pool := provider.NewClientPool()
-	var providers []provider.Provider
-	for _, t := range cfg.Targets {
-		p, err := provider.NewProvider(t, t.ID, pool)
-		if err != nil {
-			fmt.Fprintf(stderr, "创建 Provider 失败: %v\n", err)
-			return 1
-		}
-		providers = append(providers, p)
-	}
-	resolver := dns.NewResolver(cfg.DNS, cfg.DNSTimeout)
-	s := syncer.New(cfg, providers, resolver)
+	// 创建同步引擎：状态由 RuntimeManager 提供，调度由 Syncer 内部单一控制通道驱动
+	s := syncer.New(runtimeManager)
 
-	// 将 Syncer 和 EventBus 传入 WebUI（支持 status/trigger/dryrun/SSE）
+	// 告警订阅管理器：候选集合在事务提交前构造，commit 后无失败替换。
+	// 每次状态发布完成后重新读取生效中的告警集合并输出安全日志（只含收件人/渠道名）。
+	alertManager := webapi.NewAlertManager(s.EventBus())
+	alertManager.Apply(webapi.BuildAlertSet(runtimeCfg))
+	alertManager.LogStatus("已启用")
+	s.SetStateAppliedHook(func(*syncer.RuntimeState) { alertManager.LogStatus("已更新") })
+
+	// 将 Syncer、EventBus 与运行时接线传入 WebUI
+	// （status/trigger/dryrun/SSE + 连接测试/资源扫描的只读快照来源）
 	srv.SetSyncer(s, s.EventBus())
+	srv.SetRuntimeWiring(runtimeManager, alertManager)
 
 	// 同步日志写入：订阅 sync:complete 和 sync:error 事件
 	logWriter := &webapi.StoreLogWriter{Store: store}
 	s.EventBus().Subscribe(notifier.EventDomainSyncComplete, logWriter)
 	s.EventBus().Subscribe(notifier.EventSyncError, logWriter)
-
-	// 追踪当前活跃的告警 Notifier（用于热重载时取消旧订阅）
-	var currentEmailNotifier notifier.Subscriber
-	var currentWebhookNotifier notifier.Subscriber
-
-	// 读取告警配置并注册 Notifier
-	if emailCfg, err := store.GetAlertEmail(); err == nil && emailCfg != nil && emailCfg.Enabled {
-		currentEmailNotifier = notifier.NewEmailNotifier(notifier.EmailConfig{
-			Host: emailCfg.Host, Port: emailCfg.Port,
-			User: emailCfg.Username, Pass: emailCfg.Password,
-			From: emailCfg.FromAddr, To: emailCfg.ToAddr,
-		})
-		s.EventBus().Subscribe(notifier.EventSyncError, currentEmailNotifier)
-		s.EventBus().Subscribe(notifier.EventDNSFailed, currentEmailNotifier)
-		slog.Info("邮件告警已启用", "to", emailCfg.ToAddr)
-	}
-
-	if webhookCfg, err := store.GetAlertWebhook(); err == nil && webhookCfg != nil && webhookCfg.Enabled {
-		currentWebhookNotifier = notifier.NewWebhookNotifier(webhookCfg.URL, webhookCfg.Channel)
-		s.EventBus().Subscribe(notifier.EventSyncError, currentWebhookNotifier)
-		s.EventBus().Subscribe(notifier.EventDNSFailed, currentWebhookNotifier)
-		// 不记录 Webhook URL（敏感配置只在 SQLite 中保存）
-		slog.Info("Webhook 告警已启用", "channel", webhookCfg.Channel)
-	}
-
-	// 接通热重载：WebUI 修改配置后重新加载并通知 Syncer
-	srv.SetReloadFunc(func() {
-		newCfg, err := store.LoadConfig()
-		if err != nil {
-			slog.Error("重载配置失败", "error", err)
-			return
-		}
-		// 日志级别即时生效：stdout（slog.LevelVar）与 WebUI 日志流保持同一级别
-		app.SetLogLevel(newCfg.LogLevel)
-		logBroadcaster.SetLevel(app.ParseLogLevel(newCfg.LogLevel))
-		// DNS 熔断阈值变更保留既有失败计数
-		s.SetDNSFailThreshold(newCfg.DNSFailThreshold)
-		// 更新凭据
-		provider.SetCredentials(newCfg.TCAccessID, newCfg.TCAccessKey, newCfg.AliAccessID, newCfg.AliAccessKey)
-		// 重建 ClientPool 和 Provider 列表
-		newPool := provider.NewClientPool()
-		var newProviders []provider.Provider
-		var failedTargets []string
-		for _, t := range newCfg.Targets {
-			p, err := provider.NewProvider(t, t.ID, newPool)
-			if err != nil {
-				slog.Error("重建 Provider 失败", "target", t.ResourceID, "error", err)
-				failedTargets = append(failedTargets, t.ResourceID)
-				continue
-			}
-			newProviders = append(newProviders, p)
-		}
-		// 失败汇总提示（避免部分目标静默丢失）
-		if len(failedTargets) > 0 {
-			slog.Error("部分目标重建失败", "failed", len(failedTargets), "targets", failedTargets)
-		}
-		s.ReloadProviders(newProviders)
-		s.Reload(newCfg)
-		// 若 DNS 配置变更，重建 Resolver 并热重载
-		newResolver := dns.NewResolver(newCfg.DNS, newCfg.DNSTimeout)
-		s.ReloadResolver(newResolver)
-
-		// 重建告警订阅（先取消旧订阅，再按最新配置注册）
-		if currentEmailNotifier != nil {
-			s.EventBus().Unsubscribe(notifier.EventSyncError, currentEmailNotifier)
-			s.EventBus().Unsubscribe(notifier.EventDNSFailed, currentEmailNotifier)
-			currentEmailNotifier = nil
-		}
-		if currentWebhookNotifier != nil {
-			s.EventBus().Unsubscribe(notifier.EventSyncError, currentWebhookNotifier)
-			s.EventBus().Unsubscribe(notifier.EventDNSFailed, currentWebhookNotifier)
-			currentWebhookNotifier = nil
-		}
-
-		if emailCfg, err := store.GetAlertEmail(); err == nil && emailCfg != nil && emailCfg.Enabled {
-			currentEmailNotifier = notifier.NewEmailNotifier(notifier.EmailConfig{
-				Host: emailCfg.Host, Port: emailCfg.Port,
-				User: emailCfg.Username, Pass: emailCfg.Password,
-				From: emailCfg.FromAddr, To: emailCfg.ToAddr,
-			})
-			s.EventBus().Subscribe(notifier.EventSyncError, currentEmailNotifier)
-			s.EventBus().Subscribe(notifier.EventDNSFailed, currentEmailNotifier)
-			slog.Info("邮件告警已更新", "to", emailCfg.ToAddr)
-		}
-
-		if webhookCfg, err := store.GetAlertWebhook(); err == nil && webhookCfg != nil && webhookCfg.Enabled {
-			currentWebhookNotifier = notifier.NewWebhookNotifier(webhookCfg.URL, webhookCfg.Channel)
-			s.EventBus().Subscribe(notifier.EventSyncError, currentWebhookNotifier)
-			s.EventBus().Subscribe(notifier.EventDNSFailed, currentWebhookNotifier)
-			// 不记录 Webhook URL（敏感配置只在 SQLite 中保存）
-			slog.Info("Webhook 告警已更新", "channel", webhookCfg.Channel)
-		}
-	})
 
 	// 信号监听必须在 HTTP 绑定前建立：绑定失败时的极早信号也不会丢失。
 	sigCh := make(chan os.Signal, 1)
@@ -215,7 +127,7 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 		slog.Warn("WebUI 未使用请求端口", "请求端口", deploy.Port, "实际端口", actualPort)
 	}
 
-	if len(providers) == 0 {
+	if len(initialState.Providers) == 0 {
 		slog.Info("WebUI 已启动，请通过浏览器配置云资源凭据和目标", "访问地址", srv.Addr())
 	}
 

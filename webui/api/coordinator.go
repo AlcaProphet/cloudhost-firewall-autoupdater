@@ -9,38 +9,70 @@ import (
 	"sync"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 )
 
-// ConfigCoordinator 进程内配置变更协调器（Build6 Step 4 骨架、§12.4）。
+// ErrRuntimeCandidateUnsupported 候选运行时构造失败且原因属于请求侧（400）。
 //
-// 职责：把目标、规则、settings、alerts、pause/resume、reset 与配置导入的写入口
-// 串行化，在同一个 SQLite 事务内完成变更，并在提交后只触发一次运行时更新，
-// 避免“后提交先应用”造成的运行时回退。
+// 例如配置包/请求给出了未注册的云产品类型：这是输入问题，不是服务器故障。
+// 真正的内部构建失败（数据库、内存等）不应包装成该错误，而应走 500。
+var ErrRuntimeCandidateUnsupported = errors.New("配置包含不受支持的云产品类型")
+
+// ErrInternalBuild 候选运行时构造失败且原因属于内部错误（500）。
+var ErrInternalBuild = errors.New("构造运行时状态失败")
+
+// Candidate 是协调器在事务内构造好的、可在 commit 后无失败发布的一整套内存对象。
 //
-// 过渡结构声明：本轮的 apply 仍封装既有 reload 机制（run.go 注入的闭包，内部
-// 依旧是 SetCredentials → ReloadProviders → Reload → ReloadResolver → 告警
-// 重订阅的分次应用）。它**不是** Step 5 要求的完整原子 RuntimeState 发布；
-// Step 5 必须改成“预构造候选 + 无失败原子替换”并删除分次 reload。
+// State 为候选完整运行时状态（syncer 包拥有其结构与不变量），Alerts 为候选
+// 告警订阅集合。二者都在事务提交前构造完成。
+type Candidate struct {
+	State  *syncer.RuntimeState
+	Alerts alertSet
+}
+
+// ConfigCoordinator 进程内配置变更协调器（Build6 §12.4）。
+//
+// 职责：把目标、规则、settings、alerts、pause/resume、reset 与 version 2 配置
+// 导入的写入口串行化，并在**同一个 SQLite 事务内**完成变更、读取完整业务快照、
+// 构造候选运行时状态与候选告警集合；commit 之后只做无失败的内存发布。
+//
+// 因此不会出现「后提交先应用」的运行时回退，也不会出现「接口报错但数据库已经改变」。
 type ConfigCoordinator struct {
 	mu    sync.Mutex
 	store *config.Store
-	apply func()
+
+	// buildCandidate 在事务内构造候选：只允许本地对象与 SDK client，
+	// 不得访问云 API、DNS 上游、SMTP、Webhook 或任何外部网络。
+	buildCandidate func(snapshot *config.BusinessSnapshot) (Candidate, error)
+
+	// apply 在 commit 之后按固定顺序执行无失败发布：
+	// 日志级别 → 告警集合 → RuntimeState。返回 error 只用于编程错误上报。
+	apply func(candidate Candidate) error
 }
+
+// ErrNoSnapshotLoader 协调器未配置快照/候选构造能力（接线错误）。
+var ErrNoSnapshotLoader = errors.New("协调器未配置候选构造能力")
 
 // NewConfigCoordinator 创建协调器。
 //
-// apply 在事务提交后同步调用一次，只能是无失败的内存操作；传 nil 表示不需要
-// 运行时更新（仅测试或纯写入场景）。
-func NewConfigCoordinator(store *config.Store, apply func()) *ConfigCoordinator {
-	return &ConfigCoordinator{store: store, apply: apply}
+// buildCandidate 与 apply 必须同时提供；仅做纯写入（无运行时）的场景可传 nil，
+// 此时 Mutate 只提交事务、不做运行时发布。
+func NewConfigCoordinator(
+	store *config.Store,
+	buildCandidate func(snapshot *config.BusinessSnapshot) (Candidate, error),
+	apply func(candidate Candidate) error,
+) *ConfigCoordinator {
+	return &ConfigCoordinator{store: store, buildCandidate: buildCandidate, apply: apply}
 }
 
-// Mutate 在锁内执行一次配置变更：
+// Mutate 在锁内执行一次配置变更（Build6 §12.4 固定顺序）：
 //
-//	加锁 → 开启事务 → 执行变更 → 提交 → 触发一次运行时更新
+//	加协调器锁 → 开启写事务 → 执行 mutation → 同一事务内读取完整业务快照
+//	→ 构造候选 RuntimeState 与候选告警集合 → 提交事务
+//	→ 日志级别 → 告警集合 → 发布 RuntimeState → 返回成功
 //
-// 变更回调返回错误时不提交、不 apply；提交失败同样不 apply。
-// 因此非法输入既不会写库，也不会触发 reload。
+// mutation 或候选构造任一失败都完整回滚：数据库、旧 RuntimeState、旧日志级别、
+// 旧告警订阅与扫描缓存全部保持原样，且不产生部分 ID 映射。
 func (c *ConfigCoordinator) Mutate(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -62,15 +94,38 @@ func (c *ConfigCoordinator) Mutate(ctx context.Context, fn func(ctx context.Cont
 	if err := fn(ctx, tx); err != nil {
 		return err
 	}
+
+	// 事务内读取完整业务快照：导出、导入、候选构造共用同一读取路径，
+	// commit 之后不再重新读库（Build6 §12.4、§12.12）。
+	snapshot, err := c.store.LoadBusinessSnapshotTx(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("读取业务快照失败: %w", err)
+	}
+
+	var candidate Candidate
+	if c.buildCandidate != nil {
+		candidate, err = c.buildCandidate(snapshot)
+		if err != nil {
+			return err
+		}
+	} else if c.apply != nil {
+		// 配置了运行时发布却没有候选构造能力属于接线错误
+		return ErrNoSnapshotLoader
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("提交配置事务失败: %w", err)
 	}
 	committed = true
 
-	// commit 之后只做无失败的内存操作；HTTP 成功响应必须在 apply 完成后写出，
+	// 以下步骤必须是无 error 的内存操作；HTTP 成功响应必须在 apply 完成后写出，
 	// 使响应之后开始的新操作必然取得新状态。
 	if c.apply != nil {
-		c.apply()
+		if aerr := c.apply(candidate); aerr != nil {
+			// 发布阶段的设计前提是不可能失败；一旦失败说明接线错误，记录 ERROR
+			slog.Error("运行时状态发布失败", "error", aerr)
+			return aerr
+		}
 	}
 	return nil
 }

@@ -1,7 +1,7 @@
 # ProdTestList.md — 长耗时 / 外部验收测试清单
 
 > **用途：** 集中记录单次耗时较长、或需要远端与外部环境才能执行完成的验收项，便于安排时段批量处理。
-> **状态时间：** 2026-09-24。Build6 Step 1、Step 2、Step 3 与 Step 4 的本地门禁均已执行完毕（见第一、二、二之二、二之三节）；其余待办见第三节。
+> **状态时间：** 2026-09-25。Build6 Step 1、Step 2、Step 3、Step 4 与 Step 5 的本地门禁均已执行完毕（见第一、二、二之二、二之三、二之四节）；其余待办见第三节。
 > **原则：** 本清单只记录"尚未执行/需重跑"的项；已通过的项如实记录命令与结果，绝不以更窄的命令替代原门禁。
 
 ---
@@ -100,6 +100,38 @@ Build6 Step 2 规定的自动门禁已在本机真实执行并通过：
 
 ---
 
+## 二之四、Build6 Step 5 门禁：本地自动门禁已完成（2026-09-25）
+
+| # | 命令 / 动作 | 结果 | 备注 |
+|---|------------|------|------|
+| 1 | `go test -race ./config ./provider ./syncer ./webui/api` | **通过** | config 2.062s、provider 1.656s、syncer 11.163s、webui/api 5.034s；0 次 `WARNING: DATA RACE` |
+| 2 | `go test ./... -race -count=1`（冷缓存复跑） | **通过** | 11 包全 ok（root 10.402s、app 2.339s、config 3.027s、dns 3.319s、portconv 1.330s、tag 1.594s、notifier 2.512s、provider 2.862s、syncer 13.089s、webui 4.495s、webui/api 6.773s），0 次 `WARNING: DATA RACE` |
+| 3 | `go vet ./...` / `go build ./...` / `git diff --check` | **通过** | 改动与新增 Go 文件 `gofmt -l` 无输出 |
+| 4 | `cd webui/frontend && npm ci && npm run build` | **通过** | vue-tsc + Vite 5.4.21，2818 模块；`package.json`/`package-lock.json` sha256 前后一致（**未升级前端依赖**，属 Step 6） |
+| 5 | 真实二进制进程级 version 2 往返 | **通过** | `TestProcessConfigExportImportRoundTrip`：`POST` 导出附件头（`Content-Disposition: attachment; filename="fwalizer-config-v2-<UTC>.json"`、`Cache-Control: no-store`）、跨数据目录导入后 HTTP 校验目标/规则/设置/告警、version 1 → 400、两个进程日志均无四个敏感 sentinel |
+| 6 | 失败注入矩阵 | **通过** | 清表、目标插入、规则插入、settings、email、webhook、`scanned_resources` 清空、commit 共 8 项 trigger 注入 + 候选构造失败 + commit 失败，逐项断言旧库完整、旧运行时状态指针保持、零发布、500 不回显底层错误 |
+| 7 | 同实例/跨实例 ID 映射 | **通过** | 导出→清空→导入后规则仍关联同一业务目标（比较业务字段而非数字 ID）；跨实例不同自增空间导入正确重建 |
+| 8 | 调度控制与原子发布语义 | **通过** | `false→true` 立即一轮、`true→true` 只按新 interval、`true→false` 完成当前轮后不再启动、暂停期排队 trigger 不执行、`Stop` 幂等、停止后不启动新一轮；单快照轮次与 Dry Run 单快照；`RuntimeManager` 并发 Snapshot/Apply 无竞态 |
+
+**本 Step 仍待用户执行（不得由本地自动测试替代）：**
+
+| # | 项目 | 动作 | 原因 |
+|---|------|------|------|
+| 1 | 浏览器人工复核 | 打开「全局设置」执行一次导出（确认危险确认文案列出四类密钥、下载文件名形如 `fwalizer-config-v2-<UTC>.json`）、再导入同一文件（确认成功提示与整页刷新）、故意导入损坏 JSON 与 version 1 文件（确认错误提示且**不**刷新） | 前端改动为 `POST + fetch + Blob`、`Content-Disposition` 文件名解析、整页 reload 与危险确认文案；`vue-tsc` 与生产构建不能替代真实浏览器行为 |
+| 2 | 两个不同 SQLite 数据库交叉导入（人工逐项核对） | 在各自有不同自增历史的两库间导出/导入，逐项核对目标、规则目标关联、主题、同步状态与告警 | 自动测试只能断言程序语义，人工确认才是产品验收 |
+| 3 | 真实外部链路 | 连接测试、资源扫描、真实云 API 增量写入/精确删除、SMTP 收件箱、Webhook | 需用户凭据与环境；Step 5 的凭据模型与快照语义变更后需重跑 |
+| 4 | 远端 GitHub Actions 运行 | 推送分支/PR，确认 race 命令真实运行 | 同第三节第 1 项（O5-02 收尾） |
+
+**Step 5 的证据边界（不得扩大解释）：**
+
+- 全部为**本地 SQLite + httptest + 真实二进制进程**证据；未在真实云账号、真实 SMTP 或真实 Webhook 上验证；
+- 「普通变更保留 DNS 熔断失败计数 / 完整导入重置计数」由 `syncer` 单测覆盖，未在长跑真实环境复现熔断进度；
+- `modernc.org/sqlite` 驱动不强制 `sql.TxOptions.ReadOnly` 的写入拒绝，导出契约由「独立只读事务 + handler 不含写入语句」保证，测试只锁定可读取一致快照；
+- 真实浏览器的 Blob 下载文件名与整页 reload 行为未验证；
+- Step 5 改动尚未提交，远端 CI 无对应运行结果。
+
+---
+
 ## 三、仍待执行的长耗时 / 外部验收（按后续 Step 归属）
 
 | # | 项目 | 命令或动作 | 归属 | 说明 |
@@ -107,7 +139,7 @@ Build6 Step 2 规定的自动门禁已在本机真实执行并通过：
 | 1 | 远端 GitHub Actions 真实运行 | 推送分支/PR（或 tag），观察 `Docker Build & Publish` 工作流，确认 race 测试真实运行且失败会阻止镜像推送 | Step 1（O5-02 收尾）、各 Step | 本地只能证明工作流文件内容与本地命令；远端结果必须在 GitHub 上确认。当前 Issue5 O5-02 保持 ◧ |
 | 2 | 前端依赖审计 | `cd webui/frontend && npm audit --audit-level=high` | Step 6 | Step 2 的 `npm ci && npm run build` 已通过；审计仍为 Step 6 范围 |
 | 3 | 进程级信号验收（完整） | 真实二进制 SIGTERM/SIGINT、`docker stop`，验证"完成当前轮次再退出"与 SSE 退出 | Step 3 | **已于 2026-09-23 完成**（见二之二节第 3～7 项）；不再作为待办 |
-| 4 | 真实外部链路 | 真实云 API 连接测试/扫描/增量写入/精确删除、SMTP 收件箱、各渠道 Webhook、浏览器人工验收 | Step 5、Step 7 | 需用户凭据与环境；不得用 mock 替代后标记通过 |
+| 4 | 真实外部链路 | 真实云 API 连接测试/扫描/增量写入/精确删除、SMTP 收件箱、各渠道 Webhook、浏览器人工验收 | Step 5、Step 7 | 需用户凭据与环境；不得用 mock 替代后标记通过。Step 5 的凭据模型与运行时快照语义已变更，本轮需重跑（见二之四节） |
 | 5 | Step 4 浏览器复核 | 设置保存（11 键白名单 payload）、告警保存、删除被引用目标的 409 提示 | Step 4 | 见二之三节；未执行真实浏览器交互 |
 
 ---
@@ -117,4 +149,5 @@ Build6 Step 2 规定的自动门禁已在本机真实执行并通过：
 1. **远端 CI 验证**可最早做：本地 Step 1、Step 2 与 Step 3 门禁已全绿，推一个分支或 PR 即可确认 race 命令在 GitHub Actions 上真实运行；这也是 O5-02 转为验收通过的唯一剩余条件。
 2. 第二节列出的两项待办（浏览器复核导入导出、远端 CI）建议由用户安排执行。
 3. 若未来把 `-count=100` 固化为 CI 门禁，建议单独拆一个 race job 并让 Docker 发布依赖其成功（Build6 / Issue5 O5-02 第 5 条已给出方向），同时注意上文的 `-timeout` 要求。
-4. Step 3 的证据边界（容器 0 targets、`EACCES` 不可构造、进程外 Serve 运行错误）已记录在二之二节；Step 4 的证据边界（SDK 错误返回、sentinel 作用域、协调器过渡结构）已记录在二之三节；若后续 Step 需要更强证据，应在有真实同步负载与真实外部环境时补做。
+4. Step 3 的证据边界（容器 0 targets、`EACCES` 不可构造、进程外 Serve 运行错误）已记录在二之二节；Step 4 的证据边界（SDK 错误返回、sentinel 作用域、协调器过渡结构）已记录在二之三节；Step 5 的证据边界（本地 SQLite/httptest/真实二进制、熔断计数仅单测、只读事务不强制拒写、浏览器与外部链路未验证）已记录在二之四节；若后续 Step 需要更强证据，应在有真实同步负载与真实外部环境时补做。
+5. **Step 5 待办优先级建议**：先做二之四节第 1、2 项（浏览器导入导出 + 两库交叉导入人工核对），这两项无需云凭据即可完成；再做第 3 项（真实云/SMTP/Webhook，需用户凭据）；第 4 项（远端 CI）可与 Step 6 一并安排。

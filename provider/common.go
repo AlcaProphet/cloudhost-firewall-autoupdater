@@ -182,15 +182,57 @@ func supportsTCPUDP(ct config.CloudType) bool {
 	return ct == config.CloudAliSWAS // 仅 SWAS 原生支持 TCP+UDP
 }
 
-// ClientPool SDK Client 复用池
-type ClientPool struct {
-	mu      sync.Mutex
-	clients map[string]any // key: cloudType|region|accessID
+// Credentials 四个云访问凭据的不可变值类型（Build6 §12.6）。
+//
+// 用值类型取代进程级可变全局凭据：ClientPool 在创建时接收本值，构造之后
+// 不提供任何 setter，Provider 工厂、连接测试与资源扫描都只读同一份凭据，
+// 因此并发账户切换不可能发生「同一轮里混用新旧凭据」。
+type Credentials struct {
+	TencentSecretID       string
+	TencentSecretKey      string
+	AliyunAccessKeyID     string
+	AliyunAccessKeySecret string
 }
 
-// NewClientPool 创建 Client 复用池
-func NewClientPool() *ClientPool {
-	return &ClientPool{clients: make(map[string]any)}
+// AccountKey 返回可用于 client 缓存隔离的账户标识。
+//
+// 只使用 AccessKey ID / SecretId（不含密钥本身），足以区分账户；
+// 空凭据返回空串，仍可与已配置账户的缓存条目区分开。
+func (c Credentials) AccountKey() string {
+	return c.TencentSecretID + "|" + c.AliyunAccessKeyID
+}
+
+// ClientPool SDK Client 复用池。
+//
+// 构造后凭据不可修改（无 setter），因此 pool 可以被安全地放进不可变
+// RuntimeState 并被多轮同步、Dry Run、连接测试与资源扫描共享。
+type ClientPool struct {
+	mu          sync.Mutex
+	credentials Credentials // 构造后不变
+	clients     map[string]any
+}
+
+// NewClientPool 创建 Client 复用池，凭据在创建时注入且此后不可变更。
+//
+// 必须传入显式凭据：不再存在无参构造，也不存在任何读取包级全局凭据的路径。
+func NewClientPool(credentials Credentials) *ClientPool {
+	return &ClientPool{
+		credentials: credentials,
+		clients:     make(map[string]any),
+	}
+}
+
+// Credentials 返回 pool 持有的凭据副本（值类型，修改副本不影响 pool）。
+func (p *ClientPool) Credentials() Credentials {
+	return p.credentials
+}
+
+// CacheKey 构造 client 缓存键，至少区分 cloud type、region 与账户标识（Build6 §12.6）。
+//
+// 因此导入账户 B 之后新建的 pool 不会命中账户 A 留下的 client；
+// 旧状态正在执行的同步继续使用旧 pool，自然不会中途切换账户。
+func (p *ClientPool) CacheKey(cloudType config.CloudType, region string) string {
+	return string(cloudType) + "|" + region + "|" + p.credentials.AccountKey()
 }
 
 // GetOrCreate 获取或创建 Client

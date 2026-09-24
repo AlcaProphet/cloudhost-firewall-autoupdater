@@ -23,15 +23,14 @@ type TCLighthouse struct {
 }
 
 func newTCLighthouse(cfg config.TargetConfig, dbID int, pool *ClientPool) (Provider, error) {
-	// 从环境变量获取凭据（由 app 层传入 Config，此处通过 pool key 隐含）
-	// 实际凭据通过 ClientPool 共享
-	key := string(config.CloudTCLighthouse) + "|" + cfg.Region + "|" + getTCAccessID()
+	// 凭据只来自 pool 持有的不可变 Credentials，不再读取任何包级全局值
+	creds := pool.Credentials()
+	key := pool.CacheKey(config.CloudTCLighthouse, cfg.Region)
 
 	client, err := pool.GetOrCreate(key, func() (any, error) {
-		// 凭据从全局配置获取（由 app 层在创建 Provider 前设置）
 		credential := common.NewCredential(
-			getTCAccessID(),
-			getTCAccessKey(),
+			creds.TencentSecretID,
+			creds.TencentSecretKey,
 		)
 		cpf := profile.NewClientProfile()
 		cpf.HttpProfile.Endpoint = "lighthouse.tencentcloudapi.com"
@@ -79,12 +78,12 @@ func (p *TCLighthouse) GetRules() ([]config.RuleInfo, error) {
 
 		for _, r := range resp.Response.FirewallRuleSet {
 			info := config.RuleInfo{
-				Protocol:    strVal(r.Protocol),
-				Port:        strVal(r.Port),
-				CidrBlock:   strVal(r.CidrBlock),
+				Protocol:      strVal(r.Protocol),
+				Port:          strVal(r.Port),
+				CidrBlock:     strVal(r.CidrBlock),
 				Ipv6CidrBlock: strVal(r.Ipv6CidrBlock),
-				Action:      strVal(r.Action),
-				Description: strVal(r.FirewallRuleDescription),
+				Action:        strVal(r.Action),
+				Description:   strVal(r.FirewallRuleDescription),
 			}
 			allRules = append(allRules, info)
 		}
@@ -222,4 +221,3 @@ func (p *TCLighthouse) ConvertPorts(port string) []string {
 	}
 	return result
 }
-

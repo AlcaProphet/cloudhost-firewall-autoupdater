@@ -1,7 +1,7 @@
 # Issue5.md — FWAlizer 问题追踪（当前）
 
 > **文档定位：** 本文档是 FWAlizer 的当前问题记录（非强制，经验参考），记录 2026-09-22 只读审查发现的 R5-01～R5-03、O5-01～O5-06 和 A5-01。已确认的修复口径由 [Build6.md](./Build6.md) 分步实施，未经对应 Step 验收不得标记为已修复。
-> **当前进度（2026-09-24）：** Build6 Step 0～4 已验收通过；O5-04、O5-05 随 Step 3 关闭，O5-06 随 Step 4 关闭。Step 5～7 仍未实施，相关事项（O5-01、O5-03、R5-01）保持未关闭。
+> **当前进度（2026-09-25）：** Build6 Step 0～4 已验收通过；O5-04、O5-05 随 Step 3 关闭，O5-06 随 Step 4 关闭。Step 5 的工程实现与本地自动门禁已完成（version 2 配置包、显式凭据、原子运行时切换），但浏览器人工复核与真实外部链路仍待用户验收，因此 Step 5 保持 ◧ 进行中，R5-01 尚未正式关闭；O5-01、O5-03 仍待 Step 6/7。
 > 编码指令以 [AGENTS.md](./AGENTS.md) 为唯一强要求；设计记录见 [Design5.md](./Design5.md)；上一阶段的 Design4、Build5 和 Issue4 已原文移入 [HistoryDocs/](./HistoryDocs/)。
 
 ---
@@ -14,7 +14,7 @@
 2. Step 2：移除全部 CLI 和 `.env` Headless 业务模式；
 3. Step 3：完成 HTTP listener、Server 生命周期和优雅关闭；
 4. Step 4：建立 API 最小持久化校验边界；
-5. Step 5：实施 version 2 完整配置包、ID 映射和原子运行时切换；
+5. Step 5：实施 version 2 完整配置包、ID 映射和原子运行时切换（工程实现与本地门禁已完成，待用户验收）；
 6. Step 6：分阶段修复前端依赖并升级 Vite 8；
 7. Step 7：补齐高影响路径测试、真实验收和文档闭环。
 
@@ -53,7 +53,13 @@
   - 验证每条规则关联到与导出前相同的目标，而不是只比较数字 ID；
   - 验证导入事务失败时旧配置不被部分替换；
   - 运行 `go test ./... -race`、`go vet ./...` 与 `git diff --check`。
-- **状态：** ☐ 已决策 / 待 Build6 Step 5 实施
+- **实施记录（2026-09-25，Build6 Step 5）：**
+  - 代码：配置包协议升级为 version 2（`webui/api/bundle_v2.go` + `webui/api/export.go`）：导出固定 `POST /api/config/export`，在单个只读事务内读取 targets/rules/settings/alert_email/alert_webhook，目标与规则按数据库 ID 升序、每条规则的 `target_export_ids` 按 export_id 升序，marshal 先于写响应头，附件名固定 `fwalizer-config-v2-<UTC 20060102T150405Z>.json` 并带 `Cache-Control: no-store`；导入使用独立 presence DTO（缺失与 `null` 均可与合法零值/空数组区分，数组元素内未知字段同样拒绝）+ 10 MiB 严格解码，在打开写事务前完成 version/metadata/必需字段/枚举/时长/TAG/DNS/告警/`export_id` 唯一性与引用闭包校验，随后在固定顺序事务内清表（rules→targets→settings→alert_email→alert_webhook）、插入目标取 `LastInsertId` 建立 `export_id → 新数据库 ID` 映射、为每条规则创建副本重写引用、显式写入 version 2 完整 12 键设置、写入完整 email/webhook、清空 `scanned_resources`（保留 `sync_logs`、不触碰 `sqlite_sequence`）；version 1 及其他版本返回 400，不迁移、不补全、无隐藏兼容入口。
+  - 事务与运行时：`ConfigCoordinator` 收束为「锁 → 单事务 → 事务内完整业务快照 → 事务内构造候选 `RuntimeState` 与候选告警集合（零网络）→ commit → 无失败发布：日志级别 → 告警集合 → `RuntimeState`」；任一阶段失败完整回滚，旧数据库、旧运行时状态指针、旧日志级别、旧告警订阅与扫描缓存全部保持不变且不产生部分映射。
+  - 回归测试：`webui/api/export_test.go`（同实例自增历史后导出→清空→导入，规则仍关联同一业务目标；跨实例不同 ID；多目标/一条规则多目标/多规则复用/空引用；清空扫描缓存、保留同步日志、不重置自增序列；空库与完整库 Schema、默认值、UTC metadata、响应头与稳定排序）；`webui/api/import_test.go`（35 项非法输入零写入零发布：重复/零/负 `export_id`、未知与重复引用、`null`、缺失字段、任意层级未知字段、version 1/3、尾随 JSON、多顶层值、10 MiB 边界、完整凭据覆盖与空凭据清除）；`webui/api/import_failure_test.go`（清表、目标、规则、settings、email、webhook、`scanned_resources` 清空、commit 共 8 项 trigger 失败注入 + 候选构造失败 + commit 失败，逐项断言旧库完整、零发布、500 不回显底层错误）；`main_test.go` 的 `TestProcessConfigExportImportRoundTrip`（真实二进制 + 真实 SQLite 跨数据目录导入并校验业务关系、version 1 → 400、两个进程日志无敏感 sentinel）。
+  - 门禁（2026-09-25）：`go test -race ./config ./provider ./syncer ./webui/api` 通过；`go test ./... -race -count=1` 通过（11 包，0 次 `DATA RACE`）；`go vet ./...`、`go build ./...`、`git diff --check` 通过；`npm ci && npm run build` 通过且 lockfile 未变化。
+  - 证据边界：上述均为本地 SQLite/httptest/真实二进制进程证据；**真实浏览器导入导出、真实云 API、SMTP 与 Webhook 未执行**，两库交叉导入的**人工**逐项核对仍待用户按下方验收建议执行（`ProdTestList.md` 已登记）。
+- **状态：** ◧ 工程实现与本地自动门禁完成（Build6 Step 5）；真实浏览器人工复核与外部链路待用户验收，尚未标记验收通过
 
 ### R5-02 EventBus 发布与 SSE 取消订阅并发时可能触发进程 panic
 

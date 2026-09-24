@@ -15,10 +15,10 @@ type mockProvider struct {
 	targetIndex int
 }
 
-func (m *mockProvider) Name() string              { return "mock" }
-func (m *mockProvider) CloudType() config.CloudType { return m.cloudType }
-func (m *mockProvider) TargetIndex() int           { return m.targetIndex }
-func (m *mockProvider) GetRules() ([]config.RuleInfo, error) { return nil, nil }
+func (m *mockProvider) Name() string                                { return "mock" }
+func (m *mockProvider) CloudType() config.CloudType                 { return m.cloudType }
+func (m *mockProvider) TargetIndex() int                            { return m.targetIndex }
+func (m *mockProvider) GetRules() ([]config.RuleInfo, error)        { return nil, nil }
 func (m *mockProvider) CreateRules(rules []config.RuleAction) error { return nil }
 func (m *mockProvider) DeleteRules(rules []config.RuleInfo) error   { return nil }
 func (m *mockProvider) ConvertPorts(port string) []string {
@@ -251,16 +251,17 @@ func TestDiff_DomainIsolation(t *testing.T) {
 }
 
 func TestClientPool(t *testing.T) {
-	pool := NewClientPool()
+	pool := NewClientPool(Credentials{TencentSecretID: "AKID1", TencentSecretKey: "sk"})
 	callCount := 0
 
+	key := pool.CacheKey(config.CloudTCLighthouse, "ap-guangzhou")
 	create := func() (any, error) {
 		callCount++
 		return "client-1", nil
 	}
 
 	// 第一次创建
-	c1, err := pool.GetOrCreate("tc_lighthouse|ap-guangzhou|AKID1", create)
+	c1, err := pool.GetOrCreate(key, create)
 	if err != nil {
 		t.Fatalf("GetOrCreate 失败: %v", err)
 	}
@@ -269,7 +270,7 @@ func TestClientPool(t *testing.T) {
 	}
 
 	// 第二次复用
-	c2, err := pool.GetOrCreate("tc_lighthouse|ap-guangzhou|AKID1", create)
+	c2, err := pool.GetOrCreate(key, create)
 	if err != nil {
 		t.Fatalf("GetOrCreate 失败: %v", err)
 	}
@@ -280,6 +281,75 @@ func TestClientPool(t *testing.T) {
 	// create 只调用一次
 	if callCount != 1 {
 		t.Errorf("create 调用次数 = %d, want 1", callCount)
+	}
+}
+
+// TestClientPoolHoldsImmutableCredentials pool 创建后凭据不可变，
+// 且 Credentials() 返回的是值副本（修改副本不影响 pool）。
+func TestClientPoolHoldsImmutableCredentials(t *testing.T) {
+	pool := NewClientPool(Credentials{TencentSecretID: "AKID-a", TencentSecretKey: "sk-a"})
+
+	got := pool.Credentials()
+	if got.TencentSecretID != "AKID-a" || got.TencentSecretKey != "sk-a" {
+		t.Fatalf("pool 未持有创建时的凭据: %+v", got)
+	}
+	got.TencentSecretID = "mutated"
+	if pool.Credentials().TencentSecretID != "AKID-a" {
+		t.Errorf("修改返回值不应影响 pool 内部凭据: %+v", pool.Credentials())
+	}
+}
+
+// TestClientPoolCacheKeyDistinguishesAccount 缓存键至少区分 cloud type、region 与账户标识：
+// 不同账户的 pool 对同一 cloud type + region 不得命中同一 client（Build6 §12.6）。
+func TestClientPoolCacheKeyDistinguishesAccount(t *testing.T) {
+	poolA := NewClientPool(Credentials{TencentSecretID: "AKID-a"})
+	poolB := NewClientPool(Credentials{TencentSecretID: "AKID-b"})
+
+	keyA := poolA.CacheKey(config.CloudTCLighthouse, "ap-guangzhou")
+	keyB := poolB.CacheKey(config.CloudTCLighthouse, "ap-guangzhou")
+	if keyA == keyB {
+		t.Fatalf("不同账户的缓存键必须不同: %q", keyA)
+	}
+	if poolA.CacheKey(config.CloudTCLighthouse, "ap-guangzhou") == poolA.CacheKey(config.CloudTCCVM, "ap-guangzhou") {
+		t.Errorf("缓存键必须区分 cloud type")
+	}
+	if poolA.CacheKey(config.CloudTCLighthouse, "ap-guangzhou") == poolA.CacheKey(config.CloudTCLighthouse, "ap-beijing") {
+		t.Errorf("缓存键必须区分 region")
+	}
+
+	// 账户不同的两个 pool 各自独立创建 client
+	calls := 0
+	create := func() (any, error) { calls++; return "c", nil }
+	if _, err := poolA.GetOrCreate(keyA, create); err != nil {
+		t.Fatalf("poolA GetOrCreate 失败: %v", err)
+	}
+	if _, err := poolB.GetOrCreate(keyB, create); err != nil {
+		t.Fatalf("poolB GetOrCreate 失败: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("不同账户应各自创建 client，create 次数 = %d, want 2", calls)
+	}
+}
+
+// TestProviderFactoryUsesPoolCredentials 四个 Provider 工厂只从 pool 取凭据：
+// 使用不同凭据的两个 pool 创建同一目标，产生的 client 缓存条目必须互相独立。
+func TestProviderFactoryUsesPoolCredentials(t *testing.T) {
+	for _, ct := range []config.CloudType{config.CloudTCLighthouse, config.CloudTCCVM, config.CloudAliSWAS, config.CloudAliECS} {
+		t.Run(string(ct), func(t *testing.T) {
+			target := config.TargetConfig{CloudType: ct, Region: "ap-guangzhou", ResourceID: "res-1"}
+			poolA := NewClientPool(Credentials{TencentSecretID: "A", TencentSecretKey: "a", AliyunAccessKeyID: "A", AliyunAccessKeySecret: "a"})
+			poolB := NewClientPool(Credentials{TencentSecretID: "B", TencentSecretKey: "b", AliyunAccessKeyID: "B", AliyunAccessKeySecret: "b"})
+
+			if _, err := NewProvider(target, 1, poolA); err != nil {
+				t.Fatalf("poolA 创建 Provider 失败: %v", err)
+			}
+			if _, err := NewProvider(target, 2, poolB); err != nil {
+				t.Fatalf("poolB 创建 Provider 失败: %v", err)
+			}
+			if poolA.CacheKey(ct, target.Region) == poolB.CacheKey(ct, target.Region) {
+				t.Errorf("不同凭据的 pool 不应共享缓存键")
+			}
+		})
 	}
 }
 
