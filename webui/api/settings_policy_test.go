@@ -193,13 +193,11 @@ func TestConfigImport_RejectsWebuiPort(t *testing.T) {
 	if err := store.SetSetting("tag", "old-tag"); err != nil {
 		t.Fatalf("预置旧设置失败: %v", err)
 	}
-	if err := store.AddTarget(config.TargetConfig{
+	addTargetForTest(t, store, config.TargetConfig{
 		CloudType:  config.CloudTCLighthouse,
 		Region:     "ap-guangzhou",
 		ResourceID: "lhins-old",
-	}); err != nil {
-		t.Fatalf("预置旧目标失败: %v", err)
-	}
+	})
 
 	body := `{"version":1,"targets":[],"rules":[],"settings":{"webui_port":"61234","tag":"new-tag"}}`
 	w := doJSON(t, d, http.MethodPost, "/api/config/import", body)

@@ -2,7 +2,7 @@
 
 > **文档定位：** 本文档是 FWAlizer 的当前设计记录（设计大方向、架构构想与决策记录，非强制，供参考），承接已存档的 [Design1-4](./HistoryDocs/)。
 > 编码约束遵循 [AGENTS.md](./AGENTS.md)（唯一强要求）；详细分步实施和验收见 [Build6.md](./Build6.md)；问题追踪见 [Issue5.md](./Issue5.md)。
-> **实施状态：** 2026-09-24 Build6 Step 1、Step 2、Step 3 与 Step 4 已验收通过：运行时已收束为唯一 WebUI + SQLite，CLI、`.env` Headless、业务环境变量入口和 `webui_port` 业务设置已从代码与当前文档移除，监听参数只由三个部署变量提供；HTTP 生命周期已形成最终形态（同步 listener、仅 `EADDRINUSE` 降级、显式 `http.Server`、`Wait`、幂等 `Shutdown`、两类 SSE 服务器级退出、main 统一收尾）；普通 API 最小持久化校验边界已落地（统一严格解码与 1 MiB、领域校验与归一化、`RowsAffected`/引用检查、事务化 settings/alerts、删除被引用目标 409、500 安全文案、日志级别动态更新）。远端 GitHub Actions 运行结果仍待确认。
+> **实施状态：** 2026-09-24 Build6 Step 1、Step 2、Step 3 与 Step 4 已验收通过：运行时已收束为唯一 WebUI + SQLite，CLI、`.env` Headless、业务环境变量入口和 `webui_port` 业务设置已从代码与当前文档移除，监听参数只由三个部署变量提供；HTTP 生命周期已形成最终形态（同步 listener、仅 `EADDRINUSE` 降级、显式 `http.Server`、`Wait`、幂等 `Shutdown`、两类 SSE 服务器级退出、main 统一收尾）；普通 API 最小持久化校验边界已落地（统一严格解码与 1 MiB、领域校验与归一化、`RowsAffected`/引用检查、事务化 settings/alerts、删除被引用目标 409、500 安全文案、日志级别动态更新）。远端 GitHub Actions 结果已由 2026-09-27 tag `v2.0.0` 的真实运行 `36300428681`（成功）确认，详见下段与 Issue5 O5-02。
 >
 > **Step 5（version 2 完整配置包与原子运行时切换）已于 2026-09-27 验收通过：** 工程实现与本地自动门禁完成，代码于 2026-09-24 提交（`c35eb9d`）；2026-09-27 用户确认生产 WebUI、真实云/DNS及同步链路真机验收通过。跨实例不同自增历史的人工交叉导入因当前无该使用场景而免除，底层 ID 映射继续由自动化覆盖。真实 Email/SMTP/收件箱与 Webhook 验收按用户决定移交后续处理，不阻塞 Step 5；远端 GitHub Actions 结果继续由 Issue5 O5-02 跟踪。
 >
@@ -102,6 +102,8 @@ version 2 是明文完整敏感快照，安全等级等同生产 Secret 或 SQLi
 ## 四、持久化与 HTTP 边界
 
 - 目标仍被规则引用时返回 HTTP 409，要求先修改规则；
+- 规则的 `targets` 必须显式提供（省略返回 400）；空数组仍表示“适用于全部目标”，不得因字段缺失而静默扩大范围；
+- 目标/规则的更新与删除按 `RowsAffected=0` 判定 404；
 - TAG Trim 后非空，禁止方括号和控制字符，最多 48 个 Unicode 字符；
 - 普通 JSON 请求最大 1 MiB，配置导入最大 10 MiB，超限返回 413；
 - 固定结构 DTO 使用严格解码，拒绝未知字段、尾随 JSON 和多个顶层值；
@@ -158,3 +160,5 @@ EventBus 取消 channel 订阅时只从订阅表删除记录，不关闭 channel
 | v1.0 | 2026-09-22 | 建立 Build6 当前设计记录；固定 WebUI-only、SQLite 唯一配置源、version 2 完整敏感快照、原子导入、HTTP/SSE 和运行时快照边界 |
 | v1.1 | 2026-09-27 | 同步 Build6 Step 7 实际状态：自动补测/统一门禁/真实二进制与 Docker 容器验收/文档闭环完成，Issue6 A10/A5/A7/A6/A8 按用户确认边界最小修复；当时真实 SMTP/收件箱与 Webhook 尚待用户执行，Step 7 记为 ◧（该状态随后由 v1.2 更新为 ✅） |
 | v1.2 | 2026-09-27 | Step 7 ✅ 验收通过：远端 Actions 运行 `36300428681` 成功并真实推送 `ghcr.io/alcaprophet/fwalizer:2.0.0`，O5-02 关闭；真实 SMTP/收件箱与 Webhook 经用户决定免除人工验收、由用户自行处理（不写成已通过） |
+| v1.3 | 2026-09-27 | 独立核验后的文档一致性修正：实施状态段中"远端 GitHub Actions 仍待确认"改为已确认（运行 `36300428681`）；覆盖率复测值、非法输入用例计数、audit 阻断边界与 GHCR `latest` 标签按实测事实回写到 Build6/Issue5 对应记录 |
+| v1.4 | 2026-09-27 | 核验修正批次落地（不涉及 Issue6 条目）：规则 `targets` 显式必填（省略 400）、更新/删除按 `RowsAffected=0` 判定 404、扫描结果查询参数 `cloud_type` 加枚举校验、协调器 commit 后发布收紧为不可失败；同步 AGENTS §9.1 与 Build6 §4.2/§4.3/§12.9 |

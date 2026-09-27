@@ -86,6 +86,55 @@ func TestRuleCreateValidationErrors(t *testing.T) {
 	}
 }
 
+// TestRuleTargetsMustBeExplicit 规则 targets 必须显式提供：省略字段返回 400，
+// 且不得把已有规则静默扩大为“适用于全部目标”（Build6 §4.3、AGENTS §9.1）。
+func TestRuleTargetsMustBeExplicit(t *testing.T) {
+	e := newTestEnv(t)
+	targetID := e.seedTarget(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-1")
+	ruleID := e.seedRule(t, config.DomainRule{
+		Host: "keep.example.com", Protocol: "TCP", Ports: "443", Action: "ACCEPT",
+		Targets: []int{targetID},
+	})
+
+	// POST 省略 targets → 400，零写入零发布
+	w := e.do(t, http.MethodPost, "/api/rules",
+		`{"host":"a.example.com","protocol":"TCP","ports":"80","action":"ACCEPT"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("省略 targets 的 POST 状态码 = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	if rules, err := e.store.GetRules(); err != nil || len(rules) != 1 {
+		t.Errorf("拒绝后规则不应变化: %v %v", rules, err)
+	}
+	if got := e.applyCount(); got != 0 {
+		t.Errorf("拒绝请求不应发布运行时状态，实际 %d", got)
+	}
+
+	// PUT 省略 targets → 400，且原规则仍只引用原目标（不得被扩大为全部目标）
+	w = e.do(t, http.MethodPut, pathWithID("/api/rules/", ruleID),
+		`{"host":"keep.example.com","protocol":"TCP","ports":"443","action":"ACCEPT"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("省略 targets 的 PUT 状态码 = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	rules, err := e.store.GetRules()
+	if err != nil || len(rules) != 1 {
+		t.Fatalf("GetRules = %d 条, err=%v", len(rules), err)
+	}
+	if len(rules[0].Targets) != 1 || rules[0].Targets[0] != targetID {
+		t.Errorf("省略 targets 不得把规则扩大为全部目标: %+v", rules[0].Targets)
+	}
+
+	// 显式空数组仍表示“适用于全部目标”
+	w = e.do(t, http.MethodPut, pathWithID("/api/rules/", ruleID),
+		`{"host":"keep.example.com","protocol":"TCP","ports":"443","action":"ACCEPT","targets":[]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("显式空数组 PUT 状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	rules, err = e.store.GetRules()
+	if err != nil || len(rules) != 1 || len(rules[0].Targets) != 0 {
+		t.Errorf("显式空数组必须保留“适用于全部目标”语义: %+v (%v)", rules, err)
+	}
+}
+
 // TestRuleCreateWithExistingTargets 引用真实存在的目标可写入
 func TestRuleCreateWithExistingTargets(t *testing.T) {
 	e := newTestEnv(t)

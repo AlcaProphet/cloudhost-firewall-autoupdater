@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/app"
 )
 
 // 环形缓冲容量：回放最近 N 条日志（与前端显示上限 1000 一致）
@@ -32,27 +34,14 @@ type LogBroadcaster struct {
 // NewLogBroadcaster 创建日志广播器（level: debug/info/warn/error 字符串）
 func NewLogBroadcaster(level string) *LogBroadcaster {
 	lv := new(slog.LevelVar)
-	lv.Set(parseLevel(level))
+	// 复用 app.ParseLogLevel：stdout 与日志流必须使用同一套级别解析
+	lv.Set(app.ParseLogLevel(level))
 	return &LogBroadcaster{subs: make(map[int]chan string), level: lv}
 }
 
 // SetLevel 线程安全地更新日志流级别（与 stdout 日志级别保持一致）
 func (b *LogBroadcaster) SetLevel(level slog.Level) {
 	b.level.Set(level)
-}
-
-// parseLevel 解析日志级别字符串（与 app.ParseLogLevel 语义一致，默认 info）
-func parseLevel(level string) slog.Level {
-	switch level {
-	case "debug":
-		return slog.LevelDebug
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
 }
 
 // Subscribe 订阅日志流：先回放最近 logRingSize 条历史，再返回 channel 和取消函数
@@ -135,8 +124,6 @@ func (b *LogBroadcaster) Handle(_ context.Context, r slog.Record) error {
 
 func (b *LogBroadcaster) WithAttrs(attrs []slog.Attr) slog.Handler { return b }
 func (b *LogBroadcaster) WithGroup(name string) slog.Handler       { return b }
-
-// ─── LogBroadcaster 已使用 app.MultiHandler（定义于 app/logutil.go） ───
 
 // ─── SSE 端点 ───
 

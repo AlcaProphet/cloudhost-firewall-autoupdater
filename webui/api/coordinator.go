@@ -48,8 +48,9 @@ type ConfigCoordinator struct {
 	buildCandidate func(snapshot *config.BusinessSnapshot, policy syncer.BreakerPolicy) (Candidate, error)
 
 	// apply 在 commit 之后按固定顺序执行无失败发布：
-	// 日志级别 → 告警集合 → RuntimeState。返回 error 只用于编程错误上报。
-	apply func(candidate Candidate) error
+	// 日志级别 → 告警集合 → RuntimeState。**不得返回 error**：
+	// commit 之后不存在可失败出口，避免“接口报错但数据库已经改变”（Build6 §3.5）。
+	apply func(candidate Candidate)
 }
 
 // ErrNoSnapshotLoader 协调器未配置快照/候选构造能力（接线错误）。
@@ -62,7 +63,7 @@ var ErrNoSnapshotLoader = errors.New("协调器未配置候选构造能力")
 func NewConfigCoordinator(
 	store *config.Store,
 	buildCandidate func(snapshot *config.BusinessSnapshot, policy syncer.BreakerPolicy) (Candidate, error),
-	apply func(candidate Candidate) error,
+	apply func(candidate Candidate),
 ) *ConfigCoordinator {
 	return &ConfigCoordinator{store: store, buildCandidate: buildCandidate, apply: apply}
 }
@@ -135,11 +136,7 @@ func (c *ConfigCoordinator) mutate(ctx context.Context, policy syncer.BreakerPol
 	// 以下步骤必须是无 error 的内存操作；HTTP 成功响应必须在 apply 完成后写出，
 	// 使响应之后开始的新操作必然取得新状态。
 	if c.apply != nil {
-		if aerr := c.apply(candidate); aerr != nil {
-			// 发布阶段的设计前提是不可能失败；一旦失败说明接线错误，记录 ERROR
-			slog.Error("运行时状态发布失败", "error", aerr)
-			return aerr
-		}
+		c.apply(candidate)
 	}
 	return nil
 }

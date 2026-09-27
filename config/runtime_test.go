@@ -152,9 +152,7 @@ func TestLoadBusinessSnapshotTxConsistentInOneTransaction(t *testing.T) {
 	store := newSnapshotStore(t)
 	ctx := context.Background()
 
-	if err := store.AddTarget(TargetConfig{CloudType: CloudTCLighthouse, Region: "ap-guangzhou", ResourceID: "lhins-a"}); err != nil {
-		t.Fatalf("预置目标失败: %v", err)
-	}
+	addTargetTxForTest(t, store, TargetConfig{CloudType: CloudTCLighthouse, Region: "ap-guangzhou", ResourceID: "lhins-a"})
 
 	tx, err := store.BeginReadOnlyTx(ctx)
 	if err != nil {
@@ -175,9 +173,7 @@ func TestLoadBusinessSnapshotTxConsistentInOneTransaction(t *testing.T) {
 	if err := other.Close(); err != nil {
 		t.Errorf("关闭另一数据库失败: %v", err)
 	}
-	if err := store.AddTarget(TargetConfig{CloudType: CloudTCCVM, Region: "ap-beijing", ResourceID: "sg-b"}); err != nil {
-		t.Fatalf("事务外写入目标失败: %v", err)
-	}
+	addTargetTxForTest(t, store, TargetConfig{CloudType: CloudTCCVM, Region: "ap-beijing", ResourceID: "sg-b"})
 
 	second, err := store.LoadBusinessSnapshotTx(ctx, tx)
 	if err != nil {
@@ -197,9 +193,7 @@ func TestBeginReadOnlyTxSupportsSnapshotReads(t *testing.T) {
 	store := newSnapshotStore(t)
 	ctx := context.Background()
 
-	if err := store.AddTarget(TargetConfig{CloudType: CloudAliECS, Region: "cn-hangzhou", ResourceID: "sg-x"}); err != nil {
-		t.Fatalf("预置目标失败: %v", err)
-	}
+	addTargetTxForTest(t, store, TargetConfig{CloudType: CloudAliECS, Region: "cn-hangzhou", ResourceID: "sg-x"})
 
 	tx, err := store.BeginReadOnlyTx(ctx)
 	if err != nil {
@@ -295,12 +289,8 @@ func TestDeleteImportOwnedTablesTxClearsFixedSet(t *testing.T) {
 	store := newSnapshotStore(t)
 	ctx := context.Background()
 
-	if err := store.AddTarget(TargetConfig{CloudType: CloudTCLighthouse, Region: "r", ResourceID: "i"}); err != nil {
-		t.Fatalf("预置目标失败: %v", err)
-	}
-	if err := store.AddRule(DomainRule{Host: "a.com", Protocol: "TCP", Ports: "80", Action: "ACCEPT"}); err != nil {
-		t.Fatalf("预置规则失败: %v", err)
-	}
+	addTargetTxForTest(t, store, TargetConfig{CloudType: CloudTCLighthouse, Region: "r", ResourceID: "i"})
+	addRuleTxForTest(t, store, DomainRule{Host: "a.com", Protocol: "TCP", Ports: "80", Action: "ACCEPT"})
 	if err := store.SetSetting("tag", "t"); err != nil {
 		t.Fatalf("预置设置失败: %v", err)
 	}

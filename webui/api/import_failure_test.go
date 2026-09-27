@@ -201,9 +201,8 @@ func TestConfigImportCandidateConstructionFailureRollsBack(t *testing.T) {
 	applied := 0
 	failing := NewConfigCoordinator(e.store, func(*config.BusinessSnapshot, syncer.BreakerPolicy) (Candidate, error) {
 		return Candidate{}, ErrRuntimeCandidateUnsupported
-	}, func(Candidate) error {
+	}, func(Candidate) {
 		applied++
-		return nil
 	})
 
 	err := failing.Mutate(context.Background(), func(ctx context.Context, tx *sql.Tx) error {

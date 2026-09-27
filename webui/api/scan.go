@@ -75,11 +75,27 @@ func (d *Deps) handleScanResources(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// scannedCloudType 解析并校验查询参数 cloud_type。
+//
+// 与目标 CRUD、扫描请求复用同一枚举校验（Build6 §4.2）：非法枚举返回 400，
+// 不再把任意字符串直接当作查询条件。
+func scannedCloudType(r *http.Request) (string, error) {
+	raw := r.URL.Query().Get("cloud_type")
+	if raw == "" {
+		return "", badRequest("缺少 cloud_type 参数")
+	}
+	ct, err := config.NormalizeCloudType(raw)
+	if err != nil {
+		return "", err
+	}
+	return string(ct), nil
+}
+
 // handleGetScannedResources 获取某云厂商的扫描结果（资源 ID 自动补全数据源）
 func (d *Deps) handleGetScannedResources(w http.ResponseWriter, r *http.Request) {
-	cloudType := r.URL.Query().Get("cloud_type")
-	if cloudType == "" {
-		writeError(w, http.StatusBadRequest, "缺少 cloud_type 参数")
+	cloudType, err := scannedCloudType(r)
+	if err != nil {
+		writeRequestError(w, err)
 		return
 	}
 	resources, err := d.Store.GetScannedResources(cloudType)
@@ -92,9 +108,9 @@ func (d *Deps) handleGetScannedResources(w http.ResponseWriter, r *http.Request)
 
 // handleDeleteScannedResources 清理某云厂商的扫描结果
 func (d *Deps) handleDeleteScannedResources(w http.ResponseWriter, r *http.Request) {
-	cloudType := r.URL.Query().Get("cloud_type")
-	if cloudType == "" {
-		writeError(w, http.StatusBadRequest, "缺少 cloud_type 参数")
+	cloudType, err := scannedCloudType(r)
+	if err != nil {
+		writeRequestError(w, err)
 		return
 	}
 	if err := d.Store.DeleteScannedResources(cloudType); err != nil {

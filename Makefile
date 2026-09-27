@@ -7,7 +7,7 @@ build: frontend
 	go build -o fwalizer .
 
 test:
-	go test ./... -v
+	go test ./... -race -v
 
 vet:
 	go vet ./...

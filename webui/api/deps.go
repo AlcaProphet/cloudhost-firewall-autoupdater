@@ -106,10 +106,12 @@ func (d *Deps) buildCandidate(snapshot *config.BusinessSnapshot, policy syncer.B
 // applyCandidate 在 commit 之后按固定顺序执行无失败发布：
 // 日志级别 → 告警集合 → RuntimeState（Build6 §12.4 第 6 条）。
 //
+// 该函数不返回 error：commit 之后不得再存在可失败出口，否则会出现
+// “接口报错但数据库已经改变”（Build6 §3.5）。内部全部为无返回的 setter/锁内替换。
 // 任何取到新运行时状态的操作都必然已经看到新日志级别与新告警集合。
-func (d *Deps) applyCandidate(candidate Candidate) error {
+func (d *Deps) applyCandidate(candidate Candidate) {
 	if candidate.State == nil {
-		return nil
+		return
 	}
 	level := candidate.State.Config.LogLevel
 
@@ -138,7 +140,6 @@ func (d *Deps) applyCandidate(candidate Candidate) error {
 			d.Alerts.LogStatus("已更新")
 		}
 	}
-	return nil
 }
 
 // runtimeSnapshot 返回当前完整运行时状态的共享指针。

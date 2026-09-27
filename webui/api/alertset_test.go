@@ -188,9 +188,7 @@ func TestApplyCandidateOrderAndEffects(t *testing.T) {
 	}
 	candidate := Candidate{State: state, Alerts: BuildAlertSet(rc)}
 
-	if err := e.deps.applyCandidate(candidate); err != nil {
-		t.Fatalf("applyCandidate 失败: %v", err)
-	}
+	e.deps.applyCandidate(candidate)
 
 	if got := app.LogLevelVar.Level(); got != slog.LevelError {
 		t.Errorf("日志级别未应用: %v → %v", before, got)
@@ -208,9 +206,7 @@ func TestApplyCandidateOrderAndEffects(t *testing.T) {
 // TestApplyCandidateWithoutRuntimeIsNoop 无 Syncer/Runtime 时 applyCandidate 不得 panic。
 func TestApplyCandidateWithoutRuntimeIsNoop(t *testing.T) {
 	d := &Deps{}
-	if err := d.applyCandidate(Candidate{}); err != nil {
-		t.Errorf("空候选不得报错: %v", err)
-	}
+	d.applyCandidate(Candidate{})
 }
 
 // TestCoordinatorBuildsCandidateBeforeCommit 候选必须在 commit 之前构造，
@@ -231,13 +227,12 @@ func TestCoordinatorBuildsCandidateBeforeCommit(t *testing.T) {
 			return Candidate{}, err
 		}
 		return Candidate{State: state, Alerts: BuildAlertSet(snapshot.ToRuntimeConfig())}, nil
-	}, func(c Candidate) error {
+	}, func(c Candidate) {
 		if c.State == nil {
 			t.Errorf("apply 收到空候选")
 		}
 		appliedCount.Add(1)
 		commitFinished = true
-		return nil
 	})
 
 	err := coord.Mutate(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
@@ -266,9 +261,8 @@ func TestCoordinatorNoApplyOnCandidateError(t *testing.T) {
 	applied := 0
 	coord := NewConfigCoordinator(e.store, func(*config.BusinessSnapshot, syncer.BreakerPolicy) (Candidate, error) {
 		return Candidate{}, errors.New("candidate failed")
-	}, func(Candidate) error {
+	}, func(Candidate) {
 		applied++
-		return nil
 	})
 
 	err := coord.Mutate(context.Background(), func(ctx context.Context, tx *sql.Tx) error {

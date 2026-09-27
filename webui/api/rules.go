@@ -18,12 +18,15 @@ func (d *Deps) handleGetRules(w http.ResponseWriter, r *http.Request) {
 }
 
 // ruleRequest 规则请求体（Build6 §12.9：独立 DTO，不含规则数据库 ID）
+//
+// Targets 使用指针以区分「字段缺失」与「显式空数组」：空数组表示“适用于全部目标”，
+// 而缺失字段若按零值处理会把限定目标的规则静默扩大为全部目标（AGENTS §9.1、Build6 §4.3）。
 type ruleRequest struct {
 	Host       string `json:"host"`
 	Protocol   string `json:"protocol"`
 	Ports      string `json:"ports"`
 	Action     string `json:"action"`
-	Targets    []int  `json:"targets"`
+	Targets    *[]int `json:"targets"`
 	Comment    string `json:"comment"`
 	EnableIPv6 bool   `json:"enable_ipv6"`
 }
@@ -31,7 +34,13 @@ type ruleRequest struct {
 // toRule 转换为领域值：先做引用数组的正数/去重校验，再做规则本身归一化。
 // 目标是否真实存在依赖数据库，必须在事务内检查。
 func (req ruleRequest) toRule() (config.DomainRule, error) {
-	targets, err := config.NormalizeTargetIDs(req.Targets)
+	if req.Targets == nil {
+		return config.DomainRule{}, &config.ValidationError{
+			Field:  "targets",
+			Reason: "必须显式提供（空数组表示适用于全部目标）",
+		}
+	}
+	targets, err := config.NormalizeTargetIDs(*req.Targets)
 	if err != nil {
 		return config.DomainRule{}, err
 	}
@@ -90,18 +99,16 @@ func (d *Deps) handleUpdateRule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err = d.coordinator().Mutate(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		exists, eerr := d.Store.RuleExistsTx(ctx, tx, id)
-		if eerr != nil {
-			return eerr
-		}
-		if !exists {
-			return notFound("规则不存在")
-		}
 		if verr := d.Store.ValidateRuleTargetsTx(ctx, tx, rule.Targets); verr != nil {
 			return verr
 		}
-		if _, uerr := d.Store.UpdateRuleTx(ctx, tx, id, rule); uerr != nil {
+		// 不存在的规则按 RowsAffected=0 判定 404（Build6 §12.7、AGENTS §9.1）
+		rows, uerr := d.Store.UpdateRuleTx(ctx, tx, id, rule)
+		if uerr != nil {
 			return uerr
+		}
+		if rows == 0 {
+			return notFound("规则不存在")
 		}
 		return nil
 	})
@@ -120,15 +127,13 @@ func (d *Deps) handleDeleteRule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err = d.coordinator().Mutate(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		exists, eerr := d.Store.RuleExistsTx(ctx, tx, id)
-		if eerr != nil {
-			return eerr
-		}
-		if !exists {
-			return notFound("规则不存在")
-		}
-		if _, derr := d.Store.DeleteRuleTx(ctx, tx, id); derr != nil {
+		// 不存在的规则按 RowsAffected=0 判定 404（Build6 §12.7、AGENTS §9.1）
+		rows, derr := d.Store.DeleteRuleTx(ctx, tx, id)
+		if derr != nil {
 			return derr
+		}
+		if rows == 0 {
+			return notFound("规则不存在")
 		}
 		return nil
 	})

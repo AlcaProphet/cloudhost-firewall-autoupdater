@@ -200,21 +200,6 @@ func loadTargets(ctx context.Context, q DBTX) ([]TargetConfig, error) {
 	return targets, rows.Err()
 }
 
-// AddTarget 添加目标
-func (s *Store) AddTarget(t TargetConfig) error {
-	_, err := s.db.Exec(
-		"INSERT INTO targets (cloud_type, region, resource_id) VALUES (?, ?, ?)",
-		string(t.CloudType), t.Region, t.ResourceID,
-	)
-	return err
-}
-
-// DeleteTarget 删除目标
-func (s *Store) DeleteTarget(id int) error {
-	_, err := s.db.Exec("DELETE FROM targets WHERE id = ?", id)
-	return err
-}
-
 // GetRules 获取所有域名规则
 func (s *Store) GetRules() ([]DomainRule, error) {
 	return loadRules(context.Background(), s.db)
@@ -264,19 +249,6 @@ func ruleColumns(r DomainRule) (targetsJSON string, enableIPv6 int, err error) {
 	return string(raw), enableIPv6, nil
 }
 
-// AddRule 添加域名规则
-func (s *Store) AddRule(r DomainRule) error {
-	targetsJSON, enableIPv6, err := ruleColumns(r)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(
-		"INSERT INTO rules (host, protocol, ports, action, targets, comment, enable_ipv6) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		r.Host, r.Protocol, r.Ports, r.Action, targetsJSON, r.Comment, enableIPv6,
-	)
-	return err
-}
-
 // DeleteRule 删除域名规则
 func (s *Store) DeleteRule(id int) error {
 	_, err := s.db.Exec("DELETE FROM rules WHERE id = ?", id)
@@ -305,15 +277,9 @@ func (s *Store) UpdateRule(id int, r DomainRule) error {
 	return err
 }
 
-// resetAllSQL 清空全部业务表的语句（ResetAll 与事务内 ResetAllTx 共用）
+// resetAllSQL 清空全部业务表的语句（ResetAllTx 使用）
 const resetAllSQL = "DELETE FROM targets; DELETE FROM rules; DELETE FROM settings; DELETE FROM sync_logs;" +
 	"DELETE FROM alert_email; DELETE FROM alert_webhook; DELETE FROM scanned_resources;"
-
-// ResetAll 清空全部业务数据（目标、规则、凭据、日志、告警、扫描结果），等效重新初始化
-func (s *Store) ResetAll() error {
-	_, err := s.db.Exec(resetAllSQL)
-	return err
-}
 
 // ResetAllTx 在事务中清空全部业务数据（「清空所有数据」经协调器调用）
 func (s *Store) ResetAllTx(ctx context.Context, tx *sql.Tx) error {

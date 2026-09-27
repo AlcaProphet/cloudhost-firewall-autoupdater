@@ -258,7 +258,7 @@ WebUI 单二进制 + SQLite + Docker/服务器部署
 - `cloud_type` 只允许 `tc_lighthouse`、`tc_cvm`、`ali_swas`、`ali_ecs`；
 - `region`、`resource_id` Trim 后必须非空并保存 Trim 后的值；
 - 不实时校验地域是否存在于预填列表，不猜测各云资源 ID 的完整格式，不调用云 API；
-- 更新/删除不存在的目标返回 404；
+- 更新/删除不存在的目标返回 404（按 `RowsAffected=0` 判定，不做额外存在性预检）；
 - 删除目标前检查规则引用；仍被任一规则引用时返回 409，要求先修改规则；
 - 连接测试和资源扫描复用 cloud type、region、resource ID 的相同基础校验。
 
@@ -269,7 +269,7 @@ WebUI 单二进制 + SQLite + Docker/服务器部署
 - `action` Trim 并转大写，只允许 `ACCEPT`、`DROP`；
 - 非 ICMP 的 `ports` Trim 后非空；ICMP 统一归一化为 `ALL`；端口范围的完整合法性继续由现有转换和云 API 边界处理；
 - `target IDs` 必须为正数且存在；普通 CRUD 对当前数据库目标校验，导入对本次配置包的 `export_id` 集合校验；
-- 空目标数组保留“适用于全部目标”语义；不静默删除、补全或猜测未知引用；
+- `targets` 必须显式提供：省略字段返回 400，空目标数组保留“适用于全部目标”语义；不静默删除、补全或猜测未知引用；
 - 更新/删除不存在的规则返回 404。
 
 ### 4.4 设置
@@ -571,7 +571,7 @@ git diff --check
   3. 未执行真实云 API、SMTP、Webhook 验收（不属本 Step）。
 - **与计划偏差：**
   1. `config/env.go` 未按 Issue5 第 3 条拆分为“语义明确的运行时配置文件”，而是整体删除并在新文件 `config/deployment.go` 中重建部署参数读取；结果语义与固定口径一致（`FWALIZER_DATA_DIR` 空白按未设置、端口 `1～65535`），仅文件命名不同。
-  2. `config/store.go` 中 `INTERVAL 格式无效，保留默认值` 的 WARN 文案保留未改动，仍使用 `.env` 时代的变量名习惯（属既有可读性瑕疵，不影响行为）。
+  2. `config/store.go` 中 `INTERVAL 格式无效，保留默认值` 的 WARN 文案保留未改动，仍使用 `.env` 时代的变量名习惯（属既有可读性瑕疵，不影响行为；**该文案已在 Step 4 重写 `config/store.go` 时移除，本句仅为 Step 2 当时的施工期记录**）。
   3. 按用户确认口径，`PUT /api/settings` 不引入完整允许列表否决/400（留待 Step 4），而是明确忽略 `webui_port`/`sync_enabled`/未知键；`GET /api/settings` 顺带只返回 11 个可编辑键，与 §12.9 最终口径一致。
   4. 按用户确认口径，健康检查采用 `http://127.0.0.1:${WEBUI_PORT:-60200}/api/health` 动态拼接，并在 Compose 注释说明改端口需同步改 healthcheck。
   5. 本地对真实二进制做 HTTP 探测时未设置 `FWALIZER_DATA_DIR`，导致本次探测读取了本机默认真实数据目录（macOS `~/Library/Application Support/fwalizer/config.db`）中的现有业务配置；仅发出 GET 请求，未写库、未触发热重载、未修改任何文件，事后确认无残留进程、pidfile 已由进程清理、`config.db` 修改时间未变化。此为本轮操作瑕疵，不影响 Step 2 代码与验收结论，后续本地探测必须显式指定临时数据目录。
@@ -581,7 +581,7 @@ git diff --check
   - 从当前提交重新构建镜像 `fwalizer:verify-step2` 并复核：镜像内带参数执行 `version`/`--help`/`backup` 均 `exit=2`（`docker run` 返回值），映射同一宿主端口时退出后宿主端口无监听；`User=appuser`、`id` 为 `uid=1000(appuser)`；正常启动 `/api/health` 返回 `{"status":"ok"}`；进程存活但 HTTP 不可达时 `Health=unhealthy` 且 `Running=true`（健康日志 `Connection refused`）；`strings` 检查确认二进制内已无 `cloudhost-firewall-autoupdater/version` 包路径。
   - 记录修正：本 Step 起始状态行由 `◧ 进行中` 改为 `✅ 验收通过`（与 Step 1 归档格式一致）；参数用例计数由 11 改为实测 12；修正"空库启动用例"的描述为断言 `/api/targets` 返回空数组；收紧残留搜索表述为"活跃源码无入口，文档中仅有已移除项的契约/记录文字"。
   - 仍未执行：真实浏览器交互、远端 CI、真实云/SMTP/Webhook；"参数退出不监听"为间接证据（退出码 + 进程在 `os.MkdirAll`/`srv.Start()` 之前退出 + 宿主端口无监听），未使用 socket 级直接探测。
-  - 额外发现（非本 Step 代码缺陷，属文档陈旧，未擅自修改）：`AGENTS.md` 第 15 行仍以"Step 2 验收前仍可能存在 CLI/`.env` 旧实现"描述过渡边界；`Design5.md` 第 5 行实施状态仍停留在 Step 0 口径；`README.md` 第 5 行"不存在 `.env` Headless 模式"仅指该模式不可用，未说明磁盘上也不再存在 `.env.example`（文件已删除），措辞可再收紧。另 `config/store.go` 中 `INTERVAL 格式无效` 的 WARN 文案仍沿用旧变量名（既有瑕疵，同"与计划偏差"第 2 条）。
+  - 额外发现（非本 Step 代码缺陷，属文档陈旧，未擅自修改）：`AGENTS.md` 第 15 行仍以"Step 2 验收前仍可能存在 CLI/`.env` 旧实现"描述过渡边界；`Design5.md` 第 5 行实施状态仍停留在 Step 0 口径；`README.md` 第 5 行"不存在 `.env` Headless 模式"仅指该模式不可用，未说明磁盘上也不再存在 `.env.example`（文件已删除），措辞可再收紧。另 `config/store.go` 中 `INTERVAL 格式无效` 的 WARN 文案仍沿用旧变量名（既有瑕疵，同"与计划偏差"第 2 条；**该文案已在 Step 4 移除**）。
 - **状态：** ✅ 验收通过（Step 2 规定门禁全部真实通过；Docker 健康检查与 SIGTERM 容器证据均已取得；浏览器人工复核后于 2026-09-27 由用户确认真机通过；远端 CI 归属 O5-02，不阻塞本 Step 结论）
 
 ### Step 3：HTTP Listener、Server 生命周期与优雅关闭
@@ -841,7 +841,7 @@ git diff --check
   - `go test ./... -race -count=1`（冷缓存复跑）→ **通过**（11 包全 ok：root 10.402s、app 2.339s、config 3.027s、dns 3.319s、portconv 1.330s、tag 1.594s、notifier 2.512s、provider 2.862s、syncer 13.089s、webui 4.495s、webui/api 6.773s，0 次 `WARNING: DATA RACE`）
   - `go vet ./...` → 通过；`go build ./...` → 通过；`git diff --check` → 通过；改动与新增 Go 文件 `gofmt -l` 无输出
   - `cd webui/frontend && npm ci && npm run build`（vue-tsc + Vite 5.4.21，2818 模块）→ 通过；`package.json`/`package-lock.json` sha256 前后**完全一致**（未升级任何前端依赖）
-  - 关键新增用例：`config/runtime_test.go`（空库默认值与完整键集合、未知键丢弃、非空非法值带键名错误且不回显、同一事务内快照一致性、只读事务、`ToRuntimeConfig` 携带 Theme/凭据、`DeepCopy` 隔离、`ReplaceBusinessSettingsTx` 完整键集合、`DeleteImportOwnedTablesTx` 保留 `sync_logs`）；`syncer/state_test.go`（`false→true` 立即一轮、`true→true` 只按新 interval 触发、`true→false` 完成当前轮后不再启动、暂停期排队 trigger 不执行、`Stop` 幂等与并发、停止后不启动新一轮、单快照轮次、Dry Run 单快照与不受暂停限制、`RuntimeManager` 并发 Snapshot/Apply、`BreakerPreserve` 保留计数 vs `BreakerReset` 清空、新阈值即时生效、未知云类型构造失败、凭据进入 pool、发布配置深拷贝）；`webui/api/export_test.go`（空库 Schema 与数组非 null、三响应头与固定文件名、UTC metadata 与文件名时间一致、ID/`target_export_ids` 稳定排序、旧 GET 400/405、同实例自增历史后导出→清空→导入的业务关系重建、跨实例不同 ID、清空扫描缓存/保留同步日志/不重置自增序列、告警往返）；`webui/api/import_test.go`（v2 成功覆盖与归一化、空凭据清除旧值、35 项非法输入零写入零发布、错误指向 `targets[1].cloud_type`、事务失败回滚、严格解码含任意层级未知字段与 10 MiB 边界）；`webui/api/import_failure_test.go`（清表/目标/规则/settings/email/webhook/scanned 清空/commit 共 8 项失败注入 + 候选构造失败 + commit 失败，均断言旧库完整、旧状态指针保持、零发布、500 不回显底层错误）；`webui/api/alertset_test.go`（构造零副作用、禁用渠道不构造、订阅替换、幂等、无 bus 安全、apply 副作用顺序、候选在 commit 前构造、候选失败不 apply、安全日志元数据）；`main_test.go` 的 `TestProcessConfigExportImportRoundTrip`（真实二进制 + 真实 SQLite：POST 导出附件头与敏感值、跨数据目录导入、HTTP 校验目标/规则/设置/告警、version 1 → 400、两个进程日志均无敏感 sentinel）
+  - 关键新增用例：`config/runtime_test.go`（空库默认值与完整键集合、未知键丢弃、非空非法值带键名错误且不回显、同一事务内快照一致性、只读事务、`ToRuntimeConfig` 携带 Theme/凭据、`DeepCopy` 隔离、`ReplaceBusinessSettingsTx` 完整键集合、`DeleteImportOwnedTablesTx` 保留 `sync_logs`）；`syncer/state_test.go`（`false→true` 立即一轮、`true→true` 只按新 interval 触发、`true→false` 完成当前轮后不再启动、暂停期排队 trigger 不执行、`Stop` 幂等与并发、停止后不启动新一轮、单快照轮次、Dry Run 单快照与不受暂停限制、`RuntimeManager` 并发 Snapshot/Apply、`BreakerPreserve` 保留计数 vs `BreakerReset` 清空、新阈值即时生效、未知云类型构造失败、凭据进入 pool、发布配置深拷贝）；`webui/api/export_test.go`（空库 Schema 与数组非 null、三响应头与固定文件名、UTC metadata 与文件名时间一致、ID/`target_export_ids` 稳定排序、旧 GET 400/405、同实例自增历史后导出→清空→导入的业务关系重建、跨实例不同 ID、清空扫描缓存/保留同步日志/不重置自增序列、告警往返）；`webui/api/import_test.go`（v2 成功覆盖与归一化、空凭据清除旧值、39 项非法输入零写入零发布、错误指向 `targets[1].cloud_type`、事务失败回滚、严格解码含任意层级未知字段与 10 MiB 边界）；`webui/api/import_failure_test.go`（清表/目标/规则/settings/email/webhook/scanned 清空/commit 共 8 项失败注入 + 候选构造失败 + commit 失败，均断言旧库完整、旧状态指针保持、零发布、500 不回显底层错误）；`webui/api/alertset_test.go`（构造零副作用、禁用渠道不构造、订阅替换、幂等、无 bus 安全、apply 副作用顺序、候选在 commit 前构造、候选失败不 apply、安全日志元数据）；`main_test.go` 的 `TestProcessConfigExportImportRoundTrip`（真实二进制 + 真实 SQLite：POST 导出附件头与敏感值、跨数据目录导入、HTTP 校验目标/规则/设置/告警、version 1 → 400、两个进程日志均无敏感 sentinel）
 - 人工检查：2026-09-27 用户确认在真机环境完成并通过生产 WebUI 浏览器回归、连接测试、资源扫描、真实云 API/DNS 增量同步与运行时切换/退出验收；真实 Email/SMTP/收件箱与 Webhook 移交后续处理，见 `ProdTestList.md`。跨实例不同自增历史数据库的人工交叉导入因当前不存在该使用场景而免除；`export_id → 新数据库 ID` 与规则关联正确性仍由本 Step 已记录的同实例/跨实例自动化用例覆盖。
 - 证据边界：
   1. 版本 2 配置包与原子运行时切换的验证全部基于**本地 SQLite + httptest + 真实二进制进程**；未在真实云账号、真实 SMTP 或真实 Webhook 上验证；
@@ -871,7 +871,7 @@ git diff --check
 - 开工前只读核验（2026-09-24）已完成：Git 恢复点、两依赖文件 sha256、工具链、`npm ls`、`npm audit`、`npm view`、`npm outdated`、`npm audit fix --dry-run`、`npm ci && npm run build`、`go test ./... -race`、`go vet ./...`、`go build ./...`、`git diff --check` 全部记录；详见同轮《Build6 Step 6 开工前核验报告》
 - 本轮经用户明确确认的决策（2026-09-24）：
   1. **Step 6 开工时曾允许 Step 5 保持 ◧ 并保留外部链路待办**；该施工期边界已由 2026-09-27 的用户真机确认与后续事项移交取代，Step 5/R5-01 现已关闭；
-  2. **Step 6 同步增加远端 CI audit 阻断门禁**：前端构建后执行 `npm audit --omit=dev --audit-level=high` 与 `npm audit --audit-level=high` 两个阻断步骤；
+  2. **Step 6 同步增加远端 CI audit 阻断门禁**：前端构建后执行 `npm audit --omit=dev --audit-level=high` 与 `npm audit --audit-level=high` 两个阻断步骤（两条命令均带 `--audit-level=high`，按 npm 语义**只阻断 high/critical**，low/moderate 只打印审计摘要不阻断；审计需要 registry 可达，审计端点不可达时该步骤直接失败）；
   3. `vite` 与 `@vitejs/plugin-vue` 在 `package.json` 中采用 caret 范围（`^8.3.1` / `^6.0.9`）。
 - 本 Step 文件范围：`webui/frontend/package.json`、`webui/frontend/package-lock.json`（阶段 A 预期只改 lockfile）；必要的 `webui/frontend/vite.config.ts`；`.github/workflows/docker-publish.yml` 的 audit 门禁；取证后同步 `Build6.md`、`Issue5.md`、`Design5.md`、`ProdTestList.md`
 - 固定不变量：`npm run build` 保持 `vue-tsc && vite build`；不升级 Vue Router 5、TypeScript 7、npm 12；不升 Go 依赖与业务代码；不添加 overrides/resolutions；不使用 `--force`、不使用 `sudo`、不修改全局 npm cache；不启用 Vite 8 实验功能、bundled dev mode、Devtools 或 `resolve.tsconfigPaths`；不改造路由/路径系统；`webui/frontend/src/**`、`index.html`、`tsconfig.json`、`build/Dockerfile`、`Makefile` 不在改动范围
@@ -1039,6 +1039,7 @@ git diff --check
   - webui/api：整包 `-race -count=1` → ok（5.1s）；A5/A8/A10 + 导入/暂停相关 `-race -count=10` → ok（10.9s）；`TestConfigImportSyncEnabledRuntimeConsistency -race -count=20` → ok（16.3s）。
   - `gofmt -l`（`notifier/`、`syncer/`、`provider/`、`webui/`）无输出；`go vet` 各包通过。
 - **覆盖率变化（`go test <pkg> -cover -count=1`，仅作趋势参考）：** `provider` **22.6% → 53.0%**；`notifier` 47.2%、`syncer` 82.1%、`webui/api` 78.1%、`webui` 88.2%、`config` 78.9%（本轮未设任意覆盖率目标）。
+  - **2026-09-27 独立复核复测（同一命令）：** `provider` 53.0%、`config` 78.9%、`webui` 88.2%、`app` 51.9% 与上表一致；`notifier` 48.6%、`webui/api` 78.4%、`syncer` 80.6%～81.6%（同一命令多次运行存在波动，原 82.1% 不能稳定复现）。差异属测量波动，不改变本 Step 结论。
 - **统一验收门禁（完整序列，逐条真实通过）：** `npm ci` rc=0 → `npm run build` rc=0（`✓ built in 125ms`）→ `npm audit --audit-level=high` rc=0（0 漏洞）→ `npm audit --omit=dev --audit-level=high` rc=0（0 漏洞）→ `go test ./... -race -count=1` rc=0（11 包全 ok，0 次 `DATA RACE`：root 10.1s、syncer 16.5s、webui/api 7.0s）→ `go vet ./...` rc=0 → `go build ./...` rc=0 → `docker compose -f docker-compose.yml.example config --quiet` rc=0 → `docker build -f build/Dockerfile -t fwalizer:build6-step7 .` rc=0（镜像 74.1MB，manifest `sha256:de076e21…`）→ `git diff --check` rc=0。
 - **真实二进制验收（临时数据目录 + 真实进程）：** 空数据目录启动生成 `config.db`(+`-wal`/`-shm`) 与 `fwalizer.pid`；`GET /api/health` → 200 `{"status":"ok"}`；`GET /api/targets` → 200 `[]`；`GET /` → 200（index.html），其引用的 3 个哈希资源（`api-Cgz6hAsk.js`、`index-DMKGbtVO.js`、`light-Slo-5Vyt.js`）全部 200；空库首轮 `开始同步 targets=0 rules=0 → 同步完成 耗时=0s`；`SIGTERM` → 退出码 **0**，日志顺序为「收到停止信号 → 开始 HTTP 关闭 → 同步引擎停止 → HTTP 关闭完成」，端口释放；日志敏感模式扫描无命中（强证据另见自动化 `TestProcessSecretsNotLogged`）。
 - **Docker 容器验收：** `docker run -d -p 63100:60200 fwalizer:build6-step7` → 容器 6s 转 `healthy`（HEALTHCHECK 走 `/api/health`）；容器内 `uid=1000(appuser)`（**非 root**，`Config.User=appuser`）；经端口映射 `/api/health`、`/` 与 3 个哈希资源全部 200；容器日志敏感模式扫描无命中；`docker stop -t 15` → rc=0、耗时 0.111s、`ExitCode=0`、`OOMKilled=false`，日志顺序同上，停止后端口释放。附带验证容器内实际绑定 `0.0.0.0:60200` 并可通过端口映射访问（补上此前仅单测覆盖的 `WEBUI_HOST=0.0.0.0` 真实可达性）。
@@ -1046,7 +1047,7 @@ git diff --check
 - **人工检查：** 本轮**未新增**浏览器或真实云人工步骤——2026-09-27 用户已确认的生产浏览器、真实腾讯云/阿里云、DNS 增量同步与真实负载运行时证据按原记录继承（`Build6.md:844`、`:856`）；本 Step 的 provider 证据全部是本地 mock 端点与纯转换，**不声称真实云 API 验收**。
 - **外部链路检查：经用户决定免除。** PT-B6-08（真实 Email/SMTP + 收件箱）与 PT-B6-09（真实 Webhook 渠道及测试渠道）**未执行**；用户于 2026-09-27 明确决定跳过这两项并自行处理，沿用本项目 PT-B6-04 的「人工验收免除」先例。**因此这两个外部链路仍无真实通过结论，本文档不得写成已经通过**；AI 全程未接触 SMTP 密码或完整 Webhook URL，也未以 mock/HTTP 假服务替代（`notifier/email.go`、`notifier/webhook.go` 的行为测试仍不在自动补测内）。
 - **远端 GitHub Actions（真实结果）：** 按用户授权推送 tag `v2.0.0`（指向本 Step 提交 `8a075f368447cc5321b24e9c021f96fc0d1eb730`）后，真实工作流运行 **成功**：run id `36300428681`（event `push`，head_branch `v2.0.0`，run_attempt 1，2026-09-27T06:33:08Z→06:38:25Z，https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/36300428681）；14 个步骤全部 `success`，含「更新所有 SDK 到最新版」「构建前端」「前端依赖审计（生产依赖，阻断）」「前端依赖审计（完整，阻断）」「编译检查」「**运行测试（`go test -race -v ./...`）**」「登录 ghcr.io」「构建并推送 Docker 镜像」。因此 **Issue5 O5-02 的「远端 race 未运行」缺口已由真实远端结果关闭**。
-- **发布镜像（真实推送）：** 从 GHCR 匿名拉取 `ghcr.io/alcaprophet/fwalizer:2.0.0` 成功（digest `sha256:72c3166d…`），镜像标签 `org.opencontainers.image.revision` = `8a075f368447cc5321b24e9c021f96fc0d1eb730`（与本 Step 提交一致）、`version` = `2.0.0`、`source` = 本仓库 URL；semver 派生标签 `2.0`、`2` 同时存在。该镜像由 CI 使用最新 SDK 构建，属**真实远端发布证据**。
+- **发布镜像（真实推送）：** 从 GHCR 匿名拉取 `ghcr.io/alcaprophet/fwalizer:2.0.0` 成功（digest `sha256:72c3166d…`），镜像标签 `org.opencontainers.image.revision` = `8a075f368447cc5321b24e9c021f96fc0d1eb730`（与本 Step 提交一致）、`version` = `2.0.0`、`source` = 本仓库 URL；semver 派生标签 `2.0`、`2` 同时存在（GHCR 同时提供 `latest` 标签）。该镜像由 CI 使用最新 SDK 构建，属**真实远端发布证据**。
 - **未完成项：无阻塞项。** 以下三类均不阻塞 Step 7 验收，如实登记：
   1. **用户决定免除的人工验收**：PT-B6-08（真实 SMTP 发信/收件箱/告警触发与禁用后行为）与 PT-B6-09（每个实际支持渠道的真实 Webhook）——用户 2026-09-27 决定跳过并自行处理；这两个外部链路**没有真实通过结论**，不得写成已通过；
   2. ~~远端 GitHub Actions 实际运行结果~~——**已完成**：运行 `36300428681` 成功，镜像 `ghcr.io/alcaprophet/fwalizer:2.0.0` 已真实推送；
@@ -1205,13 +1206,13 @@ git diff --check
 | EventBus/SSE | `notifier/bus.go`、`webui/api/sync.go` | 取消订阅不再关闭 channel；SSE 的 `select` 已加入服务器级 shutdown channel，关闭时主动退出并 `defer unsubscribe()` | Step 1、3 | panic 窗口**已解除（Step 1）**；SSE shutdown 信号**已解除（Step 3）** |
 | 日志 SSE | `webui/api/logstream.go` | 广播器锁内发送/关闭无同类 panic；handler 已监听服务器级 shutdown channel 并主动退出 | Step 3 | **已解除（Step 3）** |
 | 日志级别 | `app/logutil.go`、`webui/api/logstream.go` | stdout 使用 `slog.LevelVar`、日志流级别改为线程安全 `*slog.LevelVar`，设置保存后即时生效 | Step 4 | **已解除（Step 4）** |
-| DNS 熔断阈值 | `dns/circuitbreaker.go`、`syncer/syncer.go` | `SetThreshold` 线程安全更新且保留既有失败计数，经 `Syncer.SetDNSFailThreshold` 应用 | Step 4 | **已解除（Step 4）** |
+| DNS 熔断阈值 | `dns/circuitbreaker.go`、`syncer/state.go` | `Clone()` + `SetThreshold` 线程安全更新且保留既有失败计数；普通变更保留计数、完整导入重置（`BreakerPreserve`/`BreakerReset`），阈值随 `RuntimeState` 在 `BuildRuntimeState` 中发布（`Syncer.SetDNSFailThreshold` 已于 Step 5 删除） | Step 4、7 | **已解除（Step 4、7）** |
 | HTTP listener | `webui/server.go` | 已改为 `Start()` 同步 `net.Listen` + 同一 listener 交给 `Serve`，仅 `EADDRINUSE` 降级；显式 `http.Server`、`Wait()`、幂等 `Shutdown()`、超时强制 `Close` 齐备 | Step 3 | **已解除（Step 3）** |
 | 普通 API 解码 | `webui/api/decode.go` | 已统一 `decodeJSONStrict`（`DisallowUnknownFields`、拒绝尾随/多顶层值；普通请求 1 MiB、配置导入 10 MiB，超限 413）与 `parsePathID`（`Atoi` 且 >0）；请求 DTO 不再含数据库 `id`；Step 7 新增 `decodeJSONObjectStrict`（顶层必须是 JSON 对象），供 reset 显式拒绝 `null` 与数组/标量 | Step 4、7 | **已解除（Step 4）**；reset `null` **已解除（Step 7，Issue6 A10）** |
 | settings/alerts | `webui/api/settings.go`、`alerts.go`、`coordinator.go` | settings 使用 11 个 pointer 字段固定 DTO 并在单事务写入（未知键 400、省略不变、仅凭据可显式空串）；alerts 要求两对象全子字段必需并单事务覆盖；两者均经协调器 commit 后只 apply 一次 | Step 2、4 | `webui_port` 入口**已解除（Step 2）**；任意 map 键与部分成功**已解除（Step 4）** |
 | 配置包协议 | `webui/api/bundle_v2.go`、`webui/api/export.go`、`webui/api/coordinator.go` | `POST /api/config/export` 在只读事务内导出 v2 完整敏感快照（ID 与 `target_export_ids` 升序、marshal 先于写头、`no-store`、固定附件名）；导入使用 presence DTO + 10 MiB 严格解码 + 预校验 + 固定顺序事务 + `LastInsertId` 映射；version 1 及其他版本 400；Step 7 起导入经 `MutateImport`（`BreakerReset`）清空 DNS 熔断计数，普通变更经 `Mutate`（`BreakerPreserve`）保留计数 | Step 4、5、7 | 严格解码与协调器接入**已解除（Step 4）**；v2 协议与 ID 映射**已解除（Step 5）**；导入/普通变更熔断策略**已解除（Step 7，Issue6 A8）** |
 | 前端导入导出 | `webui/frontend/src/views/Settings.vue` | 设置保存为 11 键白名单 payload（Step 4）；导入/导出均为危险级卡片确认（`type="error"`，文案列出四类密钥），导出走 `POST + fetch + Blob` 并从 `Content-Disposition` 解析安全文件名（含固定 fallback），导入成功整页 reload、失败不 reload | Step 4、5 | 设置保存 payload**已解除（Step 4）**；敏感快照与整页刷新**已解除（Step 5）** |
-| 前端依赖 | `webui/frontend/package*.json`、`build/Dockerfile`、`.github/workflows/docker-publish.yml` | Step 6 阶段 A 只改 lockfile：`nanoid 3.3.16→3.3.19`、`brace-expansion 2.1.2→2.1.7`；阶段 B：`vite ^5.4.0→^8.3.1`、`@vitejs/plugin-vue ^5.0.0→^6.0.9` 并重生成 lockfile（`esbuild`/`rollup` 移除，改由 `rolldown 1.2.10` + `lightningcss 1.33.0`）；`vue`/`vue-router`/`naive-ui`/`typescript`/`vue-tsc` 未改动；Node 固定为 `node:24.21-alpine` / `node-version: '24.21.0'`；完整 audit 与 `--omit=dev` audit 均 0 漏洞；CI 已增加两个阻断式 audit 门禁；Docker 构建、容器 health/stop 及用户真机浏览器回归通过 | Step 6 | **已解除（Step 6 于 2026-09-27 验收通过）** |
+| 前端依赖 | `webui/frontend/package*.json`、`build/Dockerfile`、`.github/workflows/docker-publish.yml` | Step 6 阶段 A 只改 lockfile：`nanoid 3.3.16→3.3.19`、`brace-expansion 2.1.2→2.1.7`；阶段 B：`vite ^5.4.0→^8.3.1`、`@vitejs/plugin-vue ^5.0.0→^6.0.9` 并重生成 lockfile（`esbuild`/`rollup` 移除，改由 `rolldown 1.2.10` + `lightningcss 1.33.0`）；`vue`/`vue-router`/`naive-ui`/`typescript`/`vue-tsc` 未改动；Node 固定为 `node:24.21-alpine` / `node-version: '24.21.0'`；完整 audit 与 `--omit=dev` audit 均 0 漏洞；CI 已增加两个 audit 门禁（`--audit-level=high`，只阻断 high/critical）；Docker 构建、容器 health/stop 及用户真机浏览器回归通过 | Step 6 | **已解除（Step 6 于 2026-09-27 验收通过）** |
 
 实施者应优先在这些现有边界上收束，不创建第二套 store、第二个事件总线或平行 Web server。删除旧实现后再更新本表的“当前问题”，不能让旧/新入口长期共存。
 
@@ -1491,7 +1492,7 @@ type RuleWire struct {
 - `PUT /api/settings` 是部分更新：使用 11 个 pointer 字段的固定 DTO，至少出现一个字段；省略字段保持不变，显式空字符串只对四个凭据字段合法；未知字段 400；
 - `sync_enabled` 只通过 pause/resume 或 version 2 导入修改，通过 `GET /api/sync/status` 读取；
 - `GET /api/alerts` 返回完整 `email` 与 `webhook` 对象；`PUT /api/alerts` 两个对象均为必需字段且每个子字段都必需，一次事务覆盖保存，不能用 `null` 表示“不改”；
-- 目标/规则 POST/PUT 使用不含 `id` 的 request DTO；响应中的持久化对象可包含 DB ID；客户端提交 `id` 属于未知字段并返回 400；
+- 目标/规则 POST/PUT 使用不含 `id` 的 request DTO；响应中的持久化对象可包含 DB ID；客户端提交 `id` 属于未知字段并返回 400；规则的 `targets` 使用指针 presence 类型，省略返回 400，显式 `[]` 仍表示“适用于全部目标”；更新/删除按 `RowsAffected=0` 返回 404（删除目标仍先在同一事务内检查引用并返回 409）；
 - test-connection request 固定为 `cloud_type/region/resource_id` 三字段；scan request 固定为 `cloud_type/region` 两字段；均走 1 MiB/严格解码和 §四基础校验；
 - `POST /api/config/reset` 只接受单一空对象 `{}`；未知字段、`null`、数组、标量与其他非对象一律 400（`decodeJSONObjectStrict`，Step 7 / Issue6 A10）；成功前通过协调器完成新空状态 Apply；
 - 成功消息可保持现有 `{ "message": "..." }` 形态；错误统一为 `{ "error": "安全文案" }`，前端不得依赖数据库/SDK 原始错误全文。
@@ -1724,4 +1725,6 @@ Build6 最终关闭前，必须能从本文追溯：
 | 2026-09-24 | Step 4～6 工程与自动门禁完成：严格 API/事务、version 2 与原子运行时、Vite 8 升级、Docker/Node 24 验收。 |
 | 2026-09-27 | 用户真机确认浏览器、真实云/DNS/同步链路通过，Step 5、Step 6 验收完成；跨实例人工迁移免除，Email/SMTP/收件箱与 Webhook 移交 Step 7/后续清单。 |
 | 2026-09-27 | **Step 7 ✅ 验收通过**：自动补测、统一门禁、真实二进制/Docker 容器验收、远端 GitHub Actions 与真实镜像推送、文档闭环全部完成（`provider` 覆盖率 22.6%→53.0%，11 包 race 全绿，镜像 `fwalizer:build6-step7` 74.1MB）；按用户确认边界最小修复 Issue6 A10/A5/A7/A6/A8，A1/A2/A3/A4/A9/A11～A19 继续留在 Issue6；PT-B6-08/09 真实 SMTP/收件箱与 Webhook 经用户明确决定免除人工验收、由用户自行处理（**不写成已通过**）。 |
-| 2026-09-27 | 推送 tag `v2.0.0`（提交 `8a075f3`）触发真实 GitHub Actions：运行 `36300428681` **成功**（14 步全 success，含远端 `go test -race -v ./...` 与两条阻断式 npm audit），并真实推送 `ghcr.io/alcaprophet/fwalizer:2.0.0` / `2.0` / `2`（revision 标签与提交一致）；Issue5 O5-02 的远端 race 缺口就此关闭。 |
+| 2026-09-27 | 推送 tag `v2.0.0`（提交 `8a075f3`）触发真实 GitHub Actions：运行 `36300428681` **成功**（14 步全 success，含远端 `go test -race -v ./...` 与两条阻断式 npm audit），并真实推送 `ghcr.io/alcaprophet/fwalizer:2.0.0` / `2.0` / `2`（GHCR 同时提供 `latest`；revision 标签与提交一致）；Issue5 O5-02 的远端 race 缺口就此关闭。 |
+| 2026-09-27 | 独立核验后的文档一致性修正（不改动已验收结论）：§12.2 DNS 阈值行改为 `Clone`+`SetThreshold` 经 `RuntimeState` 发布（`SetDNSFailThreshold` 已删除）；Step 2 记录中已消失的 `INTERVAL 格式无效` WARN 就地注记；Step 7 覆盖率补记复测值（`syncer` 80.6%～81.6% 存在波动）；非法输入用例计数 35→39；audit 门禁边界（`--audit-level=high` 只阻断 high/critical）与 GHCR `latest` 标签按事实回写。 |
+| 2026-09-27 | 核验修正批次落地（仅处理独立核验发现项，**不涉及 Issue6 条目**）：规则 `targets` 改为显式必填（省略 400）、目标/规则更新删除改为 `RowsAffected=0 → 404`、`GET/DELETE /api/scanned-resources` 的 `cloud_type` 加枚举校验、协调器 commit 后发布收紧为不可失败（`apply` 不再返回 error）、删除仅测试使用的非事务 Store 入口（`AddTarget`/`DeleteTarget`/`AddRule`/`ResetAll`）、日志级别解析去重与重复端口 WARN 清理、`Makefile` 的 `test` 目标补 `-race`；补 `TestConfigImportSharedTargetAcrossRules`（多规则复用同一目标）、`TestRuleTargetsMustBeExplicit`、`TestScannedResourcesQueryValidation/Valid` 判别性回归；AGENTS §9.1、Build6 §4.2/§4.3/§12.9 同步。 |

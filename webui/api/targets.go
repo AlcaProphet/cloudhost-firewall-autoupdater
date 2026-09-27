@@ -77,15 +77,13 @@ func (d *Deps) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err = d.coordinator().Mutate(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		exists, eerr := d.Store.TargetExistsTx(ctx, tx, id)
-		if eerr != nil {
-			return eerr
-		}
-		if !exists {
-			return notFound("目标不存在")
-		}
-		if _, uerr := d.Store.UpdateTargetTx(ctx, tx, id, target); uerr != nil {
+		// 不存在的目标按 RowsAffected=0 判定 404（Build6 §12.7、AGENTS §9.1）
+		rows, uerr := d.Store.UpdateTargetTx(ctx, tx, id, target)
+		if uerr != nil {
 			return uerr
+		}
+		if rows == 0 {
+			return notFound("目标不存在")
 		}
 		return nil
 	})
@@ -104,13 +102,6 @@ func (d *Deps) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err = d.coordinator().Mutate(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		exists, eerr := d.Store.TargetExistsTx(ctx, tx, id)
-		if eerr != nil {
-			return eerr
-		}
-		if !exists {
-			return notFound("目标不存在")
-		}
 		// 同一事务内检查规则引用：被引用返回 409，不静默删除引用，
 		// 也不把规则扩大为“适用于全部目标”
 		refs, rerr := d.Store.ReferencingRuleIDsTx(ctx, tx, id)
@@ -120,8 +111,13 @@ func (d *Deps) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 		if len(refs) > 0 {
 			return conflict(fmt.Sprintf("目标被 %d 条规则引用，请先修改规则", len(refs)))
 		}
-		if _, derr := d.Store.DeleteTargetTx(ctx, tx, id); derr != nil {
+		// 不存在的目标按 RowsAffected=0 判定 404（Build6 §12.7、AGENTS §9.1）
+		rows, derr := d.Store.DeleteTargetTx(ctx, tx, id)
+		if derr != nil {
 			return derr
+		}
+		if rows == 0 {
+			return notFound("目标不存在")
 		}
 		return nil
 	})

@@ -42,7 +42,7 @@ type TargetConfig struct {
 	ResourceID string    `json:"resource_id"` // InstanceId 或 SecurityGroupId
 }
 
-// DomainRule 域名规则配置（RULES 解析结果）
+// DomainRule 域名规则配置（SQLite 持久化领域模型）
 type DomainRule struct {
 	ID         int    `json:"id"`
 	Host       string `json:"host"`

@@ -117,14 +117,11 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	// 同步绑定 HTTP：绑定成功后才启动 Syncer，确保“WebUI 可用”与“同步在跑”一致
-	actualPort, err := srv.Start()
-	if err != nil {
+	// 端口降级（仅 EADDRINUSE）由 Server.Start 记录权威 WARN，这里不重复输出
+	if _, err := srv.Start(); err != nil {
 		signal.Stop(sigCh)
 		fmt.Fprintf(stderr, "WebUI 监听失败: %v\n", err)
 		return 1
-	}
-	if actualPort != deploy.Port {
-		slog.Warn("WebUI 未使用请求端口", "请求端口", deploy.Port, "实际端口", actualPort)
 	}
 
 	if len(initialState.Providers) == 0 {

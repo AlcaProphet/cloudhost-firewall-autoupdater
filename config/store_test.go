@@ -1,10 +1,60 @@
 package config
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+// withTxForTest 在事务内执行测试夹具写入并提交。
+//
+// 非事务 Store 写入入口（AddTarget/AddRule/ResetAll）已删除：生产写入统一经
+// 协调器使用 *Tx 方法，测试夹具也必须走同一事务路径。
+func withTxForTest(t *testing.T, s *Store, fn func(ctx context.Context, tx *sql.Tx) error) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := s.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("开始测试事务失败: %v", err)
+	}
+	if err := fn(ctx, tx); err != nil {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			t.Errorf("回滚测试事务失败: %v", rbErr)
+		}
+		t.Fatalf("测试夹具写入失败: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("提交测试事务失败: %v", err)
+	}
+}
+
+// addTargetTxForTest 事务内插入目标（测试夹具）
+func addTargetTxForTest(t *testing.T, s *Store, tc TargetConfig) {
+	t.Helper()
+	withTxForTest(t, s, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := s.AddTargetTx(ctx, tx, tc)
+		return err
+	})
+}
+
+// addRuleTxForTest 事务内插入规则（测试夹具）
+func addRuleTxForTest(t *testing.T, s *Store, r DomainRule) {
+	t.Helper()
+	withTxForTest(t, s, func(ctx context.Context, tx *sql.Tx) error {
+		return s.AddRuleTx(ctx, tx, r)
+	})
+}
+
+// resetAllTxForTest 事务内清空全部业务数据（测试夹具）
+func resetAllTxForTest(t *testing.T, s *Store) {
+	t.Helper()
+	withTxForTest(t, s, func(ctx context.Context, tx *sql.Tx) error {
+		return s.ResetAllTx(ctx, tx)
+	})
+}
 
 // TestClearSyncLogs 写入 3 条 → 清空 → GetSyncLogs 为空
 func TestClearSyncLogs(t *testing.T) {
@@ -95,12 +145,8 @@ func TestResetAll(t *testing.T) {
 	defer store.Close()
 
 	// 写入各表数据
-	if err := store.AddTarget(TargetConfig{CloudType: CloudTCLighthouse, Region: "ap-guangzhou", ResourceID: "lhins-abc"}); err != nil {
-		t.Fatalf("AddTarget 失败: %v", err)
-	}
-	if err := store.AddRule(DomainRule{Host: "example.com", Protocol: "TCP", Ports: "80"}); err != nil {
-		t.Fatalf("AddRule 失败: %v", err)
-	}
+	addTargetTxForTest(t, store, TargetConfig{CloudType: CloudTCLighthouse, Region: "ap-guangzhou", ResourceID: "lhins-abc"})
+	addRuleTxForTest(t, store, DomainRule{Host: "example.com", Protocol: "TCP", Ports: "80"})
 	if err := store.SetSetting("tc_access_id", "AKIDxxx"); err != nil {
 		t.Fatalf("SetSetting 失败: %v", err)
 	}
@@ -117,10 +163,8 @@ func TestResetAll(t *testing.T) {
 		t.Fatalf("ReplaceScannedResources 失败: %v", err)
 	}
 
-	// ResetAll 清空全部
-	if err := store.ResetAll(); err != nil {
-		t.Fatalf("ResetAll 失败: %v", err)
-	}
+	// 事务内清空全部（ResetAll 非事务入口已删除）
+	resetAllTxForTest(t, store)
 
 	if targets, _ := store.GetTargets(); len(targets) != 0 {
 		t.Errorf("ResetAll 后 targets 仍有 %d 条", len(targets))

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +19,45 @@ import (
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
+
+// withTxForTest 在事务内执行测试夹具写入并提交。
+//
+// 非事务 Store 写入入口（AddTarget/AddRule）已删除：生产写入统一经协调器
+// 使用 *Tx 方法，测试夹具也必须走同一事务路径。
+func withTxForTest(t *testing.T, s *config.Store, fn func(ctx context.Context, tx *sql.Tx) error) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := s.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("开始测试事务失败: %v", err)
+	}
+	if err := fn(ctx, tx); err != nil {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			t.Errorf("回滚测试事务失败: %v", rbErr)
+		}
+		t.Fatalf("测试夹具写入失败: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("提交测试事务失败: %v", err)
+	}
+}
+
+// addTargetForTest 事务内插入目标（测试夹具）
+func addTargetForTest(t *testing.T, s *config.Store, tc config.TargetConfig) {
+	t.Helper()
+	withTxForTest(t, s, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := s.AddTargetTx(ctx, tx, tc)
+		return err
+	})
+}
+
+// addRuleForTest 事务内插入规则（测试夹具）
+func addRuleForTest(t *testing.T, s *config.Store, r config.DomainRule) {
+	t.Helper()
+	withTxForTest(t, s, func(ctx context.Context, tx *sql.Tx) error {
+		return s.AddRuleTx(ctx, tx, r)
+	})
+}
 
 // testBinary 由 TestMain 构建一次，供所有进程级用例复用。
 var testBinary string
@@ -248,21 +289,17 @@ func seedTargetAndRule(t *testing.T, dataDir, dnsAddr, dnsTimeout string) {
 		}
 	}()
 
-	if err := store.AddTarget(config.TargetConfig{
+	addTargetForTest(t, store, config.TargetConfig{
 		CloudType:  config.CloudTCLighthouse,
 		Region:     "ap-guangzhou",
 		ResourceID: "lhins-step3-proc",
-	}); err != nil {
-		t.Fatalf("写入测试目标失败: %v", err)
-	}
-	if err := store.AddRule(config.DomainRule{
+	})
+	addRuleForTest(t, store, config.DomainRule{
 		Host:     "step3.invalid",
 		Protocol: "TCP",
 		Ports:    "443",
 		Action:   "ACCEPT",
-	}); err != nil {
-		t.Fatalf("写入测试规则失败: %v", err)
-	}
+	})
 	for k, v := range map[string]string{"dns": dnsAddr, "dns_timeout": dnsTimeout, "interval": "5m"} {
 		if v == "" {
 			continue
@@ -365,14 +402,11 @@ func TestBusinessEnvDoesNotOverrideSQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("准备测试数据库失败: %v", err)
 	}
-	if err := store.AddTarget(config.TargetConfig{
+	addTargetForTest(t, store, config.TargetConfig{
 		CloudType:  config.CloudTCLighthouse,
 		Region:     "ap-guangzhou",
 		ResourceID: "lhins-from-db",
-	}); err != nil {
-		_ = store.Close()
-		t.Fatalf("写入测试目标失败: %v", err)
-	}
+	})
 	if err := store.SetSetting("interval", "7m"); err != nil {
 		_ = store.Close()
 		t.Fatalf("写入测试设置失败: %v", err)
@@ -700,26 +734,17 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("预置数据库失败: %v", err)
 	}
-	if err := srcStore.AddTarget(config.TargetConfig{CloudType: config.CloudTCLighthouse, Region: "ap-guangzhou", ResourceID: "lhins-src-1"}); err != nil {
-		_ = srcStore.Close()
-		t.Fatalf("预置目标失败: %v", err)
-	}
-	if err := srcStore.AddTarget(config.TargetConfig{CloudType: config.CloudTCCVM, Region: "ap-beijing", ResourceID: "sg-src-2"}); err != nil {
-		_ = srcStore.Close()
-		t.Fatalf("预置目标失败: %v", err)
-	}
+	addTargetForTest(t, srcStore, config.TargetConfig{CloudType: config.CloudTCLighthouse, Region: "ap-guangzhou", ResourceID: "lhins-src-1"})
+	addTargetForTest(t, srcStore, config.TargetConfig{CloudType: config.CloudTCCVM, Region: "ap-beijing", ResourceID: "sg-src-2"})
 	srcTargets, err := srcStore.GetTargets()
 	if err != nil {
 		_ = srcStore.Close()
 		t.Fatalf("GetTargets 失败: %v", err)
 	}
-	if err := srcStore.AddRule(config.DomainRule{
+	addRuleForTest(t, srcStore, config.DomainRule{
 		Host: "roundtrip.example.com", Protocol: "TCP", Ports: "443", Action: "ACCEPT",
 		Targets: []int{srcTargets[1].ID}, Comment: "跨实例",
-	}); err != nil {
-		_ = srcStore.Close()
-		t.Fatalf("预置规则失败: %v", err)
-	}
+	})
 	if err := srcStore.SetSetting("tc_access_id", tcSecretID); err != nil {
 		_ = srcStore.Close()
 		t.Fatalf("预置凭据失败: %v", err)
@@ -793,10 +818,7 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 		t.Fatalf("预置目标实例数据库失败: %v", err)
 	}
 	for i := 0; i < 5; i++ {
-		if err := dstStore.AddTarget(config.TargetConfig{CloudType: config.CloudAliECS, Region: "cn-hangzhou", ResourceID: "sg-dst"}); err != nil {
-			_ = dstStore.Close()
-			t.Fatalf("预置目标失败: %v", err)
-		}
+		addTargetForTest(t, dstStore, config.TargetConfig{CloudType: config.CloudAliECS, Region: "cn-hangzhou", ResourceID: "sg-dst"})
 	}
 	if err := dstStore.Close(); err != nil {
 		t.Fatalf("关闭预置数据库失败: %v", err)

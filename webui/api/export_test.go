@@ -127,9 +127,7 @@ func TestConfigExportStableOrdering(t *testing.T) {
 
 	// 制造自增历史：先插入再删除，使后续 ID 不从 1 开始
 	e.seedTargetCount(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-1", 3)
-	if err := e.store.DeleteTarget(2); err != nil {
-		t.Fatalf("制造自增历史失败: %v", err)
-	}
+	deleteTargetForTest(t, e.store, 2)
 	e.seedTarget(t, config.CloudTCCVM, "ap-beijing", "sg-tc")
 	e.seedTarget(t, config.CloudAliECS, "cn-hangzhou", "sg-ali")
 
@@ -189,9 +187,7 @@ func TestConfigExportThenImportRoundTrip(t *testing.T) {
 
 	// 制造自增历史，使导入后的新 ID 必然不同于导出时的 ID
 	e.seedTargetCount(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-1", 4)
-	if err := e.store.DeleteTarget(2); err != nil {
-		t.Fatalf("制造自增历史失败: %v", err)
-	}
+	deleteTargetForTest(t, e.store, 2)
 	e.seedTarget(t, config.CloudTCCVM, "ap-beijing", "sg-tc")
 	targetsBefore, err := e.store.GetTargets()
 	if err != nil {
@@ -221,16 +217,12 @@ func TestConfigExportThenImportRoundTrip(t *testing.T) {
 	exported := w.Body.String()
 
 	// 清空全部数据（等效重新初始化），确认目标 ID 与导出时不同
-	if err := e.store.ResetAll(); err != nil {
-		t.Fatalf("清空失败: %v", err)
-	}
+	resetAllForTest(t, e.store)
 	// 再写入若干目标，进一步把自增序列推离导出时的 ID
 	for i := 0; i < 5; i++ {
 		e.seedTarget(t, config.CloudAliSWAS, "cn-shanghai", "swas-x")
 	}
-	if err := e.store.ResetAll(); err != nil {
-		t.Fatalf("二次清空失败: %v", err)
-	}
+	resetAllForTest(t, e.store)
 
 	w = e.do(t, http.MethodPost, "/api/config/import", exported)
 	if w.Code != http.StatusOK {
@@ -375,12 +367,8 @@ func TestConfigImportClearsScannedKeepsSyncLogsAndSequence(t *testing.T) {
 	e := newTestEnv(t)
 	// 自增历史：插入 3 个目标后删掉 2 个
 	lastID := e.seedTargetCount(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-1", 3)
-	if err := e.store.DeleteTarget(1); err != nil {
-		t.Fatalf("删除目标失败: %v", err)
-	}
-	if err := e.store.DeleteTarget(2); err != nil {
-		t.Fatalf("删除目标失败: %v", err)
-	}
+	deleteTargetForTest(t, e.store, 1)
+	deleteTargetForTest(t, e.store, 2)
 
 	if err := e.store.ReplaceScannedResources("tc_lighthouse", "ap-guangzhou", []config.ScannedResource{
 		{CloudType: "tc_lighthouse", Region: "ap-guangzhou", ResourceID: "lhins-scan", ResourceName: "扫描"},
@@ -438,5 +426,88 @@ func TestConfigImportAlertsRoundTrip(t *testing.T) {
 	// 运行时状态必须已经看到新告警集合
 	if current := e.alerts.Current(); current.email == nil || current.webhook == nil {
 		t.Errorf("运行时告警集合未更新: %+v", current)
+	}
+}
+
+// TestConfigImportSharedTargetAcrossRules 多条规则引用同一目标时，
+// v2 导入的 export_id → 新数据库 ID 映射必须让这些规则仍指向同一个新目标，
+// 且该目标是本次导入重建的业务目标（Issue5 R5-01「多规则复用同一目标」回归）。
+func TestConfigImportSharedTargetAcrossRules(t *testing.T) {
+	e := newTestEnv(t)
+
+	// 制造自增历史：插入 3 个目标后删掉 2 个，使导入分配的新 ID 必然不同于导出时的 ID
+	e.seedTargetCount(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-shared", 3)
+	deleteTargetForTest(t, e.store, 1)
+	deleteTargetForTest(t, e.store, 2)
+	targetsBefore, err := e.store.GetTargets()
+	if err != nil {
+		t.Fatalf("GetTargets 失败: %v", err)
+	}
+	if len(targetsBefore) != 1 {
+		t.Fatalf("自增历史夹具目标数 = %d, want 1", len(targetsBefore))
+	}
+	sharedBefore := targetsBefore[0].ID
+
+	// 两条规则引用同一个目标
+	e.seedRule(t, config.DomainRule{
+		Host: "a.example.com", Protocol: "TCP", Ports: "443", Action: "ACCEPT",
+		Targets: []int{sharedBefore}, Comment: "共享目标 A",
+	})
+	e.seedRule(t, config.DomainRule{
+		Host: "b.example.com", Protocol: "UDP", Ports: "53", Action: "DROP",
+		Targets: []int{sharedBefore}, Comment: "共享目标 B",
+	})
+
+	w := e.do(t, http.MethodPost, "/api/config/export", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("导出状态码 = %d, want 200", w.Code)
+	}
+	exported := w.Body.String()
+
+	// 清空并把自增序列推离导出时的 ID
+	resetAllForTest(t, e.store)
+	e.seedTargetCount(t, config.CloudAliSWAS, "cn-shanghai", "swas-x", 4)
+	resetAllForTest(t, e.store)
+
+	w = e.do(t, http.MethodPost, "/api/config/import", exported)
+	if w.Code != http.StatusOK {
+		t.Fatalf("导入状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	rules, err := e.store.GetRules()
+	if err != nil {
+		t.Fatalf("GetRules 失败: %v", err)
+	}
+	if len(rules) != 2 {
+		t.Fatalf("导入后规则数 = %d, want 2", len(rules))
+	}
+	refsByHost := make(map[string][]int, len(rules))
+	for _, r := range rules {
+		refsByHost[r.Host] = r.Targets
+	}
+	refsA, okA := refsByHost["a.example.com"]
+	refsB, okB := refsByHost["b.example.com"]
+	if !okA || !okB {
+		t.Fatalf("导入后规则主机名缺失: %+v", refsByHost)
+	}
+	if len(refsA) != 1 || len(refsB) != 1 {
+		t.Fatalf("两条规则都应恰好引用一个目标: a=%v b=%v", refsA, refsB)
+	}
+	if refsA[0] != refsB[0] {
+		t.Errorf("多规则复用同一目标必须映射到同一个新 ID: a=%d b=%d", refsA[0], refsB[0])
+	}
+	if refsA[0] == sharedBefore {
+		t.Errorf("新 ID 应不同于导出时的 ID（自增历史已制造）: %d", refsA[0])
+	}
+
+	targetsAfter, err := e.store.GetTargets()
+	if err != nil {
+		t.Fatalf("导入后 GetTargets 失败: %v", err)
+	}
+	if len(targetsAfter) != 1 {
+		t.Fatalf("导入后目标数 = %d, want 1", len(targetsAfter))
+	}
+	if targetsAfter[0].ID != refsA[0] || targetsAfter[0].ResourceID != "lhins-shared" {
+		t.Errorf("规则必须指向本次导入重建的业务目标: target=%+v refs=%d", targetsAfter[0], refsA[0])
 	}
 }

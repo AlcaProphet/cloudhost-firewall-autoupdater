@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -16,6 +18,62 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+// withTxForTest 在事务内执行测试夹具写入并提交。
+//
+// 非事务 Store 写入入口（AddTarget/DeleteTarget/AddRule/ResetAll）已删除：
+// 生产写入统一经协调器使用 *Tx 方法，测试夹具也必须走同一事务路径。
+func withTxForTest(t *testing.T, s *config.Store, fn func(ctx context.Context, tx *sql.Tx) error) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := s.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("开始测试事务失败: %v", err)
+	}
+	if err := fn(ctx, tx); err != nil {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			t.Errorf("回滚测试事务失败: %v", rbErr)
+		}
+		t.Fatalf("测试夹具写入失败: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("提交测试事务失败: %v", err)
+	}
+}
+
+// addTargetForTest 事务内插入目标（测试夹具）
+func addTargetForTest(t *testing.T, s *config.Store, tc config.TargetConfig) {
+	t.Helper()
+	withTxForTest(t, s, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := s.AddTargetTx(ctx, tx, tc)
+		return err
+	})
+}
+
+// addRuleForTest 事务内插入规则（测试夹具）
+func addRuleForTest(t *testing.T, s *config.Store, r config.DomainRule) {
+	t.Helper()
+	withTxForTest(t, s, func(ctx context.Context, tx *sql.Tx) error {
+		return s.AddRuleTx(ctx, tx, r)
+	})
+}
+
+// deleteTargetForTest 事务内删除目标（用于制造自增历史，测试夹具）
+func deleteTargetForTest(t *testing.T, s *config.Store, id int) {
+	t.Helper()
+	withTxForTest(t, s, func(ctx context.Context, tx *sql.Tx) error {
+		_, err := s.DeleteTargetTx(ctx, tx, id)
+		return err
+	})
+}
+
+// resetAllForTest 事务内清空全部业务数据（测试夹具）
+func resetAllForTest(t *testing.T, s *config.Store) {
+	t.Helper()
+	withTxForTest(t, s, func(ctx context.Context, tx *sql.Tx) error {
+		return s.ResetAllTx(ctx, tx)
+	})
+}
 
 // testEnv 测试环境：独立临时 SQLite + 真实运行时接线 + 带“运行时发布次数”计数器的协调器
 type testEnv struct {
@@ -53,12 +111,9 @@ func newTestEnv(t *testing.T) *testEnv {
 		Runtime: rt,
 		Alerts:  alerts,
 	}
-	deps.Coord = NewConfigCoordinator(store, deps.buildCandidate, func(c Candidate) error {
-		if err := deps.applyCandidate(c); err != nil {
-			return err
-		}
+	deps.Coord = NewConfigCoordinator(store, deps.buildCandidate, func(c Candidate) {
+		deps.applyCandidate(c)
 		applies.Add(1)
-		return nil
 	})
 	deps.createRuntime = true
 	return &testEnv{deps: deps, store: store, dbPath: dbPath, applies: applies, runtime: rt, alerts: alerts}
@@ -115,9 +170,7 @@ func (e *testEnv) seedTarget(t *testing.T, ct config.CloudType, region, resource
 func (e *testEnv) seedTargetCount(t *testing.T, ct config.CloudType, region, resource string, n int) int {
 	t.Helper()
 	for i := 0; i < n; i++ {
-		if err := e.store.AddTarget(config.TargetConfig{CloudType: ct, Region: region, ResourceID: resource}); err != nil {
-			t.Fatalf("预置目标失败: %v", err)
-		}
+		addTargetForTest(t, e.store, config.TargetConfig{CloudType: ct, Region: region, ResourceID: resource})
 	}
 	targets, err := e.store.GetTargets()
 	if err != nil {
@@ -132,9 +185,7 @@ func (e *testEnv) seedTargetCount(t *testing.T, ct config.CloudType, region, res
 // seedRule 直接写库预置规则，返回数据库 ID
 func (e *testEnv) seedRule(t *testing.T, r config.DomainRule) int {
 	t.Helper()
-	if err := e.store.AddRule(r); err != nil {
-		t.Fatalf("预置规则失败: %v", err)
-	}
+	addRuleForTest(t, e.store, r)
 	rules, err := e.store.GetRules()
 	if err != nil {
 		t.Fatalf("GetRules 失败: %v", err)
