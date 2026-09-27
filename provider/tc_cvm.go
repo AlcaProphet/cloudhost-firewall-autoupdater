@@ -173,6 +173,7 @@ func (p *TCCVM) DeleteRules(rules []config.RuleInfo) error {
 	})
 
 	// 逐条删除
+	deleted := 0
 	for _, r := range sorted {
 		idx, err := strconv.ParseInt(r.PolicyIndex, 10, 64)
 		if err != nil {
@@ -195,8 +196,13 @@ func (p *TCCVM) DeleteRules(rules []config.RuleInfo) error {
 				slog.Warn("规则已不存在，跳过", "index", r.PolicyIndex)
 				continue
 			}
-			return fmt.Errorf("删除安全组规则失败 (index=%s): %w", r.PolicyIndex, err)
+			deleteErr := fmt.Errorf("删除安全组规则失败 (index=%s): %w", r.PolicyIndex, err)
+			if deleted > 0 {
+				return &PartialDeleteError{Deleted: deleted, Err: deleteErr}
+			}
+			return deleteErr
 		}
+		deleted++
 	}
 	return nil
 }

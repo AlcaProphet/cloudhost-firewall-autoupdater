@@ -817,18 +817,22 @@ func (s *Syncer) syncDomainInternal(p provider.Provider, rule config.DomainRule,
 	}
 
 	added, deleted, skipped, skippedDetails, err := s.retrySyncDetailed(p, rule, resolved, tagStr)
+	// failed 与已确认增删计数正交：错误发生前已经由云端确认的独立请求仍须进入
+	// 单元/整轮汇总；当前失败且提交状态未知的请求由 Provider 保持为 0。
+	w.added, w.deleted, w.skipped = added, deleted, skipped
 	if err != nil {
 		w.failed = true
-		slog.Error("同步失败", "provider", p.Name(), "domain", rule.Host, "error", err)
+		slog.Error("同步失败", "provider", p.Name(), "domain", rule.Host, "added", added, "deleted", deleted, "error", err)
 		s.bus.Publish(notifier.Event{
 			Type:      notifier.EventSyncError,
 			Timestamp: time.Now(),
-			Data:      map[string]any{"provider": p.Name(), "domain": rule.Host, "error": err.Error()},
+			Data: map[string]any{
+				"provider": p.Name(), "domain": rule.Host, "error": err.Error(),
+				"added": added, "deleted": deleted,
+			},
 		})
 		return
 	}
-
-	w.added, w.deleted, w.skipped = added, deleted, skipped
 
 	slog.Info("同步完成", "provider", p.Name(), "domain", rule.Host, "added", added, "deleted", deleted, "skipped", skipped, "skipped_details", skippedDetails)
 	s.bus.Publish(notifier.Event{

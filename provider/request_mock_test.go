@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -517,6 +518,34 @@ func TestRequest_CVMDeleteSwallowsResourceNotFound(t *testing.T) {
 	}
 }
 
+// TestRequest_CVMDeleteReturnsConfirmedProgress 删除中途失败时必须通过可 errors.As 的
+// PartialDeleteError 返回此前已由云端确认成功的独立删除请求数。
+func TestRequest_CVMDeleteReturnsConfirmedProgress(t *testing.T) {
+	mock, host := newMockCloudAPI(t)
+	mock.reply = func(index int, _ recordedRequest) (int, string) {
+		if index == 1 {
+			return http.StatusOK, `{"Response":{"Error":{"Code":"InternalError","Message":"模拟失败"},"RequestId":"mock"}}`
+		}
+		return http.StatusOK, mock.defaultReply
+	}
+	p := mockCVM(t, host)
+
+	err := p.DeleteRules([]config.RuleInfo{
+		{PolicyIndex: "10", Description: "[t] first"},
+		{PolicyIndex: "3", Description: "[t] second"},
+	})
+	var partial *PartialDeleteError
+	if !errors.As(err, &partial) {
+		t.Fatalf("错误 = %T %v, want *PartialDeleteError", err, err)
+	}
+	if partial.Deleted != 1 {
+		t.Errorf("Deleted = %d, want 1", partial.Deleted)
+	}
+	if partial.Err == nil || errors.Unwrap(partial) == nil {
+		t.Fatalf("PartialDeleteError 必须保留并 Unwrap 原始错误: %+v", partial)
+	}
+}
+
 // TestRequest_CVMRuleLimitStopsAt100 安全组规则总数（含新增）超过 100 条时必须停止新增。
 func TestRequest_CVMRuleLimitStopsAt100(t *testing.T) {
 	statisticsReply := func(total int) string {
@@ -747,5 +776,26 @@ func TestRequest_ECSPortRangeIPv6DeleteAndBatching(t *testing.T) {
 	}
 	if got := len(rpcIndexedObjects(t, auths[mockBefore+1], "Permissions")); got != 50 {
 		t.Errorf("第 2 批数量 = %d, want 50", got)
+	}
+}
+
+// TestRequest_ECSCreateReturnsConfirmedProgress 前一批成功、后一批失败时，Written
+// 必须保留已由云端确认成功的 100 条，当前失败批次不计数。
+func TestRequest_ECSCreateReturnsConfirmedProgress(t *testing.T) {
+	mock, host := newMockCloudAPI(t)
+	mock.reply = func(index int, _ recordedRequest) (int, string) {
+		if index == 1 {
+			return http.StatusInternalServerError, `{"Code":"InternalError","Message":"模拟失败","RequestId":"mock"}`
+		}
+		return http.StatusOK, mock.defaultReply
+	}
+	p := mockECS(t, host)
+
+	res, err := p.CreateRules(makeRules(101))
+	if err == nil {
+		t.Fatal("第 2 批失败必须返回错误")
+	}
+	if res.Written != 100 || res.Skipped != 0 {
+		t.Errorf("CreateResult = %+v, want {Written:100 Skipped:0}", res)
 	}
 }

@@ -72,6 +72,12 @@ func (s *Syncer) retrySyncDetailed(p provider.Provider, rule config.DomainRule, 
 		// 3. 执行删除（成功才计数；幂等"已不存在"视为成功但不计数）
 		if len(diff.ToDelete) > 0 {
 			if err := p.DeleteRules(diff.ToDelete); err != nil {
+				// 逐条删除 Provider 可能在后续请求失败前已有确认成功项；先累计其
+				// 明确进度，再按原始错误继续幂等/重试判定。
+				var partial *provider.PartialDeleteError
+				if errors.As(err, &partial) {
+					deleted += partial.Deleted
+				}
 				if isIdempotentDelete(err) {
 					slog.Warn("规则已不存在，跳过", "provider", p.Name())
 				} else {
@@ -89,6 +95,9 @@ func (s *Syncer) retrySyncDetailed(p provider.Provider, rule config.DomainRule, 
 		// 4. 执行添加（成功才计数；幂等"已存在"视为成功但不计数）
 		if len(diff.ToAdd) > 0 {
 			res, err := p.CreateRules(diff.ToAdd)
+			// 即使最终返回错误，Written 仍可表示此前已成功的独立子批次；
+			// 当前失败且提交状态未知的子批次由 Provider 保持为 0。
+			added += res.Written
 			if err != nil {
 				if isIdempotentCreate(err) {
 					slog.Warn("规则已存在，跳过", "provider", p.Name())
@@ -100,9 +109,8 @@ func (s *Syncer) retrySyncDetailed(p provider.Provider, rule config.DomainRule, 
 					continue
 				}
 			} else {
-				// added 只累计**真正写入**的条数（Issue6 A11）：Provider 明确跳过的
-				// 期望规则（如 SWAS 无法表达 DROP）计入 skipped，绝不虚增为新增成功。
-				added += res.Written
+				// Provider 明确跳过的期望规则（如 SWAS 无法表达 DROP）计入
+				// skipped，绝不虚增为新增成功。
 				attemptSkipped += res.Skipped
 			}
 		}

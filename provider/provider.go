@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"fmt"
+
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
 )
@@ -9,7 +11,8 @@ import (
 // （Issue6 A11，2026-09-27 用户裁决 §六.4 F3）。
 //
 // 语义约束：
-//   - Written 只统计**真正提交给云 API 的期望规则**（批次内全部提交成功才会返回）；
+//   - Written 只统计**已由云 API 确认成功**的期望规则；即使调用最终返回错误，
+//     也可表示错误发生前已成功提交的独立子批次，当前失败且提交状态未知的子批次不计；
 //   - Skipped 只统计**因云端能力限制而明确未实施**的规则（如阿里云 SWAS 无法表达
 //     DROP 规则：其 CreateFirewallRules 请求参数没有 Policy 字段）；
 //   - 幂等跳过（云 API 报「规则已存在」）**不计入 Skipped**：它由 Syncer 层的
@@ -18,6 +21,22 @@ import (
 type CreateResult struct {
 	Written int // 实际写入的规则条数
 	Skipped int // 明确跳过（未实施）的规则条数
+}
+
+// PartialDeleteError 表示 DeleteRules 返回错误前，已有若干独立删除请求得到云端成功确认。
+// Deleted 不包含当前失败且提交状态未知的请求，也不包含幂等「已不存在」。
+// Syncer 可通过 errors.As 读取确认进度，并通过 Unwrap 继续判定原始错误是否可重试。
+type PartialDeleteError struct {
+	Deleted int
+	Err     error
+}
+
+func (e *PartialDeleteError) Error() string {
+	return fmt.Sprintf("已删除 %d 条后失败: %v", e.Deleted, e.Err)
+}
+
+func (e *PartialDeleteError) Unwrap() error {
+	return e.Err
 }
 
 // Provider 多云抽象接口

@@ -363,3 +363,120 @@ func (p *detailRetryProvider) DeleteRules([]config.RuleInfo) error {
 	}
 	return nil
 }
+
+// progressErrorProvider 用于验证错误返回路径仍累计云端已确认的独立请求进度。
+type progressErrorProvider struct {
+	getRules       [][]config.RuleInfo
+	getErrs        []error
+	createResult   provider.CreateResult
+	createErr      error
+	deleteProgress []int
+	deleteErrs     []error
+	getCalls       atomic.Int32
+	createCalls    atomic.Int32
+	deleteCalls    atomic.Int32
+}
+
+func (p *progressErrorProvider) Name() string                      { return "progress-error" }
+func (p *progressErrorProvider) CloudType() config.CloudType       { return config.CloudTCCVM }
+func (p *progressErrorProvider) TargetIndex() int                  { return 0 }
+func (p *progressErrorProvider) ConvertPorts(port string) []string { return []string{port} }
+func (p *progressErrorProvider) GetRules() ([]config.RuleInfo, error) {
+	i := int(p.getCalls.Add(1)) - 1
+	if i < len(p.getErrs) && p.getErrs[i] != nil {
+		return nil, p.getErrs[i]
+	}
+	if i < len(p.getRules) {
+		return p.getRules[i], nil
+	}
+	return nil, nil
+}
+func (p *progressErrorProvider) CreateRules([]config.RuleAction) (provider.CreateResult, error) {
+	p.createCalls.Add(1)
+	return p.createResult, p.createErr
+}
+func (p *progressErrorProvider) DeleteRules([]config.RuleInfo) error {
+	i := int(p.deleteCalls.Add(1)) - 1
+	if i < len(p.deleteErrs) && p.deleteErrs[i] != nil {
+		return &provider.PartialDeleteError{Deleted: p.deleteProgress[i], Err: p.deleteErrs[i]}
+	}
+	return nil
+}
+
+func ownedOldRule(id string) config.RuleInfo {
+	return config.RuleInfo{
+		Protocol: "TCP", Port: "80", CidrBlock: "9.9.9.9/32", Action: "ACCEPT",
+		Description: "[auto-dns]", RuleID: id, PolicyIndex: id,
+	}
+}
+
+// TestRetrySync_NonRetryableErrorKeepsConfirmedDeleteProgress 不可重试错误也必须保留
+// 当前请求报错前已经确认成功的独立删除请求数。
+func TestRetrySync_NonRetryableErrorKeepsConfirmedDeleteProgress(t *testing.T) {
+	p := &progressErrorProvider{
+		getRules:       [][]config.RuleInfo{{ownedOldRule("2"), ownedOldRule("1")}},
+		deleteProgress: []int{1},
+		deleteErrs:     []error{errors.New("permission denied")},
+	}
+	s := &Syncer{}
+
+	added, deleted, _, err := s.retrySync(p, config.DomainRule{
+		Host: "example.com", Protocol: "TCP", Ports: "443", Action: "ACCEPT",
+	}, nil, "auto-dns")
+	if err == nil {
+		t.Fatal("不可重试删除错误必须返回")
+	}
+	if added != 0 || deleted != 1 {
+		t.Errorf("added/deleted = %d/%d, want 0/1", added, deleted)
+	}
+}
+
+// TestRetrySync_ExhaustedRetriesKeepConfirmedProgress 每轮重新 Describe/Diff 后只累计
+// 仍出现的独立请求；耗尽重试后此前确认进度不得丢失或重复。
+func TestRetrySync_ExhaustedRetriesKeepConfirmedProgress(t *testing.T) {
+	retryErr := errors.New("RequestLimitExceeded")
+	p := &progressErrorProvider{
+		getRules: [][]config.RuleInfo{
+			{ownedOldRule("2"), ownedOldRule("1")},
+			{ownedOldRule("1")},
+		},
+		getErrs:        []error{nil, nil, retryErr},
+		deleteProgress: []int{1, 1},
+		deleteErrs:     []error{retryErr, retryErr},
+	}
+	s := &Syncer{}
+
+	_, deleted, _, err := s.retrySync(p, config.DomainRule{
+		Host: "example.com", Protocol: "TCP", Ports: "443", Action: "ACCEPT",
+	}, nil, "auto-dns")
+	if err == nil {
+		t.Fatal("耗尽重试必须返回错误")
+	}
+	if deleted != 2 {
+		t.Errorf("deleted = %d, want 2（两轮各确认一条，重新 Diff 后不重复）", deleted)
+	}
+	if got := p.getCalls.Load(); got != int32(maxRetries) {
+		t.Errorf("GetRules 调用 = %d, want %d", got, maxRetries)
+	}
+}
+
+// TestRetrySync_CreateResultWithErrorKeepsWritten CreateRules 当前子批失败时，返回值中的
+// Written 仅代表此前成功子批，retry 必须在判错前累计。
+func TestRetrySync_CreateResultWithErrorKeepsWritten(t *testing.T) {
+	p := &progressErrorProvider{
+		getRules:     [][]config.RuleInfo{{}},
+		createResult: provider.CreateResult{Written: 1},
+		createErr:    errors.New("permission denied"),
+	}
+	s := &Syncer{}
+
+	added, _, _, err := s.retrySync(p, config.DomainRule{
+		Host: "example.com", Protocol: "TCP", Ports: "443", Action: "ACCEPT",
+	}, []dns.ResolvedIP{{IP: net.ParseIP("1.2.3.4")}}, "auto-dns")
+	if err == nil {
+		t.Fatal("创建失败必须返回错误")
+	}
+	if p.createCalls.Load() != 1 || added != 1 {
+		t.Errorf("CreateRules 调用/added = %d/%d, want 1/1", p.createCalls.Load(), added)
+	}
+}

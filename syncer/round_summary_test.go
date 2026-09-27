@@ -44,13 +44,60 @@ func (p *roundFakeProvider) GetRules() ([]config.RuleInfo, error) {
 func (p *roundFakeProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
 	p.createNum.Add(1)
 	if p.createErr != nil {
-		return provider.CreateResult{}, p.createErr
+		return p.createResult, p.createErr
 	}
 	// 默认：全部写入成功
 	if p.createResult == (provider.CreateResult{}) {
 		return provider.CreateResult{Written: len(rules)}, nil
 	}
 	return p.createResult, nil
+}
+
+// TestRoundSummary_FailedUnitKeepsConfirmedCounts failed 与 added/deleted 正交：
+// 单元仍归 failed，但整轮汇总必须保留云端已确认写入量且维持分类不变量。
+func TestRoundSummary_FailedUnitKeepsConfirmedCounts(t *testing.T) {
+	p := &roundFakeProvider{
+		cloudType:    config.CloudTCCVM,
+		createResult: provider.CreateResult{Written: 1},
+		createErr:    errors.New("permission denied"),
+	}
+	sum := runOneRound(t, p, []config.DomainRule{tcpRule()}, true)
+
+	if sum.Outcome != RoundFailed || sum.Total != 1 || sum.Failed != 1 || sum.Added != 1 {
+		t.Errorf("汇总 = %+v, want failed/total=1/failed=1/added=1", sum)
+	}
+	if sum.Total != sum.OK+sum.Changed+sum.Failed+sum.Skipped {
+		t.Errorf("不变量被破坏: %+v", sum)
+	}
+}
+
+// TestSyncErrorCarriesConfirmedCounts 错误事件必须携带与 unitResult 相同的已确认计数。
+func TestSyncErrorCarriesConfirmedCounts(t *testing.T) {
+	p := &roundFakeProvider{
+		cloudType:    config.CloudTCCVM,
+		createResult: provider.CreateResult{Written: 1},
+		createErr:    errors.New("permission denied"),
+	}
+	s := &Syncer{bus: notifier.NewEventBus()}
+	events := make(chan notifier.Event, 1)
+	s.bus.Subscribe(notifier.EventSyncError, roundEventSink{ch: events})
+	w := &unitResult{}
+
+	s.syncDomainInternal(p, config.DomainRule{
+		Host: "example.com", Protocol: "TCP", Ports: "443", Action: "ACCEPT",
+	}, []dns.ResolvedIP{{IP: net.ParseIP("1.2.3.4")}}, "auto-dns", w)
+
+	if !w.failed || w.added != 1 || w.deleted != 0 {
+		t.Fatalf("unitResult = %+v, want failed=true added=1 deleted=0", w)
+	}
+	select {
+	case ev := <-events:
+		if ev.Data["added"] != 1 || ev.Data["deleted"] != 0 {
+			t.Errorf("错误事件计数 = added:%v deleted:%v, want 1/0", ev.Data["added"], ev.Data["deleted"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("未收到 sync:error 事件")
+	}
 }
 func (p *roundFakeProvider) DeleteRules([]config.RuleInfo) error { return nil }
 func (p *roundFakeProvider) ConvertPorts(port string) []string   { return []string{port} }

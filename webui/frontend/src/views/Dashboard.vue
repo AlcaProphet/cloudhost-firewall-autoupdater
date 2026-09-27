@@ -6,11 +6,11 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { request } from '../api'
 import { useSettings } from '../composables/useSettings'
-import type { SyncStatus, SyncLogEntry } from '../types'
+import type { SyncStatus } from '../types'
 
 const status = ref<SyncStatus>({ running: false, last_sync: null, enabled: true, last_success: null, last_round: null })
 const switching = ref(false) // 开关请求 loading
-const stats = ref({ targets: 0, rules: 0, lastAdded: 0, lastDeleted: 0 })
+const stats = ref({ targets: 0, rules: 0 })
 const showGuide = ref(false) // 首次使用引导条
 const router = useRouter()
 const message = useMessage()
@@ -60,19 +60,16 @@ const healthHint = computed(() => {
   return null
 })
 
-// 统计概览：目标数 / 规则数 / 最近一次同步的增删（复用现有端点，零新 API）
+// 统计概览：目标数 / 规则数（最近一轮增删直接使用同步状态快照）
 async function fetchStats() {
   try {
-    const [targets, rules, logs] = await Promise.all([
+    const [targets, rules] = await Promise.all([
       request<any[]>('/api/targets'),
       request<any[]>('/api/rules'),
-      request<SyncLogEntry[]>('/api/sync/logs'),
     ])
     stats.value = {
       targets: targets.length,
       rules: rules.length,
-      lastAdded: logs.length ? (logs[0].added || 0) : 0,
-      lastDeleted: logs.length ? (logs[0].deleted || 0) : 0,
     }
   } catch { /* 统计失败忽略，不阻塞主状态 */ }
 }
@@ -159,7 +156,7 @@ onUnmounted(() => {
           <NSpace vertical size="large" style="margin-top: 20px">
             <div style="font-size: 20px">云资源目标 <b style="font-size: 28px">{{ stats.targets }}</b> 个</div>
             <div style="font-size: 20px">域名规则 <b style="font-size: 28px">{{ stats.rules }}</b> 条</div>
-            <div style="font-size: 20px">最近同步 新增 <b style="font-size: 28px">{{ stats.lastAdded }}</b> / 删除 <b style="font-size: 28px">{{ stats.lastDeleted }}</b></div>
+            <div style="font-size: 20px">最近同步 新增 <b style="font-size: 28px">{{ status.last_round?.added ?? 0 }}</b> / 删除 <b style="font-size: 28px">{{ status.last_round?.deleted ?? 0 }}</b></div>
           </NSpace>
         </NCard>
       </NGi>
@@ -186,4 +183,3 @@ onUnmounted(() => {
     </NGrid>
   </div>
 </template>
-

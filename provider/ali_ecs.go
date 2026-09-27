@@ -115,12 +115,14 @@ func (p *AliECS) CreateRules(rules []config.RuleAction) (CreateResult, error) {
 
 	// 分批提交（单次最多 100 条）
 	batches := batchRules(rules, 100)
+	written := 0
 	for _, batch := range batches {
 		if err := p.createBatch(batch); err != nil {
-			return CreateResult{}, err
+			return CreateResult{Written: written}, err
 		}
+		written += len(batch)
 	}
-	return CreateResult{Written: len(rules), Skipped: 0}, nil
+	return CreateResult{Written: written, Skipped: 0}, nil
 }
 
 func (p *AliECS) createBatch(rules []config.RuleAction) error {

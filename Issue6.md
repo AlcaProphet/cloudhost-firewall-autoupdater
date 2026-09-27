@@ -557,12 +557,12 @@ git diff --check
 以下问题均由本轮只读复核确认存在，但不在 A1～A20 的固定合同与本次授权范围内，**不得顺手修改**；如需处理必须另行提出、另行授权并另行编号：
 
 1. **删除侧同型“跳过仍计数”**：`retry.go:59` 以 `len(diff.ToDelete)` 累加 `deleted`，而 CVM 无效 PolicyIndex 静默 `continue`、SWAS/ECS 空 RuleID 被过滤后仍 `return nil`；重试轮还会让同一跳过项按轮重复计数。
-2. **反向缺口“写了却报 0”**：非可重试错误时 `retrySync` 返回的 added/deleted 在 `syncDomainInternal` 的错误分支被丢弃，`sync_logs` 记 `failed/Added=0`，ECS 分批或 CVM 逐条删除中途失败会出现“实际已写但历史记 0”。
+2. **反向缺口“写了却报 0”（2026-09-28 已修复，当前未提交工作树）**：核验时非可重试错误会让 `retrySync` 返回的 added/deleted 在 `syncDomainInternal` 错误分支被丢弃，且 ECS 分批创建、CVM 逐条删除内部也会丢失中途已确认成功数；本轮已按“只统计客户端确认成功的独立请求/子批次”贯通 Provider、重试、失败事件、整轮汇总与 `sync_logs`，实施与证据见 §7.2 第 2 项。
 3. **`buildDesired` 静默丢弃不上报**：SWAS IPv6 与 ECS ICMPv6 在 Diff 阶段被丢弃，Dry Run 与事件中完全不可见（仅 ECS 有一条 WARN），与 A11 追求的 skipped 口径不一致。
 4. **dangling 目标引用无校验**：外部删除 targets 行后，规则会静默“作用于 0 个目标”，既不报错也不告警。
 5. **通知链路残余无界**：`StoreLogWriter` 仍按事件派生 goroutine 写 SQLite，DB 慢或被锁时仍会堆积。
 6. **SSE 契约缺口**：`/api/sync/events` 无 `id:`/`Last-Event-ID`/回放，缓冲（cap 32）满即丢，`sync:complete` 可能对已连接客户端不可见；两类 SSE 均无心跳。
-7. **Dashboard 数字双口径**：统计概览仍取最近一条逐域日志的 added/deleted，与 A18 的整轮汇总并存会出现两套数字。
+7. **Dashboard 数字双口径（2026-09-28 已修复，当前未提交工作树）**：核验时统计概览仍取最近一条逐域日志的 added/deleted，与 A18 的整轮汇总并存会出现两套数字；本轮已统一改取同一份 `SyncStatus.last_round.added/deleted` 整轮快照，实施与证据见 §7.2 第 1 项。
 8. **云侧错误码与重试面**：阿里云 `Throttling`/`ServiceUnavailable` 等不在可重试列表（F2 只新增腾讯 `ClientError.NetworkError`）。
 9. **Webhook 细节**：`resp.Body.Close()` 错误被忽略且不 drain body（影响 keep-alive 复用）。
 10. **SMTP 收件人解析**：`strings.Split(To, ",")` 未逐项 `TrimSpace`，`"a@x.com, b@y.com"` 会产生带前导空格的收件人。
@@ -581,35 +581,35 @@ git diff --check
 
 ### 7.1 核验确认且本轮已修复的实现问题
 
-#### R6-01｜已修复（工作树，待提交）｜A11 的具体跳过原因未贯通正式同步事件与日志
+#### R6-01｜已修复（当前 HEAD `8898263d`）｜A11 的具体跳过原因未贯通正式同步事件与日志
 
 - **判定：确认存在。** Dry Run 已通过 `RuleChange.skip_reason` 展示具体原因，但正式同步的 `retrySync` 只返回 `added/deleted/skipped` 三个整数；`EventDomainSyncComplete.Data` 与 `slog.Info("同步完成", ...)` 也只有 `skipped` 数量，没有被跳过的规则或 `skip_reason`。
 - **历史日志口径：** `StoreLogWriter` 收到 `EventDomainSyncComplete` 后固定写 `result="success"`，只保存 `added/deleted`，不读取 `skipped`。这与 §3 A11 固定的“跳过原因、事件/SSE/实时日志展示”收尾合同不一致。§3 A11 同时明确“不增加 `sync_logs.skipped` 列”，因此持久化 Schema 不应被本报告擅自扩大；历史日志如何表达 partial/skipped 仍需另行裁决。
 - **影响：** 用户可从整轮状态看到 `partial` 和跳过数量，也可在 Dry Run 中看到具体原因，但正式同步的逐域事件、SSE/实时日志和历史日志无法说明“哪条规则因何被跳过”；历史记录还可能把含跳过的逐域结果显示为 `success`。
 - **相关既有记录：** §6.5 第 13 项已记录 `sync_logs.result` 的 skipped 语义未定义；本项新增确认的是 A11 已宣称完成的“具体原因贯通正式事件/实时展示”实际上也未完成。
 - **本轮裁决（2026-09-28）：** 不新增 `sync_logs.skipped` 列、表或迁移；逐域正式同步事件保留既有 `skipped` 数量并新增结构化 `skipped_details`。历史日志在 `skipped > 0 && added == 0 && deleted == 0` 时写 `result="skipped"`，在有成功增删且同时有跳过时写 `result="partial"`；数量、规则与原因写入既有 `error` 文本列。这样既能区分“全部跳过”和“部分写入”，又不扩大 SQLite Schema。
-- **实施（当前未提交工作树）：** `syncer/retry.go` 新增正式同步详情返回路径，只采用最终成功 attempt 的详情，失败重试的同一跳过项不会重复累计；`syncer/syncer.go` 将协议、端口、动作、CIDR、描述和 `skip_reason` 写入 `EventDomainSyncComplete.skipped_details` 与实时 `slog`。`webui/api/logwriter.go` 按上述裁决写 `skipped/partial` 和详情；`config/store.go` 只补齐 `SyncLog.Result` 注释；`webui/frontend/src/types.ts`、`views/Logs.vue` 让 `failed/skipped/partial` 共用中性的“同步详情”入口。SSE 仍按既有机制透明序列化事件，没有引入回放、心跳或新持久化结构。
+- **实施（已提交至当前 HEAD `8898263d`）：** `syncer/retry.go` 新增正式同步详情返回路径，只采用最终成功 attempt 的详情，失败重试的同一跳过项不会重复累计；`syncer/syncer.go` 将协议、端口、动作、CIDR、描述和 `skip_reason` 写入 `EventDomainSyncComplete.skipped_details` 与实时 `slog`。`webui/api/logwriter.go` 按上述裁决写 `skipped/partial` 和详情；`config/store.go` 只补齐 `SyncLog.Result` 注释；`webui/frontend/src/types.ts`、`views/Logs.vue` 让 `failed/skipped/partial` 共用中性的“同步详情”入口。SSE 仍按既有机制透明序列化事件，没有引入回放、心跳或新持久化结构。
 - **判别性红灯：** 实现前运行 `go test ./webui/api -run TestStoreLogWriter_SkippedAndPartial -count=1`，纯跳过与部分跳过两种事件均被错误写成 `success` 且 `error` 为空；新增正式同步用例同时要求 `skipped_details` 完整，并验证可重试失败 attempt 不会重复累计详情。
 - **绿灯证据：** 最终独立测试通过 `go test ./syncer -race -count=1 -run 'Test(RetrySyncDetailedUsesSuccessfulAttemptDetails|DomainSyncCompleteCarriesSkippedDetails)$'`、`go test ./webui/api -race -count=1 -run 'Test(StoreLogWriter_SkippedAndPartial|HandleSyncEvents_ClientDisconnectUnsubscribes|HandleSyncEvents_RealConnectionPushAndDisconnect|HandleSyncEvents_ServerShutdownExits|HandleSyncEvents_WriteErrorExitsAndUnsubscribes)$'`；统一门禁与前端门禁见 §7.6。
 - **明确未扩张：** 未处理 §6.5 第 1、2、3、5、6、7 项（删除侧计数、错误路径已写计数丢失、`buildDesired` 静默丢弃、日志写库 goroutine 上界、SSE 回放/心跳、Dashboard 双口径）。未执行浏览器人工回归或真实 SWAS；自动化结果不代表真实云链路已经通过。
 
-#### R6-02｜已修复（工作树，待提交）｜A16 仍有 `Shutdown` 与首次 `Start` 的生命周期窗口
+#### R6-02｜已修复（当前 HEAD `8898263d`）｜A16 仍有 `Shutdown` 与首次 `Start` 的生命周期窗口
 
 - **判定：确认存在。** `Server.Shutdown()` 会置 `shutdown=true` 并关闭 `shutdownCh`，但不会置 `started=true`；因此在从未启动的实例上先调用 `Shutdown()`，随后首次调用 `Start()`，当前门控仍会放行并建立监听。这与 A16/F7 的“Shutdown 后 Start 也拒绝”字面合同不一致。
 - **并发窗口：** `Start()` 在锁内先置 `started=true`，随后解锁执行 `net.Listen` 和构造 `http.Server`，最后才再次加锁发布 `httpServer/listener`。若 `Shutdown()` 在两次加锁之间执行，它会看到 `httpServer == nil` 并返回成功；之后 `Start()` 仍可发布并启动 Serve，形成“Shutdown 已返回，服务随后启动”的逻辑竞态。该问题不会由 Go race detector 报告，因为字段访问有锁，缺口在生命周期状态机。
 - **边界澄清：** §6.5 第 14 项已经记录 `Syncer.Wait()` 在 `Run()` 从未启动时永久阻塞，仍然成立，不重复编号。“首次 `Start` 监听失败后不能重试”则来自当前一次性 `Start` 门控；既有 F7 未明确允许失败重试，本报告不把它直接判为回归，需产品裁决后才能改变。
 - **本轮裁决（2026-09-28）：** 保持 `Start` 的一次性尝试语义：首次 `Listen` 失败后仍不可重试，不把本问题扩大为失败重试产品变更。`shutdown=true` 是吸收态；此前未启动也必须拒绝 `Start`。监听成功但尚未发布时若发现已 Shutdown，必须关闭该未发布 listener、处理关闭错误，并返回可由 `errors.Is` 判定为 `ErrAlreadyStarted` 的错误。
-- **实施（当前未提交工作树）：** `webui/server.go` 为每个 `Server` 增加默认指向 `net.Listen` 的非导出 `listenFunc` 测试接缝；`Start` 的首个锁边界检查 `started || shutdown`，并在发布 `httpServer/listener` 前再次持锁检查 `shutdown`。并发 Shutdown 获胜时不发布字段、不关闭 `serveStarted`、不调用 `Serve`，关闭错误用 `errors.Join` 保留生命周期错误。只修改 `webui/server.go` 与 `webui/server_test.go`。
+- **实施（已提交至当前 HEAD `8898263d`）：** `webui/server.go` 为每个 `Server` 增加默认指向 `net.Listen` 的非导出 `listenFunc` 测试接缝；`Start` 的首个锁边界检查 `started || shutdown`，并在发布 `httpServer/listener` 前再次持锁检查 `shutdown`。并发 Shutdown 获胜时不发布字段、不关闭 `serveStarted`、不调用 `Serve`，关闭错误用 `errors.Join` 保留生命周期错误。只修改 `webui/server.go` 与 `webui/server_test.go`。
 - **判别性红灯与绿灯：** 三个新增确定性用例分别覆盖“首次 Start 前已 Shutdown”“真实 listener 已建立但尚未返回/发布时并发 Shutdown”“首次 Listen 失败后第二次 Start 仍拒绝”；实现前因缺少 `listenFunc` 接缝而编译红灯。最终独立运行 `go test ./webui -race -count=20 -run 'Test(StartAfterShutdownBeforeFirstStartRejected|ShutdownDuringFirstStartClosesUnpublishedListener|StartListenFailureStillCannotRetry)$'` 全部通过，统一门禁见 §7.6。
 - **明确未扩张：** 未修改 `Server.Addr()` 关闭后的语义、`Syncer.Wait()` 未 Run 时阻塞或 §6.5 其他生命周期候选；本问题不需要浏览器、Docker 或外部服务验收。
 
-#### R6-03｜已修复（工作树，待提交）｜Webhook 发送错误可能把完整敏感 URL 写入 WARN 日志
+#### R6-03｜已修复（当前 HEAD `8898263d`）｜Webhook 发送错误可能把完整敏感 URL 写入 WARN 日志
 
 - **判定：确认存在。** `WebhookNotifier.OnEvent` 调用 `http.Client.Post(n.url, ...)`，失败时以 `%w` 返回底层错误；Go HTTP 客户端的请求错误通常包含完整请求 URL。`EventBus.Publish` 随后把该错误作为 `error` 属性写入“事件处理失败” WARN。
 - **影响：** 钉钉、飞书、Slack 等 Webhook URL 常把 token/signature 放在路径或查询参数中；网络失败、TLS 失败或超时可能使该敏感 URL 进入 stdout / `docker logs`。这与项目既有“不记录 Webhook URL”的安全口径不一致。
 - **范围：** 该问题不同于 §6.5 第 9 项的 response body 未 drain / Close 错误被忽略；两者可分别处理。修复时应保留渠道名和安全错误类别，不应记录完整 URL。
 - **本轮裁决（2026-09-28）：** 不修改通用 EventBus，也不把底层发送错误包装、输出或暴露给 `Unwrap`；日志只保留经白名单收敛的渠道名（`dingtalk/feishu/slack`，其他为 `unknown`）与固定安全类别 `canceled/timeout/network/transport`。HTTP 非成功响应只记录 `category=http_status` 与状态码。
-- **实施（当前未提交工作树）：** `notifier/webhook.go` 只用底层错误做结构化分类，返回的新错误不含 `%w`、`err.Error()`、目标 host/path/query 或底层网络/TLS 文本；新增 `notifier/webhook_security_test.go`，测试内通过私有 `client` 注入 `RoundTripper`，未扩大生产构造 API。
+- **实施（已提交至当前 HEAD `8898263d`）：** `notifier/webhook.go` 只用底层错误做结构化分类，返回的新错误不含 `%w`、`err.Error()`、目标 host/path/query 或底层网络/TLS 文本；新增 `notifier/webhook_security_test.go`，测试内通过私有 `client` 注入 `RoundTripper`，未扩大生产构造 API。
 - **判别性红灯与绿灯：** 修复前，直接返回错误与真实 `EventBus → slog WARN` 都包含 URL host、路径 token、查询 signature 和底层 transport 哨兵，且可解包到底层错误；修复后独立运行 `go test ./notifier -race -count=1 -run 'Test(WebhookSendErrorDoesNotExposeSecrets|WebhookErrorCategory|WebhookEventBusWarningDoesNotExposeSecrets)$'` 通过，四种安全分类、非法渠道、不可 `Unwrap` 与端到端 WARN 脱敏均已覆盖。统一门禁见 §7.6。
 - **明确未扩张：** 未处理 §6.5 第 9 项 response body drain / `Close` 错误，也未修改 SMTP 或其他渠道。真实 Webhook 人工验收仍沿用用户免除，且没有真实通过结论。
 
@@ -617,9 +617,22 @@ git diff --check
 
 以下报告结论均由当前源码再次证实，不另建重复条目：
 
-1. **A18 Dashboard 数字双口径：** `Dashboard.vue` 的“最近同步 新增/删除”仍取 `/api/sync/logs` 第一条逐域日志，而不是 `status.last_round.added/deleted`；对应 §6.5 第 7 项。
-2. **错误路径已写计数丢失：** `syncDomainInternal` 在 `retrySync` 返回错误时先进入错误分支，未把已经发生的 added/deleted 写入 `unitResult`；对应 §6.5 第 2 项。
-3. **历史 skipped 语义原先未定义：** 核验时 `SyncLog.Result` 注释允许 skipped，但生产只写 success/failed；该残余已随 R6-01 按本轮裁决收口，当前工作树使用 `skipped/partial` 并把详情写入既有 `error` 列，见 §7.1 与 §7.6。
+1. **A18 Dashboard 数字双口径（已修复，当前未提交工作树）：**
+   - **研究结论：** 核验时 `Dashboard.vue` 每 5 秒读取 `/api/sync/status`，但统计概览另行读取 `/api/sync/logs` 并取 `logs[0].added/deleted`；后者是按 `sync_logs.id DESC` 返回的最新一条逐域单元记录，而 `SyncStatus.last_round` 才是跨全部 Provider 与域名规则累计的整轮原子快照。多单元轮次中两者即使没有请求竞态也可天然不同，问题确认存在。
+   - **裁决与边界：** 无需新增产品决策；按 A18 既有合同统一使用 `status.last_round.added/deleted`。不在本项处理 §6.5 第 11 项“重启后内存态时间戳与 `last_round` 归空”的展示语义，`null` 继续按既有界面回退为 `0`；不新增 API、SQLite 字段、依赖或前端测试框架。
+   - **实施：** 仅修改 `webui/frontend/src/views/Dashboard.vue`：移除 `SyncLogEntry` 导入和 Dashboard 对 `/api/sync/logs` 的请求，`stats` 只保留 targets/rules，“最近同步 新增/删除”直接显示 `status.last_round?.added ?? 0` 与 `status.last_round?.deleted ?? 0`。后端、API、Schema、依赖和日志页均未修改。
+   - **判别性红灯与绿灯：** 修复前源码检查命中 `SyncLogEntry`、`/api/sync/logs`、`logs[0].added/deleted`，且缺少两处 `status.last_round` 计数引用，退出码为 1；修复后旧数据源引用全部消失、两处整轮字段引用均存在，退出码为 0。
+   - **门禁：** `npm ci`、`npm run build`、`npm audit --audit-level=high`、`npm audit --omit=dev --audit-level=high`、`go test ./webui -race -count=1`、`go test ./... -race -count=1`、`go vet ./...`、`go build ./...` 与 `git diff --check` 全部通过；npm 两类审计均为 0 漏洞。
+   - **未执行边界：** 未执行浏览器人工回归、真实云 API、DNS、SMTP、Webhook、Docker、远端 CI 或其他外部链路验收。自动门禁不能替代浏览器对多逐域单元整轮合计、重启后 `0/0` 回退和 5 秒轮询更新的人工确认，也不得把上述外部链路写成已通过。
+2. **错误路径已写计数丢失（已修复，当前未提交工作树）：**
+   - **研究结论：** 缺口共有三层：`retrySyncDetailed` 已跨 attempt 累计 added/deleted，但 `syncDomainInternal` 在错误分支先返回，导致失败单元的 `unitResult`、`EventSyncError`、整轮汇总与 `sync_logs` 全部报 0；ECS 每 100 条分批创建时，前批成功、后批失败会返回空 `CreateResult`；CVM 按 PolicyIndex 逐条删除时，前项成功、后项失败只返回 error。任一 Provider 还可在删除成功后、创建失败时触发上层丢失。
+   - **裁决与不可判定边界：** 只统计客户端已确认成功的独立请求或子批次；当前请求返回错误且云端提交状态不明时计 0，不根据随后 Describe 看到的状态推测归因，因为该状态也可能来自外部并发。确认数跨 retry attempt 累积，每次重试仍完整执行 Describe → Diff → Create/Delete，由新 Diff 自然避免重复写入计数。失败仍优先归类 `failed`，added/deleted 与 outcome 正交。
+   - **实施：** `provider/provider.go` 明确 `CreateResult.Written` 在 `err != nil` 时可报告此前成功子批，并新增支持 `errors.As`/`Unwrap` 的 `PartialDeleteError`；`provider/ali_ecs.go` 保留失败批次之前的 Written，`provider/tc_cvm.go` 保留逐条删除中途的确认数。`syncer/retry.go` 在错误分类与重试前累计 Written/部分删除数；`syncer/syncer.go` 在失败分支前写入 `unitResult`，并让实时日志与 `EventSyncError` 携带 added/deleted；`webui/api/logwriter.go` 保持 `result=failed` 与原错误文本，同时持久化确认计数。
+   - **判别性红灯：** 新增 Provider/Syncer 用例后，因 `PartialDeleteError` 尚不存在而编译失败；`TestStoreLogWriter_ErrorDetail` 则实际得到 `added/deleted=0/0`、期望 `2/1`，直接证明历史失败记录丢数。
+   - **判别性覆盖：** `TestRetrySync_NonRetryableErrorKeepsConfirmedDeleteProgress`、`TestRetrySync_ExhaustedRetriesKeepConfirmedProgress`、`TestRetrySync_CreateResultWithErrorKeepsWritten`、`TestRoundSummary_FailedUnitKeepsConfirmedCounts`、`TestSyncErrorCarriesConfirmedCounts`、`TestRequest_ECSCreateReturnsConfirmedProgress`、`TestRequest_CVMDeleteReturnsConfirmedProgress` 与 `TestStoreLogWriter_ErrorDetail` 覆盖非重试失败、重试耗尽、跨 attempt 去重、失败整轮不变量/事件、ECS 后批失败、CVM 中途失败及历史落库。
+   - **门禁：** 判别性选择测试、`go test ./provider ./syncer ./webui/api -race -count=1`、`go test ./... -race -count=1`、`go vet ./...`、`go build ./...` 与 `git diff --check` 全部通过。
+   - **明确未扩张与未验证：** 未全面修改 `DeleteRules` 接口，未处理 §6.5 第 1 项删除侧在正常成功返回下的跳过虚增，未新增 Schema、前端或依赖。未执行真实腾讯云逐条删除中途失败、真实阿里云分批后批失败、弱网响应丢失、Docker、远端 CI 或其他外部验收；自动 mock 结果不得写成真实云已通过。
+3. **历史 skipped 语义原先未定义（已由当前 HEAD 收口；本轮复核被用户中断）：** 核验时 `SyncLog.Result` 注释允许 skipped，但生产只写 success/failed；提交 `8898263d` 已随 R6-01 使用 `skipped/partial` 并把详情写入既有 `error` 列，见 §7.1 与 §7.6。本轮原计划再派独立研究代理复核这一关闭结论，但用户在代理完成前要求中断；该代理未修改文件，其未完成研究不得记作本轮验证证据，也没有派发修复代理。
 4. **`Syncer.Wait()` 未运行即阻塞：** `Wait()` 直接等待仅由首个 `Run()` 关闭的 `doneCh`；对应 §6.5 第 14 项。
 
 ### 7.3 确认存在的测试与外部证据缺口
@@ -646,11 +659,25 @@ git diff --check
 
 ### 7.6 R6-01～R6-03 并行修复与独立验收记录
 
-> **执行边界：** 2026-09-28，以 `main` / `dc25d9e429e939a2f49c1ac6a1791890afb23a26`（相对 `origin/main` ahead 1）为起点，先由三个互相独立的只读研究代理分别研究 R6-01、R6-02、R6-03，再由三个新的修复代理各自只实现一个问题，最后由未参与实现的测试代理统一验收。三个实现代理均未修改本文，本文由主调度代理在全部测试完成后统一收口。当前实现与本文均在工作树中，**尚未提交**。
+> **执行边界：** 2026-09-28，以 `main` / `dc25d9e429e939a2f49c1ac6a1791890afb23a26`（相对 `origin/main` ahead 1）为起点，先由三个互相独立的只读研究代理分别研究 R6-01、R6-02、R6-03，再由三个新的修复代理各自只实现一个问题，最后由未参与实现的测试代理统一验收。三个实现代理均未修改本文，本文由主调度代理在全部测试完成后统一收口。该批实现与本文随后已提交为 `8898263d8e25fbd8503811bcea11429629bb88ff`，当前 `main` 与 `origin/main` 均指向该提交。
 
 - **范围复核：** 实现改动共 12 个已跟踪文件与 1 个新增测试文件：`config/store.go`；`syncer/retry.go`、`syncer/retry_test.go`、`syncer/round_summary_test.go`、`syncer/syncer.go`；`webui/api/logwriter.go`、`webui/api/logwriter_test.go`；`webui/frontend/src/types.ts`、`webui/frontend/src/views/Logs.vue`；`webui/server.go`、`webui/server_test.go`；`notifier/webhook.go`、`notifier/webhook_security_test.go`。独立测试代理逐项检查差异，未发现顺手处理 §6.5 其他未授权候选。
 - **Go 统一门禁：** 涉及 Go 文件的 `gofmt -l` 无输出；`git diff --check` 通过；`go test ./... -race -count=1` 共 11 个包全部通过；`go vet ./...`、`go build ./...` 通过。R6-01、R6-02、R6-03 的专项判别命令与结果分别记录在对应条目中。
 - **前端与依赖门禁：** 在 `webui/frontend` 使用独立任务缓存 `/tmp/fwalizer-r6-test-npm.JFNDfJ` 执行 `npm ci` 与 `npm run build` 均通过（Vite 8.3.1，2819 modules）；`npm audit --audit-level=high` 与 `npm audit --omit=dev --audit-level=high` 均为 0 vulnerabilities。构建后 `package.json`、`package-lock.json` 与构建目录没有新增 tracked diff；未使用 sudo 或修改全局 npm 缓存。
 - **证据分层：** 上述结论只证明当前合并工作树的本地确定性测试、race、静态检查、Go 构建和前端构建/审计通过。未执行浏览器人工回归、真实 SWAS、真实 Webhook、Docker、远端 GitHub Actions 或 GHCR 发布；其中真实 Webhook 人工验收继续沿用用户已明确免除，仍不得写成真实通过。
 
-**当前结论：** R6-01、R6-02、R6-03 已在未提交工作树中按本节裁决完成修复，并经独立测试代理验证通过；提交、推送、Docker/远端 CI 及上述外部人工验收均不在本轮已完成证据内。§6.5 其他候选仍维持未授权状态。
+**当前结论：** R6-01、R6-02、R6-03 已按本节裁决完成修复、经独立测试代理验证，并提交、推送为当前 HEAD `8898263d`；Docker/远端 CI 及上述外部人工验收仍不在该批已完成证据内。§6.5 其他候选当时维持未授权状态，后续 §7.2 残余处理进度见 §7.7。
+
+### 7.7 §7.2 残余问题串行处理进度（2026-09-28，中断点）
+
+> **执行方式：** 用户授权按“单个问题只运行一个子代理：独立研究完成后，再由新的独立代理修复；逐项完成；最后另派测试代理”的严格串行方式处理 §7.2。当前基线为 `main` / `8898263d8e25fbd8503811bcea11429629bb88ff`，开始时与 `origin/main` 同步。用户在第 3 项研究期间要求中断并优先更新本文；该研究代理已立即中断，未再派发任何代理。
+
+| §7.2 项目 | 当前状态 | 代码与证据边界 |
+|---|---|---|
+| 1. A18 Dashboard 数字双口径 | **研究、修复与本项门禁完成；当前未提交工作树** | 仅修改 `webui/frontend/src/views/Dashboard.vue`；统一改取 `SyncStatus.last_round.added/deleted`。failure-first 源码判别、`npm ci/build`、两条 audit、`go test ./webui -race`、全仓 race/vet/build 与 `git diff --check` 已通过；浏览器与外部验收未执行。 |
+| 2. 错误路径已写计数丢失 | **研究、修复与本项门禁完成；当前未提交工作树** | 修改 Provider 部分成功传递、retry 累计、失败事件/汇总与 `sync_logs` 计数，并新增判别性测试；受影响三包 race、全仓 race/vet/build 与 `git diff --check` 已通过。真实云分批/逐条中途失败和弱网响应丢失未验证。 |
+| 3. 历史 skipped 语义 | **当前 HEAD 已由 R6-01 收口；本轮独立复核被用户中断** | `8898263d` 的既有实现与 §7.1/§7.6 记录仍在；本轮研究代理未完成、未修改文件，因此没有新增研究或测试结论，也未派修复代理。 |
+| 4. `Syncer.Wait()` 未运行即阻塞 | **尚未开始** | 未派研究或修复代理，源码与文档状态均未改变。 |
+| 最终独立测试 | **尚未开始** | 尚未派测试代理；第 1、2 项各自门禁通过不等于最终合并工作树已经由独立测试代理验收。 |
+
+**当前工作树：** 除本文外，包含第 1 项的 `Dashboard.vue` 修改，以及第 2 项在 `provider/`、`syncer/`、`webui/api/` 的实现与测试修改；没有第 3、4 项产生的文件改动。当前未提交、未推送，未执行 Docker、远端 GitHub Actions、GHCR、浏览器人工回归或真实云/API/DNS/SMTP/Webhook 验收。后续若恢复，应从第 3 项是否需要重新独立复核或直接进入第 4 项开始，由用户另行指示；不得把本次中断写成全部完成。

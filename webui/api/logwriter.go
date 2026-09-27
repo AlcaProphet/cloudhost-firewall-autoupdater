@@ -48,6 +48,12 @@ func (w *StoreLogWriter) OnEvent(event notifier.Event) error {
 	switch event.Type {
 	case notifier.EventSyncError:
 		log.Result = "failed"
+		if v, ok := event.Data["added"]; ok {
+			log.Added = toInt(v)
+		}
+		if v, ok := event.Data["deleted"]; ok {
+			log.Deleted = toInt(v)
+		}
 		if v, ok := event.Data["error"].(string); ok {
 			log.Error = v
 		}
