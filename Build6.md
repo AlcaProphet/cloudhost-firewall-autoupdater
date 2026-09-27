@@ -313,7 +313,7 @@ log_level, theme
 | 4 | API 最小持久化校验边界 | Issue5 O5-06、本文件 §四 | ✅ 验收通过 |
 | 5 | version 2 完整配置包与原子运行时切换 | Issue5 R5-01、本文件 §三 | ✅ 验收通过（2026-09-27） |
 | 6 | 前端依赖受控升级 | Issue5 O5-01 | ✅ 验收通过（2026-09-27） |
-| 7 | 高影响路径补测、真实验收与文档闭环 | Issue5 O5-03 | ◧ 进行中 |
+| 7 | 高影响路径补测、真实验收与文档闭环 | Issue5 O5-03 | ✅ 验收通过（2026-09-27；Email/Webhook 人工验收经用户决定免除） |
 
 > 状态标记：☐ 未开始 / ◧ 进行中 / ✅ 验收通过
 
@@ -990,7 +990,7 @@ git diff --check
 
 ### Step 7：高影响路径补测、真实验收与文档闭环
 
-**实施状态：** ◧ 进行中（2026-09-27；自动补测、统一门禁、Docker/真实二进制验收与文档闭环已完成；待用户执行 PT-B6-08/09 真实 SMTP/收件箱与 Webhook 后才能关闭）
+**实施状态：** ✅ 验收通过（2026-09-27；自动补测、统一门禁、Docker/真实二进制验收、远端 Actions 与镜像发布、文档闭环全部完成；PT-B6-08/09 真实 SMTP/收件箱与 Webhook 的人工验收经用户明确决定跳过并由用户自行处理，属**人工验收免除**，不作为已验证通过证据）
 
 - 当前 HEAD：`69fb7c8835608866b65dadacbca01103df92f855`（`69fb7c8`）；施工开始时 `main` 比 `origin/main` 领先 3 个提交（`git rev-list --left-right --count origin/main...HEAD` = `0 3`）
 - 工作树基线：干净（`git status --short --branch` 仅输出 `## main...origin/main [领先 3]`；`git status --porcelain --untracked-files=all`、`git diff --name-only`、`git diff --check` 均为空，无用户已有改动）
@@ -999,7 +999,7 @@ git diff --check
 - 固定不变量：Step 5 已落地的 version 2 唯一协议与 `export_id → 新数据库 ID` 映射、协调器串行化与「commit 后无失败发布」顺序（日志级别 → 告警集合 → `RuntimeState`）、`RuntimeState` 发布后不可修改与「一轮一快照」、`provider.Credentials` 不可变与 `ClientPool` 无 setter、EventBus 取消订阅不关闭 channel、两类 SSE 监听服务器级 shutdown、`reset` 只接受单一空对象 `{}`、`pause/resume` 的运行时写入口唯一属于协调器（A5 后落实）、普通变更保留 DNS 熔断计数而完整导入重置（A8 后落实）、`false → true` 恢复必须立即一轮（A7 后落实）、暂停时 ticker 与 trigger 均不启动新轮次（A6 后落实）
 - 本轮不处理：Issue6 中未经用户确认的其余条目（A1、A2、A3、A4、A9、A11～A19 与 §三 清理候选）；`notifier/email.go`、`notifier/webhook.go` 的 SMTP/Webhook 行为测试（属外部真机证据层）；云 Provider 增量算法、认证与配置包协议重构；前端测试框架或任何前端新依赖；`go.mod`/`go.sum`、`webui/frontend/package*.json`、`build/Dockerfile`、`.github/workflows/*`；`HistoryDocs/` 正文；真实云 API、SMTP/收件箱、Webhook 与浏览器人工验收不得以 mock 或自动测试替代
 - **目标：** 完成 O5-03；不设置任意覆盖率目标，只补高影响行为并形成可追溯的分层证据。
-- **当前边界（2026-09-27 更新）：** Step 7 的自动补测、统一门禁、Docker/真实二进制验收与文档闭环**已实施完成**；用户已提前确认生产浏览器、真实腾讯云/阿里云、DNS 增量同步及真实负载运行时行为真机通过（本 Step 直接继承，不重复要求执行）。Email/SMTP/收件箱（PT-B6-08）与真实 Webhook（PT-B6-09）已确认环境具备但**须由用户在真机执行**，本轮未取得证据，因此 **Step 7 保持 ◧ 进行中**，不得标记完成。
+- **当前边界（2026-09-27 更新，最终）：** Step 7 已验收通过。自动补测、统一门禁、真实二进制/Docker 容器验收、远端 GitHub Actions 与镜像发布、文档闭环均**已完成**；用户已提前确认生产浏览器、真实腾讯云/阿里云、DNS 增量同步及真实负载运行时行为真机通过（本 Step 直接继承，不重复要求执行）。**Email/SMTP/收件箱（PT-B6-08）与真实 Webhook（PT-B6-09）经用户 2026-09-27 明确决定跳过、由用户自行处理，属人工验收免除，不阻塞 Step 7，但不得写成已经通过。**
 - **notifier：** 接口订阅 clone、注册/取消、channel Publish/取消竞态、重复取消、缓冲满、Subscriber 错误隔离、告警热重载边界。
 - **syncer：** Provider/Resolver/TAG/Config 完整快照、重试重新 Diff、部分写入计数、pause/resume、导入开关、停止等待、DNS 阈值更新。
 - **provider：** TCP+UDP 拆分、ICMP 端口、IPv4/IPv6、ECS ICMPv6 跳过、描述长度、48 字符 TAG、精确删除、幂等错误和 CVM 上限；只测纯转换和 mock，不声称真实云 API 已验证。
@@ -1011,7 +1011,7 @@ git diff --check
   2. 真实 DNS → Diff → 增量写入 → 精确删除；
   3. SMTP 发信并确认收件箱；
   4. 每个实际支持渠道的 Webhook；
-  5. 不具备凭据或外部环境时，Step 7 保持 ◧ 进行中，并明确列为待用户执行，不得以 mock 代替后标记完成。
+  5. 不具备凭据或外部环境时，Step 7 保持 ◧ 进行中，并明确列为待用户执行，不得以 mock 代替后标记完成。（**本轮实际结果：** 环境虽具备，但用户于 2026-09-27 明确决定跳过 SMTP/收件箱与 Webhook 人工验收并自行处理，属"人工验收免除"而非"已验证通过"；本规则仍适用于未来出现同类外部环境缺失的情况。）
 - **文档闭环：** 更新 Issue5 每项状态、Build6 每 Step 实际证据、Design5 当前状态和 README；历史文档不改写。
 - **证据分层：** 源码核验、单元/集成测试、race、build/vet、Docker、浏览器人工、真实云 API、SMTP/收件箱、Webhook 分别记录，互不替代。
 
@@ -1044,22 +1044,21 @@ git diff --check
 - **Docker 容器验收：** `docker run -d -p 63100:60200 fwalizer:build6-step7` → 容器 6s 转 `healthy`（HEALTHCHECK 走 `/api/health`）；容器内 `uid=1000(appuser)`（**非 root**，`Config.User=appuser`）；经端口映射 `/api/health`、`/` 与 3 个哈希资源全部 200；容器日志敏感模式扫描无命中；`docker stop -t 15` → rc=0、耗时 0.111s、`ExitCode=0`、`OOMKilled=false`，日志顺序同上，停止后端口释放。附带验证容器内实际绑定 `0.0.0.0:60200` 并可通过端口映射访问（补上此前仅单测覆盖的 `WEBUI_HOST=0.0.0.0` 真实可达性）。
 - **当前轮次退出边界（分层）：** 0 目标轮次立即结束（真实二进制/容器日志）；**在途轮次**必须等当前轮完成由自动化进程级用例覆盖——`TestProcessCompletesInFlightRoundAfterSignal`、`TestProcessSIGTERMGracefulShutdown`、`TestProcessSIGINTGracefulShutdown`（本轮 `-race` 全通过）。
 - **人工检查：** 本轮**未新增**浏览器或真实云人工步骤——2026-09-27 用户已确认的生产浏览器、真实腾讯云/阿里云、DNS 增量同步与真实负载运行时证据按原记录继承（`Build6.md:844`、`:856`）；本 Step 的 provider 证据全部是本地 mock 端点与纯转换，**不声称真实云 API 验收**。
-- **外部链路检查：未执行。** PT-B6-08（真实 Email/SMTP + 收件箱）与 PT-B6-09（真实 Webhook 渠道及测试渠道）环境已具备，但**须由用户本人在真机执行**；AI 不接触 SMTP 密码或完整 Webhook URL，也不以 mock/HTTP 假服务替代。未取得前 Step 7 保持 ◧。
+- **外部链路检查：经用户决定免除。** PT-B6-08（真实 Email/SMTP + 收件箱）与 PT-B6-09（真实 Webhook 渠道及测试渠道）**未执行**；用户于 2026-09-27 明确决定跳过这两项并自行处理，沿用本项目 PT-B6-04 的「人工验收免除」先例。**因此这两个外部链路仍无真实通过结论，本文档不得写成已经通过**；AI 全程未接触 SMTP 密码或完整 Webhook URL，也未以 mock/HTTP 假服务替代（`notifier/email.go`、`notifier/webhook.go` 的行为测试仍不在自动补测内）。
 - **远端 GitHub Actions（真实结果）：** 按用户授权推送 tag `v2.0.0`（指向本 Step 提交 `8a075f368447cc5321b24e9c021f96fc0d1eb730`）后，真实工作流运行 **成功**：run id `36300428681`（event `push`，head_branch `v2.0.0`，run_attempt 1，2026-09-27T06:33:08Z→06:38:25Z，https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/36300428681）；14 个步骤全部 `success`，含「更新所有 SDK 到最新版」「构建前端」「前端依赖审计（生产依赖，阻断）」「前端依赖审计（完整，阻断）」「编译检查」「**运行测试（`go test -race -v ./...`）**」「登录 ghcr.io」「构建并推送 Docker 镜像」。因此 **Issue5 O5-02 的「远端 race 未运行」缺口已由真实远端结果关闭**。
 - **发布镜像（真实推送）：** 从 GHCR 匿名拉取 `ghcr.io/alcaprophet/fwalizer:2.0.0` 成功（digest `sha256:72c3166d…`），镜像标签 `org.opencontainers.image.revision` = `8a075f368447cc5321b24e9c021f96fc0d1eb730`（与本 Step 提交一致）、`version` = `2.0.0`、`source` = 本仓库 URL；semver 派生标签 `2.0`、`2` 同时存在。该镜像由 CI 使用最新 SDK 构建，属**真实远端发布证据**。
-- **未完成项：**
-  1. PT-B6-08（真实 SMTP 发信/收件箱/告警触发与禁用后行为）与 PT-B6-09（每个实际支持渠道的真实 Webhook）——待用户真机执行；
-  2. ~~远端 GitHub Actions 实际运行结果~~——**已完成**：运行 `36300428681` 成功，镜像 `ghcr.io/alcaprophet/fwalizer:2.0.0` 已真实推送（见上条「远端 GitHub Actions」与「发布镜像」）；
-  3. 导出 handler 的只读事务失败注入（`BeginReadOnlyTx`/快照/`Commit`）未做：当前 driver 不强制 `ReadOnly`，需额外失败注入 seam（见 §12.16 边界）；
-  4. 进程级 `Serve` 异常退出 → 退出码 1 的路径无独立注入 seam，仅由 `webui` 包内 `Wait()` 返回值用例与代码审查覆盖；
-  5. `Resolver` 维度的单轮快照未单独替换（无注入式 resolver 接口）：与 TAG/`Providers` 共用同一 `state` 指针，属结构性覆盖。
+- **未完成项：无阻塞项。** 以下三类均不阻塞 Step 7 验收，如实登记：
+  1. **用户决定免除的人工验收**：PT-B6-08（真实 SMTP 发信/收件箱/告警触发与禁用后行为）与 PT-B6-09（每个实际支持渠道的真实 Webhook）——用户 2026-09-27 决定跳过并自行处理；这两个外部链路**没有真实通过结论**，不得写成已通过；
+  2. ~~远端 GitHub Actions 实际运行结果~~——**已完成**：运行 `36300428681` 成功，镜像 `ghcr.io/alcaprophet/fwalizer:2.0.0` 已真实推送；
+  3. **已知证据边界（非本 Step 门禁）**：导出 handler 的只读事务失败注入（`BeginReadOnlyTx`/快照/`Commit`）未做，当前 driver 不强制 `ReadOnly`，需额外失败注入 seam（见 §12.16）；进程级 `Serve` 异常退出 → 退出码 1 的路径无独立注入 seam，仅由 `webui` 包内 `Wait()` 返回值用例与代码审查覆盖；`Resolver` 维度的单轮快照未单独替换（无注入式 resolver 接口），与 TAG/`Providers` 共用同一 `state` 指针，属结构性覆盖。
 - **与计划偏差：**
   1. 开工报告曾预告"新增 `provider/tc_cvm_limit_test.go`"，实际落地为范围更大的 `provider/request_mock_test.go`（四个 Provider 的请求构造 mock 层，CVM 100 上限只是其中一组子用例）；新增 `webui/api/import_runtime_test.go` 承担"导入 `sync_enabled` 端到端一致性"与 A8 熔断策略判别，两处文件名/范围偏差已在 7.3/7.5 证据中如实记录。
   2. notifier 并发回归用例首版断言"取消订阅后旧订阅者不再收到任何事件"，与 §12.14 明确允许的在途快照语义冲突，`-count=100` 时失败；已改为只断言"读取快照路径确实投递过"与"压力结束后总线仍可用"。该失败是**测试侧断言错误，不是源码回归**。
   3. ECS/SWAS 的真实线上请求格式与初版假设不同（ECS 用 `Permissions.1.X` 扁平下标参数、`SecurityGroupRuleId.1`；SWAS 用逗号分隔 `RuleIds`）；已按真实格式改写解析 helper（先以临时 debug 用例打印真实 URL 确定，debug 文件已删除）。
   4. A5 修复后 `Syncer.Pause/Resume` 与 `api.Syncer` 接口成员保留但生产不再调用；删除接口成员会扩大改动面且无行为收益，故保留。
   5. A8 由"允许重置"改为"完整导入确定重置"（用户 2026-09-27 决策），因此 §12.3 第 7 条与 `AGENTS.md` 的措辞由许可性改为确定性；普通变更仍保留计数。
-- **状态：** ◧ 进行中（自动补测、统一门禁、Docker/真实二进制验收、文档闭环与远端 GitHub Actions 结果均已完成；**仅剩 PT-B6-08/09 真实 SMTP/收件箱与 Webhook 待用户真机执行**）
+  6. **PT-B6-08/09 由"待用户执行"改为"用户决定免除"**：用户于 2026-09-27 决定跳过真实 SMTP/收件箱与 Webhook 验收并自行处理。据此 `ProdTestList.md` 不再保留这两项（按该文件"不记录已完成或不适用项"的约定），用户决定记录在本 Step 与 `Issue5.md` O5-03；Step 7 因此可在无这两个外部结论的前提下验收，但两个外部链路仍保持"无真实通过结论"。
+- **状态：** ✅ 验收通过（2026-09-27；自动补测、统一门禁、真实二进制/Docker 容器验收、远端 GitHub Actions 与真实镜像推送、文档闭环全部真实完成。PT-B6-08/09 真实 SMTP/收件箱与 Webhook 由用户明确决定免除人工验收并自行处理——属人工验收免除，不阻塞本 Step，**但这两个外部链路仍无真实通过结论，不得写成已通过**）
 
 ---
 
@@ -1187,7 +1186,7 @@ git diff --check
 - 标注“**必须**”的是 Build6 固定不变量；实现可以改名、拆文件或选择等价标准库写法，但结果必须满足；
 - 标注“**参考**”的代码只表达依赖方向、锁边界、事务顺序和错误边界，不要求逐字复制；
 - 伪代码省略的 error 处理在真实实现中仍必须补全，不能因为示例简化而忽略；
-- 当前源码已完成 Step 5 工程实现与 Step 6 前端依赖升级，Step 0～6 均已验收通过；Step 7 的自动补测、统一门禁、真实二进制/Docker 容器验收与文档闭环已于 2026-09-27 完成，仅剩真实 Email/SMTP/收件箱与 Webhook 待用户真机执行，故 Step 7 保持 ◧ 进行中。本节中 EventBus 不关 channel、Step 3 HTTP 生命周期与 SSE shutdown channel、Step 4 严格解码/领域校验/事务、Step 5 `RuntimeState`/显式凭据/version 2 协议、Step 6 Vite 8 升级以及 Step 7 的 A10/A5/A7/A6/A8 最小修复均已实现；其余“目标接口”仍不当然代表已经存在；
+- 当前源码已完成 Step 5 工程实现与 Step 6 前端依赖升级，**Step 0～7 均已验收通过**；Step 7 的自动补测、统一门禁、真实二进制/Docker 容器验收、远端 GitHub Actions 与真实镜像发布、文档闭环均已于 2026-09-27 完成，真实 Email/SMTP/收件箱与 Webhook 的人工验收经用户决定免除（由用户自行处理，仍无真实通过结论）。本节中 EventBus 不关 channel、Step 3 HTTP 生命周期与 SSE shutdown channel、Step 4 严格解码/领域校验/事务、Step 5 `RuntimeState`/显式凭据/version 2 协议、Step 6 Vite 8 升级以及 Step 7 的 A10/A5/A7/A6/A8 最小修复均已实现；其余“目标接口”仍不当然代表已经存在；
 - 如当前代码与本节基线不同，先判断是仓库后来已实现、文档过期，还是出现偏离；不得同时保留两套语义。
 
 ### 12.2 源码边界映射（2026-09-27 更新；原 2026-09-24 与 2026-09-22 基线版本见 Git 历史）
@@ -1724,5 +1723,5 @@ Build6 最终关闭前，必须能从本文追溯：
 | 2026-09-23 | Step 1～3 验收：并发/race 基线、CLI 与 `.env` Headless 移除、HTTP 生命周期和优雅关闭完成。 |
 | 2026-09-24 | Step 4～6 工程与自动门禁完成：严格 API/事务、version 2 与原子运行时、Vite 8 升级、Docker/Node 24 验收。 |
 | 2026-09-27 | 用户真机确认浏览器、真实云/DNS/同步链路通过，Step 5、Step 6 验收完成；跨实例人工迁移免除，Email/SMTP/收件箱与 Webhook 移交 Step 7/后续清单。 |
-| 2026-09-27 | Step 7 自动补测、统一门禁、真实二进制/Docker 容器验收与文档闭环完成（`provider` 覆盖率 22.6%→53.0%，11 包 race 全绿，镜像 `fwalizer:build6-step7` 74.1MB）；按用户确认边界最小修复 Issue6 A10/A5/A7/A6/A8（reset 拒绝 `null`、pause/resume 单一运行时写入口、恢复立即一轮、ticker 已发布状态守卫、完整导入重置 DNS 熔断计数），A1/A2/A3/A4/A9/A11～A19 继续留在 Issue6；PT-B6-08/09 真实 SMTP/收件箱与 Webhook 待用户真机执行，故 Step 7 保持 ◧ 进行中。 |
+| 2026-09-27 | **Step 7 ✅ 验收通过**：自动补测、统一门禁、真实二进制/Docker 容器验收、远端 GitHub Actions 与真实镜像推送、文档闭环全部完成（`provider` 覆盖率 22.6%→53.0%，11 包 race 全绿，镜像 `fwalizer:build6-step7` 74.1MB）；按用户确认边界最小修复 Issue6 A10/A5/A7/A6/A8，A1/A2/A3/A4/A9/A11～A19 继续留在 Issue6；PT-B6-08/09 真实 SMTP/收件箱与 Webhook 经用户明确决定免除人工验收、由用户自行处理（**不写成已通过**）。 |
 | 2026-09-27 | 推送 tag `v2.0.0`（提交 `8a075f3`）触发真实 GitHub Actions：运行 `36300428681` **成功**（14 步全 success，含远端 `go test -race -v ./...` 与两条阻断式 npm audit），并真实推送 `ghcr.io/alcaprophet/fwalizer:2.0.0` / `2.0` / `2`（revision 标签与提交一致）；Issue5 O5-02 的远端 race 缺口就此关闭。 |
