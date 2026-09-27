@@ -8,7 +8,9 @@
 >
 > **2026-09-27 只读复核（新增 §五）：** 复核基线为 HEAD `54efb10e2ae1ad5fae1d6d3f13eef87a412eb7c1`（`main`，相对 `origin/main` **ahead 1**，工作树干净）。A1～A19 已逐项重新核验并给出判定、现行行号证据与修复方案；另新增 **A20（Stop 后仍可能启动一整轮同步，已隔离复现）**。本轮 7 项产品语义决策已由用户确认（见 §5.7）。§二 中 A5～A10 的行号与部分结论属历史快照，现行行号与修正清单见 §5.5。
 >
-> **证据边界：** 以下结论以当前仓库及本机现有 Go 标准库、依赖源码的只读检查为主。原报告声称的 `/tmp` 隔离复现与测试结果未在本次重跑；未访问真实云 API、SMTP、Webhook 或用户生产数据库。应将“代码路径可证实”“原报告复现”“生产事故已发生”分开。原报告附件在 §3.1 的 `ErrNoSnapshotLoader` 表格行中途截断，缺失部分未纳入本文。
+> **2026-09-27 权威基线（新增 §六）：** 当前基线固定为 HEAD `1fafb172307652912a621eaebf4bf942cbd2c33f`（`main == origin/main`；本轮文档改进前工作树干净，改进后仅 `Issue6.md` 有未提交变更）。§六已根据当前源码、正式门禁与重跑的隔离复现，收束 A1～A20 的状态、产品语义、修复合同、验收口径与实施顺序。**自本基线起，§六是后续实施的唯一当前依据；§一～§五保留为历史证据，与§六冲突时以§六为准。**
+>
+> **2026-09-24 原始证据边界（历史）：** 当时结论以仓库及本机 Go 标准库、依赖源码的只读检查为主，未重跑原报告声称的 `/tmp` 隔离复现，也未访问真实云 API、SMTP、Webhook 或用户生产数据库。本条不再表示当前基线；当前证据边界见 §6.1。仍应将“代码路径可证实”“隔离复现”“生产事故已发生”分开。
 
 ## 一、优先处理顺序
 
@@ -203,7 +205,7 @@
 | 编号 | 判定 | 优先级复核 | 置信度 | 现行核心证据（文件:行） | 需代码修复 | 需用户决策 | 批次 |
 |---|---|---|---|---|---|---|---|
 | A1 | 确认存在 | 保持「高」，建议列为第 1 | 高 | `provider/ali_swas.go:33-37`、`ali_ecs.go:32-36`、`scan.go:133-137`、`scan.go:181-185`；SDK `dara/core.go:349-357/533-535/734-737`、`:332` | 是 | 否 | 批次 1 |
-| A2 | 确认存在 | 保持「高」 | 高 | `notifier/bus.go:108-115`、`notifier/email.go:49`、`notifier/webhook.go:26`、`syncer/syncer.go:493-497`、`:529-533` | 是 | 是（满载语义，批次 2 前确认） | 批次 2 |
+| A2 | 确认存在 | 保持「高」 | 高 | `notifier/bus.go:108-115`、`notifier/email.go:49`、`notifier/webhook.go:26`、`syncer/syncer.go:493-497`、`:529-533` | 是 | 已决（最终口径见 §6.3.2） | 批次 2 |
 | A3 | 设计/产品决策（已决：保持 HTTP-only + 另加同步健康可观测） | 保持「中」 | 高 | `webui/server.go:240-243`、`syncer/syncer.go:325-342`、README:292/465-467、AGENTS §八、`build/Dockerfile` | 是（新增可观测，不改 health） | 已决 | 批次 4 |
 | A4 | 确认存在 | 保持「中高」 | 高 | `config/store.go:63-85`（`sql.Open` 于 `:64`、`busy_timeout` 于 `:74`）；驱动 `driver.go:50-54`、`sqlite.go:207-237`、`conn.go:56,135-138`、`lib/sqlite.go:10339-10350` | 是 | 否 | 批次 5 |
 | A5 | 已修复 | 降为已关闭（残留接口清理为低） | 高 | `webui/api/sync.go:41-73`；`coordinator.go:90-144`；`deps.go:110-142`；`webui/api/sync_test.go:107` | 否（可选清理） | 否 | 批次 8 |
@@ -271,7 +273,7 @@
 - **建议回归测试：** `notifier/email_timeout_test.go`（静默本地 SMTP，断言 deadline+裕量内返回错误、连接被关闭；可用 goroutine 计数辅助，`-race`）；`notifier/bus_bound_test.go`（阻塞订阅者 + N 次发布，断言在途 ≤ 上限、超出被丢弃且 WARN 被记录）。
 - **外部验收需求：** 真实 SMTP/收件箱与 Webhook 端到端仍只能人工验证（PT-B6-08/09），**不得写成已通过**。
 - **风险与依赖：** 采用「丢弃」策略时突发故障可能收不到全部告警（需在文档写明）；SMTP 自建会话比 `SendMail` 多约 30 行，需覆盖 STARTTLS/PlainAuth 既有行为。
-- **待用户决策：** **满载语义待确认**（推荐：固定上限 + 丢弃最新 + 每条 WARN 一次，不引入队列与重试）。可在批次 2 开工前确认。
+- **待用户决策：** 已决；最终固定为每个告警渠道在途上限 4、满载丢弃最新并 WARN，见 §6.3.2。
 
 #### 5.2.3 A3｜HTTP health 与同步健康
 
@@ -694,7 +696,7 @@
 | 批次 | 内容 | 关键点与顺序约束 | 判别性回归（建议） |
 |---|---|---|---|
 | **批次 1** | **A1 + A12**：阿里云 4 处构造点补 `ConnectTimeout/ReadTimeout`；`isRetryable` 改结构化超时判定 | **A1 先行或同批**：A1 修好后超时成为常态错误，若 A12 未修则不会重试 | 本地阻塞端点（provider）+ `TestIsRetryableErrorShapes` + 端到端重试计数 2 次 |
-| **批次 2** | **A2**：先做 SMTP 完整会话 deadline（独立低风险），再做在途上限 + 满载丢弃 WARN | 开工前确认满载语义（见 §5.7 待确认项） | 本地静默 SMTP 会话超时；阻塞订阅者 + N 次发布的在途计数 |
+| **批次 2** | **A2**：先做 SMTP 完整会话 deadline，再做每渠道在途上限 4 + 满载丢弃最新 + WARN | 满载语义已决，最终合同见 §6.3.2 | 本地静默 SMTP 会话超时；阻塞订阅者 + N 次发布的在途计数 |
 | **批次 3** | **A20 + A6 + A16**：Run 的 `stopCh` 硬门控 + `runOnce`；`Server.Start/Wait` 契约化；A7 注释收口 | 门控只挡新轮次，不中断当前轮；与 A6 守卫共用函数 | `TestStopRejectsQueuedTriggerRound`（`-count=20`）、`TestRunTwiceDoesNotPanic`、`TestStartTwice…`、`TestWaitTwice…` |
 | **批次 4** | **A3 + A18 + A13 + A15（写错误部分）**：`Generation` + `last_success`/整轮汇总 + `SyncStatus` 扩展 + Dashboard；hook 仅在真实状态变更时触发；SSE 处理写错误 | **依赖批次 1**（否则 `last_success` 可能永不前进）；`/api/health` 保持不变 | `TestStateAppliedHookOnlyOnRealStateChange`、同步健康字段用例、`TestHandleSyncEventsExitsOnWriteError` |
 | **批次 5** | **A4 + A9 + A14 + A17**：DSN `_pragma`；`loadRules` 损坏即报错；`WithTransaction`/`writeJSON`/`AddSyncLog` error 处理；`initTables` 迁移失败即返回错误 | 同文件但语义独立，可分 4 个提交；A9 的错误语义变化需写进发布说明 | `store_busy_test.go`（4 连接 PRAGMA + 竞争）、损坏 targets 四态、panic/回滚错误路径、旧库迁移夹具 |
@@ -763,7 +765,7 @@
 | A11 | **SWAS Provider 返回实际写入数/跳过数**，事件与日志区分 | 保留「允许保存 DROP」与 README 说明；`added` 反映真实写入，跳过量单独可见 |
 | A18 | **新增 `last_success` 与整轮汇总字段，不改 `last_sync`** | 保持现有 `last_sync` 语义与前端兼容；`/api/sync/status` 兼容性新增字段 |
 | A19 | **完全移除 Windows 兼容，不再考虑兼容** | 删除 `pidfile_windows.go`、`deployment.go` 的 windows 分支、README Windows 行，并从 `go.mod` 移除 `golang.org/x/sys`（需独立提交 + `go mod tidy`） |
-| A2（待确认） | **满载语义未定**（推荐：固定上限 + 丢弃最新 + 每条 WARN 一次，不引入队列与重试） | 批次 2 开工前需确认 |
+| A2 | **固定在途上限 4 + 满载丢弃最新通知 + 每次丢弃记 WARN**，不引入持久队列或告警重试 | 保持 `Publish` 不阻塞；上限只施加于邮件/Webhook 告警订阅者，不影响 StoreLogWriter 与 SSE |
 
 ### 5.8 本次实际执行的命令与隔离复现清单
 
@@ -811,7 +813,129 @@ A17 duplicate column 错误文本可被正确识别；非预期错误当前只 W
 
 ### 5.9 下一步建议（不开始实施）
 
-1. **先确认 A2 的满载语义**（§5.7 唯一待确认项），其余 7 项决策已确认。
+1. **A2 的满载语义已在 §5.7 确认**；本节不再存在待决策项。后续实施以§六的最终合同为准。
 2. **实施顺序：** 批次 1 → 批次 3 → 批次 2 → 批次 4 → 批次 5 → 批次 6 → 批次 7 → 批次 8；每批独立提交、独立回归、可独立回滚；批次 1 与批次 4 有硬依赖，顺序不可颠倒。
 3. **授权边界建议：** 每批仅授权该批列出的源码文件 + 对应测试 + 该批明确列出的文档行；`go.mod`/`go.sum` 仅在批次 7 授权；`AGENTS.md` 仅在批次 7 授权且只改 §9.1 一行。
 4. **文档回写：** 各批完成后在本节对应条目追加「实施记录」（实际改动、判别性回归、`-race` 结果、证据边界），并同步 `Build6.md`/`Issue5.md` 的口径；本轮只写入本文件。
+
+## 六、2026-09-27 权威实施基线（HEAD `1fafb17`）
+
+> **定位：** 本节是 Issue6 后续实施、审查和验收的唯一当前基线。§一～§五保留为审查演进与复现证据，其中的旧 HEAD、旧行号、待决策描述或方案与本节冲突时，一律以本节为准。
+>
+> **授权边界：** 本节只固定问题、方案与验收口径，**不代表任何待处理条目已获得代码实施授权**。实施仍按 §6.4 的独立批次逐批授权、逐批验收。
+
+### 6.1 基线与证据边界
+
+| 项 | 固定结果 |
+|---|---|
+| 日期 | 2026-09-27（Asia/Shanghai） |
+| 分支 | `main` |
+| 完整 HEAD | `1fafb172307652912a621eaebf4bf942cbd2c33f` |
+| 远端关系 | `main == origin/main` |
+| 工作树 | 文档改进前干净；改进后仅 `Issue6.md` 有未提交变更；`git diff --check` 无输出 |
+| 正式门禁 | `go test ./... -race -count=1` 全部 11 包通过；`go vet ./...` 通过 |
+| 隔离复现 | 当前 HEAD 上重跑 `/tmp/fwreview` overlay；A1/A2/A4/A9/A11/A12/A13/A15/A16/A17/A20 均仍成立；A20 本次为 10/15 |
+| 未执行 | 真实云 API、真实 SMTP/收件箱、真实 Webhook、生产数据库、Docker/浏览器/真机验收 |
+
+证据分层继续固定为：源码路径可达 ≠ 静态推理 ≠ 隔离复现 ≠ 正式自动测试 ≠ 真实外部链路 ≠ 生产事故。正式门禁全绿不能替代 Issue6 的判别性回归。
+
+### 6.2 权威状态表
+
+| 状态 | 条目 | 当前口径 |
+|---|---|---|
+| **确认存在，待处理** | A1、A2、A4、A9、A11、A12、A13、A14、A15、A16、A17、A20 | 当前源码或隔离复现仍支持原判定 |
+| **产品决策已定，待实施** | A3、A18、A19 | 不再存在方向决策，但代码/文档尚未落地 |
+| **已修复，保留回归** | A5、A6 原问题、A7、A8、A10 | 不重复修复；A6 相邻的 Stop 问题独立记为 A20 |
+| **待用户决策** | 无 | A2 满载语义已按 §6.3.2 固定 |
+
+### 6.3 最终修复合同
+
+#### 6.3.1 A1 + A12：有界云请求与结构化重试判定
+
+- 阿里云 SWAS/ECS 正式 Provider 与两条扫描路径统一设置 `ConnectTimeout=10_000ms`、`ReadTimeout=30_000ms`；定义为 `provider` 包内常量，不新增 SQLite 设置或环境变量。
+- `isRetryable` 先用 `errors.Is(err, context.DeadlineExceeded)` 与 `errors.As(err, net.Error)`/`Timeout()` 判定，再用既有云错误码字符串作兜底。
+- 不改 Provider 接口，不以不可取消的 goroutine+select 伪造超时，不改腾讯云现有 60s 行为。
+- 回归必须使用真实慢 `httptest`/本地阻塞端点构造超时错误，并证明超时错误进入第 2 次完整 Describe→Diff→Create/Delete 尝试。
+
+#### 6.3.2 A2：SMTP 完整会话 deadline + 告警在途上限
+
+- SMTP 改为显式 `net.Dialer{Timeout:10s}` + `conn.SetDeadline(now+30s)` + `smtp.NewClient`，完整保留 greeting、STARTTLS、AUTH、MAIL/RCPT/DATA、QUIT 顺序；deadline 覆盖初始 greeting 与 QUIT。
+- 邮件与 Webhook 每个告警渠道各自最多 4 个在途任务；满载时丢弃最新通知并记一条不含密码/URL 的 WARN。
+- 上限放在告警订阅者/告警调度边界，不对整个 EventBus 限流；StoreLogWriter 和 SSE 不受影响，`Publish` 保持非阻塞。
+- 不新增持久队列、告警重试或进程退出等待。真实 SMTP/收件箱与 Webhook 仍属外部人工验收，不得用本地测试代替。
+
+#### 6.3.3 A20 + A6 + A16：Stop 硬门控与单次生命周期
+
+- `Stop` 只阻止当前轮结束后启动新轮次，不中断已在执行的 `syncAll`。Run 循环入口与 ticker/trigger 调用 `syncAll` 前必须统一检查 stopped 状态。
+- `Syncer.Run` 是「只允许一个活动调用」的 API；用 mutex/atomic CAS 拒绝第二个调用并 WARN，不用会让并发第二个调用等待首次结束的 `sync.Once.Do`。
+- `Server.Start` 第二次调用在新建 listener 之前返回明确错误，且不影响第一个 listener。`Server.Wait` 保存唯一 Serve 结果并通过关闭完成 channel 广播，多次/并发 Wait 返回同一结果。
+- A20 正式回归必须用 hook/屏障或抽取的调度门控构造**确定性**失败；`-count=20` 的概率探针只可作压力补充，不得作唯一验收证据。
+
+#### 6.3.4 A3 + A18 + A13 + A15：同步健康、轮次汇总与 SSE
+
+- `/api/health` 继续只表示 HTTP 可用性，Docker HEALTHCHECK 不变；同步健康只通过 `/api/sync/status` 向后兼容地新增字段与 Dashboard 提示表达。
+- 一个统计单元固定为「一个 Provider × 一条适用规则」。每轮汇总至少包含 `finished_at/total/ok/failed/skipped/added/deleted/duration/outcome`。
+- DNS 失败或 Provider 错误记 `failed`；成功执行且无变更也记 `ok`；SWAS 不支持的 DROP 等明确未实施操作记 `skipped`。
+- `outcome=success` 只在 `total>0 && failed==0 && skipped==0` 时成立并更新 `last_success`；`failed>0` 为 `failed`；`failed==0 && skipped>0` 为 `partial`；无 Provider 或无适用规则为 `idle`。`partial/failed/idle` 均不更新 `last_success`。
+- `last_sync` 仍表示最近一次轮次完成，语义不变；暂停期不制造轮次、`last_sync` 或 `last_success`。`EventSyncComplete.Data` 保留 `duration` 并增加同样汇总。
+- A13 不为此新增可变 generation；Run 记录上次已消费的不可变 `RuntimeState` 指针，仅在指针变化时触发 state-applied hook，普通 ticker/trigger 轮次不记「告警已更新」。
+- SSE 写入改用可检查错误的写出/刷新路径；写错误立即退出并 unsubscribe。若实施单次写 deadline，初始 Flush 也必须覆盖，且每次写前刷新 deadline；优先使用 `http.ResponseController` 的可返回错误 API。
+
+#### 6.3.5 A4 + A9 + A14 + A17：SQLite 连接、损坏数据与错误处理
+
+- A4 使用 `net/url.URL` + `url.Values` 构造 SQLite file URI，不得用 `"file:"+path+"?..."` 直接拼接。DSN 仅用 `_pragma=busy_timeout(5000)` 保证每条物理连接都生效；`journal_mode=WAL` 继续在打开后执行一次，不让每条新连接重复切换 journal mode。
+- A4 回归必须覆盖含空格、`#`、`?` 与非 ASCII 字符的数据库路径；固定 4 条连接逐条断言 `busy_timeout=5000`，再验证写锁竞争会等待而非立即 `SQLITE_BUSY`。
+- A9 固定四态：历史空串 `""` 继续兼容为全部目标；`[]` 是当前合法的全部目标表达；`null`、对象、标量、非整数数组与解析失败全部返回带规则 ID 但不含原值的内部错误。**`null` 不得再当作空数组。**
+- 损坏 targets 必须同时阻断同步、导出、完整快照和目标引用检查，不得扩大为全部目标或固化为 `[]`。
+- A14 处理 `WithTransaction` 的 Rollback/panic 路径、`AddSyncLog` 的 COUNT/清理错误和 `writeJSON` 的 Encode/写出错误；响应头已发出后的编码错误只记安全日志，不尝试伪造第二个 HTTP 错误响应。
+- A17 的 duplicate-column 继续作为幂等成功；其他 ALTER 错误立即从 `OpenStore` 返回并中止启动。不引入 `schema_migrations` 表。
+
+#### 6.3.6 A11：SWAS DROP 的真实写入与跳过计数
+
+- Provider 层返回至少 `{Written, Skipped}`，`retrySync.added` 只累计 `Written`；SWAS 混合批次中 DROP 记 `Skipped`，可写的 ACCEPT 成功后记 `Written`，全部 DROP 时返回 `Written=0,Skipped=N,error=nil`。
+- 优先直接收敛 `Provider.CreateRules` 的统一返回契约，不引入只有 SWAS 走的可选接口；其他 Provider 成功时返回 `Written=len(rules),Skipped=0`。
+- `EventDomainSyncComplete.Data` 增加 `skipped`；stdout/WebUI 实时日志显式记「已跳过 N 条 SWAS 不支持的 DROP」。
+- 本批**不增加 SQLite `sync_logs.skipped` 列**：历史表的 `added` 改为真实写入数，跳过明细以事件/SSE/实时日志为准。若未来需要持久化 `skipped`，必须作为新的独立 Schema 变更设计，不在 A11 中顺带实施。
+- Dry Run 必须同样表达 SWAS DROP 不可实施，不得继续把它显示为普通 `to_add`。
+
+#### 6.3.7 A19 + A8 文档收口
+
+- 按已定决策完全移除 Windows 兼容；平台文件用明确的 `linux || darwin` 构建约束，不是单纯删除 `!windows` 后意外覆盖其他未声明平台。
+- 删除 Windows 数据目录分支、pidfile 实现、README 承诺与仅为该实现存在的直接 `golang.org/x/sys` 依赖；`go mod tidy` 后若仍被间接依赖则保留 indirect。
+- A8 代码已修复；同批只把 AGENTS 的「完整导入允许新建并清空」收紧为「完整导入确定新建 breaker 并清空计数」，不再改动实现。
+
+### 6.4 实施批次与依赖
+
+| 顺序 | 批次 | 范围 | 强依赖/停止条件 |
+|---|---|---|---|
+| 1 | 批次 1 | A1 + A12 | 先使外部请求有界，再把超时纳入重试；两者同批交付 |
+| 2 | 批次 3 | A20 + A6 + A16 | 只挡新轮次，不中断当前轮；必须有确定性 Stop 竞态回归 |
+| 3 | 批次 2 | A2 | 固定 4 在途 + 丢弃最新 + WARN；真实外部链路仍不得写成通过 |
+| 4 | 批次 4 | A3 + A18 + A13 + A15 | 依赖批次 1；按 §6.3.4 一次固定状态字段与轮次口径 |
+| 5 | 批次 5 | A4 + A9 + A14 + A17 | 同文件不等于同一改动；按条目拆分提交/审查，共用整包回归 |
+| 6 | 批次 6 | A11 | 在批次 4 的汇总字段定型后实施，同步 Dry Run 口径 |
+| 7 | 批次 7 | A19 + A8 文档 | 独立依赖/平台提交；只在该批授权 `go.mod/go.sum/AGENTS.md` |
+| 8 | 批次 8 | 低风险清理 | 移除 API Syncer 中无生产调用的 Pause/Resume；不捆绑新功能 |
+
+上述每批必须独立授权、独立提交、独立判别性回归、独立记录未验证外部边界。上一批验收前不自动扩展到下一批。
+
+### 6.5 统一验收门禁
+
+每个代码批次至少执行：
+
+```text
+go test <受影响包> -race -count=1
+go test ./... -race -count=1
+go vet ./...
+go build ./...
+git diff --check
+```
+
+其中 A1/A2/A4/A9/A11/A12/A13/A15/A16/A17/A20 还必须有各自的判别性用例，证明「修复前失败、修复后通过」。只有通用门禁全绿不足以关闭条目。
+
+### 6.6 文档同步与关闭规则
+
+1. 每批完成后，先在本节对应条目追加「实施记录」，记录提交、实际文件、判别性失败/通过证据、整体门禁和外部未验证边界。
+2. 再按该批授权同步 `Build6.md`/`Issue5.md`；`AGENTS.md` 只在批次 7 中收紧 A8 一行措辞。
+3. 代码完成但判别性回归缺失，不得关闭；本地自动化不得写成真实云/SMTP/Webhook/浏览器/生产验收通过。
+4. A5/A6/A7/A8/A10 保留已关闭状态；只有现有判别性回归真实失败或当前调用链重现原问题时才重开。
