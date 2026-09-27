@@ -24,8 +24,17 @@ const maxRetries = 3
 // 重试轮重新 Diff（云端状态已更新），已生效规则不重复出现，天然避免重复计数；
 // 幂等跳过（规则已存在/已不存在）不计入，与 Dry Run 的 to_add/to_delete 口径一致
 func (s *Syncer) retrySync(p provider.Provider, rule config.DomainRule, resolved []dns.ResolvedIP, tagStr string) (added, deleted, skipped int, err error) {
+	added, deleted, skipped, _, err = s.retrySyncDetailed(p, rule, resolved, tagStr)
+	return
+}
+
+// retrySyncDetailed 在既有计数之外返回可安全展示的跳过详情。
+// 详情只取最终成功 attempt；需要重试的失败 attempt 不得重复累加。
+func (s *Syncer) retrySyncDetailed(p provider.Provider, rule config.DomainRule, resolved []dns.ResolvedIP, tagStr string) (added, deleted, skipped int, skippedDetails []provider.RuleChange, err error) {
 	var lastErr error
 	for i := 0; i < maxRetries; i++ {
+		attemptSkipped := 0
+		var attemptDetails []provider.RuleChange
 		if i > 0 {
 			backoff := time.Duration(1<<uint(i-1)) * time.Second
 			slog.Warn("重试同步", "attempt", i+1, "backoff", backoff, "provider", p.Name())
@@ -37,7 +46,7 @@ func (s *Syncer) retrySync(p provider.Provider, rule config.DomainRule, resolved
 		if err != nil {
 			lastErr = err
 			if !isRetryable(err) {
-				return added, deleted, skipped, err
+				return added, deleted, attemptSkipped, attemptDetails, err
 			}
 			continue
 		}
@@ -53,7 +62,12 @@ func (s *Syncer) retrySync(p provider.Provider, rule config.DomainRule, resolved
 		//
 		// 注意本轮次内只计一次：成功返回即结束，需要重试时本轮次的计数会被
 		// 丢弃（与 added/deleted 的既有语义一致——它们同样只累计成功轮）。
-		skipped += len(diff.Skipped)
+		attemptSkipped += len(diff.Skipped)
+		for _, item := range diff.Skipped {
+			detail := provider.RuleChangeFromAction(item.Action)
+			detail.SkipReason = item.Reason
+			attemptDetails = append(attemptDetails, detail)
+		}
 
 		// 3. 执行删除（成功才计数；幂等"已不存在"视为成功但不计数）
 		if len(diff.ToDelete) > 0 {
@@ -63,7 +77,7 @@ func (s *Syncer) retrySync(p provider.Provider, rule config.DomainRule, resolved
 				} else {
 					lastErr = err
 					if !isRetryable(err) {
-						return added, deleted, skipped, err
+						return added, deleted, attemptSkipped, attemptDetails, err
 					}
 					continue
 				}
@@ -81,7 +95,7 @@ func (s *Syncer) retrySync(p provider.Provider, rule config.DomainRule, resolved
 				} else {
 					lastErr = err
 					if !isRetryable(err) {
-						return added, deleted, skipped, err
+						return added, deleted, attemptSkipped, attemptDetails, err
 					}
 					continue
 				}
@@ -89,13 +103,13 @@ func (s *Syncer) retrySync(p provider.Provider, rule config.DomainRule, resolved
 				// added 只累计**真正写入**的条数（Issue6 A11）：Provider 明确跳过的
 				// 期望规则（如 SWAS 无法表达 DROP）计入 skipped，绝不虚增为新增成功。
 				added += res.Written
-				skipped += res.Skipped
+				attemptSkipped += res.Skipped
 			}
 		}
 
-		return added, deleted, skipped, nil // 成功
+		return added, deleted, attemptSkipped, attemptDetails, nil // 成功
 	}
-	return added, deleted, skipped, lastErr
+	return added, deleted, skipped, skippedDetails, lastErr
 }
 
 // isRetryable 判断是否可重试（Issue6 A12，2026-09-27 用户裁决：结构化与兜底两者都做）。

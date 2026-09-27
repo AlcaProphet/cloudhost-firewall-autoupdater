@@ -45,7 +45,7 @@ type SyncLog struct {
 	Timestamp time.Time `json:"timestamp"`
 	Target    string    `json:"target"`
 	Domain    string    `json:"domain"`
-	Result    string    `json:"result"` // success / failed / skipped
+	Result    string    `json:"result"` // success / failed / skipped / partial
 	Added     int       `json:"added"`
 	Deleted   int       `json:"deleted"`
 	Error     string    `json:"error"`

@@ -260,6 +260,37 @@ func TestRoundSummary_OnlySkippedIsPartial(t *testing.T) {
 	}
 }
 
+// TestDomainSyncCompleteCarriesSkippedDetails R6-01 判别：正式同步逐域事件必须携带
+// 可结构化消费的规则与原因，而不只是 skipped 整数。
+func TestDomainSyncCompleteCarriesSkippedDetails(t *testing.T) {
+	p := &roundFakeProvider{cloudType: config.CloudAliSWAS}
+	s := &Syncer{bus: notifier.NewEventBus()}
+	events := make(chan notifier.Event, 1)
+	s.bus.Subscribe(notifier.EventDomainSyncComplete, roundEventSink{ch: events})
+
+	w := &unitResult{}
+	s.syncDomainInternal(p, config.DomainRule{
+		Host: "example.com", Protocol: "TCP", Ports: "443", Action: "DROP",
+	}, []dns.ResolvedIP{{IP: net.ParseIP("1.2.3.4")}}, "auto-dns", w)
+
+	select {
+	case ev := <-events:
+		if got := ev.Data["skipped"]; got != 1 {
+			t.Fatalf("skipped = %#v, want 1", got)
+		}
+		details, ok := ev.Data["skipped_details"].([]provider.RuleChange)
+		if !ok || len(details) != 1 {
+			t.Fatalf("skipped_details = %#v, want 1 条结构化详情", ev.Data["skipped_details"])
+		}
+		detail := details[0]
+		if detail.Protocol != "TCP" || detail.Port != "443" || detail.Action != "DROP" || detail.Cidr != "1.2.3.4/32" || detail.SkipReason == "" {
+			t.Errorf("详情 = %+v, want 完整规则与非空原因", detail)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("未收到 domain:sync_complete 事件")
+	}
+}
+
 // TestRoundSummary_InvariantAcrossMixedUnits 多单元混合时不变式恒成立。
 func TestRoundSummary_InvariantAcrossMixedUnits(t *testing.T) {
 	// 两个目标：一个正常写入，一个持续失败

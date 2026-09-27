@@ -858,6 +858,136 @@ func TestStartAfterShutdownRejected(t *testing.T) {
 	}
 }
 
+// TestStartAfterShutdownBeforeFirstStartRejected 在首次 Start 之前已经进入
+// Shutdown 的实例必须保持终止状态，不得随后重新建立监听。
+func TestStartAfterShutdownBeforeFirstStartRejected(t *testing.T) {
+	s := newTestServer(t, freeTCPPort(t))
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("首次 Start 前 Shutdown 失败: %v", err)
+	}
+
+	port, err := s.Start()
+	if !errors.Is(err, ErrAlreadyStarted) {
+		t.Fatalf("首次 Start 前已 Shutdown 后的 Start 错误 = %v, want ErrAlreadyStarted", err)
+	}
+	if port != 0 {
+		t.Errorf("首次 Start 前已 Shutdown 后的 Start 返回端口 = %d, want 0", port)
+	}
+
+	s.mu.Lock()
+	hs, ln := s.httpServer, s.listener
+	s.mu.Unlock()
+	if hs != nil || ln != nil {
+		t.Error("Shutdown 后首次 Start 被拒绝时不得发布 http.Server 或 listener")
+	}
+}
+
+// TestShutdownDuringFirstStartClosesUnpublishedListener 使用逐实例 listen 接缝将
+// Start 确定性暂停在监听成功、发布之前。Shutdown 一旦返回，Start 不得再发布或 Serve。
+func TestShutdownDuringFirstStartClosesUnpublishedListener(t *testing.T) {
+	s := newTestServer(t, freeTCPPort(t))
+	listenEntered := make(chan net.Listener, 1)
+	releaseListen := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseListen) }) })
+
+	s.listenFunc = func(network, address string) (net.Listener, error) {
+		ln, err := net.Listen(network, address)
+		if err != nil {
+			return nil, err
+		}
+		listenEntered <- ln
+		<-releaseListen
+		return ln, nil
+	}
+
+	type startResult struct {
+		port int
+		err  error
+	}
+	startDone := make(chan startResult, 1)
+	go func() {
+		port, err := s.Start()
+		startDone <- startResult{port: port, err: err}
+	}()
+
+	var unpublished net.Listener
+	select {
+	case unpublished = <-listenEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start 未进入监听成功、发布前窗口")
+	}
+
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("监听成功、发布前 Shutdown 失败: %v", err)
+	}
+	releaseOnce.Do(func() { close(releaseListen) })
+
+	select {
+	case got := <-startDone:
+		if !errors.Is(got.err, ErrAlreadyStarted) {
+			t.Fatalf("并发 Shutdown 后 Start 错误 = %v, want ErrAlreadyStarted", got.err)
+		}
+		if got.port != 0 {
+			t.Errorf("并发 Shutdown 后 Start 返回端口 = %d, want 0", got.port)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("并发 Shutdown 后 Start 未有界返回")
+	}
+
+	s.mu.Lock()
+	hs, published := s.httpServer, s.listener
+	s.mu.Unlock()
+	if hs != nil || published != nil {
+		t.Error("并发 Shutdown 后不得发布 http.Server 或 listener")
+	}
+	select {
+	case <-s.ServeStarted():
+		t.Error("并发 Shutdown 后不得启动 Serve")
+	default:
+	}
+
+	// Start 必须关闭刚创建但尚未发布的 listener。
+	probe, err := net.Listen("tcp", unpublished.Addr().String())
+	if err != nil {
+		t.Fatalf("未发布 listener 未被关闭，地址仍不可重新绑定: %v", err)
+	}
+	if err := probe.Close(); err != nil {
+		t.Fatalf("关闭重绑定探针失败: %v", err)
+	}
+}
+
+// TestStartListenFailureStillCannotRetry 保持 Start 的一次性语义：即使首次 Listen
+// 失败，后续 Start 也必须在再次调用 listen 之前被拒绝。
+func TestStartListenFailureStillCannotRetry(t *testing.T) {
+	s := newTestServer(t, freeTCPPort(t))
+	wantErr := errors.New("注入监听失败")
+	listenCalls := 0
+	s.listenFunc = func(string, string) (net.Listener, error) {
+		listenCalls++
+		return nil, wantErr
+	}
+
+	port, err := s.Start()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("首次 Start 错误 = %v, want 注入监听失败", err)
+	}
+	if port != 0 {
+		t.Errorf("监听失败时端口 = %d, want 0", port)
+	}
+
+	port, err = s.Start()
+	if !errors.Is(err, ErrAlreadyStarted) {
+		t.Fatalf("Listen 失败后的第二次 Start 错误 = %v, want ErrAlreadyStarted", err)
+	}
+	if port != 0 {
+		t.Errorf("Listen 失败后的第二次 Start 返回端口 = %d, want 0", port)
+	}
+	if listenCalls != 1 {
+		t.Errorf("listen 调用次数 = %d, want 1", listenCalls)
+	}
+}
+
 // TestConcurrentStartOnlyOneWins 并发 Start 只能有一个成功，其余全部被拒绝。
 func TestConcurrentStartOnlyOneWins(t *testing.T) {
 	s := newTestServer(t, freeTCPPort(t))

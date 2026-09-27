@@ -579,26 +579,39 @@ git diff --check
 
 > **核验边界：** 本节复核 Codex 任务「核验 Issue6 修复」所报告的问题，只记录当前源码、测试和文档中能够重新证实的结论；不授权修改实现、测试、依赖或其他文档。核验基线为 `main` / `b38678a8d28612517f3cff4f4fc9610a3cc33b95`，核验开始时工作树干净且与 `origin/main` 同步。本轮执行 `go test ./webui ./syncer ./webui/api ./notifier -race -count=1`，四包均通过；未重跑浏览器、Docker、真实云、真实 SMTP/Webhook、远端 CI 或 GHCR 发布。
 
-### 7.1 确认仍存在的实现问题
+### 7.1 核验确认且本轮已修复的实现问题
 
-#### R6-01｜中｜A11 的具体跳过原因未贯通正式同步事件与日志
+#### R6-01｜已修复（工作树，待提交）｜A11 的具体跳过原因未贯通正式同步事件与日志
 
 - **判定：确认存在。** Dry Run 已通过 `RuleChange.skip_reason` 展示具体原因，但正式同步的 `retrySync` 只返回 `added/deleted/skipped` 三个整数；`EventDomainSyncComplete.Data` 与 `slog.Info("同步完成", ...)` 也只有 `skipped` 数量，没有被跳过的规则或 `skip_reason`。
 - **历史日志口径：** `StoreLogWriter` 收到 `EventDomainSyncComplete` 后固定写 `result="success"`，只保存 `added/deleted`，不读取 `skipped`。这与 §3 A11 固定的“跳过原因、事件/SSE/实时日志展示”收尾合同不一致。§3 A11 同时明确“不增加 `sync_logs.skipped` 列”，因此持久化 Schema 不应被本报告擅自扩大；历史日志如何表达 partial/skipped 仍需另行裁决。
 - **影响：** 用户可从整轮状态看到 `partial` 和跳过数量，也可在 Dry Run 中看到具体原因，但正式同步的逐域事件、SSE/实时日志和历史日志无法说明“哪条规则因何被跳过”；历史记录还可能把含跳过的逐域结果显示为 `success`。
 - **相关既有记录：** §6.5 第 13 项已记录 `sync_logs.result` 的 skipped 语义未定义；本项新增确认的是 A11 已宣称完成的“具体原因贯通正式事件/实时展示”实际上也未完成。
+- **本轮裁决（2026-09-28）：** 不新增 `sync_logs.skipped` 列、表或迁移；逐域正式同步事件保留既有 `skipped` 数量并新增结构化 `skipped_details`。历史日志在 `skipped > 0 && added == 0 && deleted == 0` 时写 `result="skipped"`，在有成功增删且同时有跳过时写 `result="partial"`；数量、规则与原因写入既有 `error` 文本列。这样既能区分“全部跳过”和“部分写入”，又不扩大 SQLite Schema。
+- **实施（当前未提交工作树）：** `syncer/retry.go` 新增正式同步详情返回路径，只采用最终成功 attempt 的详情，失败重试的同一跳过项不会重复累计；`syncer/syncer.go` 将协议、端口、动作、CIDR、描述和 `skip_reason` 写入 `EventDomainSyncComplete.skipped_details` 与实时 `slog`。`webui/api/logwriter.go` 按上述裁决写 `skipped/partial` 和详情；`config/store.go` 只补齐 `SyncLog.Result` 注释；`webui/frontend/src/types.ts`、`views/Logs.vue` 让 `failed/skipped/partial` 共用中性的“同步详情”入口。SSE 仍按既有机制透明序列化事件，没有引入回放、心跳或新持久化结构。
+- **判别性红灯：** 实现前运行 `go test ./webui/api -run TestStoreLogWriter_SkippedAndPartial -count=1`，纯跳过与部分跳过两种事件均被错误写成 `success` 且 `error` 为空；新增正式同步用例同时要求 `skipped_details` 完整，并验证可重试失败 attempt 不会重复累计详情。
+- **绿灯证据：** 最终独立测试通过 `go test ./syncer -race -count=1 -run 'Test(RetrySyncDetailedUsesSuccessfulAttemptDetails|DomainSyncCompleteCarriesSkippedDetails)$'`、`go test ./webui/api -race -count=1 -run 'Test(StoreLogWriter_SkippedAndPartial|HandleSyncEvents_ClientDisconnectUnsubscribes|HandleSyncEvents_RealConnectionPushAndDisconnect|HandleSyncEvents_ServerShutdownExits|HandleSyncEvents_WriteErrorExitsAndUnsubscribes)$'`；统一门禁与前端门禁见 §7.6。
+- **明确未扩张：** 未处理 §6.5 第 1、2、3、5、6、7 项（删除侧计数、错误路径已写计数丢失、`buildDesired` 静默丢弃、日志写库 goroutine 上界、SSE 回放/心跳、Dashboard 双口径）。未执行浏览器人工回归或真实 SWAS；自动化结果不代表真实云链路已经通过。
 
-#### R6-02｜中低｜A16 仍有 `Shutdown` 与首次 `Start` 的生命周期窗口
+#### R6-02｜已修复（工作树，待提交）｜A16 仍有 `Shutdown` 与首次 `Start` 的生命周期窗口
 
 - **判定：确认存在。** `Server.Shutdown()` 会置 `shutdown=true` 并关闭 `shutdownCh`，但不会置 `started=true`；因此在从未启动的实例上先调用 `Shutdown()`，随后首次调用 `Start()`，当前门控仍会放行并建立监听。这与 A16/F7 的“Shutdown 后 Start 也拒绝”字面合同不一致。
 - **并发窗口：** `Start()` 在锁内先置 `started=true`，随后解锁执行 `net.Listen` 和构造 `http.Server`，最后才再次加锁发布 `httpServer/listener`。若 `Shutdown()` 在两次加锁之间执行，它会看到 `httpServer == nil` 并返回成功；之后 `Start()` 仍可发布并启动 Serve，形成“Shutdown 已返回，服务随后启动”的逻辑竞态。该问题不会由 Go race detector 报告，因为字段访问有锁，缺口在生命周期状态机。
 - **边界澄清：** §6.5 第 14 项已经记录 `Syncer.Wait()` 在 `Run()` 从未启动时永久阻塞，仍然成立，不重复编号。“首次 `Start` 监听失败后不能重试”则来自当前一次性 `Start` 门控；既有 F7 未明确允许失败重试，本报告不把它直接判为回归，需产品裁决后才能改变。
+- **本轮裁决（2026-09-28）：** 保持 `Start` 的一次性尝试语义：首次 `Listen` 失败后仍不可重试，不把本问题扩大为失败重试产品变更。`shutdown=true` 是吸收态；此前未启动也必须拒绝 `Start`。监听成功但尚未发布时若发现已 Shutdown，必须关闭该未发布 listener、处理关闭错误，并返回可由 `errors.Is` 判定为 `ErrAlreadyStarted` 的错误。
+- **实施（当前未提交工作树）：** `webui/server.go` 为每个 `Server` 增加默认指向 `net.Listen` 的非导出 `listenFunc` 测试接缝；`Start` 的首个锁边界检查 `started || shutdown`，并在发布 `httpServer/listener` 前再次持锁检查 `shutdown`。并发 Shutdown 获胜时不发布字段、不关闭 `serveStarted`、不调用 `Serve`，关闭错误用 `errors.Join` 保留生命周期错误。只修改 `webui/server.go` 与 `webui/server_test.go`。
+- **判别性红灯与绿灯：** 三个新增确定性用例分别覆盖“首次 Start 前已 Shutdown”“真实 listener 已建立但尚未返回/发布时并发 Shutdown”“首次 Listen 失败后第二次 Start 仍拒绝”；实现前因缺少 `listenFunc` 接缝而编译红灯。最终独立运行 `go test ./webui -race -count=20 -run 'Test(StartAfterShutdownBeforeFirstStartRejected|ShutdownDuringFirstStartClosesUnpublishedListener|StartListenFailureStillCannotRetry)$'` 全部通过，统一门禁见 §7.6。
+- **明确未扩张：** 未修改 `Server.Addr()` 关闭后的语义、`Syncer.Wait()` 未 Run 时阻塞或 §6.5 其他生命周期候选；本问题不需要浏览器、Docker 或外部服务验收。
 
-#### R6-03｜中低｜Webhook 发送错误可能把完整敏感 URL 写入 WARN 日志
+#### R6-03｜已修复（工作树，待提交）｜Webhook 发送错误可能把完整敏感 URL 写入 WARN 日志
 
 - **判定：确认存在。** `WebhookNotifier.OnEvent` 调用 `http.Client.Post(n.url, ...)`，失败时以 `%w` 返回底层错误；Go HTTP 客户端的请求错误通常包含完整请求 URL。`EventBus.Publish` 随后把该错误作为 `error` 属性写入“事件处理失败” WARN。
 - **影响：** 钉钉、飞书、Slack 等 Webhook URL 常把 token/signature 放在路径或查询参数中；网络失败、TLS 失败或超时可能使该敏感 URL 进入 stdout / `docker logs`。这与项目既有“不记录 Webhook URL”的安全口径不一致。
 - **范围：** 该问题不同于 §6.5 第 9 项的 response body 未 drain / Close 错误被忽略；两者可分别处理。修复时应保留渠道名和安全错误类别，不应记录完整 URL。
+- **本轮裁决（2026-09-28）：** 不修改通用 EventBus，也不把底层发送错误包装、输出或暴露给 `Unwrap`；日志只保留经白名单收敛的渠道名（`dingtalk/feishu/slack`，其他为 `unknown`）与固定安全类别 `canceled/timeout/network/transport`。HTTP 非成功响应只记录 `category=http_status` 与状态码。
+- **实施（当前未提交工作树）：** `notifier/webhook.go` 只用底层错误做结构化分类，返回的新错误不含 `%w`、`err.Error()`、目标 host/path/query 或底层网络/TLS 文本；新增 `notifier/webhook_security_test.go`，测试内通过私有 `client` 注入 `RoundTripper`，未扩大生产构造 API。
+- **判别性红灯与绿灯：** 修复前，直接返回错误与真实 `EventBus → slog WARN` 都包含 URL host、路径 token、查询 signature 和底层 transport 哨兵，且可解包到底层错误；修复后独立运行 `go test ./notifier -race -count=1 -run 'Test(WebhookSendErrorDoesNotExposeSecrets|WebhookErrorCategory|WebhookEventBusWarningDoesNotExposeSecrets)$'` 通过，四种安全分类、非法渠道、不可 `Unwrap` 与端到端 WARN 脱敏均已覆盖。统一门禁见 §7.6。
+- **明确未扩张：** 未处理 §6.5 第 9 项 response body drain / `Close` 错误，也未修改 SMTP 或其他渠道。真实 Webhook 人工验收仍沿用用户免除，且没有真实通过结论。
 
 ### 7.2 确认存在、但已由 §6.5 记录的残余
 
@@ -606,7 +619,7 @@ git diff --check
 
 1. **A18 Dashboard 数字双口径：** `Dashboard.vue` 的“最近同步 新增/删除”仍取 `/api/sync/logs` 第一条逐域日志，而不是 `status.last_round.added/deleted`；对应 §6.5 第 7 项。
 2. **错误路径已写计数丢失：** `syncDomainInternal` 在 `retrySync` 返回错误时先进入错误分支，未把已经发生的 added/deleted 写入 `unitResult`；对应 §6.5 第 2 项。
-3. **历史 skipped 语义未定义：** `SyncLog.Result` 注释允许 skipped，但生产只写 success/failed；对应 §6.5 第 13 项，并与 R6-01 相邻。
+3. **历史 skipped 语义原先未定义：** 核验时 `SyncLog.Result` 注释允许 skipped，但生产只写 success/failed；该残余已随 R6-01 按本轮裁决收口，当前工作树使用 `skipped/partial` 并把详情写入既有 `error` 列，见 §7.1 与 §7.6。
 4. **`Syncer.Wait()` 未运行即阻塞：** `Wait()` 直接等待仅由首个 `Run()` 关闭的 `doneCh`；对应 §6.5 第 14 项。
 
 ### 7.3 确认存在的测试与外部证据缺口
@@ -630,3 +643,14 @@ git diff --check
 
 - 引用报告提到 A1 阻塞服务用例和 A15 SSE 用例各出现过一次偶发失败；本轮受影响四包 race 测试全部通过，现有证据不足以把两次偶发现象定性为稳定可复现缺陷。若后续再次出现，应保留完整失败输出、随机种子/次数和运行环境后另行跟踪。
 - A1/A2/A4/A5～A8/A10/A12/A13/A15/A17/A19/A20 的核心本地实现，本轮源码复核未发现报告所述范围之外的新确定性回归；这不扩大为外部链路或当前 HEAD 远端发布已经通过。
+
+### 7.6 R6-01～R6-03 并行修复与独立验收记录
+
+> **执行边界：** 2026-09-28，以 `main` / `dc25d9e429e939a2f49c1ac6a1791890afb23a26`（相对 `origin/main` ahead 1）为起点，先由三个互相独立的只读研究代理分别研究 R6-01、R6-02、R6-03，再由三个新的修复代理各自只实现一个问题，最后由未参与实现的测试代理统一验收。三个实现代理均未修改本文，本文由主调度代理在全部测试完成后统一收口。当前实现与本文均在工作树中，**尚未提交**。
+
+- **范围复核：** 实现改动共 12 个已跟踪文件与 1 个新增测试文件：`config/store.go`；`syncer/retry.go`、`syncer/retry_test.go`、`syncer/round_summary_test.go`、`syncer/syncer.go`；`webui/api/logwriter.go`、`webui/api/logwriter_test.go`；`webui/frontend/src/types.ts`、`webui/frontend/src/views/Logs.vue`；`webui/server.go`、`webui/server_test.go`；`notifier/webhook.go`、`notifier/webhook_security_test.go`。独立测试代理逐项检查差异，未发现顺手处理 §6.5 其他未授权候选。
+- **Go 统一门禁：** 涉及 Go 文件的 `gofmt -l` 无输出；`git diff --check` 通过；`go test ./... -race -count=1` 共 11 个包全部通过；`go vet ./...`、`go build ./...` 通过。R6-01、R6-02、R6-03 的专项判别命令与结果分别记录在对应条目中。
+- **前端与依赖门禁：** 在 `webui/frontend` 使用独立任务缓存 `/tmp/fwalizer-r6-test-npm.JFNDfJ` 执行 `npm ci` 与 `npm run build` 均通过（Vite 8.3.1，2819 modules）；`npm audit --audit-level=high` 与 `npm audit --omit=dev --audit-level=high` 均为 0 vulnerabilities。构建后 `package.json`、`package-lock.json` 与构建目录没有新增 tracked diff；未使用 sudo 或修改全局 npm 缓存。
+- **证据分层：** 上述结论只证明当前合并工作树的本地确定性测试、race、静态检查、Go 构建和前端构建/审计通过。未执行浏览器人工回归、真实 SWAS、真实 Webhook、Docker、远端 GitHub Actions 或 GHCR 发布；其中真实 Webhook 人工验收继续沿用用户已明确免除，仍不得写成真实通过。
+
+**当前结论：** R6-01、R6-02、R6-03 已在未提交工作树中按本节裁决完成修复，并经独立测试代理验证通过；提交、推送、Docker/远端 CI 及上述外部人工验收均不在本轮已完成证据内。§6.5 其他候选仍维持未授权状态。

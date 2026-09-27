@@ -1,11 +1,13 @@
 package api
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
 
 // StoreLogWriter 将同步事件写入 SQLite 同步日志
@@ -50,13 +52,24 @@ func (w *StoreLogWriter) OnEvent(event notifier.Event) error {
 			log.Error = v
 		}
 	case notifier.EventDomainSyncComplete:
-		log.Result = "success"
 		// 读取实际写入计数（Build4 Step 1：计数链路打通，修复历史记录新增/删除恒为 0）
 		if v, ok := event.Data["added"]; ok {
 			log.Added = toInt(v)
 		}
 		if v, ok := event.Data["deleted"]; ok {
 			log.Deleted = toInt(v)
+		}
+		skipped := toInt(event.Data["skipped"])
+		switch {
+		case skipped > 0 && log.Added == 0 && log.Deleted == 0:
+			log.Result = "skipped"
+		case skipped > 0:
+			log.Result = "partial"
+		default:
+			log.Result = "success"
+		}
+		if skipped > 0 {
+			log.Error = formatSkippedDetails(skipped, event.Data["skipped_details"])
 		}
 	default:
 		return nil
@@ -65,4 +78,20 @@ func (w *StoreLogWriter) OnEvent(event notifier.Event) error {
 		slog.Warn("写入同步日志失败", "error", err)
 	}
 	return nil
+}
+
+func formatSkippedDetails(count int, raw any) string {
+	lines := []string{fmt.Sprintf("跳过 %d 条规则", count)}
+	details, _ := raw.([]provider.RuleChange)
+	for _, detail := range details {
+		cidr := detail.Cidr
+		if cidr == "" {
+			cidr = "-"
+		}
+		lines = append(lines, fmt.Sprintf("- %s %s %s %s：%s", detail.Protocol, detail.Port, detail.Action, cidr, detail.SkipReason))
+	}
+	if len(details) == 0 {
+		lines = append(lines, "- 未提供具体规则或原因")
+	}
+	return strings.Join(lines, "\n")
 }

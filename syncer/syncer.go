@@ -816,7 +816,7 @@ func (s *Syncer) syncDomainInternal(p provider.Provider, rule config.DomainRule,
 		}
 	}
 
-	added, deleted, skipped, err := s.retrySync(p, rule, resolved, tagStr)
+	added, deleted, skipped, skippedDetails, err := s.retrySyncDetailed(p, rule, resolved, tagStr)
 	if err != nil {
 		w.failed = true
 		slog.Error("同步失败", "provider", p.Name(), "domain", rule.Host, "error", err)
@@ -830,13 +830,14 @@ func (s *Syncer) syncDomainInternal(p provider.Provider, rule config.DomainRule,
 
 	w.added, w.deleted, w.skipped = added, deleted, skipped
 
-	slog.Info("同步完成", "provider", p.Name(), "domain", rule.Host, "added", added, "deleted", deleted, "skipped", skipped)
+	slog.Info("同步完成", "provider", p.Name(), "domain", rule.Host, "added", added, "deleted", deleted, "skipped", skipped, "skipped_details", skippedDetails)
 	s.bus.Publish(notifier.Event{
 		Type:      notifier.EventDomainSyncComplete,
 		Timestamp: time.Now(),
 		Data: map[string]any{
 			"provider": p.Name(), "domain": rule.Host,
 			"added": added, "deleted": deleted, "skipped": skipped,
+			"skipped_details": skippedDetails,
 		},
 	})
 }

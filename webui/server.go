@@ -30,7 +30,7 @@ const (
 	ShutdownTimeout = 10 * time.Second
 )
 
-// ErrAlreadyStarted 表示 Server.Start 已被调用过。
+// ErrAlreadyStarted 表示 Server 已经启动过或已进入关闭流程，不能再启动。
 //
 // 重复调用语义（Issue6 A16，2026-09-27 用户裁决）：
 //   - 第二次 Start（含**并发**第二次与 Shutdown 之后）必须在 net.Listen **之前**被拒绝，
@@ -57,6 +57,7 @@ type Server struct {
 	port         int
 	mux          *http.ServeMux
 	deps         *api.Deps
+	listenFunc   func(network, address string) (net.Listener, error)
 	shutdownCh   chan struct{} // 服务器级 SSE shutdown 信号（只关闭一次，永不写入）
 	shutdownOnce sync.Once
 
@@ -82,6 +83,7 @@ func NewServer(store *config.Store, host string, port int) *Server {
 		host:         host,
 		port:         port,
 		mux:          http.NewServeMux(),
+		listenFunc:   net.Listen,
 		shutdownCh:   make(chan struct{}),
 		serveStarted: make(chan struct{}),
 		waitDone:     make(chan struct{}),
@@ -153,7 +155,7 @@ func (s *Server) Start() (int, error) {
 	// 重复调用门控必须在 net.Listen **之前**（Issue6 A16）：否则会先占用/降级端口
 	// 并覆盖 s.listener/s.httpServer，制造一个无人 Serve 且永不关闭的 listener。
 	s.mu.Lock()
-	if s.started {
+	if s.started || s.shutdown {
 		s.mu.Unlock()
 		return 0, ErrAlreadyStarted
 	}
@@ -161,9 +163,9 @@ func (s *Server) Start() (int, error) {
 	s.mu.Unlock()
 
 	preferred := s.port
-	ln, err := net.Listen("tcp", net.JoinHostPort(s.host, strconv.Itoa(preferred)))
+	ln, err := s.listenFunc("tcp", net.JoinHostPort(s.host, strconv.Itoa(preferred)))
 	if err != nil && errors.Is(err, syscall.EADDRINUSE) {
-		ln, err = net.Listen("tcp", net.JoinHostPort(s.host, "0"))
+		ln, err = s.listenFunc("tcp", net.JoinHostPort(s.host, "0"))
 	}
 	if err != nil {
 		return 0, err
@@ -186,6 +188,13 @@ func (s *Server) Start() (int, error) {
 	}
 
 	s.mu.Lock()
+	if s.shutdown {
+		s.mu.Unlock()
+		if closeErr := ln.Close(); closeErr != nil {
+			return 0, errors.Join(ErrAlreadyStarted, fmt.Errorf("关闭未发布 listener 失败: %w", closeErr))
+		}
+		return 0, ErrAlreadyStarted
+	}
 	s.httpServer = hs
 	s.listener = ln
 	s.mu.Unlock()

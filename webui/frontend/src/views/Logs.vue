@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 同步日志页：历史记录（最顶部）+ 实时运行日志（默认展开）
-// 历史记录：failed 可点击查看错误详情；支持清空（DELETE /api/sync/logs）
+// 历史记录：failed / skipped / partial 可查看同步详情；支持清空（DELETE /api/sync/logs）
 import { NDataTable, NTag, NModal, NButton, NSpace, useMessage } from 'naive-ui'
 import { ref, onMounted, onUnmounted, h } from 'vue'
 import { request } from '../api'
@@ -10,9 +10,9 @@ const logs = ref<SyncLogEntry[]>([])
 const logLines = ref<string[]>([])
 const message = useMessage()
 
-// failed 错误报告弹窗
-const showErrorModal = ref(false)
-const errorDetail = ref<SyncLogEntry | null>(null)
+// failed / skipped / partial 共用中性的同步详情弹窗
+const showDetailModal = ref(false)
+const detailLog = ref<SyncLogEntry | null>(null)
 
 let logEs: EventSource | null = null
 
@@ -54,9 +54,9 @@ onUnmounted(() => {
 })
 
 // ─── 历史记录 ───
-function openError(row: SyncLogEntry) {
-  errorDetail.value = row
-  showErrorModal.value = true
+function openDetail(row: SyncLogEntry) {
+  detailLog.value = row
+  showDetailModal.value = true
 }
 
 // 历史记录清空确认（卡片式弹窗）
@@ -85,12 +85,19 @@ const columns = [
       return h(NTag, {
         type, size: 'small',
         style: failed ? 'cursor: pointer;' : '',
-        onClick: failed ? () => openError(row) : undefined,
+        onClick: failed ? () => openDetail(row) : undefined,
       }, { default: () => row.result })
     }
   },
   { title: '新增', key: 'added' },
   { title: '删除', key: 'deleted' },
+  {
+    title: '详情', key: 'detail',
+    render(row: SyncLogEntry) {
+      if (row.result === 'success') return '-'
+      return h(NButton, { text: true, onClick: () => openDetail(row) }, { default: () => '同步详情' })
+    },
+  },
 ]
 </script>
 
@@ -121,16 +128,18 @@ const columns = [
       </NSpace>
     </NModal>
 
-    <!-- failed 错误报告弹窗（Build4 Step 4：改进 9） -->
-    <NModal v-model:show="showErrorModal" preset="card" title="同步失败详情" style="width: 600px">
-      <p v-if="errorDetail" style="line-height: 1.9">
-        <b>时间：</b>{{ formatTime(errorDetail.timestamp) }}<br />
-        <b>目标：</b>{{ errorDetail.target || '-' }}<br />
-        <b>域名：</b>{{ errorDetail.domain || '-' }}
+    <!-- failed / skipped / partial 统一查看同步详情 -->
+    <NModal v-model:show="showDetailModal" preset="card" title="同步详情" style="width: 600px">
+      <p v-if="detailLog" style="line-height: 1.9">
+        <b>时间：</b>{{ formatTime(detailLog.timestamp) }}<br />
+        <b>目标：</b>{{ detailLog.target || '-' }}<br />
+        <b>域名：</b>{{ detailLog.domain || '-' }}<br />
+        <b>结果：</b>{{ detailLog.result }}<br />
+        <b>新增 / 删除：</b>{{ detailLog.added }} / {{ detailLog.deleted }}
       </p>
-      <p style="margin-bottom: 8px"><b>错误原因：</b></p>
-      <pre v-if="errorDetail?.error" style="background: #1e1e1e; color: #f44336; padding: 12px; border-radius: 6px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all;">{{ errorDetail.error }}</pre>
-      <p v-else style="color: #999">该记录未保存错误详情</p>
+      <p style="margin-bottom: 8px"><b>{{ detailLog?.result === 'failed' ? '错误原因' : '同步说明' }}：</b></p>
+      <pre v-if="detailLog?.error" :style="{ background: '#1e1e1e', color: detailLog.result === 'failed' ? '#f44336' : '#d4d4d4', padding: '12px', borderRadius: '6px', fontSize: '12px', lineHeight: '1.6', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }">{{ detailLog.error }}</pre>
+      <p v-else style="color: #999">该记录未保存详细说明</p>
     </NModal>
   </div>
 </template>

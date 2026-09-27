@@ -107,7 +107,7 @@ export interface SyncLogEntry {
   result: string
   added: number
   deleted: number
-  error?: string // 失败详情（后端已返回，Build4 Step 4 前端消费）
+  error?: string // 失败原因，或 skipped/partial 的同步详情（复用既有持久化列）
 }
 
 export interface SyncEvent {

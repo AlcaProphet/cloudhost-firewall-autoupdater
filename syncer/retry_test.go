@@ -321,3 +321,45 @@ func (p *writtenProbeProvider) CreateRules(rules []config.RuleAction) (provider.
 	p.createdCount.Add(int32(len(rules)))
 	return p.result, nil
 }
+
+// TestRetrySyncDetailedUsesSuccessfulAttemptDetails R6-01 判别：失败 attempt 的跳过
+// 详情不得与最终成功 attempt 重复累加。
+func TestRetrySyncDetailedUsesSuccessfulAttemptDetails(t *testing.T) {
+	p := &detailRetryProvider{}
+	s := &Syncer{}
+
+	_, _, skipped, details, err := s.retrySyncDetailed(p, config.DomainRule{
+		Host: "example.com", Protocol: "TCP", Ports: "443", Action: "DROP",
+	}, []dns.ResolvedIP{{IP: net.ParseIP("1.2.3.4")}}, "auto-dns")
+	if err != nil {
+		t.Fatalf("retrySyncDetailed 失败: %v", err)
+	}
+	if skipped != 1 || len(details) != 1 {
+		t.Fatalf("skipped/details = %d/%d, want 1/1", skipped, len(details))
+	}
+	if got := p.deleteCalls.Load(); got != 2 {
+		t.Fatalf("DeleteRules 调用 = %d, want 2（首轮失败、次轮成功）", got)
+	}
+}
+
+type detailRetryProvider struct{ deleteCalls atomic.Int32 }
+
+func (p *detailRetryProvider) Name() string                      { return "detail-retry" }
+func (p *detailRetryProvider) CloudType() config.CloudType       { return config.CloudAliSWAS }
+func (p *detailRetryProvider) TargetIndex() int                  { return 0 }
+func (p *detailRetryProvider) ConvertPorts(port string) []string { return []string{port} }
+func (p *detailRetryProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
+	return provider.CreateResult{Written: len(rules)}, nil
+}
+func (p *detailRetryProvider) GetRules() ([]config.RuleInfo, error) {
+	return []config.RuleInfo{{
+		Protocol: "TCP", Port: "80", CidrBlock: "9.9.9.9/32", Action: "ACCEPT",
+		Description: "[auto-dns]", RuleID: "old",
+	}}, nil
+}
+func (p *detailRetryProvider) DeleteRules([]config.RuleInfo) error {
+	if p.deleteCalls.Add(1) == 1 {
+		return errors.New("RequestLimitExceeded")
+	}
+	return nil
+}

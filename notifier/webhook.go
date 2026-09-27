@@ -2,9 +2,13 @@ package notifier
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -38,7 +42,40 @@ func NewWebhookNotifier(url, channel string) *WebhookNotifier {
 func (n *WebhookNotifier) SetInFlightLimiter(l *InFlightLimiter) { n.limiter = l }
 
 // ChannelName 返回渠道名（用于安全日志；不暴露 URL）
-func (n *WebhookNotifier) ChannelName() string { return n.channel }
+func (n *WebhookNotifier) ChannelName() string {
+	switch n.channel {
+	case "dingtalk", "feishu", "slack":
+		return n.channel
+	default:
+		return "unknown"
+	}
+}
+
+// webhookErrorCategory 把底层错误收敛为固定类别。
+// 只用底层错误做类型判别，调用方得到的错误不包装也不输出它。
+func webhookErrorCategory(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	}
+
+	// http.Client 会把 RoundTripper 错误包装成 *url.Error；先取内部错误，
+	// 避免把所有 transport 错误都因 *url.Error 实现 net.Error 而误归为 network。
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		err = urlErr.Err
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return "timeout"
+		}
+		return "network"
+	}
+	return "transport"
+}
 
 // OnEvent 实现 Subscriber 接口
 func (n *WebhookNotifier) OnEvent(event Event) error {
@@ -80,12 +117,12 @@ func (n *WebhookNotifier) OnEvent(event Event) error {
 
 	resp, err := n.client.Post(n.url, "application/json", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("Webhook 发送失败: %w", err)
+		return fmt.Errorf("Webhook 发送失败: channel=%s category=%s", n.ChannelName(), webhookErrorCategory(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("Webhook 返回状态码: %d", resp.StatusCode)
+		return fmt.Errorf("Webhook 发送失败: channel=%s category=http_status status=%d", n.ChannelName(), resp.StatusCode)
 	}
 	return nil
 }
