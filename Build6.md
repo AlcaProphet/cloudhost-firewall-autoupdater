@@ -311,8 +311,8 @@ log_level, theme
 | 2 | 移除 CLI 与 `.env` Headless 业务模式 | Issue5 A5-01、本文件 §一 | ✅ 验收通过 |
 | 3 | HTTP Listener、Server 生命周期与优雅关闭 | Issue5 O5-04、O5-05 | ✅ 验收通过 |
 | 4 | API 最小持久化校验边界 | Issue5 O5-06、本文件 §四 | ✅ 验收通过 |
-| 5 | version 2 完整配置包与原子运行时切换 | Issue5 R5-01、本文件 §三 | ◧ 进行中（工程实现与本地门禁完成；浏览器与真实外部链路待用户验收） |
-| 6 | 前端依赖受控升级 | Issue5 O5-01 | ◧ 进行中 |
+| 5 | version 2 完整配置包与原子运行时切换 | Issue5 R5-01、本文件 §三 | ◧ 进行中（浏览器、真实云/DNS/同步真机验收通过；SMTP/Webhook 暂缓） |
+| 6 | 前端依赖受控升级 | Issue5 O5-01 | ✅ 验收通过（2026-09-27） |
 | 7 | 高影响路径补测、真实验收与文档闭环 | Issue5 O5-03 | ☐ 未开始 |
 
 > 状态标记：☐ 未开始 / ◧ 进行中 / ✅ 验收通过
@@ -482,7 +482,7 @@ git diff --check
   - `go vet ./...` → **通过**；`git diff --check` → **通过**；`gofmt -l`（本 Step 修改文件）→ 无输出。
   - CI 工作流：`ruby -e YAML.load_file` 解析通过，步骤顺序仍为 前端构建(4) → build+vet(5) → race 测试(6) → Docker 推送(10，仅 tag)；`go build -v ./...`、`go vet ./...` 与 `CGO_ENABLED=0` 产物约束未改动。
 - **人工检查：** 已执行的静态人工核验为 `grep` 确认 `retrySync` 不再出现 `s.cfg.Tag`、`bus.go` 中不再存在 `close(`、CI 为 `go test -race -v ./...`、新测试未使用 `recover`；**未执行**真实浏览器、真实云 API、SMTP/Webhook 与真实 GitHub Actions 远端运行，证据边界仅限本地源码、本地测试与工作流文件静态内容。
-- **未完成项：** GitHub Actions 是否真实通过未获得远端结果，不得声称 CI 已通过（已列入 `ProdTestList.md` 第三节第 1 项）；O5-02 因此保持 ◧。
+- **未完成项：** GitHub Actions 是否真实通过未获得远端结果，不得声称 CI 已通过；该自动化/远端验证由 `Issue5.md` O5-02 继续跟踪，不进入只记录人工真机验收的 `ProdTestList.md`。
 - **与计划偏差：**
   1. 本 Step 门禁以**逐包**方式执行（`./notifier`、`./webui/api`、`./syncer` 各一次），且 `./syncer` 需显式 `-timeout 40m` 才能跑满 100 轮（默认 10 分钟上限不足）。测试集与轮次数未做任何削减。
   2. 构建前报告预计 TAG 快照测试会在当前代码下被 `-race` 报告竞态；实际确定性交错用例（阻塞 Describe → 真实 Reload → 释放）因测试侧同步（`RLock` 轮询 + channel 释放）构成 happens-before 边而**不会**产生竞态报告，其红灯表现为**语义失败**（同一轮混用新旧 TAG）。为覆盖锁旁路本身，新增无严格交错点的 `TestSyncRound_ConcurrentReloadStress`，它在修复前确实报告了 `retry.go:40` 的竞态。两类证据均已如实记录，未互相替代。
@@ -581,7 +581,7 @@ git diff --check
   - 记录修正：本 Step 起始状态行由 `◧ 进行中` 改为 `✅ 验收通过`（与 Step 1 归档格式一致）；参数用例计数由 11 改为实测 12；修正"空库启动用例"的描述为断言 `/api/targets` 返回空数组；收紧残留搜索表述为"活跃源码无入口，文档中仅有已移除项的契约/记录文字"。
   - 仍未执行：真实浏览器交互、远端 CI、真实云/SMTP/Webhook；"参数退出不监听"为间接证据（退出码 + 进程在 `os.MkdirAll`/`srv.Start()` 之前退出 + 宿主端口无监听），未使用 socket 级直接探测。
   - 额外发现（非本 Step 代码缺陷，属文档陈旧，未擅自修改）：`AGENTS.md` 第 15 行仍以"Step 2 验收前仍可能存在 CLI/`.env` 旧实现"描述过渡边界；`Design5.md` 第 5 行实施状态仍停留在 Step 0 口径；`README.md` 第 5 行"不存在 `.env` Headless 模式"仅指该模式不可用，未说明磁盘上也不再存在 `.env.example`（文件已删除），措辞可再收紧。另 `config/store.go` 中 `INTERVAL 格式无效` 的 WARN 文案仍沿用旧变量名（既有瑕疵，同"与计划偏差"第 2 条）。
-- **状态：** ✅ 验收通过（Step 2 规定门禁全部真实通过；Docker 健康检查与 SIGTERM 容器证据均已取得；浏览器人工复核与远端 CI 属本 Step 之外的待办并已登记，不阻塞本 Step 结论）
+- **状态：** ✅ 验收通过（Step 2 规定门禁全部真实通过；Docker 健康检查与 SIGTERM 容器证据均已取得；浏览器人工复核后于 2026-09-27 由用户确认真机通过；远端 CI 归属 O5-02，不阻塞本 Step 结论）
 
 ### Step 3：HTTP Listener、Server 生命周期与优雅关闭
 
@@ -670,7 +670,7 @@ git diff --check
 
 ### Step 4：API 最小持久化校验边界
 
-**实施状态：** ✅ 验收通过（2026-09-24；浏览器复核与远端 CI 仍按待办记录）
+**实施状态：** ✅ 验收通过（2026-09-24；非告警浏览器复核于 2026-09-27 真机通过，Email/Webhook 配置随外部链路暂缓；远端 CI 归属 O5-02）
 
 - 实施前基线 HEAD：`f5c6ea75aa02cebb4cba1968b0f554914f085be2`（`f5c6ea7`），当时与 `origin/main` 一致
 - 工作树基线：干净（`git status --short --branch` 仅分支行；`git status --porcelain` 与 `git diff --stat` 均为空，无用户已有改动）
@@ -758,11 +758,11 @@ git diff --check
 - 发现并处理：① version 1 导入未共用严格解码（已按用户决定补齐，见“与计划偏差”第 7 条）；② `run.go` 三处运行时接线缺自动回归（已补 `TestProcessSecretsNotLogged`，DNS 阈值接线仍只有单测 + 代码审查覆盖）；③ （已复跑确认）version 1 导入的严格解码补齐后，尾随 JSON/多顶层值/未知字段→400、>10 MiB→413、被拒后旧配置保留、限内合法导入→200 且生效，共 6/6 通过；④ theme 单键保存与 pause/resume 现在也会触发一次完整 apply（原实现跳过 reload），属协调器统一的预期行为差异，功能无影响，但 `apply → s.Reload` 为容量 1 的阻塞发送，pause/resume 在同步轮次中可能等待该轮结束，Step 5 替换 reload 机制后消失；⑤ 文档测试名拼写已更正。
 - 未覆盖边界（如实登记）：连接测试/资源扫描的 SDK 原始错误未在真实云上验证不含密钥；`GET/DELETE /api/scanned-resources` 的 `cloud_type` 查询参数未做枚举校验（不在本 Step 枚举清单内）；v2 配置包（含 `metadata`/`alerts`）在本 Step 会以“未知字段”400 拒绝而非“不支持的配置版本”，Step 5 的 v2 DTO 会恢复专门版本语义。
 
-- **状态：** ✅ 验收通过（Step 4 规定四道门禁全部真实通过；独立复核发现项已按用户决定补齐；浏览器人工复核与远端 CI 为登记待办）
+- **状态：** ✅ 验收通过（Step 4 规定四道门禁全部真实通过；独立复核发现项已按用户决定补齐；非告警浏览器复核于 2026-09-27 真机通过，Email/Webhook 配置暂缓；远端 CI 归属 O5-02）
 
 ### Step 5：version 2 完整配置包与原子运行时切换
 
-**实施状态：** ◧ 进行中（2026-09-24；工程实现与本地自动门禁完成，浏览器人工复核与真实外部链路待用户执行）
+**实施状态：** ◧ 进行中（更新至 2026-09-27；工程实现、本地自动门禁、浏览器及真实云/DNS/同步真机验收完成；SMTP/收件箱与 Webhook 暂缓）
 
 - 实施前基线 HEAD：`c2897440c565a23ee1dc6492da4f5e5ace80dea4`（`c289744`）；这是 Step 5 开工时的代码基线，不代表当前分支状态
 - 本轮开始核验时的基线（2026-09-24）：HEAD `559453221ec8984e48a2e16d260f74940ff9f5bb`（`5594532`），`main` 比 `origin/main` 超前 3 个提交，工作树干净；Step 5 已由 `c35eb9d` 提交，之后有 Step 6 同步触发门控提交 `5594532`。随后用户继续进行 Step 6，当前未提交文件见 Step 6 工作树记录
@@ -841,29 +841,30 @@ git diff --check
   - `go vet ./...` → 通过；`go build ./...` → 通过；`git diff --check` → 通过；改动与新增 Go 文件 `gofmt -l` 无输出
   - `cd webui/frontend && npm ci && npm run build`（vue-tsc + Vite 5.4.21，2818 模块）→ 通过；`package.json`/`package-lock.json` sha256 前后**完全一致**（未升级任何前端依赖）
   - 关键新增用例：`config/runtime_test.go`（空库默认值与完整键集合、未知键丢弃、非空非法值带键名错误且不回显、同一事务内快照一致性、只读事务、`ToRuntimeConfig` 携带 Theme/凭据、`DeepCopy` 隔离、`ReplaceBusinessSettingsTx` 完整键集合、`DeleteImportOwnedTablesTx` 保留 `sync_logs`）；`syncer/state_test.go`（`false→true` 立即一轮、`true→true` 只按新 interval 触发、`true→false` 完成当前轮后不再启动、暂停期排队 trigger 不执行、`Stop` 幂等与并发、停止后不启动新一轮、单快照轮次、Dry Run 单快照与不受暂停限制、`RuntimeManager` 并发 Snapshot/Apply、`BreakerPreserve` 保留计数 vs `BreakerReset` 清空、新阈值即时生效、未知云类型构造失败、凭据进入 pool、发布配置深拷贝）；`webui/api/export_test.go`（空库 Schema 与数组非 null、三响应头与固定文件名、UTC metadata 与文件名时间一致、ID/`target_export_ids` 稳定排序、旧 GET 400/405、同实例自增历史后导出→清空→导入的业务关系重建、跨实例不同 ID、清空扫描缓存/保留同步日志/不重置自增序列、告警往返）；`webui/api/import_test.go`（v2 成功覆盖与归一化、空凭据清除旧值、35 项非法输入零写入零发布、错误指向 `targets[1].cloud_type`、事务失败回滚、严格解码含任意层级未知字段与 10 MiB 边界）；`webui/api/import_failure_test.go`（清表/目标/规则/settings/email/webhook/scanned 清空/commit 共 8 项失败注入 + 候选构造失败 + commit 失败，均断言旧库完整、旧状态指针保持、零发布、500 不回显底层错误）；`webui/api/alertset_test.go`（构造零副作用、禁用渠道不构造、订阅替换、幂等、无 bus 安全、apply 副作用顺序、候选在 commit 前构造、候选失败不 apply、安全日志元数据）；`main_test.go` 的 `TestProcessConfigExportImportRoundTrip`（真实二进制 + 真实 SQLite：POST 导出附件头与敏感值、跨数据目录导入、HTTP 校验目标/规则/设置/告警、version 1 → 400、两个进程日志均无敏感 sentinel）
-- 人工检查：**未执行真实浏览器交互**，**未执行真实云 API / SMTP / Webhook**。前端仅通过 `vue-tsc` 类型检查与生产构建；真实浏览器导入导出、连接测试、资源扫描、真实云同步、SMTP 收件箱与 Webhook 均留待用户环境执行（见 `ProdTestList.md`）。
+- 人工检查：2026-09-27 用户确认在真机环境完成并通过生产 WebUI 浏览器回归、连接测试、资源扫描、真实云 API/DNS 增量同步与运行时切换/退出验收；真实 SMTP/收件箱与 Webhook 暂缓，见 `ProdTestList.md`。跨实例不同自增历史数据库的人工交叉导入因当前不存在该使用场景而免除；`export_id → 新数据库 ID` 与规则关联正确性仍由本 Step 已记录的同实例/跨实例自动化用例覆盖。
 - 证据边界：
   1. 版本 2 配置包与原子运行时切换的验证全部基于**本地 SQLite + httptest + 真实二进制进程**；未在真实云账号、真实 SMTP 或真实 Webhook 上验证；
   2. 「普通变更保留 DNS 熔断失败计数」「完整导入重置计数」由 `syncer/state_test.go` 的 `BreakerPreserve`/`BreakerReset` 单测覆盖，未在长跑真实环境复现熔断进度；
   3. `moderntc.org/sqlite` 驱动不强制 `sql.TxOptions.ReadOnly` 的写入拒绝，导出契约由「独立只读事务 + handler 不含写入语句」保证（测试只锁定可读取一致快照）；
-  4. 浏览器复核已在 2026-09-27 部分补做；页面 Blob 下载文件名、文件选择器导入与整页 reload 仍未验证。
+  4. 浏览器复核已由用户于 2026-09-27 在真机环境完成并确认通过；配置包中的 Email/Webhook 字段随对应外部链路验收暂缓。
 - 未完成项：
-  1. **浏览器人工复核**：尚需通过页面文件选择器完成导入、确认实际 Blob 下载文件名与导入成功后整页刷新、损坏/v1 文件失败后页面不刷新；告警保存与目标删除 409 提示（同时承接 Step 4 遗留项）也未执行。设置保存、导出危险确认四类密钥文案和导出成功提示已在 2026-09-27 浏览器实测；
-  2. **真实外部链路**：连接测试/资源扫描、真实云 API 增量写入与精确删除、SMTP/收件箱、Webhook；
+  1. **告警外部链路**：真实 SMTP/收件箱与每个实际支持渠道的 Webhook 暂缓执行；告警配置相关浏览器核对随此外部链路一并保留；
+  2. **跨实例人工交叉导入**：用户确认当前不存在该使用场景，故免除人工真机验收，不再作为 Step 关闭阻塞项；底层 ID 映射继续由自动化覆盖；
   3. **远端 CI**：仍无 GitHub Actions 运行结果（O5-02 收尾，需用户授权推送）；
-  4. Step 5 尚待用户验收决定是否关闭；代码已提交为 `c35eb9d`。远端 CI 仍待运行，且当前分支尚未推送。
+  4. Step 5 因 SMTP/Webhook 暂缓仍保持进行中；代码已提交为 `c35eb9d`。远端 CI 仍待运行，且当前分支尚未推送。
 - **浏览器验收补充（2026-09-27）：** 使用两个独立临时数据目录启动当前 HEAD 的真实二进制，并通过 Codex 内置浏览器打开生产内嵌前端（`127.0.0.1:62205`、`127.0.0.1:62206`）。第一个实例的「全局设置」中真实打开导出危险确认，页面可见明文完整敏感快照提示及腾讯云密钥、阿里云密钥、SMTP 密码、Webhook URL 四项；确认后前端显示「配置已导出，请妥善保管（含全部密钥）」。导出端点返回 `200`、`Cache-Control: no-store` 和 `Content-Disposition: attachment; filename="fwalizer-config-v2-20260927T045506Z.json"`。在第一个实例经浏览器保存临时 TAG `acceptance-a` 后导出 version 2 配置包，以本机 HTTP 请求将包导入第二个独立实例，导入返回 `200`，刷新第二实例后在内置浏览器「全局设置」看到 `acceptance-a`。另以本机 HTTP 请求验证 version 1 导入返回 `400` 和「不支持的配置版本: 1」。
   - **边界：** 本轮点击导入入口后，内置浏览器未出现可操作的原生文件选择窗口，故没有完成通过页面文件选择器上传导出文件、检查成功提示后的自动整页 reload、上传损坏 JSON 并确认页面不刷新；version 1 拒绝与跨实例导入使用 HTTP 请求，不能计作相应的浏览器人工验收。跨实例演示只含设置 TAG，不含不同自增历史下的目标/规则引用、主题、同步状态与告警逐项核对。设置保存的浏览器实测已成功；告警保存及 Step 4 遗留的目标删除 409 提示未执行。完整浏览器、两库关系核对、真实云/SMTP/Webhook 与远端 CI 仍待完成，Step 5 保持 `◧`。
+- **用户真机验收补充（2026-09-27）：** 用户随后确认 `ProdTestList.md` 的 PT-B6-01～03、PT-B6-05～07 均已在真机环境运行并通过，覆盖生产 WebUI、配置包页面导入导出、真实云连接/扫描、真实 DNS→Diff→增量写入→精确删除以及真实同步负载下的运行时切换与退出。PT-B6-04 因无跨实例迁移使用场景而免除人工验收；PT-B6-08～09（SMTP/收件箱、Webhook）暂缓。该确认补足上段浏览器与真实云边界，但不构成 SMTP/Webhook 或远端 CI 证据。
 - 与计划偏差：
   1. 候选构造失败在 HTTP 路径上无法由 version 2 导入触发（未注册云类型在事务前的预校验即被 400 拒绝），因此该项改为对协调器直接注入失败 builder 验证防御路径，并在 `import_failure_test.go` 中说明；
   2. `Config` 的四个凭据冗余字段（`TCAccessID` 等）随实现收尾一并删除（属「不保留全局/显式双凭据」的同一目标，未提前到 Step 4）；
   3. 为保持既有「Webhook 告警已启用/已更新」日志行为，`AlertManager.LogStatus` 只记录收件人与渠道名（不含密码/URL），由 `Syncer.SetStateAppliedHook` 在状态发布后触发；
   4. `export_test.go` 中旧 GET 端点的状态码断言在单元测试为 405、真实进程为 404/405（静态文件兜底差异），两处均只断言「路由已删除」。
-- **状态：** ◧ 进行中（工程实现与本地自动门禁已完成；浏览器人工复核与真实外部链路待用户执行，未标记验收通过）
+- **状态：** ◧ 进行中（工程实现、本地自动门禁、浏览器及真实云/DNS/同步真机验收已完成；SMTP/收件箱与 Webhook 暂缓，未标记验收通过）
 
 ### Step 6：前端依赖受控升级
 
-**实施状态：** ◧ 进行中（2026-09-24；阶段 A、阶段 B 工程实施与本地自动门禁已完成，Docker 构建与容器 health/stop 验收已完成，浏览器人工复核待用户执行）
+**实施状态：** ✅ 验收通过（2026-09-27；阶段 A、阶段 B 工程实施与本地自动门禁、Docker 构建与容器 health/stop、浏览器真机回归均已完成）
 
 - 当前 HEAD：`559453221ec8984e48a2e16d260f74940ff9f5bb`（`5594532`）；`main` 比 `origin/main`（`f5c6ea7`）超前 3 个提交（`c289744`、`c35eb9d`、`5594532`，均未推送，保持不变）
 - 当前工作树：Step 6 代码/依赖改动正在进行；本轮观察到未提交改动涉及 `webui/frontend/package.json`、`webui/frontend/package-lock.json` 与 `.github/workflows/docker-publish.yml`。本轮另修正了 `AGENTS.md`、`Build6.md`、`Design5.md`、`Issue5.md`、`ProdTestList.md` 的进度文档；未修改 Step 6 代码或依赖。
@@ -976,20 +977,21 @@ git diff --check
   - 容器运行验收（`-p 62100:60200`、挂载临时数据目录）：health 于 **6s** 转为 `healthy`；`GET /api/health` → `HTTP 200` `{"status":"ok"}`；`GET /` → `HTTP 200`（471 B 新 `index.html`）；`index-DMKGbtVO.js`(181,922 B)、`api-Cgz6hAsk.js`(194,937 B)、`light-Slo-5Vyt.js`(15,873 B)、`Targets-CV95Zb0J.js`、`Settings-B-oOj7B-.js` 全部 `HTTP 200`；容器内进程为 `uid=1000(appuser)`（非 root）；
   - `docker stop` → **ExitCode=0**、`OOMKilled=false`、耗时 0.155s；日志顺序为 `收到停止信号，等待当前轮次完成 → 开始 HTTP 关闭 → 同步引擎停止 → HTTP 关闭完成`；停止后端口释放；
   - `docker compose -f docker-compose.yml.example config --quiet` → 通过（该命令不需要 daemon）；
-  - **Docker Desktop 环境异常（非本仓库问题）**：完成上述构建与容器验收后，本机 Docker Desktop VM 的容器创建能力失效——`docker run` 对**所有**镜像（含此前成功运行过的 `fwalizer:build6-step6` 与 `alpine:3.24`）均挂起在 `State=created`，切换 `--runtime=runc` 与 `docker compose run` 同样挂起；`docker version`、`docker system df`、`docker images`、`docker build` 仍正常响应，磁盘充足（Images 766 MB、Build Cache 8.9 GB 可回收）。因此计划中的容器化 Node 24 交叉复验未能执行，需用户重启 Docker Desktop 后补做（见 `ProdTestList.md` 二之五节）。
-- 未完成项（不得由上述自动证据替代）：
-  1. **浏览器人工回归未执行**：七个页面、hash 路由与刷新、深浅主题、卡片式确认、目标/规则弹窗、暂停/恢复、配置 version 2 导入导出、Console 与 Network 检查均待用户按 `ProdTestList.md` 二之五节执行；
-  2. **Node 24 容器化交叉复验未执行**：Docker 构建本身已在 `node:24.21-alpine` 的 `frontend-builder` 阶段真实执行 `npm ci && npm run build` 并产出完整 `dist`（等于已在 Node 24.21.0 下验证构建链），但"同一份源码在 Node 24 容器中重新生成 dist 并与本机 dist 逐字节比对"这一独立复验因 Docker Desktop 异常而待补做；
-  3. **远端 CI 仍无运行结果**（当前分支未推送，O5-02 与 Step 5 的远端待办继续保留）。
+  - **Docker Desktop 环境异常（非本仓库问题）**：完成上述构建与容器验收后，本机 Docker Desktop VM 的容器创建能力失效——`docker run` 对**所有**镜像（含此前成功运行过的 `fwalizer:build6-step6` 与 `alpine:3.24`）均挂起在 `State=created`，切换 `--runtime=runc` 与 `docker compose run` 同样挂起；`docker version`、`docker system df`、`docker images`、`docker build` 仍正常响应，磁盘充足（Images 766 MB、Build Cache 8.9 GB 可回收）。因此计划中的容器化 Node 24 独立重复复验未能执行；Docker 构建本身已在 Node 24.21.0 阶段成功产出完整 dist，该重复复验不再作为 Step 6 关闭条件。
+- 人工检查：2026-09-27 用户确认 `ProdTestList.md` PT-B6-01、PT-B6-03 已在真机生产 WebUI 中运行并通过，覆盖七页面、hash 路由与刷新、深浅主题、卡片式确认、目标/规则弹窗、暂停/恢复、version 2 页面导入导出以及 Console/Network 检查；该证据补足 Vite 8/Rolldown 的浏览器行为验收。
+- 补充边界（不阻塞 Step 6 验收）：
+  1. Docker 构建已在 `node:24.21-alpine` 的 `frontend-builder` 阶段真实执行 `npm ci && npm run build` 并产出完整 `dist`；因 Docker Desktop 异常未再独立生成第二份 dist 与本机逐字节比较，该重复复验不再作为 Step 6 关闭条件；
+  2. 远端 CI 仍无运行结果，继续归属 O5-02，不作为 Step 6 验收证据。
 - 与计划偏差：
   1. `vite.config.ts` 按预判**无需修改**，兼容层已覆盖本项目全部配置面，未产生任何 `vite.config.ts` 变更；
   2. `vue-tsc 2.2.12` + `typescript 5.9.3` 在 Vite 8 下类型检查通过，因此**未做任何 Vue/Naive UI/vue-tsc/TypeScript 更新**，符合"能通过则保持不动"的固定范围；
   3. `npm audit fix --dry-run --json` 在 npm 11 下会先向 stdout 打印 `change …` 文本行再输出 JSON，导致直接管道给 JSON 解析器失败（非命令失败）；实际使用 `npm audit fix`（不带 `--force`）并按 `package-lock.json` diff 逐条核对，结果与 dry-run 预告完全一致。
-- **状态：** ◧ 进行中（阶段 A、阶段 B 的工程实施与本地自动门禁已完成；high/critical 已清零、两条 audit 门禁均通过、Go race/vet/build 通过、单二进制与 Docker 镜像均可完整提供新产物；**浏览器人工回归待用户执行**，因此不标记验收通过）
+- **状态：** ✅ 验收通过（2026-09-27；阶段 A、阶段 B 工程实施与本地自动门禁完成，high/critical 清零，两条 audit 门禁、Go race/vet/build、单二进制、Docker 镜像和用户真机浏览器回归均通过）
 
 ### Step 7：高影响路径补测、真实验收与文档闭环
 
 - **目标：** 完成 O5-03；不设置任意覆盖率目标，只补高影响行为并形成可追溯的分层证据。
+- **当前边界（2026-09-27）：** Step 7 的自动补测与文档闭环尚未实施；但用户已提前确认生产浏览器、真实腾讯云/阿里云、DNS 增量同步及真实负载运行时行为真机通过。SMTP/收件箱与 Webhook 暂缓，不能据此把 Step 7 标记完成。
 - **notifier：** 接口订阅 clone、注册/取消、channel Publish/取消竞态、重复取消、缓冲满、Subscriber 错误隔离、告警热重载边界。
 - **syncer：** Provider/Resolver/TAG/Config 完整快照、重试重新 Diff、部分写入计数、pause/resume、导入开关、停止等待、DNS 阈值更新。
 - **provider：** TCP+UDP 拆分、ICMP 端口、IPv4/IPv6、ECS ICMPv6 跳过、描述长度、48 字符 TAG、精确删除、幂等错误和 CVM 上限；只测纯转换和 mock，不声称真实云 API 已验证。
@@ -1131,7 +1133,7 @@ git diff --check
 - 标注“**必须**”的是 Build6 固定不变量；实现可以改名、拆文件或选择等价标准库写法，但结果必须满足；
 - 标注“**参考**”的代码只表达依赖方向、锁边界、事务顺序和错误边界，不要求逐字复制；
 - 伪代码省略的 error 处理在真实实现中仍必须补全，不能因为示例简化而忽略；
-- 当前源码已处于 Step 5 工程实现完成的过渡状态（Step 5 仍为 ◧：浏览器人工复核与真实外部链路待用户执行）；本节其余“目标接口”仍不代表已经存在（EventBus 不关 channel、Step 3 的 HTTP 生命周期与 SSE shutdown channel、Step 4 的严格解码/领域校验/事务、Step 5 的 `RuntimeState`/显式凭据/version 2 协议均已实现，但 Step 6 前端依赖升级与 Step 7 总验收尚未实施）；
+- 当前源码已完成 Step 5 工程实现与 Step 6 前端依赖升级；Step 5 因真实 SMTP/收件箱与 Webhook 暂缓仍为 ◧，Step 6 已验收通过，Step 7 的自动补测和文档闭环尚未实施。本节中 EventBus 不关 channel、Step 3 HTTP 生命周期与 SSE shutdown channel、Step 4 严格解码/领域校验/事务、Step 5 `RuntimeState`/显式凭据/version 2 协议及 Step 6 Vite 8 升级均已实现；其余“目标接口”仍不当然代表已经存在；
 - 如当前代码与本节基线不同，先判断是仓库后来已实现、文档过期，还是出现偏离；不得同时保留两套语义。
 
 ### 12.2 源码边界映射（2026-09-24 更新；原 2026-09-22 基线版本见 Git 历史）
@@ -1156,7 +1158,7 @@ git diff --check
 | settings/alerts | `webui/api/settings.go`、`alerts.go`、`coordinator.go` | settings 使用 11 个 pointer 字段固定 DTO 并在单事务写入（未知键 400、省略不变、仅凭据可显式空串）；alerts 要求两对象全子字段必需并单事务覆盖；两者均经协调器 commit 后只 apply 一次 | Step 2、4 | `webui_port` 入口**已解除（Step 2）**；任意 map 键与部分成功**已解除（Step 4）** |
 | 配置包协议 | `webui/api/bundle_v2.go`、`webui/api/export.go` | `POST /api/config/export` 在只读事务内导出 v2 完整敏感快照（ID 与 `target_export_ids` 升序、marshal 先于写头、`no-store`、固定附件名）；导入使用 presence DTO + 10 MiB 严格解码 + 预校验 + 固定顺序事务 + `LastInsertId` 映射；version 1 及其他版本 400 | Step 4、5 | 严格解码与协调器接入**已解除（Step 4）**；v2 协议与 ID 映射**已解除（Step 5）** |
 | 前端导入导出 | `webui/frontend/src/views/Settings.vue` | 设置保存为 11 键白名单 payload（Step 4）；导入/导出均为危险级卡片确认（`type="error"`，文案列出四类密钥），导出走 `POST + fetch + Blob` 并从 `Content-Disposition` 解析安全文件名（含固定 fallback），导入成功整页 reload、失败不 reload | Step 4、5 | 设置保存 payload**已解除（Step 4）**；敏感快照与整页刷新**已解除（Step 5）** |
-| 前端依赖 | `webui/frontend/package*.json`、`build/Dockerfile`、`.github/workflows/docker-publish.yml` | Step 6 阶段 A 只改 lockfile：`nanoid 3.3.16→3.3.19`、`brace-expansion 2.1.2→2.1.7`；阶段 B：`vite ^5.4.0→^8.3.1`、`@vitejs/plugin-vue ^5.0.0→^6.0.9` 并重生成 lockfile（`esbuild`/`rollup` 移除，改由 `rolldown 1.2.10` + `lightningcss 1.33.0`）；`vue`/`vue-router`/`naive-ui`/`typescript`/`vue-tsc` 未改动；Node 固定为 `node:24.21-alpine` / `node-version: '24.21.0'`；完整 audit 与 `--omit=dev` audit 均 0 漏洞；CI 已增加两个阻断式 audit 门禁；Docker 构建与容器 health/stop 验收通过 | Step 6 | **已解除（Step 6：审计清零、构建与 Go 门禁通过、单二进制与 Docker 镜像均可提供新产物；仅浏览器人工复核待用户执行，故 Step 6 仍为 ◧）** |
+| 前端依赖 | `webui/frontend/package*.json`、`build/Dockerfile`、`.github/workflows/docker-publish.yml` | Step 6 阶段 A 只改 lockfile：`nanoid 3.3.16→3.3.19`、`brace-expansion 2.1.2→2.1.7`；阶段 B：`vite ^5.4.0→^8.3.1`、`@vitejs/plugin-vue ^5.0.0→^6.0.9` 并重生成 lockfile（`esbuild`/`rollup` 移除，改由 `rolldown 1.2.10` + `lightningcss 1.33.0`）；`vue`/`vue-router`/`naive-ui`/`typescript`/`vue-tsc` 未改动；Node 固定为 `node:24.21-alpine` / `node-version: '24.21.0'`；完整 audit 与 `--omit=dev` audit 均 0 漏洞；CI 已增加两个阻断式 audit 门禁；Docker 构建、容器 health/stop 及用户真机浏览器回归通过 | Step 6 | **已解除（Step 6 于 2026-09-27 验收通过）** |
 
 实施者应优先在这些现有边界上收束，不创建第二套 store、第二个事件总线或平行 Web server。删除旧实现后再更新本表的“当前问题”，不能让旧/新入口长期共存。
 
@@ -1664,6 +1666,7 @@ Build6 最终关闭前，必须能从本文追溯：
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| v2.2 | 2026-09-27 | 用户确认 PT-B6-01～03、PT-B6-05～07 真机运行通过；跨实例不同自增历史的人工交叉导入因无实际使用场景免除，ID 映射仍由自动化覆盖；SMTP/收件箱与 Webhook 暂缓。Step 6 浏览器证据补齐并验收通过；Step 5 因告警外部链路暂缓保持进行中 |
 | v1.0 | 2026-09-22 | 建立构建前方案：整合完整配置包、CLI/Headless 移除及 Issue5 全部事项；所有 Step 均未开始 |
 | v1.1 | 2026-09-22 | 完成逐 Step 构建前核验；固定 version 2 Schema、目标删除 409、TAG/JSON/HTTP 边界、SSE 关闭、原子运行时切换和 Vite 8 升级口径；补齐研究证据、测试矩阵与授权门禁 |
 | v1.2 | 2026-09-22 | Step 0 验收通过：切换当前文档体系，建立 Design5，同步 AGENTS/Issue5/README 边界并存档 Design4/Build5/Issue4 |
