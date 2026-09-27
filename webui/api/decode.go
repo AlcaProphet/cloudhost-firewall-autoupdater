@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -65,6 +66,29 @@ func decodeJSONStrict(w http.ResponseWriter, r *http.Request, limit int64, dst a
 		return decodeError(err)
 	}
 	return nil
+}
+
+// decodeJSONObjectStrict 与 decodeJSONStrict 语义一致，但额外要求顶层是 JSON 对象。
+//
+// encoding/json 把 JSON null 解码到非指针结构体时不报错（静默留空），因此
+// 「只接受单一空对象 {}」的端点（如 reset）必须显式检查顶层类型，否则 null
+// 会被当作合法空参数并执行破坏性清空（Issue6 A10、Build6 §12.9）。
+func decodeJSONObjectStrict(w http.ResponseWriter, r *http.Request, limit int64, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		return decodeError(err)
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return badRequest("请求体不能为空")
+	}
+	if trimmed[0] != '{' {
+		return badRequest("请求体必须是 JSON 对象")
+	}
+	// 复用严格解码：未知字段、尾随值与多个顶层值仍按同一口径拒绝
+	r.Body = io.NopCloser(bytes.NewReader(trimmed))
+	return decodeJSONStrict(w, r, limit, dst)
 }
 
 // decodeError 把 json 解码错误映射为带状态码的安全错误。

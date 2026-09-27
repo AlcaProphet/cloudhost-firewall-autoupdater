@@ -82,15 +82,17 @@ func (d *Deps) coordinator() *ConfigCoordinator {
 // buildCandidate 在事务内构造候选运行时状态与候选告警集合。
 //
 // 只构造本地对象与 SDK client，不访问云 API、DNS 上游、SMTP、Webhook
-// 或任何其他外部网络（Build6 §12.4）。普通变更保留既有 DNS 熔断失败计数。
-func (d *Deps) buildCandidate(snapshot *config.BusinessSnapshot) (Candidate, error) {
+// 或任何其他外部网络（Build6 §12.4）。policy 由协调器给定：普通变更
+// BreakerPreserve 保留既有 DNS 熔断失败计数；完整导入 BreakerReset 清空
+// （Build6 §12.3 第 7 条、Issue6 A8）。
+func (d *Deps) buildCandidate(snapshot *config.BusinessSnapshot, policy syncer.BreakerPolicy) (Candidate, error) {
 	rc := snapshot.ToRuntimeConfig()
 
 	var previous *syncer.RuntimeState
 	if d.Runtime != nil {
 		previous = d.Runtime.Snapshot()
 	}
-	state, err := syncer.BuildRuntimeState(previous, rc, syncer.BreakerPreserve)
+	state, err := syncer.BuildRuntimeState(previous, rc, policy)
 	if err != nil {
 		// 未注册云类型属请求侧错误；其余构造失败按内部错误处理
 		if errors.Is(err, syncer.ErrUnknownCloudType) {

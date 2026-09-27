@@ -43,7 +43,9 @@ type ConfigCoordinator struct {
 
 	// buildCandidate 在事务内构造候选：只允许本地对象与 SDK client，
 	// 不得访问云 API、DNS 上游、SMTP、Webhook 或任何外部网络。
-	buildCandidate func(snapshot *config.BusinessSnapshot) (Candidate, error)
+	// policy 决定候选状态的 DNS 熔断策略：普通变更保留既有失败计数，
+	// 完整导入新建 breaker 并清空计数（Build6 §12.3 第 7 条）。
+	buildCandidate func(snapshot *config.BusinessSnapshot, policy syncer.BreakerPolicy) (Candidate, error)
 
 	// apply 在 commit 之后按固定顺序执行无失败发布：
 	// 日志级别 → 告警集合 → RuntimeState。返回 error 只用于编程错误上报。
@@ -59,13 +61,25 @@ var ErrNoSnapshotLoader = errors.New("协调器未配置候选构造能力")
 // 此时 Mutate 只提交事务、不做运行时发布。
 func NewConfigCoordinator(
 	store *config.Store,
-	buildCandidate func(snapshot *config.BusinessSnapshot) (Candidate, error),
+	buildCandidate func(snapshot *config.BusinessSnapshot, policy syncer.BreakerPolicy) (Candidate, error),
 	apply func(candidate Candidate) error,
 ) *ConfigCoordinator {
 	return &ConfigCoordinator{store: store, buildCandidate: buildCandidate, apply: apply}
 }
 
-// Mutate 在锁内执行一次配置变更（Build6 §12.4 固定顺序）：
+// Mutate 普通配置变更（目标/规则/settings/alerts/pause/resume/reset）：
+// 候选状态沿用 BreakerPreserve，保留既有 DNS 熔断失败计数。
+func (c *ConfigCoordinator) Mutate(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error) error {
+	return c.mutate(ctx, syncer.BreakerPreserve, fn)
+}
+
+// MutateImport 完整配置导入：候选状态使用 BreakerReset，新建 breaker 并清空原失败计数
+// （Build6 §12.3 第 7 条、Issue6 A8）。导入是「整库替换」语义，熔断状态随之重置。
+func (c *ConfigCoordinator) MutateImport(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error) error {
+	return c.mutate(ctx, syncer.BreakerReset, fn)
+}
+
+// mutate 在锁内执行一次配置变更（Build6 §12.4 固定顺序）：
 //
 //	加协调器锁 → 开启写事务 → 执行 mutation → 同一事务内读取完整业务快照
 //	→ 构造候选 RuntimeState 与候选告警集合 → 提交事务
@@ -73,7 +87,7 @@ func NewConfigCoordinator(
 //
 // mutation 或候选构造任一失败都完整回滚：数据库、旧 RuntimeState、旧日志级别、
 // 旧告警订阅与扫描缓存全部保持原样，且不产生部分 ID 映射。
-func (c *ConfigCoordinator) Mutate(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error) error {
+func (c *ConfigCoordinator) mutate(ctx context.Context, policy syncer.BreakerPolicy, fn func(ctx context.Context, tx *sql.Tx) error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -104,7 +118,7 @@ func (c *ConfigCoordinator) Mutate(ctx context.Context, fn func(ctx context.Cont
 
 	var candidate Candidate
 	if c.buildCandidate != nil {
-		candidate, err = c.buildCandidate(snapshot)
+		candidate, err = c.buildCandidate(snapshot, policy)
 		if err != nil {
 			return err
 		}

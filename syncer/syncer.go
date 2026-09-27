@@ -40,14 +40,10 @@ type Syncer struct {
 	lastSync time.Time
 	// enabled 是「已提交开关」的调度镜像：唯一真值在 SQLite 与已发布的运行时状态。
 	//
-	// 由 ApplyState 在发布新状态时同步推进，用于两处判定：
-	//   - trigger 门控：暂停期间排队的陈旧 trigger 在恢复后不会额外多跑一轮
-	//     （Build6 §12.5「排队中的 trigger 在消费前重新检查 enabled」）；
-	//   - Run 的过渡判定：以「进入 select 阻塞之前记录的镜像」与「已发布真值」
-	//     比较，因此 false→true 的立即轮次只由 Run 执行一次，不会与调用方重复。
-	//
-	// 对外的 IsEnabled/Status 读的是已发布状态本身，保证 pause/resume 之后
-	// TriggerSync 的 409 判定立即正确。
+	// 由 ApplyState 在发布新状态时同步推进，仅用于运行时状态尚未发布（启动极早期）
+	// 的 IsEnabled 回退。Run 的过渡判定使用自身已经处理过的本地相位（见 Run），
+	// 不再使用本镜像：否则镜像先于循环相位推进时会把 false→true 误判为 true→true，
+	// 漏掉恢复后的立即一轮（Issue6 A7）。
 	enabled bool
 
 	dryRunMu sync.Mutex // Dry Run 防重入
@@ -93,9 +89,8 @@ func (s *Syncer) Runtime() *RuntimeManager {
 func (s *Syncer) ApplyState(next *RuntimeState) {
 	s.runtime.Apply(next)
 
-	// 调度镜像在此同步推进，使 pause/resume 之后 trigger 门控立即反映已提交状态；
-	// Run 的过渡判定使用「进入 select 前记录的镜像」与「已发布真值」，因此
-	// false→true 的立即轮次只由 Run 执行一次，不会与调用方重复。
+	// 调度镜像在此同步推进：IsEnabled 读的是已发布真值，镜像只作为
+	// 「运行时状态尚未发布」时的回退（见 enabled 字段注释与 Issue6 A7）。
 	s.setEnabledMirror(next.Config.SyncEnabled)
 
 	select {
@@ -145,9 +140,10 @@ func (s *Syncer) Run() {
 	}
 
 	for {
-		// 进入阻塞等待之前先记录「本次等待开始前已生效的开关」：
-		// 唤醒后据此判定 false→true / true→false 过渡（Build6 §12.5）。
-		wasEnabled := s.isEnabledMirror()
+		// 过渡前值取「本循环已经处理过的相位」，而不是已发布镜像（Issue6 A7）：
+		// ApplyState 在发布时就会同步推进镜像，若镜像先于本循环推进，
+		// 用镜像判定会把 false→true 误判为 true→true，从而漏掉恢复后的立即一轮。
+		wasEnabled := enabled
 
 		if !enabled {
 			// 暂停子循环：不接收 ticker/trigger，只在状态通知或停止时退出。
@@ -161,6 +157,14 @@ func (s *Syncer) Run() {
 		} else {
 			select {
 			case <-ticker.C:
+				// 暂停可能已在当前轮次进行中提交、但控制通知尚未被消费；
+				// 定时触发必须与手动触发使用同一门控（AGENTS §五「暂停时 ticker
+				// 与手动 trigger 均不触发同步」）。此处不直接 syncAll，而是跳出
+				// select 进入下方统一的状态重读与过渡判定，避免启动一轮已暂停的同步。
+				if !s.IsEnabled() {
+					slog.Debug("丢弃已暂停状态下的定时同步")
+					break
+				}
 				s.syncAll()
 			case <-s.triggerCh:
 				// 排队中的 trigger 在消费前重新检查开关（Build6 §12.5）：
@@ -267,10 +271,11 @@ func (s *Syncer) IsEnabled() bool {
 	return s.isEnabledMirror()
 }
 
-// isEnabledMirror 读取**调度已生效**的开关镜像（供 Run 的过渡判定与 trigger 门控使用）。
+// isEnabledMirror 读取开关镜像，仅在运行时状态尚未发布时作为 IsEnabled 的回退。
 //
-// 该镜像只在控制消息被 Run 消费后推进，因此暂停期间排队的陈旧 trigger 不会
-// 在恢复通知消费前通过门控（Build6 §12.5）。
+// 过渡判定与 trigger 门控都不再使用本镜像：前者用 Run 的本地相位（Issue6 A7），
+// 后者用已发布状态。因此镜像不在 Run 消费控制消息后才推进，而是在 ApplyState
+// 发布时推进（它只表示「已提交」）。
 func (s *Syncer) isEnabledMirror() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

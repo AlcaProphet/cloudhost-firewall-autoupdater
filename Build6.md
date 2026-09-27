@@ -313,7 +313,7 @@ log_level, theme
 | 4 | API 最小持久化校验边界 | Issue5 O5-06、本文件 §四 | ✅ 验收通过 |
 | 5 | version 2 完整配置包与原子运行时切换 | Issue5 R5-01、本文件 §三 | ✅ 验收通过（2026-09-27） |
 | 6 | 前端依赖受控升级 | Issue5 O5-01 | ✅ 验收通过（2026-09-27） |
-| 7 | 高影响路径补测、真实验收与文档闭环 | Issue5 O5-03 | ☐ 未开始 |
+| 7 | 高影响路径补测、真实验收与文档闭环 | Issue5 O5-03 | ◧ 进行中 |
 
 > 状态标记：☐ 未开始 / ◧ 进行中 / ✅ 验收通过
 
@@ -989,8 +989,16 @@ git diff --check
 
 ### Step 7：高影响路径补测、真实验收与文档闭环
 
+**实施状态：** ◧ 进行中（2026-09-27；自动补测、统一门禁、Docker/真实二进制验收与文档闭环已完成；待用户执行 PT-B6-08/09 真实 SMTP/收件箱与 Webhook 后才能关闭）
+
+- 当前 HEAD：`69fb7c8835608866b65dadacbca01103df92f855`（`69fb7c8`）；施工开始时 `main` 比 `origin/main` 领先 3 个提交（`git rev-list --left-right --count origin/main...HEAD` = `0 3`）
+- 工作树基线：干净（`git status --short --branch` 仅输出 `## main...origin/main [领先 3]`；`git status --porcelain --untracked-files=all`、`git diff --name-only`、`git diff --check` 均为空，无用户已有改动）
+- 开工前只读核验（2026-09-27）全部通过：`go test ./... -race -count=1`（11 包全 ok，0 次 `DATA RACE`）、`go vet ./...`、`go build ./...`、`docker compose -f docker-compose.yml.example config --quiet`、`cd webui/frontend && npm ci && npm run build`（`vite v8.3.1`，21 个产物，`built in 136ms`）、`npm audit --audit-level=high` 与 `npm audit --omit=dev --audit-level=high`（均 0 漏洞）、`git diff --check`；详见同轮开工前报告
+- 本 Step 文件范围（生产代码，经用户逐项确认）：`webui/api/decode.go`（新增 `decodeJSONObjectStrict`）、`webui/api/settings.go`（A10：reset 拒绝 `null` 与非对象）、`webui/api/sync.go`（A5：删除协调器之外的二次运行时写）、`webui/api/coordinator.go`（A8：新增 `MutateImport`，`buildCandidate` 接收 breaker 策略）、`webui/api/deps.go`（A8：策略透传）、`webui/api/export.go`（A8：导入改调 `MutateImport`）、`syncer/syncer.go`（A7：过渡前值改用 Run 本地已处理相位；A6：ticker 分支补已发布状态守卫）。测试范围：`notifier/bus_test.go`、`syncer/state_test.go`、`syncer/syncer_test.go`、`provider/common_test.go`、新增 `provider/request_mock_test.go`、`webui/server_test.go`、`webui/api/alertset_test.go`、`webui/api/settings_alerts_test.go`、`webui/api/sync_test.go`、`webui/api/import_failure_test.go`（签名/断言适配）、新增 `webui/api/import_runtime_test.go`。文档范围：`Build6.md`、`Issue5.md`、`Design5.md`、`README.md`、`ProdTestList.md`、`AGENTS.md`（仅当实施事实改变其 Build6 过渡口径）
+- 固定不变量：Step 5 已落地的 version 2 唯一协议与 `export_id → 新数据库 ID` 映射、协调器串行化与「commit 后无失败发布」顺序（日志级别 → 告警集合 → `RuntimeState`）、`RuntimeState` 发布后不可修改与「一轮一快照」、`provider.Credentials` 不可变与 `ClientPool` 无 setter、EventBus 取消订阅不关闭 channel、两类 SSE 监听服务器级 shutdown、`reset` 只接受单一空对象 `{}`、`pause/resume` 的运行时写入口唯一属于协调器（A5 后落实）、普通变更保留 DNS 熔断计数而完整导入重置（A8 后落实）、`false → true` 恢复必须立即一轮（A7 后落实）、暂停时 ticker 与 trigger 均不启动新轮次（A6 后落实）
+- 本轮不处理：Issue6 中未经用户确认的其余条目（A1、A2、A3、A4、A9、A11～A19 与 §三 清理候选）；`notifier/email.go`、`notifier/webhook.go` 的 SMTP/Webhook 行为测试（属外部真机证据层）；云 Provider 增量算法、认证与配置包协议重构；前端测试框架或任何前端新依赖；`go.mod`/`go.sum`、`webui/frontend/package*.json`、`build/Dockerfile`、`.github/workflows/*`；`HistoryDocs/` 正文；真实云 API、SMTP/收件箱、Webhook 与浏览器人工验收不得以 mock 或自动测试替代
 - **目标：** 完成 O5-03；不设置任意覆盖率目标，只补高影响行为并形成可追溯的分层证据。
-- **当前边界（2026-09-27）：** Step 7 的自动补测与文档闭环尚未实施；用户已提前确认生产浏览器、真实腾讯云/阿里云、DNS 增量同步及真实负载运行时行为真机通过。Email/SMTP/收件箱与 Webhook 已从 Step 5 移交本 Step/后续清单，仍待执行，不能据此把 Step 7 标记完成。
+- **当前边界（2026-09-27 更新）：** Step 7 的自动补测、统一门禁、Docker/真实二进制验收与文档闭环**已实施完成**；用户已提前确认生产浏览器、真实腾讯云/阿里云、DNS 增量同步及真实负载运行时行为真机通过（本 Step 直接继承，不重复要求执行）。Email/SMTP/收件箱（PT-B6-08）与真实 Webhook（PT-B6-09）已确认环境具备但**须由用户在真机执行**，本轮未取得证据，因此 **Step 7 保持 ◧ 进行中**，不得标记完成。
 - **notifier：** 接口订阅 clone、注册/取消、channel Publish/取消竞态、重复取消、缓冲满、Subscriber 错误隔离、告警热重载边界。
 - **syncer：** Provider/Resolver/TAG/Config 完整快照、重试重新 Diff、部分写入计数、pause/resume、导入开关、停止等待、DNS 阈值更新。
 - **provider：** TCP+UDP 拆分、ICMP 端口、IPv4/IPv6、ECS ICMPv6 跳过、描述长度、48 字符 TAG、精确删除、幂等错误和 CVM 上限；只测纯转换和 mock，不声称真实云 API 已验证。
@@ -1005,6 +1013,51 @@ git diff --check
   5. 不具备凭据或外部环境时，Step 7 保持 ◧ 进行中，并明确列为待用户执行，不得以 mock 代替后标记完成。
 - **文档闭环：** 更新 Issue5 每项状态、Build6 每 Step 实际证据、Design5 当前状态和 README；历史文档不改写。
 - **证据分层：** 源码核验、单元/集成测试、race、build/vet、Docker、浏览器人工、真实云 API、SMTP/收件箱、Webhook 分别记录，互不替代。
+
+**实际证据（2026-09-27）：**
+
+- **实际改动（生产代码，全部在用户 2026-09-27 确认的边界内）：**
+  1. **A10（reset 拒绝 `null`/非对象）**：`webui/api/decode.go` 新增 `decodeJSONObjectStrict`（顶层必须是 JSON 对象；`encoding/json` 把 `null` 解码到非指针结构体不报错，必须显式拒绝），随后仍复用 `decodeJSONStrict` 保持未知字段/尾随值/多顶层值口径；`webui/api/settings.go` 的 `handleConfigReset` 改用它。
+  2. **A5（pause/resume 运行时写入口唯一）**：`webui/api/sync.go` 删除协调器 commit 之后额外的 `d.Syncer.Pause()` / `d.Syncer.Resume()`，协调器成为唯一运行时写入口。`Syncer.Pause/Resume` 方法与其 syncer 内部测试保留（不再被生产 handler 调用）。
+  3. **A8（完整导入重置 DNS 熔断计数，用户确认语义）**：`webui/api/coordinator.go` 的 `buildCandidate` 增加 `syncer.BreakerPolicy` 形参；`Mutate` 固定 `BreakerPreserve`，新增 `MutateImport` 固定 `BreakerReset`（共用同一锁/事务/发布顺序）；`webui/api/deps.go` 透传策略；`webui/api/export.go` 导入 handler 改调 `MutateImport`。
+  4. **A7（恢复必须立即一轮）**：`syncer/syncer.go` 的 Run 过渡前值由已发布镜像 `s.isEnabledMirror()` 改为本循环已处理相位 `enabled`。
+  5. **A6（暂停时 ticker 不启动新轮次）**：`syncer/syncer.go` 的 ticker 分支补 `if !s.IsEnabled() { slog.Debug(...); break }`，与 trigger 分支使用同一门控。
+  6. 注释同步：`syncer/syncer.go` 的 `enabled` 字段、`ApplyState`、`isEnabledMirror` 注释改为与实现一致。
+- **实际改动（测试，只测不改产品行为）**：`notifier/bus_test.go`（Subscriber 错误隔离 + 并发用例补断言）、`webui/api/alertset_test.go`（告警热重载在途/新订阅边界）、`syncer/state_test.go`（A7/A6 确定性用例、`TestStopWaitsForBlockedRound`、`stopRunBounded` 有界清理）、`syncer/syncer_test.go`（部分写入计数、Provider 快照隔离、ECS/48 rune TAG 截断边界）、`provider/common_test.go`（CVM/ECS 拆分、笛卡尔积、地址族字段互斥）、新增 `provider/request_mock_test.go`（四个 Provider 的请求构造 mock 层）、`webui/server_test.go`（内嵌哈希资源可取回）、`webui/api/settings_alerts_test.go`（reset 拒绝 `null`/非对象）、`webui/api/sync_test.go`（pause/resume 单写判别用例 + 签名适配）、`webui/api/import_failure_test.go`（`buildCandidate` 签名适配）、新增 `webui/api/import_runtime_test.go`（导入 `sync_enabled` 端到端调度一致性 + A8 熔断策略判别）。
+- **缺陷暴露与修复的判别性证据（修复前真实失败 → 修复后通过）：**
+  - A7：`go test ./syncer/ -race -run TestResumeImmediateRoundAfterPhaseMirrorAdvance` → **FAIL**（`state_test.go:377` "GetRules 调用次数 = 1, want >= 2"）→ 修复后 PASS。
+  - A6：临时移除守卫 → **FAIL**（`state_test.go:404` "GetRules = 2, want 1"）；恢复守卫（经 sha256 `279dc545…6448` 校验一致）→ PASS（x5）。
+  - A10：临时改回 `decodeJSONStrict` → **FAIL**（`body="null" 状态码 = 200, want 400`，数据被清空且 apply=1）→ 恢复后 PASS。
+  - A5：修复前 → **FAIL**（`sync_test.go:123/140` "不得在协调器之外二次调用 Syncer.Pause()/Resume()"）→ 修复后 PASS。
+  - A8：临时把 `MutateImport` 改回 `BreakerPreserve` → **FAIL**（`import_runtime_test.go:245` "完整导入必须清空 DNS 熔断失败计数"）→ 恢复后 `-race -count=3` PASS。
+  - 上述"临时改回"验证均先把修复后文件备份到 `/tmp`，复现失败后用备份覆盖并校验 sha256 一致；**未使用任何破坏性 Git 命令**。
+- **专项自动检查（真实结果）：**
+  - notifier：`go test ./notifier/ -race -count=100` → ok（44.0s）。
+  - syncer：调度相关 8 个用例 `-race -count=100 -timeout 30m` → ok（517.4s）；整包 `-race -count=5` → ok（71.7s）。
+  - provider：`go test ./provider/ -race -count=20` → ok（1.8s）。
+  - webui/api：整包 `-race -count=1` → ok（5.1s）；A5/A8/A10 + 导入/暂停相关 `-race -count=10` → ok（10.9s）；`TestConfigImportSyncEnabledRuntimeConsistency -race -count=20` → ok（16.3s）。
+  - `gofmt -l`（`notifier/`、`syncer/`、`provider/`、`webui/`）无输出；`go vet` 各包通过。
+- **覆盖率变化（`go test <pkg> -cover -count=1`，仅作趋势参考）：** `provider` **22.6% → 53.0%**；`notifier` 47.2%、`syncer` 82.1%、`webui/api` 78.1%、`webui` 88.2%、`config` 78.9%（本轮未设任意覆盖率目标）。
+- **统一验收门禁（完整序列，逐条真实通过）：** `npm ci` rc=0 → `npm run build` rc=0（`✓ built in 125ms`）→ `npm audit --audit-level=high` rc=0（0 漏洞）→ `npm audit --omit=dev --audit-level=high` rc=0（0 漏洞）→ `go test ./... -race -count=1` rc=0（11 包全 ok，0 次 `DATA RACE`：root 10.1s、syncer 16.5s、webui/api 7.0s）→ `go vet ./...` rc=0 → `go build ./...` rc=0 → `docker compose -f docker-compose.yml.example config --quiet` rc=0 → `docker build -f build/Dockerfile -t fwalizer:build6-step7 .` rc=0（镜像 74.1MB，manifest `sha256:de076e21…`）→ `git diff --check` rc=0。
+- **真实二进制验收（临时数据目录 + 真实进程）：** 空数据目录启动生成 `config.db`(+`-wal`/`-shm`) 与 `fwalizer.pid`；`GET /api/health` → 200 `{"status":"ok"}`；`GET /api/targets` → 200 `[]`；`GET /` → 200（index.html），其引用的 3 个哈希资源（`api-Cgz6hAsk.js`、`index-DMKGbtVO.js`、`light-Slo-5Vyt.js`）全部 200；空库首轮 `开始同步 targets=0 rules=0 → 同步完成 耗时=0s`；`SIGTERM` → 退出码 **0**，日志顺序为「收到停止信号 → 开始 HTTP 关闭 → 同步引擎停止 → HTTP 关闭完成」，端口释放；日志敏感模式扫描无命中（强证据另见自动化 `TestProcessSecretsNotLogged`）。
+- **Docker 容器验收：** `docker run -d -p 63100:60200 fwalizer:build6-step7` → 容器 6s 转 `healthy`（HEALTHCHECK 走 `/api/health`）；容器内 `uid=1000(appuser)`（**非 root**，`Config.User=appuser`）；经端口映射 `/api/health`、`/` 与 3 个哈希资源全部 200；容器日志敏感模式扫描无命中；`docker stop -t 15` → rc=0、耗时 0.111s、`ExitCode=0`、`OOMKilled=false`，日志顺序同上，停止后端口释放。附带验证容器内实际绑定 `0.0.0.0:60200` 并可通过端口映射访问（补上此前仅单测覆盖的 `WEBUI_HOST=0.0.0.0` 真实可达性）。
+- **当前轮次退出边界（分层）：** 0 目标轮次立即结束（真实二进制/容器日志）；**在途轮次**必须等当前轮完成由自动化进程级用例覆盖——`TestProcessCompletesInFlightRoundAfterSignal`、`TestProcessSIGTERMGracefulShutdown`、`TestProcessSIGINTGracefulShutdown`（本轮 `-race` 全通过）。
+- **人工检查：** 本轮**未新增**浏览器或真实云人工步骤——2026-09-27 用户已确认的生产浏览器、真实腾讯云/阿里云、DNS 增量同步与真实负载运行时证据按原记录继承（`Build6.md:844`、`:856`）；本 Step 的 provider 证据全部是本地 mock 端点与纯转换，**不声称真实云 API 验收**。
+- **外部链路检查：未执行。** PT-B6-08（真实 Email/SMTP + 收件箱）与 PT-B6-09（真实 Webhook 渠道及测试渠道）环境已具备，但**须由用户本人在真机执行**；AI 不接触 SMTP 密码或完整 Webhook URL，也不以 mock/HTTP 假服务替代。未取得前 Step 7 保持 ◧。
+- **远端 CI：** 本轮文档闭环完成后按用户授权推送 `v2.0.0` tag 触发真实 GitHub Actions；推送前 O5-02 记录保持"未取得远端运行结果"，推送后单独回写。
+- **未完成项：**
+  1. PT-B6-08（真实 SMTP 发信/收件箱/告警触发与禁用后行为）与 PT-B6-09（每个实际支持渠道的真实 Webhook）——待用户真机执行；
+  2. 远端 GitHub Actions 实际运行结果——待本轮 push 后回写；
+  3. 导出 handler 的只读事务失败注入（`BeginReadOnlyTx`/快照/`Commit`）未做：当前 driver 不强制 `ReadOnly`，需额外失败注入 seam（见 §12.16 边界）；
+  4. 进程级 `Serve` 异常退出 → 退出码 1 的路径无独立注入 seam，仅由 `webui` 包内 `Wait()` 返回值用例与代码审查覆盖；
+  5. `Resolver` 维度的单轮快照未单独替换（无注入式 resolver 接口）：与 TAG/`Providers` 共用同一 `state` 指针，属结构性覆盖。
+- **与计划偏差：**
+  1. 开工报告曾预告"新增 `provider/tc_cvm_limit_test.go`"，实际落地为范围更大的 `provider/request_mock_test.go`（四个 Provider 的请求构造 mock 层，CVM 100 上限只是其中一组子用例）；新增 `webui/api/import_runtime_test.go` 承担"导入 `sync_enabled` 端到端一致性"与 A8 熔断策略判别，两处文件名/范围偏差已在 7.3/7.5 证据中如实记录。
+  2. notifier 并发回归用例首版断言"取消订阅后旧订阅者不再收到任何事件"，与 §12.14 明确允许的在途快照语义冲突，`-count=100` 时失败；已改为只断言"读取快照路径确实投递过"与"压力结束后总线仍可用"。该失败是**测试侧断言错误，不是源码回归**。
+  3. ECS/SWAS 的真实线上请求格式与初版假设不同（ECS 用 `Permissions.1.X` 扁平下标参数、`SecurityGroupRuleId.1`；SWAS 用逗号分隔 `RuleIds`）；已按真实格式改写解析 helper（先以临时 debug 用例打印真实 URL 确定，debug 文件已删除）。
+  4. A5 修复后 `Syncer.Pause/Resume` 与 `api.Syncer` 接口成员保留但生产不再调用；删除接口成员会扩大改动面且无行为收益，故保留。
+  5. A8 由"允许重置"改为"完整导入确定重置"（用户 2026-09-27 决策），因此 §12.3 第 7 条与 `AGENTS.md` 的措辞由许可性改为确定性；普通变更仍保留计数。
+- **状态：** ◧ 进行中（自动补测、统一门禁、Docker/真实二进制验收与文档闭环已完成；仅剩 PT-B6-08/09 真实 SMTP/收件箱与 Webhook 待用户真机执行，以及 push 后的远端 Actions 结果回写）
 
 ---
 
@@ -1132,10 +1185,10 @@ git diff --check
 - 标注“**必须**”的是 Build6 固定不变量；实现可以改名、拆文件或选择等价标准库写法，但结果必须满足；
 - 标注“**参考**”的代码只表达依赖方向、锁边界、事务顺序和错误边界，不要求逐字复制；
 - 伪代码省略的 error 处理在真实实现中仍必须补全，不能因为示例简化而忽略；
-- 当前源码已完成 Step 5 工程实现与 Step 6 前端依赖升级，Step 0～6 均已验收通过；Step 7 的自动补测、Email/Webhook 外部验收和文档闭环尚未实施。本节中 EventBus 不关 channel、Step 3 HTTP 生命周期与 SSE shutdown channel、Step 4 严格解码/领域校验/事务、Step 5 `RuntimeState`/显式凭据/version 2 协议及 Step 6 Vite 8 升级均已实现；其余“目标接口”仍不当然代表已经存在；
+- 当前源码已完成 Step 5 工程实现与 Step 6 前端依赖升级，Step 0～6 均已验收通过；Step 7 的自动补测、统一门禁、真实二进制/Docker 容器验收与文档闭环已于 2026-09-27 完成，仅剩真实 Email/SMTP/收件箱与 Webhook 待用户真机执行，故 Step 7 保持 ◧ 进行中。本节中 EventBus 不关 channel、Step 3 HTTP 生命周期与 SSE shutdown channel、Step 4 严格解码/领域校验/事务、Step 5 `RuntimeState`/显式凭据/version 2 协议、Step 6 Vite 8 升级以及 Step 7 的 A10/A5/A7/A6/A8 最小修复均已实现；其余“目标接口”仍不当然代表已经存在；
 - 如当前代码与本节基线不同，先判断是仓库后来已实现、文档过期，还是出现偏离；不得同时保留两套语义。
 
-### 12.2 源码边界映射（2026-09-24 更新；原 2026-09-22 基线版本见 Git 历史）
+### 12.2 源码边界映射（2026-09-27 更新；原 2026-09-24 与 2026-09-22 基线版本见 Git 历史）
 
 > “状态”列区分：**已解除（Step N）** 表示该项在当前源码中已按 Build6 口径收束；**仍存在** 表示问题仍在，按“Build6 目标归属”在后续 Step 处理。已解除项保留在表中作为历史对照，不代表后续 Step 的工作已完成。
 
@@ -1147,15 +1200,15 @@ git diff --check
 | 运行时配置 | `config/runtime.go`、`config/config.go` | 监听参数由 `DeploymentConfig` 提供；业务配置的运行时形态是 `RuntimeConfig`（含 Credentials/Targets/DomainRules/TAG/Interval/DNS/DNS timeout/DNS fail threshold/LogLevel/SyncEnabled/Theme/Email/Webhook），`Config` 只保留启动期读取用途且已删除凭据冗余字段 | Step 2、5 | 字段混装**已解除（Step 2）**；分次 reload**已解除（Step 5）** |
 | 云凭据 | `provider/common.go` | `provider.Credentials` 为不可变值类型；`credentials.go` 与 `SetCredentials`/四个 getter/包级变量已删除；连接测试、资源扫描、正式同步与 Dry Run 都只读同一显式凭据模型 | Step 5 | **已解除（Step 5）** |
 | SDK Client 复用 | `provider/common.go` 的 `ClientPool` | pool 在创建时接收不可变凭据、无 setter，`CacheKey` 至少区分 cloud type、region 与账户标识；四个 Provider 与 `scan.go` 的 client 闭包只读 pool 内凭据 | Step 5 | **已解除（Step 5）** |
-| 同步热重载与运行时状态 | `syncer/state.go`、`syncer/syncer.go`、`syncer/retry.go`、`webui/api/coordinator.go` | `RuntimeState`（Config/Pool/Providers/Resolver/Breaker）发布后不可修改，`RuntimeManager` 单锁替换指针；同步轮次、Dry Run、连接测试与资源扫描各只取一次快照；`Reload`/`ReloadProviders`/`ReloadResolver` 已删除；调度收敛为单一可合并控制通知 | Step 1、4、5 | TAG 快照**已解除（Step 1）**；写入串行化**已解除（Step 4）**；完整原子替换**已解除（Step 5）** |
+| 同步热重载与运行时状态 | `syncer/state.go`、`syncer/syncer.go`、`syncer/retry.go`、`webui/api/coordinator.go`、`webui/api/sync.go` | `RuntimeState`（Config/Pool/Providers/Resolver/Breaker）发布后不可修改，`RuntimeManager` 单锁替换指针；同步轮次、Dry Run、连接测试与资源扫描各只取一次快照；`Reload`/`ReloadProviders`/`ReloadResolver` 已删除；调度收敛为单一可合并控制通知；Step 7 起 Run 的过渡前值改用本循环已处理相位（不再用已发布镜像），ticker 分支与 trigger 分支共用已发布状态守卫，pause/resume 的运行时写入口只经协调器（handler 不再二次调用 `Syncer.Pause/Resume`） | Step 1、4、5、7 | TAG 快照**已解除（Step 1）**；写入串行化**已解除（Step 4）**；完整原子替换**已解除（Step 5）**；A7 恢复立即一轮、A6 ticker 守卫、A5 单一写入口**已解除（Step 7）** |
 | EventBus/SSE | `notifier/bus.go`、`webui/api/sync.go` | 取消订阅不再关闭 channel；SSE 的 `select` 已加入服务器级 shutdown channel，关闭时主动退出并 `defer unsubscribe()` | Step 1、3 | panic 窗口**已解除（Step 1）**；SSE shutdown 信号**已解除（Step 3）** |
 | 日志 SSE | `webui/api/logstream.go` | 广播器锁内发送/关闭无同类 panic；handler 已监听服务器级 shutdown channel 并主动退出 | Step 3 | **已解除（Step 3）** |
 | 日志级别 | `app/logutil.go`、`webui/api/logstream.go` | stdout 使用 `slog.LevelVar`、日志流级别改为线程安全 `*slog.LevelVar`，设置保存后即时生效 | Step 4 | **已解除（Step 4）** |
 | DNS 熔断阈值 | `dns/circuitbreaker.go`、`syncer/syncer.go` | `SetThreshold` 线程安全更新且保留既有失败计数，经 `Syncer.SetDNSFailThreshold` 应用 | Step 4 | **已解除（Step 4）** |
 | HTTP listener | `webui/server.go` | 已改为 `Start()` 同步 `net.Listen` + 同一 listener 交给 `Serve`，仅 `EADDRINUSE` 降级；显式 `http.Server`、`Wait()`、幂等 `Shutdown()`、超时强制 `Close` 齐备 | Step 3 | **已解除（Step 3）** |
-| 普通 API 解码 | `webui/api/decode.go` | 已统一 `decodeJSONStrict`（`DisallowUnknownFields`、拒绝尾随/多顶层值；普通请求 1 MiB、配置导入 10 MiB，超限 413）与 `parsePathID`（`Atoi` 且 >0）；请求 DTO 不再含数据库 `id` | Step 4 | **已解除（Step 4）** |
+| 普通 API 解码 | `webui/api/decode.go` | 已统一 `decodeJSONStrict`（`DisallowUnknownFields`、拒绝尾随/多顶层值；普通请求 1 MiB、配置导入 10 MiB，超限 413）与 `parsePathID`（`Atoi` 且 >0）；请求 DTO 不再含数据库 `id`；Step 7 新增 `decodeJSONObjectStrict`（顶层必须是 JSON 对象），供 reset 显式拒绝 `null` 与数组/标量 | Step 4、7 | **已解除（Step 4）**；reset `null` **已解除（Step 7，Issue6 A10）** |
 | settings/alerts | `webui/api/settings.go`、`alerts.go`、`coordinator.go` | settings 使用 11 个 pointer 字段固定 DTO 并在单事务写入（未知键 400、省略不变、仅凭据可显式空串）；alerts 要求两对象全子字段必需并单事务覆盖；两者均经协调器 commit 后只 apply 一次 | Step 2、4 | `webui_port` 入口**已解除（Step 2）**；任意 map 键与部分成功**已解除（Step 4）** |
-| 配置包协议 | `webui/api/bundle_v2.go`、`webui/api/export.go` | `POST /api/config/export` 在只读事务内导出 v2 完整敏感快照（ID 与 `target_export_ids` 升序、marshal 先于写头、`no-store`、固定附件名）；导入使用 presence DTO + 10 MiB 严格解码 + 预校验 + 固定顺序事务 + `LastInsertId` 映射；version 1 及其他版本 400 | Step 4、5 | 严格解码与协调器接入**已解除（Step 4）**；v2 协议与 ID 映射**已解除（Step 5）** |
+| 配置包协议 | `webui/api/bundle_v2.go`、`webui/api/export.go`、`webui/api/coordinator.go` | `POST /api/config/export` 在只读事务内导出 v2 完整敏感快照（ID 与 `target_export_ids` 升序、marshal 先于写头、`no-store`、固定附件名）；导入使用 presence DTO + 10 MiB 严格解码 + 预校验 + 固定顺序事务 + `LastInsertId` 映射；version 1 及其他版本 400；Step 7 起导入经 `MutateImport`（`BreakerReset`）清空 DNS 熔断计数，普通变更经 `Mutate`（`BreakerPreserve`）保留计数 | Step 4、5、7 | 严格解码与协调器接入**已解除（Step 4）**；v2 协议与 ID 映射**已解除（Step 5）**；导入/普通变更熔断策略**已解除（Step 7，Issue6 A8）** |
 | 前端导入导出 | `webui/frontend/src/views/Settings.vue` | 设置保存为 11 键白名单 payload（Step 4）；导入/导出均为危险级卡片确认（`type="error"`，文案列出四类密钥），导出走 `POST + fetch + Blob` 并从 `Content-Disposition` 解析安全文件名（含固定 fallback），导入成功整页 reload、失败不 reload | Step 4、5 | 设置保存 payload**已解除（Step 4）**；敏感快照与整页刷新**已解除（Step 5）** |
 | 前端依赖 | `webui/frontend/package*.json`、`build/Dockerfile`、`.github/workflows/docker-publish.yml` | Step 6 阶段 A 只改 lockfile：`nanoid 3.3.16→3.3.19`、`brace-expansion 2.1.2→2.1.7`；阶段 B：`vite ^5.4.0→^8.3.1`、`@vitejs/plugin-vue ^5.0.0→^6.0.9` 并重生成 lockfile（`esbuild`/`rollup` 移除，改由 `rolldown 1.2.10` + `lightningcss 1.33.0`）；`vue`/`vue-router`/`naive-ui`/`typescript`/`vue-tsc` 未改动；Node 固定为 `node:24.21-alpine` / `node-version: '24.21.0'`；完整 audit 与 `--omit=dev` audit 均 0 漏洞；CI 已增加两个阻断式 audit 门禁；Docker 构建、容器 health/stop 及用户真机浏览器回归通过 | Step 6 | **已解除（Step 6 于 2026-09-27 验收通过）** |
 
@@ -1211,7 +1264,7 @@ type RuntimeState struct {
 4. `Providers`、`Targets`、`DomainRules` 等 slice 在发布前深拷贝；不得把可继续 append/修改的请求 DTO slice 直接放入状态；
 5. `ClientPool` 持有创建时的不可变 `Credentials`，SDK client 的 cache key 至少区分 cloud type、region 和账户标识；不得再读取包级全局凭据；
 6. 连接测试和扫描可按请求目标临时创建 Provider，但必须使用请求开始时取得的同一 `RuntimeState.Pool/Credentials`；不得重新从数据库零散读取四个密钥；
-7. 普通配置变更保留既有 DNS 熔断计数；阈值变更通过线程安全 clone/setter 生效。完整导入允许创建新 breaker 并清空计数；
+7. 普通配置变更保留既有 DNS 熔断计数；阈值变更通过线程安全 clone/setter 生效。完整导入**确定**新建 breaker 并清空计数（`ConfigCoordinator.MutateImport` → `syncer.BreakerReset`，Step 7 / Issue6 A8）；
 8. `theme` 是业务配置但不参与同步器；仍属于导入导出完整快照；
 9. `sync_enabled` 的持久化真值在 SQLite，运行时镜像由统一协调器在 commit 后应用；pause/resume 不绕开该协调器。
 
@@ -1439,7 +1492,7 @@ type RuleWire struct {
 - `GET /api/alerts` 返回完整 `email` 与 `webhook` 对象；`PUT /api/alerts` 两个对象均为必需字段且每个子字段都必需，一次事务覆盖保存，不能用 `null` 表示“不改”；
 - 目标/规则 POST/PUT 使用不含 `id` 的 request DTO；响应中的持久化对象可包含 DB ID；客户端提交 `id` 属于未知字段并返回 400；
 - test-connection request 固定为 `cloud_type/region/resource_id` 三字段；scan request 固定为 `cloud_type/region` 两字段；均走 1 MiB/严格解码和 §四基础校验；
-- `POST /api/config/reset` 接受单一空对象 `{}`；未知字段或非对象返回 400；成功前通过协调器完成新空状态 Apply；
+- `POST /api/config/reset` 只接受单一空对象 `{}`；未知字段、`null`、数组、标量与其他非对象一律 400（`decodeJSONObjectStrict`，Step 7 / Issue6 A10）；成功前通过协调器完成新空状态 Apply；
 - 成功消息可保持现有 `{ "message": "..." }` 形态；错误统一为 `{ "error": "安全文案" }`，前端不得依赖数据库/SDK 原始错误全文。
 
 设置部分更新的参考 DTO：
@@ -1669,3 +1722,4 @@ Build6 最终关闭前，必须能从本文追溯：
 | 2026-09-23 | Step 1～3 验收：并发/race 基线、CLI 与 `.env` Headless 移除、HTTP 生命周期和优雅关闭完成。 |
 | 2026-09-24 | Step 4～6 工程与自动门禁完成：严格 API/事务、version 2 与原子运行时、Vite 8 升级、Docker/Node 24 验收。 |
 | 2026-09-27 | 用户真机确认浏览器、真实云/DNS/同步链路通过，Step 5、Step 6 验收完成；跨实例人工迁移免除，Email/SMTP/收件箱与 Webhook 移交 Step 7/后续清单。 |
+| 2026-09-27 | Step 7 自动补测、统一门禁、真实二进制/Docker 容器验收与文档闭环完成（`provider` 覆盖率 22.6%→53.0%，11 包 race 全绿，镜像 `fwalizer:build6-step7` 74.1MB）；按用户确认边界最小修复 Issue6 A10/A5/A7/A6/A8（reset 拒绝 `null`、pause/resume 单一运行时写入口、恢复立即一轮、ticker 已发布状态守卫、完整导入重置 DNS 熔断计数），A1/A2/A3/A4/A9/A11～A19 继续留在 Issue6；PT-B6-08/09 真实 SMTP/收件箱与 Webhook 待用户真机执行，故 Step 7 保持 ◧ 进行中。 |

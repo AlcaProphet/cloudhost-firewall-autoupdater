@@ -172,7 +172,9 @@ func (d *Deps) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 // 只接受单一空对象 `{}`；未知字段或非对象返回 400（Build6 §12.9）。
 func (d *Deps) handleConfigReset(w http.ResponseWriter, r *http.Request) {
 	var req struct{}
-	if err := decodeJSONStrict(w, r, maxJSONBodyBytes, &req); err != nil {
+	// 必须用 decodeJSONObjectStrict：encoding/json 会把 JSON null 解码到结构体而不报错，
+	// 只用 decodeJSONStrict 会让 null 通过并执行全量清空（Issue6 A10）。
+	if err := decodeJSONObjectStrict(w, r, maxJSONBodyBytes, &req); err != nil {
 		writeRequestError(w, err)
 		return
 	}

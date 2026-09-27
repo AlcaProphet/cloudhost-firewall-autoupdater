@@ -8,14 +8,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 )
@@ -101,46 +99,48 @@ func TestHandleSyncTrigger_Enabled(t *testing.T) {
 	}
 }
 
-// TestHandleSyncPauseResume pause/resume 端点：200 + settings 表持久化
+// TestHandleSyncPauseResume pause/resume 端点：先写库，再经协调器只发布一次运行时状态。
+//
+// Step 7（Issue6 A5）：handler 不得在协调器之外再调用 Syncer.Pause()/Resume() 二次改写
+// 运行时开关，否则并发导入/恢复时迟到的第二次写入会覆盖后提交的真值，造成
+// SQLite sync_enabled 与运行时状态分裂。
 func TestHandleSyncPauseResume(t *testing.T) {
-	store, err := config.OpenStore(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("OpenStore 失败: %v", err)
-	}
-	defer store.Close()
-	s := &stubSyncer{enabled: true}
-	d := &Deps{Store: store, Syncer: s}
+	e := newTestEnv(t)
+	spy := &stubSyncer{enabled: true, runtime: e.runtime}
+	e.deps.Syncer = spy
 
 	// 暂停
-	w := doPost(t, d, "/api/sync/pause")
-	if w.Code != http.StatusOK {
-		t.Errorf("pause 状态码 = %d, want 200", w.Code)
+	if w := e.do(t, http.MethodPost, "/api/sync/pause", ""); w.Code != http.StatusOK {
+		t.Fatalf("pause 状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
-	if !s.paused.Load() {
-		t.Error("Syncer.Pause 应被调用")
+	if settings, _ := e.store.GetSettings(); settings["sync_enabled"] != "false" {
+		t.Errorf("sync_enabled = %q, want false", settings["sync_enabled"])
 	}
-	settings, err := store.GetSettings()
-	if err != nil {
-		t.Fatalf("GetSettings 失败: %v", err)
+	if st := e.snapshot(); st == nil || st.Config.SyncEnabled {
+		t.Errorf("pause 后已发布运行时状态必须为暂停: %+v", st)
 	}
-	if settings["sync_enabled"] != "false" {
-		t.Errorf("sync_enabled = %s, want false", settings["sync_enabled"])
+	if spy.paused.Load() {
+		t.Error("pause 不得在协调器之外二次调用 Syncer.Pause() 改写运行时开关")
+	}
+	if got := e.applyCount(); got != 1 {
+		t.Errorf("pause 应只经协调器发布一次运行时状态，实际 %d", got)
 	}
 
 	// 恢复
-	w = doPost(t, d, "/api/sync/resume")
-	if w.Code != http.StatusOK {
-		t.Errorf("resume 状态码 = %d, want 200", w.Code)
+	if w := e.do(t, http.MethodPost, "/api/sync/resume", ""); w.Code != http.StatusOK {
+		t.Fatalf("resume 状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
-	if !s.resumed.Load() {
-		t.Error("Syncer.Resume 应被调用")
+	if settings, _ := e.store.GetSettings(); settings["sync_enabled"] != "true" {
+		t.Errorf("sync_enabled = %q, want true", settings["sync_enabled"])
 	}
-	settings, err = store.GetSettings()
-	if err != nil {
-		t.Fatalf("GetSettings 失败: %v", err)
+	if st := e.snapshot(); st == nil || !st.Config.SyncEnabled {
+		t.Errorf("resume 后已发布运行时状态必须为开启: %+v", st)
 	}
-	if settings["sync_enabled"] != "true" {
-		t.Errorf("sync_enabled = %s, want true", settings["sync_enabled"])
+	if spy.resumed.Load() {
+		t.Error("resume 不得在协调器之外二次调用 Syncer.Resume() 改写运行时开关")
+	}
+	if got := e.applyCount(); got != 2 {
+		t.Errorf("resume 后累计发布次数 = %d, want 2", got)
 	}
 }
 

@@ -265,7 +265,11 @@ func TestPutAlertsSuccessOneReload(t *testing.T) {
 
 // TestConfigResetStrictBody 只接受单一空对象，且清空全部业务表并一次 reload
 func TestConfigResetStrictBody(t *testing.T) {
-	for _, body := range []string{`{"unknown":1}`, `{"webui_port":"1"}`, ``} {
+	// null 尤其关键：encoding/json 把 null 解码到结构体不报错，必须被显式拒绝（Issue6 A10）
+	for _, body := range []string{
+		`{"unknown":1}`, `{"webui_port":"1"}`, ``,
+		`null`, `  null  `, `[]`, `[{}]`, `1`, `"str"`, `true`,
+	} {
 		e := newTestEnv(t)
 		e.seedTarget(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-1")
 		w := e.do(t, http.MethodPost, "/api/config/reset", body)

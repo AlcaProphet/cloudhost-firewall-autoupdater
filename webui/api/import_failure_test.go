@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 )
 
 // importState 记录一次导入前的旧配置，用于断言失败注入后完整保留。
@@ -198,7 +199,7 @@ func TestConfigImportCandidateConstructionFailureRollsBack(t *testing.T) {
 	before := captureImportState(t, e)
 
 	applied := 0
-	failing := NewConfigCoordinator(e.store, func(*config.BusinessSnapshot) (Candidate, error) {
+	failing := NewConfigCoordinator(e.store, func(*config.BusinessSnapshot, syncer.BreakerPolicy) (Candidate, error) {
 		return Candidate{}, ErrRuntimeCandidateUnsupported
 	}, func(Candidate) error {
 		applied++

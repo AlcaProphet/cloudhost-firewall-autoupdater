@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -279,6 +281,67 @@ func TestHTTPRoutesRegression(t *testing.T) {
 	}
 	if !strings.Contains(body, "<div id=\"app\">") {
 		t.Errorf("SPA 根页面未返回 index.html 内容: %.120q", body)
+	}
+}
+
+// assetRefPattern 匹配 index.html 中引用的哈希资源（src/href="/assets/..."）。
+var assetRefPattern = regexp.MustCompile(`(?:src|href)="(/assets/[^"]+)"`)
+
+// referencedAssets 提取 index.html 引用的去重资源路径。
+func referencedAssets(body string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range assetRefPattern.FindAllStringSubmatch(body, -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
+// TestStaticAssetsServedFromEmbed Step 7「静态资源」：内嵌 dist 的哈希资源必须真实可取回，
+// 不只是根页面可访问——覆盖前面路由测试只断言 GET / 的空白。
+func TestStaticAssetsServedFromEmbed(t *testing.T) {
+	distFS, err := fs.Sub(frontendFS, "frontend/dist")
+	if err != nil {
+		t.Fatalf("定位内嵌 dist 失败: %v", err)
+	}
+	assets, err := fs.Glob(distFS, "assets/*.js")
+	if err != nil {
+		t.Fatalf("枚举内嵌 JS 资源失败: %v", err)
+	}
+	if len(assets) == 0 {
+		t.Fatal("内嵌 dist 中没有 assets/*.js：请先执行前端生产构建（npm run build）")
+	}
+
+	_, port := startTestServer(t, newTestServerWithStore(t, freeTCPPort(t)))
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+
+	// 1) index.html 实际引用的每个资源都必须 200 且非空
+	indexBody, status := httpGet(t, base+"/")
+	if status != http.StatusOK {
+		t.Fatalf("GET / = %d, want 200", status)
+	}
+	referenced := referencedAssets(indexBody)
+	if len(referenced) == 0 {
+		t.Fatalf("index.html 未引用任何 /assets 资源: %.200q", indexBody)
+	}
+	for _, path := range referenced {
+		body, status := httpGet(t, base+path)
+		if status != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200", path, status)
+		}
+		if strings.TrimSpace(body) == "" {
+			t.Errorf("GET %s 返回空内容", path)
+		}
+	}
+
+	// 2) 内嵌 dist 中实际存在的全部 JS 资源都必须可取回（不能有 404）
+	for _, path := range assets {
+		if _, status := httpGet(t, base+"/"+path); status != http.StatusOK {
+			t.Errorf("GET /%s = %d, want 200", path, status)
+		}
 	}
 }
 

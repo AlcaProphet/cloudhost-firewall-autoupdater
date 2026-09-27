@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +15,59 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 )
+
+// alertReloadSubscriber 告警订阅测试替身：记录事件、进入回调时发信号，
+// 并可在回调内阻塞以精确制造「Apply 之前的在途通知」。
+//
+// 用 channel 屏障替代 sleep 猜时序（Build6 §12.16）。
+type alertReloadSubscriber struct {
+	mu      sync.Mutex
+	events  []notifier.Event
+	entered chan struct{}
+	done    chan struct{}
+	block   chan struct{} // 非 nil 时每次回调先等待其关闭
+}
+
+func newAlertReloadSubscriber(buffer int) *alertReloadSubscriber {
+	return &alertReloadSubscriber{
+		entered: make(chan struct{}, buffer),
+		done:    make(chan struct{}, buffer),
+	}
+}
+
+func (s *alertReloadSubscriber) OnEvent(ev notifier.Event) error {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	if s.block != nil {
+		<-s.block
+	}
+	s.mu.Lock()
+	s.events = append(s.events, ev)
+	s.mu.Unlock()
+	select {
+	case s.done <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (s *alertReloadSubscriber) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.events)
+}
+
+// waitSignal 在给定时限内等待信号，超时即判定断言失败。
+func waitSignal(t *testing.T, ch <-chan struct{}, msg string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal(msg)
+	}
+}
 
 // alertConfig 构造带启用告警的运行时配置（SMTP/Webhook 指向必然不可达的地址）。
 func alertConfig(emailEnabled, webhookEnabled bool) config.RuntimeConfig {
@@ -167,7 +221,7 @@ func TestCoordinatorBuildsCandidateBeforeCommit(t *testing.T) {
 	var observedTag string
 	commitFinished := false
 	var appliedCount atomic.Int32
-	coord := NewConfigCoordinator(e.store, func(snapshot *config.BusinessSnapshot) (Candidate, error) {
+	coord := NewConfigCoordinator(e.store, func(snapshot *config.BusinessSnapshot, _ syncer.BreakerPolicy) (Candidate, error) {
 		if commitFinished {
 			t.Errorf("候选构造不得发生在 commit 之后")
 		}
@@ -210,7 +264,7 @@ func TestCoordinatorNoApplyOnCandidateError(t *testing.T) {
 	e := newTestEnv(t)
 
 	applied := 0
-	coord := NewConfigCoordinator(e.store, func(*config.BusinessSnapshot) (Candidate, error) {
+	coord := NewConfigCoordinator(e.store, func(*config.BusinessSnapshot, syncer.BreakerPolicy) (Candidate, error) {
 		return Candidate{}, errors.New("candidate failed")
 	}, func(Candidate) error {
 		applied++
@@ -262,5 +316,59 @@ func TestAlertManagerEnabledChannelsMetadata(t *testing.T) {
 	}
 	if toAddr == "smtp-password-secret" || channel == "http://127.0.0.1:1/hook-secret" {
 		t.Errorf("安全日志元数据不得包含密钥或 URL")
+	}
+}
+
+// TestAlertManagerApplyBoundaryInFlightAndNewSubscriptions Step 7「告警热重载边界」：
+//
+//   - Apply 之前已经取得 EventBus 快照的在途通知必须允许正常完成（不取消、不等待）；
+//   - Apply 之后的新事件只投递给新订阅集合，旧订阅者不再收到任何事件。
+func TestAlertManagerApplyBoundaryInFlightAndNewSubscriptions(t *testing.T) {
+	bus := notifier.NewEventBus()
+	manager := NewAlertManager(bus)
+
+	old := newAlertReloadSubscriber(4)
+	old.block = make(chan struct{})
+	manager.Apply(alertSet{email: old, emailToAddr: "old@example.com"})
+
+	// 旧订阅已安装：第一次发布进入旧订阅者回调并阻塞在那里，形成真正的「在途通知」
+	bus.Publish(notifier.Event{Type: notifier.EventSyncError, Timestamp: time.Now()})
+	waitSignal(t, old.entered, "旧订阅者未收到 Apply 之前发布的事件")
+
+	// 热重载：取消旧订阅、安装新订阅（在途通知仍阻塞中）
+	fresh := newAlertReloadSubscriber(4)
+	manager.Apply(alertSet{email: fresh, emailToAddr: "new@example.com"})
+
+	// Apply 之后的新发布只能投递给新订阅者
+	bus.Publish(notifier.Event{Type: notifier.EventSyncError, Timestamp: time.Now()})
+	waitSignal(t, fresh.done, "新订阅者未收到热重载后的事件")
+	if got := fresh.count(); got != 1 {
+		t.Fatalf("新订阅者事件数 = %d, want 1", got)
+	}
+	if got := old.count(); got != 0 {
+		t.Fatalf("在途通知被阻塞期间旧订阅者不应完成，实际 %d", got)
+	}
+
+	// 放行在途通知：旧订阅者的这一次通知必须允许完成
+	close(old.block)
+	waitSignal(t, old.done, "热重载不得取消 Apply 之前的在途通知")
+	if got := old.count(); got != 1 {
+		t.Fatalf("在途通知应恰好完成一次，实际 %d", got)
+	}
+
+	// 在途通知完成后再发布：旧订阅者不得再收到任何事件
+	bus.Publish(notifier.Event{Type: notifier.EventSyncError, Timestamp: time.Now()})
+	waitSignal(t, fresh.done, "新订阅者未收到第二次事件")
+	time.Sleep(100 * time.Millisecond) // 给可能存在的陈旧快照投递留出窗口
+	if got := fresh.count(); got != 2 {
+		t.Errorf("新订阅者事件数 = %d, want 2", got)
+	}
+	if got := old.count(); got != 1 {
+		t.Errorf("热重载后旧订阅者不得再收到事件，实际 %d", got)
+	}
+
+	// 安全日志元数据只含新收件人
+	if _, _, toAddr, _ := manager.enabledChannels(); toAddr != "new@example.com" {
+		t.Errorf("热重载后安全日志元数据未更新: %q", toAddr)
 	}
 }

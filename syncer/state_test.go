@@ -104,13 +104,31 @@ func newControlSyncer(t *testing.T, p provider.Provider, interval time.Duration)
 	return New(NewRuntimeManager(st))
 }
 
-// startRun 启动 Run 并在清理时 Stop/Wait
+// stopRunBounded 在有界时间内停止并等待 Run 退出。
+//
+// 测试清理必须自身有界（Build6 Step 7 / Issue6 A6）：若某轮次因测试失败仍被阻塞，
+// 无界的 Stop();Wait() 会让整个包挂到 go test 超时，看不到真正的失败原因。
+func stopRunBounded(t *testing.T, s *Syncer, timeout time.Duration) {
+	t.Helper()
+	s.Stop()
+	done := make(chan struct{})
+	go func() {
+		s.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		t.Fatalf("Syncer 在 %s 内未退出：测试清理必须有界（当前轮次可能仍被阻塞）", timeout)
+	}
+}
+
+// startRun 启动 Run，并在清理时有界地 Stop/Wait
 func startRun(t *testing.T, s *Syncer) {
 	t.Helper()
 	go s.Run()
 	t.Cleanup(func() {
-		s.Stop()
-		s.Wait()
+		stopRunBounded(t, s, 10*time.Second)
 	})
 }
 
@@ -275,6 +293,115 @@ func TestStaleTriggerAfterPauseDoesNotAddRound(t *testing.T) {
 	time.Sleep(600 * time.Millisecond)
 	if got := p.calls.Load(); got != baseline+1 {
 		t.Fatalf("恢复后应恰好新增 1 轮（陈旧 trigger 必须被丢弃）: %d → %d", baseline, got)
+	}
+}
+
+// TestStopWaitsForBlockedRound Step 7「停止时等待当前轮次」：
+// Stop() 必须在轮次进行中立即阻止新一轮，但 Wait() 必须等当前轮次真正完成才返回。
+func TestStopWaitsForBlockedRound(t *testing.T) {
+	p := newCountingProvider(config.CloudTCCVM, true) // 首次 GetRules 阻塞
+	st := gatedState(t, true, time.Hour)
+	st.Providers = []provider.Provider{p}
+	s := New(NewRuntimeManager(st))
+	go s.Run()
+	waitForCalls(t, p, 1, "启用态启动未开始首轮")
+
+	select {
+	case <-p.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("首轮未进入阻塞的 Describe")
+	}
+
+	s.Stop()
+
+	waited := make(chan struct{})
+	go func() {
+		s.Wait()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+		t.Fatal("Wait 在当前轮次完成前返回（必须等待当前轮次）")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// 放行当前轮次：Wait 必须随即返回（有界）
+	p.release <- struct{}{}
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("放行当前轮次后 Wait 未返回")
+	}
+
+	if got := p.calls.Load(); got != 1 {
+		t.Errorf("停止后不得启动新一轮: GetRules = %d, want 1", got)
+	}
+}
+
+// TestResumeImmediateRoundAfterPhaseMirrorAdvance Step 7（Issue6 A7）：
+// false → true 必须立即启动一轮，即使已发布的开关镜像在 Run 读取下一次过渡前值
+// 之前就已推进（Build6 §12.5「false → true：更新 ticker 后立即触发一轮」）。
+//
+// 用 SetStateAppliedHook 作为确定性屏障：hook 在 Run 消费控制消息并完成调度决策后触发，
+// 因此可在「Run 刚完成一次过渡」与「Run 下一次读取过渡前值」之间注入一次已提交的
+// 暂停 + 恢复，精确复现"镜像先于循环相位推进"的交错，而不是靠 sleep 猜时序。
+func TestResumeImmediateRoundAfterPhaseMirrorAdvance(t *testing.T) {
+	p := newCountingProvider(config.CloudTCCVM, false)
+	s := newControlSyncer(t, p, time.Hour)
+
+	var applied atomic.Int32
+	s.SetStateAppliedHook(func(*RuntimeState) {
+		switch applied.Add(1) {
+		case 1:
+			// 首轮（false → true）应用完成后立即提交一次暂停
+			s.ApplyState(stateWithProvider(t, s, false, time.Hour))
+		case 2:
+			// 暂停生效后立即提交恢复：此时 Run 尚未读取下一次过渡前值
+			s.ApplyState(stateWithProvider(t, s, true, time.Hour))
+		}
+	})
+
+	startRun(t, s)
+
+	// 前置：暂停态启动不自动同步
+	select {
+	case <-p.started:
+		t.Fatal("暂停启动不应自动同步")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	s.ApplyState(stateWithProvider(t, s, true, time.Hour))
+	waitForCalls(t, p, 1, "恢复未触发首轮")
+
+	// 钩子注入的暂停/恢复交错之后，恢复必须再次立即启动一轮
+	waitForCalls(t, p, 2, "镜像先于循环相位推进时恢复漏掉了立即一轮")
+}
+
+// TestPausedPublishedStateDropsTickerRound Step 7 / AGENTS §五「暂停时 ticker 与手动
+// trigger 均不触发同步」，对应 Issue6 A6 的 ticker 分支守卫。
+//
+// 确定性交错：直接用 RuntimeManager 发布一个已暂停状态（模拟「暂停已提交、但控制通知
+// 尚未被 Run 消费」的窗口），此时 Run 的本地相位仍是启用态、且没有任何待处理通知。
+// 定时器随后到期时必须被丢弃，不能启动一轮已暂停的同步。
+func TestPausedPublishedStateDropsTickerRound(t *testing.T) {
+	p := newCountingProvider(config.CloudTCCVM, false)
+	st := gatedState(t, true, 50*time.Millisecond) // 启用态 + 50ms 间隔，便于定时器多次到期
+	st.Providers = []provider.Provider{p}
+	s := New(NewRuntimeManager(st))
+	startRun(t, s)
+
+	waitForCalls(t, p, 1, "启用态启动未执行首轮")
+
+	// 已提交暂停：只发布真值，不投递控制通知（模拟消费前的窗口）
+	s.Runtime().Apply(stateWithProvider(t, s, false, 50*time.Millisecond))
+	if s.IsEnabled() {
+		t.Fatal("前置条件：已发布状态必须为暂停")
+	}
+
+	// 观察窗口覆盖至少 8 个定时器周期：暂停期间不得启动任何新一轮
+	time.Sleep(400 * time.Millisecond)
+	if got := p.calls.Load(); got != 1 {
+		t.Fatalf("暂停已提交时定时触发不得启动新轮次: GetRules = %d, want 1", got)
 	}
 }
 

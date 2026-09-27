@@ -1,7 +1,9 @@
 package notifier
 
 import (
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -16,6 +18,29 @@ func (m *mockSubscriber) OnEvent(event Event) error {
 	defer m.mu.Unlock()
 	m.events = append(m.events, event)
 	return nil
+}
+
+// count 返回已记录的事件数（并发安全）。
+func (m *mockSubscriber) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.events)
+}
+
+// failingSubscriber 回调固定返回错误的订阅者：用于验证 Subscriber 错误隔离
+// （Build6 Step 7：错误只记录 WARN，不影响同类型其他订阅者，也不破坏总线可用性）。
+type failingSubscriber struct {
+	calls  atomic.Int32
+	notify chan struct{}
+}
+
+func (s *failingSubscriber) OnEvent(Event) error {
+	s.calls.Add(1)
+	select {
+	case s.notify <- struct{}{}:
+	default:
+	}
+	return errors.New("订阅者故意失败")
 }
 
 func TestEventBus_Publish(t *testing.T) {
@@ -356,6 +381,31 @@ func TestEventBus_InterfaceSubscribeConcurrentWithPublish(t *testing.T) {
 	}
 	close(start)
 	wg.Wait()
+
+	// 压力阶段不做数量断言：订阅窗口重叠，且 Publish 取得的在途快照会在压力结束后
+	// 继续异步投递（§12.14 明确不承诺"最多一个在途事件"），因此不能断言
+	// "取消后旧订阅者不再收到任何事件"。
+	// 这里只断言读取快照路径确实投递过事件，避免该回归用例在非 -race 下"零断言"通过。
+	var delivered int
+	for _, s := range subs {
+		delivered += s.count()
+	}
+	if delivered == 0 {
+		t.Fatal("并发订阅/取消期间没有任何投递，读取快照路径可能已失效")
+	}
+
+	// 压力结束后总线必须仍然可用：新订阅者能收到后续事件
+	fresh := &mockSubscriber{}
+	bus.Subscribe(EventSyncComplete, fresh)
+	bus.Publish(Event{Type: EventSyncComplete, Timestamp: time.Now()})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for fresh.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := fresh.count(); got != 1 {
+		t.Fatalf("压力结束后新订阅者投递数 = %d, want 1", got)
+	}
 }
 
 // TestEventBus_FullBufferDoesNotBlock 缓冲已满的慢 channel：非阻塞投递，满则跳过本次事件
@@ -428,4 +478,51 @@ func TestEventBus_SlowCallbackDoesNotHoldLock(t *testing.T) {
 		t.Fatal("慢回调阻塞了 EventBus 全局锁")
 	}
 	close(sub.release)
+}
+
+// ─── Step 7：Subscriber 错误隔离 ───
+
+// TestEventBus_SubscriberErrorIsolation 订阅者返回错误时必须被隔离：
+// 错误只由 EventBus 记录 WARN（bus.go 中 Publish 的异步回调），
+// 既不影响同事件类型的其他订阅者，也不破坏总线后续可用性。
+func TestEventBus_SubscriberErrorIsolation(t *testing.T) {
+	bus := NewEventBus()
+	bad := &failingSubscriber{notify: make(chan struct{}, 4)}
+	good := &mockSubscriber{}
+
+	bus.Subscribe(EventSyncError, bad)
+	bus.Subscribe(EventSyncError, good)
+
+	bus.Publish(Event{
+		Type:      EventSyncError,
+		Timestamp: time.Now(),
+		Data:      map[string]any{"domain": "example.com"},
+	})
+
+	// 确定性等待两个订阅者都被调用：错误订阅者不得阻断同类型其他订阅者
+	select {
+	case <-bad.notify:
+	case <-time.After(5 * time.Second):
+		t.Fatal("错误订阅者未被调用")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for good.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := bad.calls.Load(); got != 1 {
+		t.Errorf("错误订阅者调用次数 = %d, want 1", got)
+	}
+	if got := good.count(); got != 1 {
+		t.Fatalf("错误订阅者的返回值影响了其他订阅者：收到 %d 个事件, want 1", got)
+	}
+
+	// 错误回调之后总线仍然可用：再次发布必须继续投递
+	bus.Publish(Event{Type: EventSyncError, Timestamp: time.Now()})
+	deadline = time.Now().Add(5 * time.Second)
+	for good.count() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := good.count(); got != 2 {
+		t.Errorf("错误回调后事件总线不可用：收到 %d 个事件, want 2", got)
+	}
 }

@@ -111,7 +111,9 @@ func (d *Deps) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 
 	storeSettings := bundleSettingsToStore(bundle.Settings)
 
-	err = d.coordinator().Mutate(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
+	// 完整导入使用 MutateImport：候选状态 BreakerReset，清空原 DNS 熔断失败计数
+	// （Build6 §12.3 第 7 条、Issue6 A8）。
+	err = d.coordinator().MutateImport(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
 		// 1) 按依赖顺序清空被覆盖的业务表（rules → targets → settings → 告警）
 		if derr := d.Store.DeleteImportOwnedTablesTx(ctx, tx); derr != nil {
 			return fmt.Errorf("清空旧配置失败: %w", derr)

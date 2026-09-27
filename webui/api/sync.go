@@ -36,8 +36,8 @@ func (d *Deps) handleSyncTrigger(w http.ResponseWriter, r *http.Request) {
 // handleSyncPause 暂停同步：经协调器写入 sync_enabled，commit 后原子发布新运行时状态。
 //
 // 协调器的 apply 会把 SyncEnabled=false 写进新的 RuntimeState 并通知 Run goroutine，
-// 因此「先写 DB 后生效」的语义不变；随后调用 Syncer.Pause() 只是幂等确认
-// （状态已为 false 时立即返回），保留它是为了让 api.Syncer 接口语义在测试替身下也成立。
+// 因此「先写 DB 后生效」的语义不变。**不得**在协调器之外再调用 Syncer.Pause()：
+// 那是第二次运行时写入，迟到时会覆盖后提交的真值，造成 SQLite 与运行时分裂（Issue6 A5）。
 func (d *Deps) handleSyncPause(w http.ResponseWriter, r *http.Request) {
 	if d.Syncer == nil {
 		writeError(w, http.StatusBadRequest, "同步引擎未启动")
@@ -50,13 +50,13 @@ func (d *Deps) handleSyncPause(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, err)
 		return
 	}
-	d.Syncer.Pause()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "同步已暂停"})
 }
 
 // handleSyncResume 恢复同步：经协调器写入 sync_enabled，commit 后原子发布新运行时状态。
 //
-// false → true 的转换由 Run goroutine 消费控制通知后立即触发一轮（与 Resume 语义一致）。
+// false → true 的转换由 Run goroutine 消费控制通知后立即触发一轮（Build6 §12.5）。
+// 同样不得在协调器之外再调用 Syncer.Resume()（Issue6 A5）。
 func (d *Deps) handleSyncResume(w http.ResponseWriter, r *http.Request) {
 	if d.Syncer == nil {
 		writeError(w, http.StatusBadRequest, "同步引擎未启动")
@@ -69,7 +69,6 @@ func (d *Deps) handleSyncResume(w http.ResponseWriter, r *http.Request) {
 		writeMutationError(w, err)
 		return
 	}
-	d.Syncer.Resume()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "同步已恢复"})
 }
 

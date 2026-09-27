@@ -512,3 +512,80 @@ func TestRuleChangeFromInfo(t *testing.T) {
 		t.Errorf("Port = %s, want 空串", c6.Port)
 	}
 }
+
+// ─── Step 7：纯转换补测（不访问真实云 API） ───
+
+// TestDiff_TCPUDPSplitForCVMAndECS 除 Lighthouse 外，CVM/ECS 同样必须拆分 TCP+UDP
+// （仅 SWAS 原生支持，见 TestDiff_SWASNoSplit）。
+func TestDiff_TCPUDPSplitForCVMAndECS(t *testing.T) {
+	resolved := []dns.ResolvedIP{{IP: net.ParseIP("1.2.3.4"), IsIPv6: false}}
+	rule := config.DomainRule{Host: "game.example.com", Protocol: "TCP+UDP", Ports: "8000", Action: "ACCEPT"}
+
+	for _, ct := range []config.CloudType{config.CloudTCCVM, config.CloudAliECS} {
+		t.Run(string(ct), func(t *testing.T) {
+			diff := Diff(resolved, rule, "[auto-dns] 游戏", nil, &mockProvider{cloudType: ct})
+			if len(diff.ToAdd) != 2 {
+				t.Fatalf("TCP+UDP 拆分后 ToAdd 数量 = %d, want 2", len(diff.ToAdd))
+			}
+			protocols := map[string]bool{}
+			for _, a := range diff.ToAdd {
+				protocols[a.Protocol] = true
+			}
+			if !protocols["TCP"] || !protocols["UDP"] {
+				t.Errorf("应同时包含 TCP 与 UDP, got %v", protocols)
+			}
+		})
+	}
+}
+
+// TestDiff_TCPUDPSplitMultiPortCartesian 拆分后的协议数 × 端口数必须是完整笛卡尔积。
+func TestDiff_TCPUDPSplitMultiPortCartesian(t *testing.T) {
+	resolved := []dns.ResolvedIP{
+		{IP: net.ParseIP("1.2.3.4"), IsIPv6: false},
+		{IP: net.ParseIP("2001:db8::1"), IsIPv6: true},
+	}
+	rule := config.DomainRule{Host: "game.example.com", Protocol: "TCP+UDP", Ports: "8000,9000", Action: "ACCEPT"}
+
+	diff := Diff(resolved, rule, "[auto-dns] 游戏", nil, &mockProvider{cloudType: config.CloudTCLighthouse})
+	// 2 地址族 × 2 协议（TCP/UDP）× 2 端口 = 8
+	if len(diff.ToAdd) != 8 {
+		t.Fatalf("笛卡尔积数量 = %d, want 8", len(diff.ToAdd))
+	}
+	seen := map[string]bool{}
+	for _, a := range diff.ToAdd {
+		cidr := a.CidrBlock
+		if cidr == "" {
+			cidr = a.Ipv6CidrBlock
+		}
+		seen[a.Protocol+"|"+a.Port+"|"+cidr] = true
+	}
+	if len(seen) != 8 {
+		t.Errorf("笛卡尔积存在重复组合: %v", seen)
+	}
+}
+
+// TestBuildDesired_AddressFamilyFieldMapping IPv4 只写 CidrBlock、IPv6 只写 Ipv6CidrBlock（字段互斥）。
+func TestBuildDesired_AddressFamilyFieldMapping(t *testing.T) {
+	resolved := []dns.ResolvedIP{
+		{IP: net.ParseIP("1.2.3.4"), IsIPv6: false},
+		{IP: net.ParseIP("2001:db8::1"), IsIPv6: true},
+	}
+	rule := config.DomainRule{Host: "api.example.com", Protocol: "TCP", Ports: "443", Action: "ACCEPT"}
+
+	got := buildDesired(resolved, rule, "[auto-dns] api", &mockProvider{cloudType: config.CloudTCCVM})
+	if len(got) != 2 {
+		t.Fatalf("期望规则数 = %d, want 2", len(got))
+	}
+
+	v4 := got[0]
+	if v4.CidrBlock != "1.2.3.4/32" || v4.Ipv6CidrBlock != "" {
+		t.Errorf("IPv4 规则字段错误: CidrBlock=%q Ipv6CidrBlock=%q", v4.CidrBlock, v4.Ipv6CidrBlock)
+	}
+	v6 := got[1]
+	if v6.Ipv6CidrBlock != "2001:db8::1/128" || v6.CidrBlock != "" {
+		t.Errorf("IPv6 规则字段错误: CidrBlock=%q Ipv6CidrBlock=%q", v6.CidrBlock, v6.Ipv6CidrBlock)
+	}
+	if v4.Port != "443" || v6.Port != "443" {
+		t.Errorf("端口必须保持一致: v4=%q v6=%q", v4.Port, v6.Port)
+	}
+}

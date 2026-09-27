@@ -4,6 +4,8 @@
 >
 > **核验基线：** 2026-09-24，HEAD `559453221ec8984e48a2e16d260f74940ff9f5bb`。核验时工作区已有未提交改动：`.github/workflows/docker-publish.yml`、`AGENTS.md`、`Build6.md`、`Design5.md`、`Issue5.md`、`ProdTestList.md`、`webui/frontend/package.json`、`webui/frontend/package-lock.json`；本次仅新建本文，不触碰上述改动。
 >
+> **后续进展（2026-09-27）：** 本文件的核验基线为 `5594532`，属历史快照；A5、A6、A7、A8、A10 已在 Build6 Step 7 内按用户确认的最小边界修复（详见各项「实施记录」），其余条目状态未变。
+>
 > **证据边界：** 以下结论以当前仓库及本机现有 Go 标准库、依赖源码的只读检查为主。原报告声称的 `/tmp` 隔离复现与测试结果未在本次重跑；未访问真实云 API、SMTP、Webhook 或用户生产数据库。应将“代码路径可证实”“原报告复现”“生产事故已发生”分开。原报告附件在 §3.1 的 `ErrNoSnapshotLoader` 表格行中途截断，缺失部分未纳入本文。
 
 ## 一、优先处理顺序
@@ -13,7 +15,7 @@
 3. **可观测性与契约一致性：** A3、A8、A13、A17、A18。
 4. **较低优先级的生命周期与错误处理：** A14、A15、A16；A19 仅待确定支持范围。
 
-上述仅为处理建议，不改变 Build6 已记录的 Step 5、Step 6 验收状态。每项均保持**待处理**，除 A6 中已提交的手动触发守卫外，不把审查结论写成修复完成。
+上述仅为处理建议，不改变 Build6 已记录的 Step 5、Step 6 验收状态。**2026-09-27 更新：** 经用户逐项确认，A5、A6、A7、A8、A10 已在 Build6 Step 7 内做最小修复并附判别性回归（见各项「实施记录」）；其余条目（A1、A2、A3、A4、A9、A11～A19）仍**待处理/待决策**，不得写成已修复。
 
 ## 二、问题明细
 
@@ -50,28 +52,32 @@
 - **证据：** `webui/api/sync.go:46-54,65-73` 先调用 `ConfigCoordinator.Mutate`，返回后再调用 `Syncer.Pause/Resume`；`webui/api/coordinator.go:77-78` 的锁此时已释放；`syncer/syncer.go:235-246` 再以运行时快照做读改写。
 - **影响：** 并发 pause/resume 或导入交错时，迟到的第二次运行时写入可覆盖后来提交的真值，使 SQLite `sync_enabled` 与运行时状态分裂。原报告在隔离副本中称已确定性复现；当前代码路径仍保留。
 - **处理方向：** 让协调器的提交后发布成为唯一运行时写入口；回归测试使用真实 Store/Syncer，控制交错并比较数据库与运行时最终值。
-- **状态：** 待处理。
+- **实施记录（2026-09-27，Build6 Step 7，经用户确认）：** `webui/api/sync.go` 删除 commit 之后额外的 `d.Syncer.Pause()` / `d.Syncer.Resume()`，协调器成为唯一运行时写入口；`TestHandleSyncPauseResume` 重写为判别性用例（断言 DB、已发布 `RuntimeState`、apply 次数，且 stub 的 `paused/resumed` 必须为 false），修复前该用例真实失败、修复后通过。`Syncer.Pause/Resume` 方法与其 syncer 内部测试保留，生产 handler 不再调用。
+- **状态：** ✅ 已修复（2026-09-27，Build6 Step 7）；证据为源码 + webui/api 专项与整包 `-race` 测试。
 
 ### A6｜中｜暂停后排队触发的旧缺陷已部分修复，ticker 边界与测试仍待收束
 
 - **已完成事实：** 报告所依据的旧 HEAD `c35eb9d` 的手动 trigger 分支使用无效的 `if !enabled` 守卫；当前 HEAD `5594532` 已提交 `if !s.IsEnabled()`，`syncer/syncer.go:165-175` 对已提交暂停状态重新检查。
 - **剩余问题：** `syncer/syncer.go:163-164` 的 ticker 分支未作同样检查；`syncer/state_test.go:107-115` 的测试清理使用无界 `Stop(); Wait()`，若失败后 fake Provider 的新增轮次仍被阻塞，测试可能挂住。现有暂停测试没有确定性覆盖“暂停已提交但 Run 尚未更新本地相位”的交错。
 - **处理方向：** 给 ticker 消费前加已发布状态守卫；新增该交错的确定性回归测试，并保证失败后的测试资源能有界释放。ticker 额外轮次目前为代码窗口推断，原报告 12 次探针未复现。
-- **状态：** 手动 trigger 守卫已提交；其余待处理。
+- **实施记录（2026-09-27，Build6 Step 7，经用户确认）：** ticker 分支补 `if !s.IsEnabled() { slog.Debug(...); break }`，与 trigger 分支共用已发布状态守卫（AGENTS §五）。`TestPausedPublishedStateDropsTickerRound` 用「直接发布已暂停状态、不投递控制通知」精确复现消费前窗口：移除守卫时该用例真实失败（`GetRules = 2, want 1`），恢复守卫后通过。测试清理改为有界 `stopRunBounded`（10s 上限）。原报告所述 ticker 额外轮次在修复前无法用确定性探针复现，本轮改用上述发布窗口模型后已可确定性覆盖。
+- **状态：** ✅ 已修复（2026-09-27，Build6 Step 7）；手动 trigger 守卫（更早提交）与 ticker 守卫均已落地并有回归用例。
 
 ### A7｜中｜恢复同步时可能漏掉立即一轮
 
 - **证据：** `syncer/syncer.go:93-100` 的 `ApplyState` 在发布时更新 `enabled` 镜像；Run 在 `:150` 以该镜像取得 `wasEnabled`，却在 `:190-203` 以本地 `enabled` 及最新快照判定过渡。镜像可能先于 Run 消费控制通知推进，造成 `false→true` 被判断为 `true→true`。
 - **影响：** 恢复后可能只重置 ticker，不立即同步，直到下一个 interval 才运行。原报告在隔离副本中称已用 hook 复现；当前代码未改变相关判定。
 - **处理方向：** 以前一次 Run 本地已处理状态作为过渡前值，检查通知合并场景，并补确定性交错测试；与 A6 一起验证调度。
-- **状态：** 待处理。
+- **实施记录（2026-09-27，Build6 Step 7，经用户确认）：** Run 的过渡前值由已发布镜像 `s.isEnabledMirror()` 改为本循环已处理相位 `enabled`。`TestResumeImmediateRoundAfterPhaseMirrorAdvance` 用 `SetStateAppliedHook` 屏障在「Run 刚完成一次过渡」与「下一次读取过渡前值」之间注入已提交的暂停+恢复：修复前真实失败（`GetRules 调用次数 = 1, want >= 2`），修复后通过。`isEnabledMirror` 仅保留为运行时状态尚未发布时的 `IsEnabled` 回退，注释已同步。
+- **状态：** ✅ 已修复（2026-09-27，Build6 Step 7）；含确定性交错回归用例与调度用例 100 轮 race。
 
 ### A8｜中｜完整导入没有重置 DNS 熔断计数
 
 - **证据：** `webui/api/deps.go:86-101` 的所有候选构造固定传 `syncer.BreakerPreserve`；`BreakerReset` 只在 `run.go:84` 的启动路径使用。`syncer/state_test.go` 分别测试两种策略，但没有证明导入走 Reset。Build6 当前记录“完整导入重置计数”，实现并非如此。
 - **边界：** AGENTS 使用“完整导入允许新建并清空”的表述，是否必须重置应明确为一项设计决定；不能仅凭 `BreakerReset` 单元测试声称导入语义已落实。
 - **处理方向：** 决定导入保留或重置计数；若选择重置，传入明确的策略并增加从导入端点验证熔断状态的测试。
-- **状态：** 待决策、待处理。
+- **实施记录（2026-09-27，Build6 Step 7，用户决策：完整导入重置）：** `webui/api/coordinator.go` 的 `buildCandidate` 增加 `syncer.BreakerPolicy` 形参，`Mutate` 固定 `BreakerPreserve`、新增 `MutateImport` 固定 `BreakerReset`；`webui/api/deps.go` 透传策略，`webui/api/export.go` 导入 handler 改调 `MutateImport`；Build6 §12.3 第 7 条与本节语义由「允许」明确为「确定重置」。`TestConfigImportResetsDNSBreakerOrdinaryChangePreserves` 以「阈值 2 + 2 次失败已熔断」为夹具做判别：临时改回 `BreakerPreserve` 时真实失败，恢复后通过。
+- **状态：** ✅ 已修复（2026-09-27，Build6 Step 7）；导入重置、普通变更保留，均有端点级断言。
 
 ### A9｜中低｜损坏的 `rules.targets` 可被解释为“适用于全部目标”
 
@@ -85,7 +91,8 @@
 - **证据：** `webui/api/settings.go:173-181` 将请求解码到 `struct{}`；`encoding/json` 对 `null` 解码到非指针结构体不报错，随后执行 `ResetAllTx`。`webui/api/settings_alerts_test.go:266-281` 未覆盖 `null`。
 - **影响：** 非前端调用方误把 `null` 当作空参数时，也会执行全量清空；与只接受单一空对象 `{}` 的明确契约冲突。
 - **处理方向：** 显式验证顶层 JSON 对象且非 `null`，补 `null`、数组、标量、未知字段的拒绝测试，确保拒绝后数据及运行时不变。
-- **状态：** 待处理。
+- **实施记录（2026-09-27，Build6 Step 7，经用户确认）：** `webui/api/decode.go` 新增 `decodeJSONObjectStrict`（顶层必须是 JSON 对象，显式拒绝 `null`），`handleConfigReset` 改用它，其余严格解码口径不变。`TestConfigResetStrictBody` 拒绝列表扩为 `null`、`  null  `、`[]`、`[{}]`、`1`、`"str"`、`true` 与原有未知字段/空 body，并断言 400 + 数据保留 + apply==0；临时改回 `decodeJSONStrict` 时 `null` 会返回 200 并清空数据（真实失败），恢复后通过。
+- **状态：** ✅ 已修复（2026-09-27，Build6 Step 7）；含判别性回归用例。
 
 ### A11｜中低｜SWAS 跳过 DROP 后仍被计作“新增成功”
 
