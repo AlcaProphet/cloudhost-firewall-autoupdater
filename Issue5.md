@@ -1,7 +1,7 @@
 # Issue5.md — FWAlizer 问题追踪（当前）
 
 > **文档定位：** 本文档是 FWAlizer 的当前问题记录（非强制，经验参考），记录 2026-09-22 只读审查发现的 R5-01～R5-03、O5-01～O5-06 和 A5-01。已确认的修复口径由 [Build6.md](./Build6.md) 分步实施，未经对应 Step 验收不得标记为已修复。
-> **当前进度（2026-09-24）：** Build6 Step 0～4 已验收通过；O5-04、O5-05 随 Step 3 关闭，O5-06 随 Step 4 关闭。Step 5 的工程实现与本地自动门禁已完成（version 2 配置包、显式凭据、原子运行时切换），但浏览器人工复核与真实外部链路仍待用户验收，因此 Step 5 保持 ◧ 进行中，R5-01 尚未正式关闭；远端 GitHub Actions 仍待运行确认；**Step 6 的阶段 A（lockfile 内修复 `nanoid`/`brace-expansion`）与阶段 B（`vite 8.3.1` + `@vitejs/plugin-vue 6.0.9`）工程实施已完成，O5-01 的 high/critical 已清零、CI 双阻断 audit 门禁已落地、Docker 构建与容器 health/stop 验收已通过，仅浏览器人工回归待用户执行，因此 O5-01 与 Step 6 保持 ◧ 进行中**；O5-03 仍待 Step 7。
+> **当前进度（2026-09-27）：** Build6 Step 0～4 已验收通过；O5-04、O5-05 随 Step 3 关闭，O5-06 随 Step 4 关闭。Step 5 的工程实现与本地自动门禁已完成（version 2 配置包、显式凭据、原子运行时切换）；本日通过 Codex 内置浏览器部分复核了设置保存和导出风险/成功提示，并以本机 HTTP 请求补做 version 1 拒绝与隔离数据库导入，详细证据与边界见 [Build6.md](./Build6.md) 与 [ProdTestList.md](./ProdTestList.md)。页面文件上传/自动刷新、不同自增历史下的目标规则关系核对、真实云/SMTP/Webhook 与远端 CI 仍未验收，因此 Step 5 保持 ◧ 进行中，R5-01 尚未正式关闭；远端 GitHub Actions 仍待运行确认；**Step 6 的阶段 A（lockfile 内修复 `nanoid`/`brace-expansion`）与阶段 B（`vite 8.3.1` + `@vitejs/plugin-vue 6.0.9`）工程实施已完成，O5-01 的 high/critical 已清零、CI 双阻断 audit 门禁已落地、Docker 构建与容器 health/stop 验收已通过，仅浏览器人工回归待用户执行，因此 O5-01 与 Step 6 保持 ◧ 进行中**；O5-03 仍待 Step 7。
 > 编码指令以 [AGENTS.md](./AGENTS.md) 为唯一强要求；设计记录见 [Design5.md](./Design5.md)；上一阶段的 Design4、Build5 和 Issue4 已原文移入 [HistoryDocs/](./HistoryDocs/)。
 
 ---
