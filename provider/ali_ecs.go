@@ -6,7 +6,6 @@ import (
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/portconv"
-	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
 	ecs "github.com/alibabacloud-go/ecs-20140526/v7/client"
 	"github.com/alibabacloud-go/tea/tea"
 )
@@ -29,12 +28,9 @@ func newAliECS(cfg config.TargetConfig, dbID int, pool *ClientPool) (Provider, e
 	key := pool.CacheKey(config.CloudAliECS, cfg.Region)
 
 	client, err := pool.GetOrCreate(key, func() (any, error) {
-		openCfg := &openapi.Config{
-			AccessKeyId:     tea.String(creds.AliyunAccessKeyID),
-			AccessKeySecret: tea.String(creds.AliyunAccessKeySecret),
-			Endpoint:        tea.String(fmt.Sprintf("ecs.%s.aliyuncs.com", cfg.Region)),
-		}
-		return ecs.NewClient(openCfg)
+		// 超时由 newAliOpenAPIConfig 统一提供（Issue6 A1）：与扫描路径共用同一
+		// ClientPool 缓存键，取值必须完全一致
+		return ecs.NewClient(newAliOpenAPIConfig("ecs", cfg.Region, creds))
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 ECS Client 失败: %w", err)
@@ -108,20 +104,23 @@ func (p *AliECS) GetRules() ([]config.RuleInfo, error) {
 	return allRules, nil
 }
 
-// CreateRules 增量添加入站规则（Permissions 数组，单次最多 100 条）
-func (p *AliECS) CreateRules(rules []config.RuleAction) error {
+// CreateRules 增量添加入站规则（Permissions 数组，单次最多 100 条）。
+//
+// ECS 不支持任何本工具需要跳过的期望规则形态（ICMPv6 在 Diff 阶段已被过滤），
+// 因此成功时恒为 {len(rules), 0}（Issue6 A11）。
+func (p *AliECS) CreateRules(rules []config.RuleAction) (CreateResult, error) {
 	if len(rules) == 0 {
-		return nil
+		return CreateResult{}, nil
 	}
 
 	// 分批提交（单次最多 100 条）
 	batches := batchRules(rules, 100)
 	for _, batch := range batches {
 		if err := p.createBatch(batch); err != nil {
-			return err
+			return CreateResult{}, err
 		}
 	}
-	return nil
+	return CreateResult{Written: len(rules), Skipped: 0}, nil
 }
 
 func (p *AliECS) createBatch(rules []config.RuleAction) error {

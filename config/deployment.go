@@ -64,15 +64,12 @@ func DefaultDataDir() string {
 		// 回退到当前目录（极端情况）
 		return "."
 	}
+	// 平台约束固定为 Linux/macOS（Windows 支持已按用户决策移除，见 Issue6 A19）。
+	// 刻意不给本文件加平台 build tag：否则 runtime 会变成未使用导入，
+	// 且 default 分支（Linux 及其他 Unix）会失去意义。
 	switch runtime.GOOS {
 	case "darwin":
 		return filepath.Join(home, "Library", "Application Support", "fwalizer")
-	case "windows":
-		appdata := os.Getenv("APPDATA")
-		if appdata == "" {
-			appdata = filepath.Join(home, "AppData", "Roaming")
-		}
-		return filepath.Join(appdata, "fwalizer")
 	default:
 		return filepath.Join(home, ".config", "fwalizer")
 	}

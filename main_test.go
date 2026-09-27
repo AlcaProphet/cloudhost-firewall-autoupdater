@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -944,4 +945,71 @@ func postJSON(t *testing.T, url, body string) int {
 		t.Fatalf("读取响应失败: %v", err)
 	}
 	return resp.StatusCode
+}
+
+// ─── Issue6 A19：pidfile 单实例的进程级判别回归 ───
+
+// TestProcessSecondInstanceRejectedByPidFile 第二个实例必须拒绝启动并提示 PID。
+//
+// 判别性：全仓此前**没有任何**用例覆盖 pidfile 的「FWAlizer 已在运行」分支（只有
+// 「退出后清理」断言）。本用例用真实二进制 + 真实 pidfile：第一个实例正常运行后，
+// 第二个实例（同一 FWALIZER_DATA_DIR）必须以非零状态退出、打印已有 PID，且**不得**
+// 启动 WebUI（端口不会被抢占）。
+func TestProcessSecondInstanceRejectedByPidFile(t *testing.T) {
+	dataDir := t.TempDir()
+	port := freePort(t)
+
+	first, firstOut := startProcess(t, dataDir, map[string]string{"WEBUI_PORT": fmt.Sprintf("%d", port)})
+	waitForHTTP(t, fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
+
+	// pidfile 必须存在且记录的是第一个实例的 PID
+	pidPath := config.GetPidFilePath(dataDir)
+	raw, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("读取 pidfile 失败: %v（第一个实例必须先写入 pidfile）", err)
+	}
+	firstPID := strings.TrimSpace(string(raw))
+	if firstPID == "" {
+		t.Fatal("pidfile 内容为空")
+	}
+	if firstPID != strconv.Itoa(first.Process.Pid) {
+		t.Errorf("pidfile PID = %q, want %d", firstPID, first.Process.Pid)
+	}
+
+	// 第二个实例：同一数据目录 → 必须被拒绝
+	second, secondOut := startProcess(t, dataDir, map[string]string{"WEBUI_PORT": fmt.Sprintf("%d", port)})
+	code, err := waitForProcessExit(t, second, 15*time.Second)
+	if err != nil {
+		t.Fatalf("第二个实例未在限期内退出: %v\n输出:\n%s", err, secondOut.String())
+	}
+	if code == 0 {
+		t.Errorf("第二个实例退出码 = 0, want 非零\n输出:\n%s", secondOut.String())
+	}
+	if !strings.Contains(secondOut.String(), "FWAlizer 已在运行") {
+		t.Errorf("第二个实例必须提示已有实例运行；输出:\n%s", secondOut.String())
+	}
+	if !strings.Contains(secondOut.String(), firstPID) {
+		t.Errorf("第二个实例必须提示已有 PID %s；输出:\n%s", firstPID, secondOut.String())
+	}
+
+	// 第一个实例必须仍然健康（第二个实例不得抢占端口或数据目录）
+	resp, err := (&http.Client{Timeout: 3 * time.Second}).Get(fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
+	if err != nil {
+		t.Fatalf("第二个实例被拒绝后第一个实例必须仍可访问: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("第一个实例 health 状态码 = %d, want 200", resp.StatusCode)
+	}
+
+	// 收尾：第一个实例正常退出并清理 pidfile
+	if err := first.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("发送 SIGTERM 失败: %v", err)
+	}
+	if code, err := waitForProcessExit(t, first, 20*time.Second); err != nil {
+		t.Fatalf("第一个实例未正常退出: %v\n输出:\n%s", err, firstOut.String())
+	} else if code != 0 {
+		t.Errorf("第一个实例退出码 = %d, want 0\n输出:\n%s", code, firstOut.String())
+	}
+	assertPidFileCleanup(t, dataDir, 3*time.Second)
 }

@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
-	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
 	ecs "github.com/alibabacloud-go/ecs-20140526/v7/client"
 	swas "github.com/alibabacloud-go/swas-open-20200601/v3/client"
 	"github.com/alibabacloud-go/tea/tea"
@@ -130,12 +129,8 @@ func scanTCCVM(region string, pool *ClientPool) ([]ScannedCloudResource, error) 
 func scanAliSWAS(region string, pool *ClientPool) ([]ScannedCloudResource, error) {
 	creds := pool.Credentials()
 	client, err := pool.GetOrCreate(pool.CacheKey(config.CloudAliSWAS, region), func() (any, error) {
-		openCfg := &openapi.Config{
-			AccessKeyId:     tea.String(creds.AliyunAccessKeyID),
-			AccessKeySecret: tea.String(creds.AliyunAccessKeySecret),
-			Endpoint:        tea.String(fmt.Sprintf("swas.%s.aliyuncs.com", region)),
-		}
-		return swas.NewClient(openCfg)
+		// 与正式 SWAS Provider 共用同一缓存键与同一超时样本（Issue6 A1）
+		return swas.NewClient(newAliOpenAPIConfig("swas", region, creds))
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 SWAS Client 失败: %w", err)
@@ -178,12 +173,8 @@ func scanAliSWAS(region string, pool *ClientPool) ([]ScannedCloudResource, error
 func scanAliECS(region string, pool *ClientPool) ([]ScannedCloudResource, error) {
 	creds := pool.Credentials()
 	client, err := pool.GetOrCreate(pool.CacheKey(config.CloudAliECS, region), func() (any, error) {
-		openCfg := &openapi.Config{
-			AccessKeyId:     tea.String(creds.AliyunAccessKeyID),
-			AccessKeySecret: tea.String(creds.AliyunAccessKeySecret),
-			Endpoint:        tea.String(fmt.Sprintf("ecs.%s.aliyuncs.com", region)),
-		}
-		return ecs.NewClient(openCfg)
+		// 与正式 ECS Provider 共用同一缓存键与同一超时样本（Issue6 A1）
+		return ecs.NewClient(newAliOpenAPIConfig("ecs", region, creds))
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 ECS Client 失败: %w", err)

@@ -775,3 +775,253 @@ func TestShutdownAfterServeExitedRepeated(t *testing.T) {
 		t.Errorf("重复 Shutdown 后残留 Server 相关 goroutine:\n%s", dump)
 	}
 }
+
+// ─── Issue6 A16：Start / Wait 重复调用契约 ───
+
+// TestStartSecondCallRejected 第二次 Start 必须返回 ErrAlreadyStarted，
+// 且不新建 listener、不改变首个监听地址、不产生伪 WARN 降级。
+func TestStartSecondCallRejected(t *testing.T) {
+	s := newTestServer(t, freeTCPPort(t))
+
+	_, err := s.Start()
+	if err != nil {
+		t.Fatalf("首次 Start 失败: %v", err)
+	}
+	mustServeStarted(t, s)
+	t.Cleanup(func() {
+		if err := s.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown 失败: %v", err)
+		}
+	})
+
+	s.mu.Lock()
+	firstListener := s.listener
+	firstHTTPServer := s.httpServer
+	s.mu.Unlock()
+	// Addr() 内部会再次取锁，必须在释放 mu 之后单独读取，避免自锁死
+	firstAddr := s.Addr()
+
+	if firstListener == nil || firstHTTPServer == nil {
+		t.Fatal("首次 Start 必须发布 listener 与 httpServer")
+	}
+
+	// 第二次 Start：必须被拒绝且保持首个 listener/httpServer 不变
+	port, err := s.Start()
+	if !errors.Is(err, ErrAlreadyStarted) {
+		t.Fatalf("第二次 Start 错误 = %v, want ErrAlreadyStarted", err)
+	}
+	if port != 0 {
+		t.Errorf("第二次 Start 返回端口 = %d, want 0", port)
+	}
+
+	s.mu.Lock()
+	gotListener := s.listener
+	gotHTTPServer := s.httpServer
+	s.mu.Unlock()
+	gotAddr := s.Addr()
+
+	if gotListener != firstListener {
+		t.Error("第二次 Start 不得替换 listener（修复前会覆盖并泄漏一个永不关闭的 listener）")
+	}
+	if gotHTTPServer != firstHTTPServer {
+		t.Error("第二次 Start 不得替换 httpServer（修复前会让 Shutdown 作用于错误对象）")
+	}
+	if gotAddr != firstAddr {
+		t.Errorf("第二次 Start 后监听地址 = %q, want %q", gotAddr, firstAddr)
+	}
+
+	// 首个 Serve 仍在服务：Shutdown 必须能真正停掉它，且 Wait 有界返回
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown 失败: %v", err)
+	}
+	waitBounded(t, s, 5*time.Second)
+}
+
+// TestStartAfterShutdownRejected Shutdown 之后调用 Start 同样必须被拒绝。
+func TestStartAfterShutdownRejected(t *testing.T) {
+	s := newTestServer(t, freeTCPPort(t))
+	if _, err := s.Start(); err != nil {
+		t.Fatalf("首次 Start 失败: %v", err)
+	}
+	mustServeStarted(t, s)
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown 失败: %v", err)
+	}
+	waitBounded(t, s, 5*time.Second)
+
+	port, err := s.Start()
+	if !errors.Is(err, ErrAlreadyStarted) {
+		t.Fatalf("Shutdown 后 Start 错误 = %v, want ErrAlreadyStarted", err)
+	}
+	if port != 0 {
+		t.Errorf("Shutdown 后 Start 返回端口 = %d, want 0", port)
+	}
+}
+
+// TestConcurrentStartOnlyOneWins 并发 Start 只能有一个成功，其余全部被拒绝。
+func TestConcurrentStartOnlyOneWins(t *testing.T) {
+	s := newTestServer(t, freeTCPPort(t))
+	t.Cleanup(func() {
+		if err := s.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown 失败: %v", err)
+		}
+	})
+
+	const n = 8
+	var wg sync.WaitGroup
+	results := make([]error, n)
+	ports := make([]int, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			ports[idx], results[idx] = s.Start()
+		}(i)
+	}
+	wg.Wait()
+
+	success, rejected := 0, 0
+	for i, err := range results {
+		switch {
+		case err == nil:
+			success++
+			if ports[i] == 0 {
+				t.Error("成功的 Start 必须返回非零端口")
+			}
+		case errors.Is(err, ErrAlreadyStarted):
+			rejected++
+		default:
+			t.Errorf("第 %d 次并发 Start 返回意外错误: %v", i, err)
+		}
+	}
+	if success != 1 {
+		t.Errorf("并发 Start 成功次数 = %d, want 1", success)
+	}
+	if rejected != n-1 {
+		t.Errorf("并发 Start 被拒绝次数 = %d, want %d", rejected, n-1)
+	}
+}
+
+// TestWaitConcurrentReturnsSameResult 并发/重复 Wait 必须返回同一结果。
+//
+// 修复前 Wait 从容量 1 的 channel 反复读取，第二次调用会永久阻塞。
+func TestWaitConcurrentReturnsSameResult(t *testing.T) {
+	s := newTestServer(t, freeTCPPort(t))
+	if _, err := s.Start(); err != nil {
+		t.Fatalf("Start 失败: %v", err)
+	}
+	mustServeStarted(t, s)
+
+	const n = 6
+	results := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			results[idx] = s.Wait()
+		}(i)
+	}
+
+	// 仍在服务：并发 Wait 全部必须继续阻塞。
+	// 用「Wait 返回即抢占」的独立观察者断言，避免 WaitGroup 与超时竞争造成的误判。
+	returnedEarly := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(returnedEarly)
+	}()
+	select {
+	case <-returnedEarly:
+		t.Fatal("Serve 运行中 Wait 不应返回")
+	case <-time.After(150 * time.Millisecond):
+		// 预期路径：150ms 内没有任何 Wait 返回
+	}
+
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown 失败: %v", err)
+	}
+
+	select {
+	case <-returnedEarly:
+	case <-time.After(5 * time.Second):
+		t.Fatal("并发 Wait 未在 Shutdown 后有界返回（修复前第二次会永久阻塞）")
+	}
+
+	for i, err := range results {
+		if err != nil {
+			t.Errorf("并发 Wait[%d] = %v, want nil", i, err)
+		}
+	}
+
+	// Shutdown 之后再次 Wait 也必须立即返回同一结果
+	again := make(chan error, 1)
+	go func() { again <- s.Wait() }()
+	select {
+	case err := <-again:
+		if err != nil {
+			t.Errorf("重复 Wait = %v, want nil", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Shutdown 后重复 Wait 未返回")
+	}
+}
+
+// waitBounded 在有界时间内等待 Wait 返回。
+func waitBounded(t *testing.T, s *Server, timeout time.Duration) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- s.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		t.Fatal("Wait 未在有界时间内返回")
+	}
+}
+
+// ─── Issue6 A3：/api/health 保持静态，同步健康由 /api/sync/status 表达 ───
+
+// TestHealthEndpointUnaffectedBySyncState 暂停、无目标、空轮次、从未成功等状态下，
+// /api/health 必须仍精确返回 {"status":"ok"} 与 200。
+//
+// 判别性：A3 明确「/api/health、Docker HEALTHCHECK 与容器重启语义保持不变」，
+// 同步健康只能通过 /api/sync/status 的向后兼容扩展表达。
+func TestHealthEndpointUnaffectedBySyncState(t *testing.T) {
+	s := newTestServerWithStore(t, freeTCPPort(t))
+	// 未接入 Syncer（等价「同步引擎未启动 / 从未成功 / 无目标」）
+	if _, err := s.Start(); err != nil {
+		t.Fatalf("Start 失败: %v", err)
+	}
+	mustServeStarted(t, s)
+	t.Cleanup(func() {
+		if err := s.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown 失败: %v", err)
+		}
+	})
+
+	base := "http://" + s.Addr()
+
+	body, code := httpGet(t, base+"/api/health")
+	if code != http.StatusOK {
+		t.Errorf("/api/health 状态码 = %d, want 200", code)
+	}
+	if body != `{"status":"ok"}` {
+		t.Errorf("/api/health 响应体 = %q, want exactly {\"status\":\"ok\"}", body)
+	}
+
+	// 同一实例的 /api/sync/status：不得因为 health 的静态契约而缺少同步健康字段
+	statusBody, statusCode := httpGet(t, base+"/api/sync/status")
+	if statusCode != http.StatusOK {
+		t.Fatalf("/api/sync/status 状态码 = %d, want 200", statusCode)
+	}
+	for _, field := range []string{`"running"`, `"enabled"`, `"last_sync"`, `"last_success"`, `"last_round"`} {
+		if !strings.Contains(statusBody, field) {
+			t.Errorf("/api/sync/status 缺少字段 %s；实际 %s", field, statusBody)
+		}
+	}
+
+	// 再次探测 health：状态查询不得影响其静态语义
+	body, code = httpGet(t, base+"/api/health")
+	if code != http.StatusOK || body != `{"status":"ok"}` {
+		t.Errorf("查询 status 后 /api/health = (%d, %q), want (200, {\"status\":\"ok\"})", code, body)
+	}
+}

@@ -30,6 +30,19 @@ const (
 	ShutdownTimeout = 10 * time.Second
 )
 
+// ErrAlreadyStarted 表示 Server.Start 已被调用过。
+//
+// 重复调用语义（Issue6 A16，2026-09-27 用户裁决）：
+//   - 第二次 Start（含**并发**第二次与 Shutdown 之后）必须在 net.Listen **之前**被拒绝，
+//     返回 (0, ErrAlreadyStarted)，且保持首个 listener 与 httpServer 不变；
+//   - 不新建 listener、不降级随机端口、不产生伪 EADDRINUSE WARN。
+//
+// 修复前的行为是：先占用或降级端口并覆盖 s.listener/s.httpServer，而 serveOnce 已
+// 执行过，第二个 listener 无人 Serve 且**永远不会被关闭**；Shutdown 又只作用于被
+// 覆盖后的第二个 http.Server，于是真正在服务的第一个 Serve 永不停止、
+// run.go 的 srv.Wait() 永不返回，并产生一条伪 EADDRINUSE WARN。
+var ErrAlreadyStarted = errors.New("WebUI 服务器已启动，禁止重复 Start")
+
 // Server WebUI HTTP 服务器。
 //
 // 生命周期契约（Build6 Step 3）：
@@ -46,15 +59,21 @@ type Server struct {
 	deps         *api.Deps
 	shutdownCh   chan struct{} // 服务器级 SSE shutdown 信号（只关闭一次，永不写入）
 	shutdownOnce sync.Once
-	serveOnce    sync.Once
+
 	serveStarted chan struct{} // Serve goroutine 已启动（测试用确定性同步）
-	serveDone    chan error    // Serve 结果；容量 1，保证 Serve goroutine 不因无人接收而阻塞
 
 	// 生命周期状态（由 mu 保护）
 	mu         sync.Mutex
 	httpServer *http.Server
 	listener   net.Listener
 	shutdown   bool // 是否已进入关闭流程（用于归一化 ErrServerClosed/net.ErrClosed）
+	started    bool // Start 是否已被调用过（重复调用门控，Issue6 A16）
+
+	// Wait 的唯一结果广播（Issue6 A16）：Serve 结果只投递一次并被缓存，
+	// 使多次/并发 Wait 返回同一结果，而不是从容量 1 的 channel 各读一次而永久阻塞。
+	waitOnce    sync.Once
+	waitDone    chan struct{}
+	serveResult error
 }
 
 // NewServer 创建 WebUI 服务器
@@ -65,7 +84,7 @@ func NewServer(store *config.Store, host string, port int) *Server {
 		mux:          http.NewServeMux(),
 		shutdownCh:   make(chan struct{}),
 		serveStarted: make(chan struct{}),
-		serveDone:    make(chan error, 1),
+		waitDone:     make(chan struct{}),
 	}
 	s.deps = &api.Deps{Store: store, ShutdownCh: s.shutdownCh}
 	s.registerRoutes()
@@ -131,6 +150,16 @@ func accessURL(host string, port int) string {
 // 时才降级到 host:0（由 OS 随机分配）。权限、非法地址等其他监听错误原样返回，
 // 不做随机降级。成功创建的 listener 直接交给 http.Server.Serve，全程不释放端口。
 func (s *Server) Start() (int, error) {
+	// 重复调用门控必须在 net.Listen **之前**（Issue6 A16）：否则会先占用/降级端口
+	// 并覆盖 s.listener/s.httpServer，制造一个无人 Serve 且永不关闭的 listener。
+	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		return 0, ErrAlreadyStarted
+	}
+	s.started = true
+	s.mu.Unlock()
+
 	preferred := s.port
 	ln, err := net.Listen("tcp", net.JoinHostPort(s.host, strconv.Itoa(preferred)))
 	if err != nil && errors.Is(err, syscall.EADDRINUSE) {
@@ -161,11 +190,14 @@ func (s *Server) Start() (int, error) {
 	s.listener = ln
 	s.mu.Unlock()
 
-	s.serveOnce.Do(func() {
-		close(s.serveStarted)
-		// listener/httpServer 已在启动 Serve goroutine 前发布到 Server 状态
-		go func() { s.serveDone <- s.normalizeServeError(hs.Serve(ln)) }()
-	})
+	close(s.serveStarted)
+	go func() {
+		// 关闭广播 + 缓存唯一结果（正常化仍在 Serve 返回处完成，时机不变）
+		s.waitOnce.Do(func() {
+			s.serveResult = s.normalizeServeError(hs.Serve(ln))
+			close(s.waitDone)
+		})
+	}()
 
 	access := accessURL(s.host, actualPort)
 	if actualPort != preferred {
@@ -177,10 +209,13 @@ func (s *Server) Start() (int, error) {
 
 // Wait 等待 Serve 结束并返回其结果。
 //
+// 多次/并发调用返回**同一结果**（Issue6 A16）：结果由 waitDone 关闭广播，不再从
+// 容量 1 的 channel 反复读取（修复前第二次调用会永久阻塞）。
 // http.ErrServerClosed 与 net.ErrClosed 只在已经进入关闭流程（Shutdown 已调用）时
 // 归一化为 nil；关闭流程之前出现的 Serve 错误原样返回给调用方。
 func (s *Server) Wait() error {
-	return <-s.serveDone
+	<-s.waitDone
+	return s.serveResult
 }
 
 // normalizeServeError 归一化 Serve 返回值。

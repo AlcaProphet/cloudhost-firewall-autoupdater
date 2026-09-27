@@ -14,14 +14,22 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 )
 
-// Syncer 同步引擎接口（避免 api 包直接依赖 syncer 包的具体实现细节）
+// Syncer 同步引擎接口（避免 api 包直接依赖 syncer 包的具体实现细节）。
+//
+// Issue6 A5 / 批次 8（2026-09-27 用户裁决，解释 A）：接口**不再**暴露
+// `Pause()`/`Resume()`——pause/resume 的运行时写入口唯一属于配置变更协调器
+// （handler 先写 DB，再由协调器在 commit 后发布新 RuntimeState）。移除接口成员后，
+// 「handler 在协调器之外二次改写运行时开关」从**运行时断言**升级为**编译期不可能**。
+//
+// 注意：`syncer.Syncer` 上的 `Pause()`/`Resume()` 实现方法**必须保留**
+// （Build6 明确要求，且 `syncer` 包内测试继续使用），删除的只是 API 侧的接口成员。
 type Syncer interface {
 	Status() syncer.SyncStatus
 	TriggerSync()
 	DryRun() (syncer.DryRunResponse, error)
-	Pause()  // 暂停同步
-	Resume() // 恢复同步
-	// Runtime 返回运行时状态管理器：只读操作（连接测试、资源扫描）据此取得一次完整快照
+	// Runtime 返回运行时状态管理器：只读操作（连接测试、资源扫描）据此取得一次完整快照。
+	//
+	// 依 2026-09-27 用户裁决（解释 A）**保留**该接口成员；`syncer` 侧实现同样保留。
 	Runtime() *syncer.RuntimeManager
 	// ApplyState 无失败地一次性发布完整运行时状态（协调器 commit 后调用）
 	ApplyState(state *syncer.RuntimeState)
@@ -195,11 +203,17 @@ func (d *Deps) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/alerts", d.handlePutAlerts)
 }
 
-// writeJSON 写入 JSON 响应
+// writeJSON 写入 JSON 响应。
+//
+// Issue6 A14：Encode 的返回值必须处理。响应头与状态码此时已发出，**不得**再伪造
+// 第二个 HTTP 错误响应（参照 export.go 的既有先例），只记录安全日志——错误文本
+// 可能包含响应内容片段，因此只记错误本身，不记 data。
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		slog.Warn("写出 JSON 响应失败", "status", status, "error", err)
+	}
 }
 
 // writeError 写入错误响应

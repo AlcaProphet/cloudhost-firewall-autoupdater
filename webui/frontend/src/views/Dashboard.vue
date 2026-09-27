@@ -8,7 +8,7 @@ import { request } from '../api'
 import { useSettings } from '../composables/useSettings'
 import type { SyncStatus, SyncLogEntry } from '../types'
 
-const status = ref<SyncStatus>({ running: false, last_sync: null, enabled: true })
+const status = ref<SyncStatus>({ running: false, last_sync: null, enabled: true, last_success: null, last_round: null })
 const switching = ref(false) // 开关请求 loading
 const stats = ref({ targets: 0, rules: 0, lastAdded: 0, lastDeleted: 0 })
 const showGuide = ref(false) // 首次使用引导条
@@ -31,6 +31,34 @@ async function fetchStatus() {
     status.value = s
   } catch { /* 轮询失败忽略 */ }
 }
+
+// 同步健康提示（Issue6 A3）：不引入任何时间阈值判定，只用「最近一轮结论 +
+// last_success 是否缺失或落后于 last_sync」表达「停滞」。
+// 两个时间戳都是内存态，重启后为 null，因此 null 时按「尚无记录」措辞，
+// 不写「从未成功」。暂停时不提示（暂停本身不制造轮次）。
+const healthHint = computed(() => {
+  if (!status.value.enabled) return null
+  const round = status.value.last_round
+  if (!round) return null
+
+  if (round.outcome === 'failed') {
+    const skipped = round.skipped > 0 ? `，跳过 ${round.skipped}` : ''
+    return { type: 'error' as const, text: `最近一轮同步失败：共 ${round.total} 项，失败 ${round.failed}${skipped}。请查看同步日志排查。` }
+  }
+  if (round.outcome === 'partial') {
+    return { type: 'warning' as const, text: `最近一轮同步部分完成：共 ${round.total} 项，跳过 ${round.skipped}（该云产品无法表达对应规则）。` }
+  }
+  // success：若 last_success 落后于 last_sync，说明最近一轮不是成功轮
+  const lastSync = status.value.last_sync
+  const lastSuccess = status.value.last_success
+  if (lastSync && lastSuccess && lastSync !== lastSuccess) {
+    return { type: 'warning' as const, text: '最近一轮同步未取得完整成功，上一次成功时间早于最近一轮完成时间。' }
+  }
+  if (lastSync && !lastSuccess) {
+    return { type: 'warning' as const, text: '最近一轮同步已完成，但尚无成功记录（进程重启后该记录会重置）。' }
+  }
+  return null
+})
 
 // 统计概览：目标数 / 规则数 / 最近一次同步的增删（复用现有端点，零新 API）
 async function fetchStats() {
@@ -102,6 +130,11 @@ onUnmounted(() => {
     <NAlert v-if="showGuide" type="warning" closable @close="closeGuide" style="margin-bottom: 16px">
       首次使用：请先在「全局设置」中填写云厂商 API 密钥（SecretId/SecretKey），再添加云资源目标与域名规则。
       <NButton size="small" type="primary" ghost style="margin-left: 12px" @click="router.push('/settings')">去配置</NButton>
+    </NAlert>
+
+    <!-- 同步健康提示（Issue6 A3）：走既有 5s 轮询，不依赖 /api/sync/events -->
+    <NAlert v-if="healthHint" :type="healthHint.type" style="margin-bottom: 16px" data-testid="sync-health-hint">
+      {{ healthHint.text }}
     </NAlert>
 
     <!-- 2×2 大卡片（改进 2：方案 B） -->

@@ -13,13 +13,6 @@ var settingsKeysV2 = []string{
 	"log_level", "sync_enabled", "theme",
 }
 
-// SettingsKeysV2 返回 version 2 的完整设置键集合副本（调用方不得修改内部顺序来源）。
-func SettingsKeysV2() []string {
-	out := make([]string, len(settingsKeysV2))
-	copy(out, settingsKeysV2)
-	return out
-}
-
 // BusinessSnapshot 是一个 SQLite 事务内取到的完整业务配置快照，
 // 所有字段都已经过 validate.go 的归一化与校验（Build6 §12.7、§12.10）。
 //

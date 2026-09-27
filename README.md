@@ -136,7 +136,8 @@ make build
 |------|---------|
 | macOS | `~/Library/Application Support/fwalizer/config.db` |
 | Linux | `~/.config/fwalizer/config.db` |
-| Windows | `%APPDATA%\fwalizer\config.db` |
+
+> **平台支持声明：** 本项目支持 **Linux 与 macOS**。**自本版本起不再支持 Windows**（Windows 专用的 pidfile 实现、`%APPDATA%` 数据目录分支与相关依赖已按用户决策移除；`GOOS=windows` 构建将按预期失败）。发布与 CI 面向 `linux/amd64`。
 
 ### 仅有的三个部署参数
 
@@ -425,6 +426,22 @@ make build
 使用「全局设置」页的「导出配置」与「导入配置」完成业务配置迁移。配置包是 version 2 明文完整敏感快照，**包含云凭据、SMTP 密码与 Webhook URL**，请按上文「配置导入导出」的安全警告妥善保管；导入会覆盖当前全部业务配置。
 
 需要注意：配置包是配置迁移方式，**不是 SQLite 数据库的在线备份**，不含同步日志与扫描缓存。若需要完整数据库备份，请停止 FWAlizer 后复制 `<数据目录>/config.db`。
+
+#### 从旧版本升级：`rules.targets` 数据损坏的修复提示
+
+早期版本的规则 `targets` 列在「适用于全部目标」时会写成字面量 `null`。当前版本对损坏值采取 **fail-closed**：`null`、SQL NULL、对象、标量、非整数数组或解析失败都会**中止同步/导出/启动加载**并返回安全错误（错误日志会带规则 ID），**不再**静默当作「适用于全部目标」。
+
+这是**预期行为**，请按以下任一方式修复后再启动：
+
+```bash
+# 方式一：直接把损坏值改写为合法的空数组（= 适用于全部目标）
+sqlite3 <数据目录>/config.db "UPDATE rules SET targets='[]' WHERE targets IS NULL OR targets='null';"
+
+# 方式二：先手工核对 rules 表的目标引用，再重新导入 version 2 配置包
+# （导入会先清空 rules 再写入，可顺带修复损坏库）
+```
+
+若某条规则确实只适用于部分目标，请改为显式整数数组（如 `[1,3]`），或直接在「域名规则」页重新保存该规则。
 
 ### 9. 如何配置告警通知？
 

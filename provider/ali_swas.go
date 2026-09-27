@@ -7,7 +7,6 @@ import (
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/portconv"
-	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
 	swas "github.com/alibabacloud-go/swas-open-20200601/v3/client"
 	"github.com/alibabacloud-go/tea/tea"
 )
@@ -30,12 +29,9 @@ func newAliSWAS(cfg config.TargetConfig, dbID int, pool *ClientPool) (Provider, 
 	key := pool.CacheKey(config.CloudAliSWAS, cfg.Region)
 
 	client, err := pool.GetOrCreate(key, func() (any, error) {
-		openCfg := &openapi.Config{
-			AccessKeyId:     tea.String(creds.AliyunAccessKeyID),
-			AccessKeySecret: tea.String(creds.AliyunAccessKeySecret),
-			Endpoint:        tea.String(fmt.Sprintf("swas.%s.aliyuncs.com", cfg.Region)),
-		}
-		return swas.NewClient(openCfg)
+		// 超时由 newAliOpenAPIConfig 统一提供（Issue6 A1）：与扫描路径共用同一
+		// ClientPool 缓存键，取值必须完全一致
+		return swas.NewClient(newAliOpenAPIConfig("swas", cfg.Region, creds))
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建 SWAS Client 失败: %w", err)
@@ -107,17 +103,25 @@ func (p *AliSWAS) GetRules() ([]config.RuleInfo, error) {
 	return allRules, nil
 }
 
-// CreateRules 批量创建防火墙规则
-func (p *AliSWAS) CreateRules(rules []config.RuleAction) error {
+// CreateRules 批量创建防火墙规则。
+//
+// SWAS 的 CreateFirewallRules 请求参数**没有 Policy 字段**（见
+// PlatformAPIDocs/AliyunSWASAPIGuide/CreateFirewallRules.md），因此 DROP 规则永远
+// 无法表达：记 WARN 后跳过，并在返回值里如实计入 Skipped（Issue6 A11）。修复前
+// 混合批次照常提交、全 DROP 时直接 return nil，调用方无法区分「全部写入成功」
+// 与「全部跳过」，导致 added 虚增且每轮重复出现、永不收敛。
+func (p *AliSWAS) CreateRules(rules []config.RuleAction) (CreateResult, error) {
 	if len(rules) == 0 {
-		return nil
+		return CreateResult{}, nil
 	}
 
 	var fwRules []*swas.CreateFirewallRulesRequestFirewallRules
+	skipped := 0
 	for _, r := range rules {
 		// DROP 规则不支持：SWAS API 无 Policy 字段，规则均为 accept
 		if strings.EqualFold(r.Action, "DROP") {
 			slog.Warn("SWAS 不支持 DROP 规则，跳过", "description", r.Description)
+			skipped++
 			continue
 		}
 
@@ -131,7 +135,8 @@ func (p *AliSWAS) CreateRules(rules []config.RuleAction) error {
 	}
 
 	if len(fwRules) == 0 {
-		return nil
+		// 全部被跳过：没有发起任何请求，但必须如实报告跳过条数
+		return CreateResult{Written: 0, Skipped: skipped}, nil
 	}
 
 	req := &swas.CreateFirewallRulesRequest{
@@ -140,11 +145,10 @@ func (p *AliSWAS) CreateRules(rules []config.RuleAction) error {
 		FirewallRules: fwRules,
 	}
 
-	_, err := p.client.CreateFirewallRules(req)
-	if err != nil {
-		return fmt.Errorf("添加防火墙规则失败: %w", err)
+	if _, err := p.client.CreateFirewallRules(req); err != nil {
+		return CreateResult{}, fmt.Errorf("添加防火墙规则失败: %w", err)
 	}
-	return nil
+	return CreateResult{Written: len(fwRules), Skipped: skipped}, nil
 }
 
 // DeleteRules 批量删除防火墙规则

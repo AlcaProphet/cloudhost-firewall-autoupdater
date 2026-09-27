@@ -1,6 +1,5 @@
 # ─── 编译产物 ───
 fwalizer
-fwalizer.exe
 /dist/
 node_modules/
 webui/frontend/dist/

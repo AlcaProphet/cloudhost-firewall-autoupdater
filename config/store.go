@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -59,21 +60,63 @@ type ScannedResource struct {
 	ResourceName string `json:"resource_name"`
 }
 
+// sqliteDSN 把数据库文件路径转换为带连接级 PRAGMA 的 SQLite file URI（Issue6 A4）。
+//
+// 背景：`PRAGMA busy_timeout` 是**连接级**设置，打开后执行一次只影响当时那一条
+// 物理连接；database/sql 之后新建的连接 busy_timeout 为 0，竞争时立即 SQLITE_BUSY。
+// 驱动支持 `_pragma=` 查询参数，并在**每条新连接**上执行，因此这里把它写进 DSN。
+//
+// 两个必须遵守的细节：
+//  1. 只对 `#`、`?`、`%` 做百分号转义，并保留 `(`/`)` 字面量（SQLite 的 URI 解析器
+//     不会把括号当分隔符，而它们对 `busy_timeout(5000)` 可读性重要）。若走
+//     `net/url` 的查询编码会把括号编码成 %28/%29，不必要地降低可读性。
+//  2. 必须先 `filepath.Abs`：相对路径会在 file URI 里变成 authority，
+//     SQLite 报 `invalid uri authority`；同时 `file:` 前缀让驱动不再按 `?` 截断路径
+//     （修复前 `/data/a?b.db` 会被静默打开成 `/data/a`）。
+//
+// 刻意**不**把 `journal_mode(WAL)` 放进 _pragma：WAL 按契约只在打开后设置一次，
+// 每条连接重复切换没有必要；也不使用 `_txlock`（会让导出/启动的只读事务申请写锁）。
+func sqliteDSN(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("解析数据库绝对路径失败: %w", err)
+	}
+
+	var b strings.Builder
+	b.WriteString("file:")
+	// 转义为路径安全形式（Windows 反斜杠统一为斜杠，SQLite URI 要求）
+	for _, r := range filepath.ToSlash(abs) {
+		switch r {
+		case '%':
+			b.WriteString("%25")
+		case '#':
+			b.WriteString("%23")
+		case '?':
+			b.WriteString("%3F")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteString("?_pragma=busy_timeout(5000)")
+	return b.String(), nil
+}
+
 // OpenStore 打开或创建 SQLite 数据库
 func OpenStore(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	dsn, err := sqliteDSN(path)
+	if err != nil {
+		return nil, err
+	}
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败: %w", err)
 	}
 
-	// WAL 模式 + busy_timeout
+	// WAL 模式：按契约只在打开后设置一次（每条连接重复切换没有必要）
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("设置 WAL 模式失败: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("设置 busy_timeout 失败: %w", err)
 	}
 
 	s := &Store{db: db}
@@ -150,12 +193,30 @@ CREATE TABLE IF NOT EXISTS scanned_resources (
 	if err != nil {
 		return fmt.Errorf("初始化表结构失败: %w", err)
 	}
-	// 迁移：为已有表补充列（"列已存在"属于正常迁移场景，仅忽略该错误；其他错误记录 WARN）
-	if _, err := s.db.Exec("ALTER TABLE rules ADD COLUMN enable_ipv6 INTEGER DEFAULT 0"); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		slog.Warn("迁移 rules 表失败", "error", err)
+	return s.migrateColumns(s.db)
+}
+
+// migrateColumns 为已有表补充列（Build1 时期的旧库形态：`CREATE TABLE IF NOT EXISTS`
+// 不会给已存在表补列，因此这两条 ALTER 仍然必要）。
+//
+// duplicate-column 表示列已存在，属幂等成功；**其他任何错误立即返回并中止启动**
+// （Issue6 A17）：修复前只记 WARN 后继续，会让列缺失的库带着不完整 schema 启动，
+// 后续读写以难以定位的方式失败。
+func (s *Store) migrateColumns(q DBTX) error {
+	alters := []struct {
+		desc string
+		sql  string
+	}{
+		{"rules.enable_ipv6", "ALTER TABLE rules ADD COLUMN enable_ipv6 INTEGER DEFAULT 0"},
+		{"alert_webhook.channel", "ALTER TABLE alert_webhook ADD COLUMN channel TEXT DEFAULT 'dingtalk'"},
 	}
-	if _, err := s.db.Exec("ALTER TABLE alert_webhook ADD COLUMN channel TEXT DEFAULT 'dingtalk'"); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-		slog.Warn("迁移 alert_webhook 表失败", "error", err)
+	for _, a := range alters {
+		if _, err := q.ExecContext(context.Background(), a.sql); err != nil {
+			if strings.Contains(err.Error(), "duplicate column") {
+				continue // 已迁移：幂等成功
+			}
+			return fmt.Errorf("迁移列 %s 失败: %w", a.desc, err)
+		}
 	}
 	return nil
 }
@@ -206,6 +267,17 @@ func (s *Store) GetRules() ([]DomainRule, error) {
 }
 
 // loadRules 读取全部域名规则；传入 *sql.Tx 即可在事务内复用（Build6 §12.7）
+//
+// rules.targets 采用**四态严格口径**（Issue6 A9，2026-09-27 用户裁决 F1）：
+//   - 历史空串 ""   → 兼容为「适用于全部目标」（空 Targets 的既有语义）
+//   - "[]"          → 合法的「全部目标」（json 解出非 nil 空切片）
+//   - "null"        → **内部错误**（json 解出 nil 切片，与 "[]" 可区分）；
+//     历史（c289744 之前）写路径用 json.Marshal(nil slice) 会写出字面量 null，
+//     因此存量库可能包含该值：升级后 fail-closed 是**预期行为**，
+//     发布说明给出修复方式（SQL 或重新导入 version 2 配置包）。
+//   - 对象/标量/非整数数组/解析失败/物理 NULL → 内部错误
+//
+// 错误文本只带规则 `#id`，绝不回显原始损坏值。
 func loadRules(ctx context.Context, q DBTX) ([]DomainRule, error) {
 	rows, err := q.QueryContext(ctx, "SELECT id, host, protocol, ports, action, targets, comment, enable_ipv6 FROM rules ORDER BY id")
 	if err != nil {
@@ -216,21 +288,48 @@ func loadRules(ctx context.Context, q DBTX) ([]DomainRule, error) {
 	rules := make([]DomainRule, 0)
 	for rows.Next() {
 		var r DomainRule
-		var targets string
+		// 用 sql.NullString 覆盖物理 SQL NULL：直接 Scan 进 string 会报
+		// `unsupported Scan … into type *string`，且错误里不含规则 ID
+		var targets sql.NullString
 		var enableIPv6 int
 		if err := rows.Scan(&r.ID, &r.Host, &r.Protocol, &r.Ports, &r.Action, &targets, &r.Comment, &enableIPv6); err != nil {
 			return nil, err
 		}
-		if targets != "" {
-			var nums []int
-			if err := json.Unmarshal([]byte(targets), &nums); err == nil {
-				r.Targets = nums
-			}
+		parsed, err := parseRuleTargets(r.ID, targets)
+		if err != nil {
+			return nil, err
 		}
+		r.Targets = parsed
 		r.EnableIPv6 = enableIPv6 != 0
 		rules = append(rules, r)
 	}
 	return rules, rows.Err()
+}
+
+// parseRuleTargets 严格解析单条规则的 targets 列（见 loadRules 的四态口径）。
+func parseRuleTargets(ruleID int, raw sql.NullString) ([]int, error) {
+	// 物理 NULL 视为损坏：与 "" 不同，它不是历史兼容形态
+	if !raw.Valid {
+		return nil, fmt.Errorf("规则 #%d 的 targets 为 SQL NULL，数据已损坏", ruleID)
+	}
+
+	text := raw.String
+	// 历史空串兼容为「全部目标」（空 Targets 的既有语义）
+	if text == "" {
+		return nil, nil
+	}
+
+	var nums []int
+	if err := json.Unmarshal([]byte(text), &nums); err != nil {
+		// 不回显原值：只给规则 ID 与损坏事实
+		return nil, fmt.Errorf("规则 #%d 的 targets 不是合法的整数数组（数据已损坏）", ruleID)
+	}
+	if nums == nil {
+		// JSON null：json 解出 nil 切片，而 [] 解出非 nil 空切片，两者可区分。
+		// null 不得视为 []，否则损坏会被静默扩大为「适用于全部目标」。
+		return nil, fmt.Errorf("规则 #%d 的 targets 为 JSON null（数据已损坏，不得视为全部目标）", ruleID)
+	}
+	return nums, nil
 }
 
 // ruleColumns 把域名规则转换为数据库列值（targets JSON 文本、enable_ipv6 0/1）
@@ -249,34 +348,6 @@ func ruleColumns(r DomainRule) (targetsJSON string, enableIPv6 int, err error) {
 	return string(raw), enableIPv6, nil
 }
 
-// DeleteRule 删除域名规则
-func (s *Store) DeleteRule(id int) error {
-	_, err := s.db.Exec("DELETE FROM rules WHERE id = ?", id)
-	return err
-}
-
-// UpdateTarget 更新目标
-func (s *Store) UpdateTarget(id int, t TargetConfig) error {
-	_, err := s.db.Exec(
-		"UPDATE targets SET cloud_type = ?, region = ?, resource_id = ? WHERE id = ?",
-		string(t.CloudType), t.Region, t.ResourceID, id,
-	)
-	return err
-}
-
-// UpdateRule 更新域名规则
-func (s *Store) UpdateRule(id int, r DomainRule) error {
-	targetsJSON, enableIPv6, err := ruleColumns(r)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(
-		"UPDATE rules SET host = ?, protocol = ?, ports = ?, action = ?, targets = ?, comment = ?, enable_ipv6 = ? WHERE id = ?",
-		r.Host, r.Protocol, r.Ports, r.Action, targetsJSON, r.Comment, enableIPv6, id,
-	)
-	return err
-}
-
 // resetAllSQL 清空全部业务表的语句（ResetAllTx 使用）
 const resetAllSQL = "DELETE FROM targets; DELETE FROM rules; DELETE FROM settings; DELETE FROM sync_logs;" +
 	"DELETE FROM alert_email; DELETE FROM alert_webhook; DELETE FROM scanned_resources;"
@@ -287,17 +358,36 @@ func (s *Store) ResetAllTx(ctx context.Context, tx *sql.Tx) error {
 	return err
 }
 
-// WithTransaction 在事务中执行操作，失败自动回滚
+// WithTransaction 在事务中执行操作，失败自动回滚。
+//
+// Issue6 A14：修复前忽略 Rollback 返回值、且没有 defer——fn panic 时事务与连接
+// 不会被回滚（*sql.Tx 没有 finalizer，WAL 下泄漏的写事务会让后续写入持续 BUSY）。
+// 现在用 committed 标志 + defer 回滚：正常提交后不再回滚；已结束事务的
+// sql.ErrTxDone 属预期，忽略；其他回滚失败记安全错误日志（不回显业务数据）。
 func (s *Store) WithTransaction(fn func(tx *sql.Tx) error) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("开始事务失败: %w", err)
 	}
+
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.Error("回滚事务失败", "error", rbErr)
+		}
+	}()
+
 	if err := fn(tx); err != nil {
-		tx.Rollback()
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 // ReplaceScannedResources 覆盖式保存某云厂商+地域的扫描结果（先删后插）
@@ -602,16 +692,6 @@ func (s *Store) SaveAlertWebhookTx(ctx context.Context, tx *sql.Tx, cfg *AlertWe
 	return err
 }
 
-// GetAlertEmailConfigTx 在事务内读取邮件告警配置（配置导入的候选构造使用）。
-func (s *Store) GetAlertEmailConfigTx(ctx context.Context, q DBTX) (AlertEmailConfig, error) {
-	return loadAlertEmail(ctx, q)
-}
-
-// GetAlertWebhookConfigTx 在事务内读取 Webhook 告警配置（配置导入的候选构造使用）。
-func (s *Store) GetAlertWebhookConfigTx(ctx context.Context, q DBTX) (AlertWebhookConfig, error) {
-	return loadAlertWebhook(ctx, q)
-}
-
 // GetSettingsTx 在事务内按固定键集合读取设置（不返回数据库中的未知键）。
 func (s *Store) GetSettingsTx(ctx context.Context, q DBTX) (map[string]string, error) {
 	return loadSettingsByKeys(ctx, q, settingsKeysV2)
@@ -627,10 +707,16 @@ func (s *Store) AddSyncLog(log SyncLog) error {
 		return err
 	}
 	// 仅当超过保留上限（1000 条）时执行清理，避免每次写入全表扫描（O(n)）
+	//
+	// Issue6 A14：COUNT 查询失败也必须处理。此处保留「查询失败就不裁剪」的保守
+	// 语义（不改变裁剪阈值与行为），但记录安全错误日志，不再静默吞掉。
 	var count int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM sync_logs").Scan(&count); err == nil && count > 1000 {
-		_, err = s.db.Exec("DELETE FROM sync_logs WHERE id NOT IN (SELECT id FROM sync_logs ORDER BY id DESC LIMIT 1000)")
-		if err != nil {
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM sync_logs").Scan(&count); err != nil {
+		slog.Warn("统计同步日志条数失败，跳过本次裁剪", "error", err)
+		return nil
+	}
+	if count > 1000 {
+		if _, err := s.db.Exec("DELETE FROM sync_logs WHERE id NOT IN (SELECT id FROM sync_logs ORDER BY id DESC LIMIT 1000)"); err != nil {
 			return err
 		}
 	}

@@ -56,17 +56,32 @@ type AlertManager struct {
 	mu      sync.Mutex
 	bus     *notifier.EventBus
 	current alertSet
+
+	// 按渠道持有的在途限流器（构造后不替换）：Issue6 A2 / §六.4 F5 要求
+	// 「每渠道在途 ≤4」在配置热重载后仍然成立，因此限流器必须比 notifier 实例活得久。
+	emailLimiter   *notifier.InFlightLimiter
+	webhookLimiter *notifier.InFlightLimiter
 }
 
 // NewAlertManager 创建告警管理器；bus 为 nil 时只记录订阅集合（最小接线/测试场景）。
+//
+// 同时创建邮件与 Webhook 各自的在途限流器（容量 notifier.InFlightLimit = 4）。
 func NewAlertManager(bus *notifier.EventBus) *AlertManager {
-	return &AlertManager{bus: bus}
+	return &AlertManager{
+		bus:            bus,
+		emailLimiter:   notifier.NewInFlightLimiter(notifier.InFlightLimit),
+		webhookLimiter: notifier.NewInFlightLimiter(notifier.InFlightLimit),
+	}
 }
 
 // Apply 取消旧订阅并安装新订阅（无失败的内存操作）。
 func (m *AlertManager) Apply(set alertSet) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// 注入本渠道的长期限流器：实例随配置更换，在途计数保持连续
+	injectLimiter(set.email, m.emailLimiter)
+	injectLimiter(set.webhook, m.webhookLimiter)
 
 	if m.bus != nil {
 		for _, et := range alertSubscriptions {
@@ -87,6 +102,19 @@ func (m *AlertManager) Apply(set alertSet) {
 		}
 	}
 	m.current = set
+}
+
+// injectLimiter 把渠道限流器注入支持它的实例。
+//
+// 用非导出接口 + setter 注入，避免改动 NewEmailNotifier / NewWebhookNotifier 的既有
+// 签名（既有测试与调用点零改动）。
+func injectLimiter(sub notifier.Subscriber, limiter *notifier.InFlightLimiter) {
+	if sub == nil || limiter == nil {
+		return
+	}
+	if ln, ok := sub.(notifier.LimitedNotifier); ok {
+		ln.SetInFlightLimiter(limiter)
+	}
 }
 
 // Current 返回当前订阅集合（测试与只读观测用）。

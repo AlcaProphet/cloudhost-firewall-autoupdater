@@ -98,10 +98,13 @@ func (p *TCLighthouse) GetRules() ([]config.RuleInfo, error) {
 	return allRules, nil
 }
 
-// CreateRules 增量添加防火墙规则
-func (p *TCLighthouse) CreateRules(rules []config.RuleAction) error {
+// CreateRules 增量添加防火墙规则。
+//
+// Lighthouse 不支持任何本工具需要跳过的期望规则形态（ICMPv6 由其原生支持），
+// 因此成功时恒为 {len(rules), 0}（Issue6 A11）。
+func (p *TCLighthouse) CreateRules(rules []config.RuleAction) (CreateResult, error) {
 	if len(rules) == 0 {
-		return nil
+		return CreateResult{}, nil
 	}
 
 	var fwRules []*lighthouse.FirewallRule
@@ -140,11 +143,10 @@ func (p *TCLighthouse) CreateRules(rules []config.RuleAction) error {
 	req.FirewallRules = fwRules
 	// 不传 FirewallVersion（由云 API 自行管理）
 
-	_, err := p.client.CreateFirewallRules(req)
-	if err != nil {
-		return fmt.Errorf("添加防火墙规则失败: %w", err)
+	if _, err := p.client.CreateFirewallRules(req); err != nil {
+		return CreateResult{}, fmt.Errorf("添加防火墙规则失败: %w", err)
 	}
-	return nil
+	return CreateResult{Written: len(fwRules), Skipped: 0}, nil
 }
 
 // DeleteRules 精确删除防火墙规则

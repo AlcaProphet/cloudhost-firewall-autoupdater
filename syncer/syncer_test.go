@@ -34,8 +34,10 @@ func (m *stubProvider) GetRules() ([]config.RuleInfo, error) {
 	}
 	return nil, nil
 }
-func (m *stubProvider) CreateRules(rules []config.RuleAction) error { return nil }
-func (m *stubProvider) DeleteRules(rules []config.RuleInfo) error   { return nil }
+func (m *stubProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
+	return provider.CreateResult{Written: len(rules)}, nil
+}
+func (m *stubProvider) DeleteRules(rules []config.RuleInfo) error { return nil }
 func (m *stubProvider) ConvertPorts(port string) []string {
 	return portconv.Parse(port)
 }
@@ -297,9 +299,9 @@ type countingProvider struct {
 	deleted atomic.Int32
 }
 
-func (m *countingProvider) CreateRules(rules []config.RuleAction) error {
+func (m *countingProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
 	m.created.Add(int32(len(rules)))
-	return nil
+	return provider.CreateResult{Written: len(rules)}, nil
 }
 
 func (m *countingProvider) DeleteRules(rules []config.RuleInfo) error {
@@ -318,7 +320,7 @@ func TestRetrySync_Counts(t *testing.T) {
 		t.Fatalf("解析失败: %v", err)
 	}
 	resolved = filterIPv4(resolved) // 与 syncDomain 实际执行路径一致（LookupIPAddr 对 localhost 同时返回 127.0.0.1 与 ::1，过滤后恒为 1 条 IPv4）
-	added, deleted, err := s.retrySync(p, config.DomainRule{
+	added, deleted, _, err := s.retrySync(p, config.DomainRule{
 		Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Targets: []int{0},
 	}, resolved, cfg.Tag)
 	if err != nil {
@@ -376,10 +378,10 @@ func (m *fakeTagProvider) GetRules() ([]config.RuleInfo, error) {
 	return append([]config.RuleInfo(nil), m.rules...), nil
 }
 
-func (m *fakeTagProvider) CreateRules(rules []config.RuleAction) error {
+func (m *fakeTagProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
 	n := m.createCalls.Add(1)
 	if m.idempotentCreateErr != nil {
-		return m.idempotentCreateErr
+		return provider.CreateResult{}, m.idempotentCreateErr
 	}
 	m.mu.Lock()
 	for _, r := range rules {
@@ -387,9 +389,9 @@ func (m *fakeTagProvider) CreateRules(rules []config.RuleAction) error {
 	}
 	m.mu.Unlock()
 	if m.failCreateOn == n {
-		return errors.New("InternalError: 模拟可重试写入失败")
+		return provider.CreateResult{}, errors.New("InternalError: 模拟可重试写入失败")
 	}
-	return nil
+	return provider.CreateResult{Written: len(rules)}, nil
 }
 
 func (m *fakeTagProvider) DeleteRules(rules []config.RuleInfo) error {
@@ -691,7 +693,7 @@ func TestRetrySync_IdempotentErrorsNotCounted(t *testing.T) {
 	}
 	s := newTagSnapshotSyncer(t, "auto-dns", p)
 
-	added, deleted, err := s.retrySync(p, config.DomainRule{
+	added, deleted, _, err := s.retrySync(p, config.DomainRule{
 		Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Comment: "测试", Targets: []int{0},
 	}, resolveLocalhostIPv4(t, s), "auto-dns")
 	if err != nil {
@@ -710,7 +712,7 @@ func TestRetrySync_EmptyCommentDesc(t *testing.T) {
 	p := &fakeTagProvider{stubProvider: &stubProvider{cloudType: config.CloudTCCVM, targetIndex: 0}}
 	s := newTagSnapshotSyncer(t, "auto-dns", p)
 
-	added, deleted, err := s.retrySync(p, config.DomainRule{
+	added, deleted, _, err := s.retrySync(p, config.DomainRule{
 		Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Targets: []int{0},
 	}, resolveLocalhostIPv4(t, s), "auto-dns")
 	if err != nil {
@@ -769,7 +771,7 @@ func TestRetrySync_PartialWriteCounting(t *testing.T) {
 	}
 	s := newTagSnapshotSyncer(t, "auto-dns", p)
 
-	added, deleted, err := s.retrySync(p, config.DomainRule{
+	added, deleted, _, err := s.retrySync(p, config.DomainRule{
 		Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Comment: "测试", Targets: []int{0},
 	}, resolveLocalhostIPv4(t, s), "auto-dns")
 	if err != nil {

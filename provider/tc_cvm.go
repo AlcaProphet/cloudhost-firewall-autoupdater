@@ -101,15 +101,18 @@ func (p *TCCVM) GetRules() ([]config.RuleInfo, error) {
 	return rules, nil
 }
 
-// CreateRules 增量添加入站规则
-func (p *TCCVM) CreateRules(rules []config.RuleAction) error {
+// CreateRules 增量添加入站规则。
+//
+// CVM 的 100 条规则上限是**硬错误**（不属 skipped，也不可重试），因此超出上限时
+// 返回空结果与错误；成功时恒为 {len(rules), 0}（Issue6 A11）。
+func (p *TCCVM) CreateRules(rules []config.RuleAction) (CreateResult, error) {
 	if len(rules) == 0 {
-		return nil
+		return CreateResult{}, nil
 	}
 
 	// 检查规则总数是否接近上限（100 条）
 	if err := p.checkRuleLimit(len(rules)); err != nil {
-		return err
+		return CreateResult{}, err
 	}
 
 	var policies []*vpc.SecurityGroupPolicy
@@ -148,11 +151,10 @@ func (p *TCCVM) CreateRules(rules []config.RuleAction) error {
 		Ingress: policies,
 	}
 
-	_, err := p.client.CreateSecurityGroupPolicies(req)
-	if err != nil {
-		return fmt.Errorf("添加安全组规则失败: %w", err)
+	if _, err := p.client.CreateSecurityGroupPolicies(req); err != nil {
+		return CreateResult{}, fmt.Errorf("添加安全组规则失败: %w", err)
 	}
-	return nil
+	return CreateResult{Written: len(policies), Skipped: 0}, nil
 }
 
 // DeleteRules 按 PolicyIndex 降序逐条删除入站规则

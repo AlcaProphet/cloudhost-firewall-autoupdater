@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,14 +20,16 @@ import (
 )
 
 // stubSyncer 测试用模拟 Syncer（实现 api.Syncer 接口）
+// 注意（Issue6 A5 / 批次 8）：本 stub **刻意不再实现** Pause()/Resume()。
+// api.Syncer 接口已移除这两个成员，因此 handler 想「在协调器之外二次改写运行时
+// 开关」现在会**编译失败**——A5 的实质契约由运行时断言升级为编译期不可能。
+// syncer.Syncer 上的具体实现方法仍然保留（Build6 明确要求，syncer 包内测试继续使用）。
 type stubSyncer struct {
 	mu        sync.Mutex
 	enabled   bool
 	runtime   *syncer.RuntimeManager
 	applied   atomic.Int32
 	triggered atomic.Bool
-	paused    atomic.Bool
-	resumed   atomic.Bool
 }
 
 func (s *stubSyncer) Status() syncer.SyncStatus {
@@ -37,18 +40,6 @@ func (s *stubSyncer) Status() syncer.SyncStatus {
 func (s *stubSyncer) TriggerSync() { s.triggered.Store(true) }
 func (s *stubSyncer) DryRun() (syncer.DryRunResponse, error) {
 	return syncer.DryRunResponse{Results: []syncer.DryRunResult{}}, nil
-}
-func (s *stubSyncer) Pause() {
-	s.mu.Lock()
-	s.enabled = false
-	s.mu.Unlock()
-	s.paused.Store(true)
-}
-func (s *stubSyncer) Resume() {
-	s.mu.Lock()
-	s.enabled = true
-	s.mu.Unlock()
-	s.resumed.Store(true)
 }
 func (s *stubSyncer) Runtime() *syncer.RuntimeManager { return s.runtime }
 func (s *stubSyncer) ApplyState(state *syncer.RuntimeState) {
@@ -104,6 +95,11 @@ func TestHandleSyncTrigger_Enabled(t *testing.T) {
 // Step 7（Issue6 A5）：handler 不得在协调器之外再调用 Syncer.Pause()/Resume() 二次改写
 // 运行时开关，否则并发导入/恢复时迟到的第二次写入会覆盖后提交的真值，造成
 // SQLite sync_enabled 与运行时状态分裂。
+//
+// 批次 8（Issue6 §六.4 F9 / 2026-09-27 用户裁决，解释 A）：api.Syncer 接口已移除
+// Pause()/Resume()，因此原先基于 stub 观测位的两条断言（spy.paused / spy.resumed）
+// **在编译期已不可能**——stub 不再实现这两个方法，handler 若调用即编译失败。
+// 这里保留数据库真值与「恰好一次 apply」两条实质断言来承担 A5 的契约。
 func TestHandleSyncPauseResume(t *testing.T) {
 	e := newTestEnv(t)
 	spy := &stubSyncer{enabled: true, runtime: e.runtime}
@@ -119,9 +115,6 @@ func TestHandleSyncPauseResume(t *testing.T) {
 	if st := e.snapshot(); st == nil || st.Config.SyncEnabled {
 		t.Errorf("pause 后已发布运行时状态必须为暂停: %+v", st)
 	}
-	if spy.paused.Load() {
-		t.Error("pause 不得在协调器之外二次调用 Syncer.Pause() 改写运行时开关")
-	}
 	if got := e.applyCount(); got != 1 {
 		t.Errorf("pause 应只经协调器发布一次运行时状态，实际 %d", got)
 	}
@@ -135,9 +128,6 @@ func TestHandleSyncPauseResume(t *testing.T) {
 	}
 	if st := e.snapshot(); st == nil || !st.Config.SyncEnabled {
 		t.Errorf("resume 后已发布运行时状态必须为开启: %+v", st)
-	}
-	if spy.resumed.Load() {
-		t.Error("resume 不得在协调器之外二次调用 Syncer.Resume() 改写运行时开关")
 	}
 	if got := e.applyCount(); got != 2 {
 		t.Errorf("resume 后累计发布次数 = %d, want 2", got)
@@ -326,4 +316,52 @@ func TestHandleSyncEvents_ServerShutdownExitsSubscriber(t *testing.T) {
 	}
 	// request context 与 shutdown 是两条独立退出路径，此处主动取消以避免泄漏
 	cancel()
+}
+
+// TestAPISyncerInterfaceHasNoPauseResume api.Syncer 接口不得重新引入 Pause()/Resume()。
+//
+// 说明（Issue6 A5 / 批次 8）：这两条断言的**运行时版本**已被移除，因为接口成员
+// 已删除后 stub 不再实现它们——handler 若调用即编译失败，这是比运行时断言更强的
+// 保证。本用例用源码级守卫补上「有人把成员加回来」这一反向风险，使该保证不会
+// 在后续改动中静默退化。
+func TestAPISyncerInterfaceHasNoPauseResume(t *testing.T) {
+	src, err := os.ReadFile("deps.go")
+	if err != nil {
+		t.Fatalf("读取 deps.go 失败: %v", err)
+	}
+	text := string(src)
+
+	start := strings.Index(text, "type Syncer interface {")
+	if start < 0 {
+		t.Fatal("未找到 api.Syncer 接口定义")
+	}
+	end := strings.Index(text[start:], "\n}")
+	if end < 0 {
+		t.Fatal("未找到 api.Syncer 接口定义结尾")
+	}
+	body := text[start : start+end]
+
+	for _, forbidden := range []string{"Pause()", "Resume()"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("api.Syncer 接口不得再引入 %s（A5 契约现在由编译期保证；"+
+				"pause/resume 的运行时写入口唯一属于配置变更协调器）", forbidden)
+		}
+	}
+	// ApplyState 与 Runtime 必须保留
+	for _, required := range []string{"ApplyState(", "Runtime()"} {
+		if !strings.Contains(body, required) {
+			t.Errorf("api.Syncer 接口必须保留 %s", required)
+		}
+	}
+	// syncer 侧的具体实现方法必须仍然存在（Build6 明确要求保留）
+	impl, err := os.ReadFile("../../syncer/syncer.go")
+	if err != nil {
+		t.Fatalf("读取 syncer.go 失败: %v", err)
+	}
+	implText := string(impl)
+	for _, required := range []string{"func (s *Syncer) Pause()", "func (s *Syncer) Resume()", "func (s *Syncer) Runtime()"} {
+		if !strings.Contains(implText, required) {
+			t.Errorf("syncer 侧必须保留实现方法 %s", required)
+		}
+	}
 }

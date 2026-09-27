@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -133,11 +132,13 @@ func (d *Deps) handleLogStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	// 能力检测必须在写响应头之前：不支持 Flush 的 ResponseWriter 无法承载 SSE
+	// （Issue6 A15）。
+	if !probeSSE(w) {
 		writeError(w, http.StatusInternalServerError, "SSE 不可用")
 		return
 	}
+	rc := http.NewResponseController(w)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -147,7 +148,11 @@ func (d *Deps) handleLogStream(w http.ResponseWriter, r *http.Request) {
 	defer unsubscribe()
 
 	// 立即写出响应头：客户端可在 Subscribe（含历史回放）完成后确认连接已建立。
-	flusher.Flush()
+	// 失败时直接返回：响应头已发出，不得再写第二个响应头或 500。
+	if err := rc.Flush(); err != nil {
+		slog.Warn("日志流 SSE 初始刷新失败，结束连接", "error", err)
+		return
+	}
 
 	for {
 		select {
@@ -155,8 +160,11 @@ func (d *Deps) handleLogStream(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			fmt.Fprintf(w, "data: %s\n\n", line)
-			flusher.Flush()
+			if err := writeSSE(w, "data: %s\n\n", line); err != nil {
+				// 半开连接 / 客户端停止读取：首个写错误即退出（修复前会永久循环）
+				slog.Debug("日志流 SSE 写出失败，结束连接", "error", err)
+				return
+			}
 		case <-r.Context().Done():
 			return
 		case <-d.ShutdownCh:

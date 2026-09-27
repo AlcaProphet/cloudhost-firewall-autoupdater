@@ -34,10 +34,34 @@ export interface DomainRule {
   enable_ipv6: boolean
 }
 
+// RoundSummary 一轮同步的整轮汇总（Issue6 A18；字段口径按 F4 裁决）
+//
+// 不变量：total === ok + changed + failed + skipped
+//   - ok      成功且无变更的单元
+//   - changed 成功且发生增删的单元
+//   - failed  DNS 或云调用失败的单元
+//   - skipped Provider 明确未实施操作的单元（如 SWAS 无法表达 DROP）
+export interface RoundSummary {
+  finished_at: string
+  total: number
+  ok: number
+  changed: number
+  failed: number
+  skipped: number
+  added: number
+  deleted: number
+  duration_ms: number
+  outcome: 'success' | 'failed' | 'partial' | 'idle'
+}
+
 export interface SyncStatus {
   running: boolean
   last_sync: string | null
   enabled: boolean // 同步开关（Step 11 起后端必返回）
+  // 同步健康（Issue6 A3/A18，向后兼容追加）：
+  // 两者都是内存态，后端重启后为 null（不得表述为「从未成功」）
+  last_success: string | null
+  last_round: RoundSummary | null
 }
 
 // RuleChange 规则变更摘要（Dry Run 明细化）
@@ -47,6 +71,8 @@ export interface RuleChange {
   action: string
   cidr: string // IPv4 或 IPv6 的 CIDR
   desc: string // 规则描述（含 [TAG]）
+  // skip_reason 只在 skipped 列表中出现（Issue6 A11，向后兼容追加）
+  skip_reason?: string
 }
 
 // DryRunResult 试运行结果（to_add/to_delete 为规则明细数组）
@@ -56,6 +82,9 @@ export interface DryRunResult {
   to_add: RuleChange[]
   to_delete: RuleChange[]
   error?: string
+  // skipped 无法实施的期望规则（如阿里云轻量云不支持 DROP；
+  // Issue6 A11，只追加字段，to_add/to_delete 的名称与结构不变）
+  skipped?: RuleChange[]
 }
 
 // DryRunResponse Dry Run 响应包装（空状态语义化）

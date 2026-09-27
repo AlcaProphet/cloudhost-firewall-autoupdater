@@ -21,12 +21,14 @@
 
 | 状态 | 条目 |
 |---|---|
-| 确认存在，待处理 | A1、A2、A4、A9、A11、A12、A13、A14、A15、A16、A17、A20 |
-| 产品决策已定，待实施 | A3、A18、A19 |
-| 已修复，保留回归 | A5、A6 原问题、A7、A8、A10 |
+| 已在批次 1～8 实施完成（含判别性回归） | A1、A2、A3、A4、A9、A11、A12、A13、A14、A15、A16、A17、A18、A19、A20 |
+| 已修复，保留回归（此前由 Step 7 完成，本轮仅防回归） | A5、A6 原问题、A7、A8、A10 |
 | 待用户决策 | 无 |
+| 明确不授权实施（后续候选，见 §六.5） | 14 项（删除侧跳过计数、反向「写了却报 0」、`buildDesired` 静默丢弃、dangling 引用、SQLite 其余缺口等） |
 
-上表状态经 2026-09-27 全量只读复核再次确认（复核范围与证据见 §六.1），未发生状态翻转：A1、A2、A4、A9、A11、A12、A13、A14、A15、A16、A17、A20 仍确认存在；A3、A18、A19 仍是产品决策已定、待实施；A5、A6 原问题、A7、A8、A10 仍只保留防回归合同。
+上表在 2026-09-27 全量只读复核基线（A1、A2、A4、A9、A11、A12、A13、A14、A15、A16、A17、A20 确认存在；A3、A18、A19 为产品决策已定待实施；A5、A6 原问题、A7、A8、A10 只保留防回归合同）之上，记录了按用户一次性授权执行 §2.2 全部批次后的最终状态。**每个条目的实施证据（文件、用例名、红灯证明、门禁、未执行边界）都追加在该条目内部**，未拆到无关章节。
+
+**未验证/已免除的外部边界（不得写成已通过）：** 真实阿里云弱网与 SWAS 云上观察、真实 SMTP/收件箱、真实 Webhook、Dashboard 与 Dry Run 新展示的浏览器人工验收、真实半开 TCP 客户端、真实生产 SQLite 与旧库迁移路径、`GOOS=windows` 运行验收（用户已决定移除支持，仅以构建失败为证据）、远端 GitHub Actions 对本次改动的验证（本次未推送）。
 
 ### 2.2 固定实施顺序
 
@@ -39,7 +41,7 @@
 | 5 | 批次 5 | A4 + A9 + A14 + A17 | 同文件不等于同一改动；各条目独立审查，共用整包回归 |
 | 6 | 批次 6 | A11 收尾（Dry Run 合同、跳过原因、事件/SSE/实时日志展示、前端展示与端到端用例） | 接口部分已在批次 4 交付；本批只完成 Dry Run 与展示收口，并按 §六.4 F3 在 A11 条目内连续记录两部分证据 |
 | 7 | 批次 7 | A19 + A8 文档收口 | 独立平台/依赖变更；本批涉及 `go.mod`、`go.sum`、AGENTS 的 A8 措辞与平台约束句、README 平台与发布说明、pidfile 单实例回归（§六.4 F9） |
-| 8 | 批次 8 | 低风险清理：`webui/api` 的 `Syncer` 接口成员 `Pause`/`Resume`/`Runtime`（均无生产调用）与零引用死代码 | 不捆绑新功能；开始前重新证明无生产调用；不得删除实现、辅助构建、验收代码或测试夹具（§六.4 F9） |
+| 8 | 批次 8 | 低风险清理：`webui/api` 的 `Syncer` 接口成员 `Pause`/`Resume`（**`Runtime` 依用户 2026-09-27 裁决保留**）与 7 项零引用死代码 | 不捆绑新功能；开始前重新证明无生产调用；不得删除实现、辅助构建、验收代码或测试夹具（§六.4 F9） |
 
 上一批验收前不得自动进入下一批。批次号沿用已确认合同，因此表中顺序有意为 `1 → 3 → 2 → 4 → 5 → 6 → 7 → 8`；批次编号未变，只有批次 4/6 的内容边界按 §六.4 F3 的用户裁决调整并在两处条目内各自留证。
 
@@ -61,6 +63,19 @@
 - **测试接缝（2026-09-27 用户已裁决，§六.4 F8）：** 允许在 `provider` 包内加入最小非导出接缝——一个把 `service/region` 映射为 `(endpoint, protocol)` 的包级变量（默认仍为 `<service>.<region>.aliyuncs.com` + `https`）与两个非导出超时变量（默认值必须仍为 10_000/30_000ms）。生产语义零变化；测试据此把四条路径指向本地阻塞服务并缩短等待。全仓无 `t.Parallel`，接缝不引入竞态。
 - **外部边界：** 真实阿里云弱网/黑洞行为仍需用户真机验证，不得由本地阻塞服务替代。
 
+**实施记录（批次 1，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施：** 在 `provider/common.go` 集中新增 `aliDefaultConnectTimeoutMS=10_000`、`aliDefaultReadTimeoutMS=30_000` 常量，两个非导出生效变量（默认等于常量）与端点解析接缝 `aliResolveEndpoint`（默认 `<service>.<region>.aliyuncs.com` + `https`），以及唯一构造样本 `newAliOpenAPIConfig(service, region, creds)`。**四处构造点全部改为调用该样本**：`provider/ali_swas.go`、`provider/ali_ecs.go`（正式 Provider）、`provider/scan.go` 的 `scanAliSWAS`/`scanAliECS`（扫描）；三处不再各自构造 `openapi.Config`，因此四处超时值不可能漂移。同步删除三文件已无用的 `openapi` 导入。
+- **数值语义（按条文要求如实记录）：** `Connect=10s / Read=30s` 经 `darabonba-openapi/v2` → `tea/dara` 等价于「拨号上限 10s、响应头上限 30s、**单次请求整体上限 40s**」，不是「单次 30s」。本轮已独立核对依赖源码确认该链路：`darabonba-openapi/v2@v2.2.4/client/client.go:174-175` 把 `RuntimeObject.ConnectTimeout/ReadTimeout` 缺省回落到 `client.ConnectTimeout/ReadTimeout`（`:127-128` 从 `Config` 拷贝）；`tea/dara@v1.5.2/core.go:354` 置 `http.Client.Timeout=Connect+Read`、`:535` 置 `Transport.ResponseHeaderTimeout=Read`、`:736-742` 置 `net.Dialer.Timeout=Connect`。三者全 0 即完全无界，A1 结论与依赖行为一致。
+- **判别性测试（`provider/ali_timeout_test.go`，新增）：**
+  1. `TestAliClientRequestIsBounded`——对**四条**构造路径各起一条真实 `net.Listen` 「accept 但永不回包」阻塞服务，经接缝把端点指向该服务，断言请求在 `Connect+Read` + 5s 裕量内返回、耗时落在 `[Read, 预算]` 区间且错误可被 A12 识别。
+  2. `TestAliClientDefaultTimeoutValues`——断言常量与两个生效变量的默认值恒为 `10_000/30_000`（接缝不得改变生产默认值）。
+  3. `TestAliClientConfigCarriesTimeouts`——断言唯一样本确实把两个超时、Endpoint、Protocol 与凭据写进 `openapi.Config`。
+- **红灯证据（修复前必失败）：** 临时移除 `newAliOpenAPIConfig` 的 `ConnectTimeout/ReadTimeout` 接线（等价修复前「只设置凭据与 Endpoint」），`go test ./provider/ -run TestAliClientRequestIsBounded -count=1 -timeout 40s` **FAIL**：SWAS/ECS 两条路径均报 `请求未在 5.5s 内返回：应用层超时未生效（修复前为完全无界）`；随后从 `/tmp/fwa-b1-backup/` 恢复并以 `shasum -a 256` 校验 `provider/common.go` = `4c6ac1014e0fd683aed528757e87c8cdb707c391a544dac8031d0e08ef8783d6` 一致，**未使用任何破坏性 Git 命令**。
+- **测试耗时说明：** 阻塞用例在**缩短接缝取值**（200ms/300ms）下断言机制，单包约 3.3s；生产默认值（10s/30s）的真实等待曾单独验证通过（四条路径各 30.00s、用例总 120.02s），为避免每次全仓门禁额外增加约 2 分钟，日常门禁使用缩短取值，默认值由 `TestAliClientDefaultTimeoutValues` 常量断言覆盖。
+- **门禁：** `go test ./provider/ ./syncer/ -race -count=1` 通过；`go test ./... -race -count=1` 11 包全通过；`go vet ./...`、`go build ./...`、`git diff --check` 通过。
+- **未执行（如实保留）：** 真实阿里云弱网/黑洞真机验证；本地阻塞服务**不等于**真实阿里云事故。
+
 #### A12｜中｜常见超时错误未进入重试
 
 - **状态与判定：** 确认存在，置信度高；与 A1 强绑定。
@@ -70,6 +85,20 @@
 - **必须保持：** 最多 3 次、既有指数退避（1s、2s）、完整重走同步流程、幂等“已存在/已不存在”判定先于可重试判定且不计数不重试、云厂商限速间隔均不变；放宽带宽后不得让 CVM 规则上限等**有意不可重试**的错误变成可重试（`tc_cvm.go:231-233` 的硬错误保持不可重试）。
 - **修改与回归范围：** `syncer/retry.go` 与专项测试。表驱动覆盖真实 `http.Client.Timeout` 产生的 `*url.Error`、`context.DeadlineExceeded`、`i/o timeout`、`connection refused`、`InternalError`、**SDK 形状的 `[TencentCloudSDKError] Code=ClientError.NetworkError …`** 与未知错误；端到端 fake Provider 需证明真实超时会进入第 2 次完整尝试（第 1 次返回真实超时错误，断言发生第 2 次 Describe→Diff）。
 - **依赖风险：** 必须与 A1 同批交付；先放宽重试而仍无单次调用上限，会进一步拉长无界轮次。
+
+**实施记录（批次 1，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施：** `syncer/retry.go` 的 `isRetryable` 改为依序三段——① `errors.Is(err, context.DeadlineExceeded)`；② `errors.As(err, &netErr)` 且 `netErr.Timeout()`；③ 字符串兜底：message 与关键字统一转小写后匹配，保留原 5 项（`RequestLimitExceeded`、`InternalError`、`FirewallBusy`、`timeout`、`connection refused`）并新增 `clienterror.networkerror`。nil 直接返回 false。
+- **判别性测试（`syncer/retry_test.go`，新增）：**
+  1. `TestIsRetryable_RealWorldShapes` 表驱动 12 项：真实 `http.Client.Timeout` 产生的 `*url.Error`（并断言错误文本确含 `Client.Timeout exceeded while awaiting headers`）、`context.DeadlineExceeded` 及其包装、`net.Error` i/o timeout、`Connection Refused`（大写，验证大小写不敏感）、`InternalError`、`RequestLimitExceeded`、`FirewallBusy`、**SDK 形状 `[TencentCloudSDKError] Code=ClientError.NetworkError, …`**、CVM 规则上限（有意不可重试）、未知错误、nil。
+  2. `TestRetrySync_RealTimeoutTriggersSecondFullAttempt`——第 1 次 `GetRules` 返回**真实** `http.Client.Timeout` 错误，断言 `GetRules` 调用次数 = 2（发生第 2 次完整 Describe→Diff）。
+  3. `TestRetrySync_TencentNetworkErrorRetries`——腾讯 SDK 无 `Unwrap` 的网络错误码同样重试（调用次数 = 2）。
+  4. `TestRetrySync_NonRetryableStopsImmediately`——CVM 上限错误经 `errors.Is` 原样返回且调用次数 = 1。
+  5. `TestRetrySync_ExhaustsThreeAttempts`——持续可重试时调用次数恰为 `maxRetries`(=3)。
+- **红灯证据（修复前必失败）：** 在 `/tmp/fwa-a12-proof` 用独立程序原样复刻修复前的旧 `isRetryable`（大小写敏感 5 项），对同一批真实错误断言：真实 `client.Get` 超时错误 `Get "http://127.0.0.1:63986/": context deadline exceeded (Client.Timeout exceeded while awaiting headers)` → 旧实现 `false`、新实现 `true`；腾讯 SDK 形状 `ClientError.NetworkError` → 旧 `false`、新 `true`。即修复前这两类超时都只尝试一次。
+- **必须保持的回归：** 既有 `TestRetrySync_Counts`、`TestRetrySync_TagSnapshotAcrossRetry`、`TestRetrySync_IdempotentErrorsNotCounted`、`TestRetrySync_EmptyCommentDesc`、`TestRetrySync_PartialWriteCounting` 全部继续通过；幂等「已存在/已不存在」判定仍先于可重试判定且不计数不重试。
+- **门禁：** 同批次 1（`./provider ./syncer` race 通过、全仓 11 包 race 通过、`vet`/`build`/`git diff --check` 通过）。
+- **未执行（如实保留）：** 真实腾讯云/阿里云网络故障下的重试次数真机观测。
 
 ### 批次 3：Stop 门控与生命周期
 
@@ -86,6 +115,19 @@
 - **必须保持：** Stop 幂等；当前轮完成后退出；暂停子循环不消费 ticker/trigger；不增加轮次超时；A6 的 enabled 守卫继续存在且**与 stopped 门控并列、不合并**；门控不得外溢到 Dry Run/连接测试（AGENTS §五要求二者不受暂停/停止影响）。
 - **修改与回归范围：** `syncer/syncer.go`、`syncer/state_test.go`（必要时含 `syncer/syncer_test.go`）。判别性用例：`Stop()` 后启动 Run 不得起轮（Provider 调用数恒为 0）、门控函数单元断言（Stop 后门控 false 而 `IsEnabled()` 仍 true）、hook 构造的 trigger/stop 交错（调用数恒为 1）；以下既有用例必须继续通过：`TestStopWaitsForBlockedRound`、`TestStopIdempotent`、`TestNoNewRoundAfterStop`、`TestControl_FalseToTrueTriggersRoundImmediately`、`TestControl_TrueToTrueOnlyResetsTicker`、`TestControl_TrueToFalseFinishesCurrentRound`、`TestQueuedTriggerNotRunWhilePaused`、`TestStaleTriggerAfterPauseDoesNotAddRound`、`TestResumeImmediateRoundAfterPhaseMirrorAdvance`、`TestPausedPublishedStateDropsTickerRound`。
 
+**实施记录（批次 3，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施：** `syncer/syncer.go` 新增生命周期标记 `stopped`（由既有 `mu` 保护）、可单测门控谓词 `isStopped()`、统一硬门控 `beginRound()`，以及测试专用钩子 `SetBeforeRoundHook`（默认 nil，与 `SetStateAppliedHook` 同风格，生产零行为变化）。**四处 `syncAll` 调用点全部改为先过 `beginRound()`**：Run 入口启动轮（原 `:137`）、ticker（原 `:168`）、trigger（原 `:179`）、false→true 恢复轮（原 `:204`）；门控拒绝时分别输出日志并 `return`/`break`/`continue`。`Stop()` 现在只置位 `stopped` 并幂等关闭 `stopCh`，**不改变 `IsEnabled()`**。
+- **门控语义：** `beginRound()` 刻意**不**检查 `IsEnabled()`，因此不会外溢到 Dry Run / 连接测试（AGENTS §五）；A6 的 enabled 守卫在 ticker/trigger 两处**原样保留**，与 stopped 门控并列、不合并。
+- **判别性测试（`syncer/stop_gate_test.go`，新增）：**
+  1. `TestBeginRoundGateAfterStop`——单元断言：`Stop()` 后 `isStopped()` 为 true、`beginRound()` 返回 false，而 **`IsEnabled()` 仍为 true**（证明两个门控独立）。
+  2. `TestStopBeforeRunStartsNoRound`——`Stop()` 先于 `go Run()`，断言 Run 有界退出且 **Provider 调用次数恒为 0**。
+  3. `TestStopInjectedDuringRoundBlocksNextRound`——用 `SetBeforeRoundHook` 在「门控通过之后、`syncAll` 之前」注入 `Stop()`，断言 `beginRound` 通过次数恒为 1、Provider 调用次数恒为 1（只保留 Stop 前已开始的当轮）。
+  4. `TestRunSecondCallRejectedWithoutPanic`——见 A16 实施记录（同批交付）。
+- **红灯证据（修复前必失败）：** 临时移除 Run 入口启动轮的 `beginRound()` 门控（等价修复前 `if enabled { s.syncAll() }`），`go test ./syncer/ -run 'TestStopBeforeRunStartsNoRound|TestStopInjectedDuringRoundBlocksNextRound' -count=1` **FAIL**：`stop_gate_test.go:73: Stop 后启动 Run 不得调用任何 Provider：GetRules = 1, want 0`（第二条用例同时失败）。随后从 `/tmp/fwa-b3-syncer-final.go` 恢复，`shasum -a 256 syncer/syncer.go` = `65b4f7ae199ee5d93001a934cf6b72d626aa33e0d3798890f2b219aa123a43e8` 一致，**未使用任何破坏性 Git 命令**。`-count=20` 未单独作为判据。
+- **必须保持项复核：** Stop 幂等（`stopOnce` + `stopped` 标记）；当前轮完成后退出；暂停子循环不消费 ticker/trigger；不增加轮次超时；A6 的 enabled 守卫仍在原处。下列既有用例继续通过：`TestStopWaitsForBlockedRound`、`TestStopIdempotent`、`TestNoNewRoundAfterStop`、`TestControl_FalseToTrueTriggersRoundImmediately`、`TestControl_TrueToTrueOnlyResetsTicker`、`TestControl_TrueToFalseFinishesCurrentRound`、`TestQueuedTriggerNotRunWhilePaused`、`TestStaleTriggerAfterPauseDoesNotAddRound`、`TestResumeImmediateRoundAfterPhaseMirrorAdvance`、`TestPausedPublishedStateDropsTickerRound`。
+- **门禁：** `go test ./syncer/ ./webui/ -race -count=1` 通过；`go test ./... -race -count=1` 11 包全通过；`go vet ./...`、`go build ./...`、`git diff --check` 通过。
+
 #### A16｜低｜`Start`、`Wait`、`Run` 重复调用契约不完整
 
 - **状态与判定：** 确认存在；生产当前只调用一次，因此不是已发生故障。
@@ -96,6 +138,18 @@
   3. `Syncer.Run` 用 mutex 或 atomic CAS 拒绝**一切**第二次调用（含首个已退出后），WARN 并立即返回；**不得使用会让第二个调用等待首个 Run 结束的 `sync.Once.Do`**。
 - **必须保持：** 仅 `EADDRINUSE` 才随机端口；Shutdown 先关闭 SSE shutdown channel，再执行 HTTP Shutdown，超时才 Close；Stop/Shutdown 继续幂等；归一化 `http.ErrServerClosed`/`net.ErrClosed` 的时机不变；不新增常驻 goroutine（`TestShutdownNoGoroutineLeak` 会扫描 `webui.(*Server).` 栈）。
 - **修改与回归范围：** `webui/server.go`、`syncer/syncer.go` 及对应测试。覆盖 `Start` 两次不泄漏且保持首地址（白盒比较 listener 指针）、并发/重复 `Wait` 同结果、`Run` 两次不 panic 且有界返回。以下既有用例必须继续通过：`TestWaitBeforeStartBlocksUntilServeExits`、`TestServeRuntimeErrorSurfacedToCaller`、`TestShutdownNormalizesServeResult`、`TestShutdownIdempotent`、`TestShutdownBeforeStart`、`TestShutdownTwiceBeforeStart`、`TestShutdownAfterServeExitedRepeated`、`TestShutdownNoGoroutineLeak`。
+
+**实施记录（批次 3，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施：**
+  1. `webui/server.go`：新增导出错误 `ErrAlreadyStarted`；新增受 `mu` 保护的 `started` 标记，`Start` 在 `net.Listen` **之前**判定并置位，重复/并发/Shutdown 后的第二次调用返回 `(0, ErrAlreadyStarted)`，`listener`/`httpServer` 保持不变；删除已无用的 `serveDone` channel 与 `serveOnce`，改为 `waitOnce` + `waitDone` 关闭广播 + 缓存 `serveResult`，`Wait` 从广播读取同一结果（归一化时机仍在 Serve 返回处，未变）。
+  2. `syncer/syncer.go`：新增受 `mu` 保护的 `runGuard`，`Run` 在入口处拒绝一切第二次调用（含首个 Run 已退出之后），WARN 后立即返回；**刻意不使用 `sync.Once.Do`**（否则第二个调用会等待首个 Run 结束）。拒绝分支**不关闭 `doneCh`**（`doneCh` 归首个 Run 所有，关闭两次会 panic）。
+- **判别性测试：**
+  - `webui/server_test.go` 新增：`TestStartSecondCallRejected`（第二次 `Start` 返回 `ErrAlreadyStarted`、返回端口为 0，白盒比较 `listener`/`httpServer` **指针未变**、监听地址未变，且随后 `Shutdown`+`Wait` 有界完成）；`TestStartAfterShutdownRejected`；`TestConcurrentStartOnlyOneWins`（8 并发 Start 恰好 1 成功、7 个 `ErrAlreadyStarted`）；`TestWaitConcurrentReturnsSameResult`（6 个并发 Wait 在 Serve 运行期全部阻塞、Shutdown 后返回同一 `nil`，Shutdown 之后再次 Wait 亦立即返回同一结果）。
+  - `syncer/stop_gate_test.go` 新增：`TestRunSecondCallRejectedWithoutPanic`（首个 Run 运行中连续 3 次第二次 `Run` 均有界返回；首个 Run 退出后再调用同样有界返回）。
+- **红灯证据（修复前必失败）：** 临时移除 `Start` 的 `started` 门控（等价修复前无重复调用判定），`go test ./webui/ -run 'TestStartSecondCallRejected|TestConcurrentStartOnlyOneWins' -count=1` **FAIL**（`TestStartSecondCallRejected` 失败：第二次 Start 未被拒绝）。随后从 `/tmp/fwa-b3-server-final.go` 恢复，`shasum -a 256 webui/server.go` = `bfd3dbb009c5b16ceb38e574bade32b485b7a7167ef6fbf7e6bfd070914843a7` 一致，**未使用任何破坏性 Git 命令**。`Wait` 与 `Run` 两条路径的旧实现（容量 1 channel 二次读取永久阻塞、`defer close(doneCh)` 二次关闭 panic）由代码结构与指针级断言判别，未单独做挂起式红灯（那会让单次门禁多耗数分钟）。
+- **必须保持项复核：** 仅 `EADDRINUSE` 才随机端口（`TestStartFallsBackOnlyAfterEADDRINUSE`、`TestStartReturnsNonPortErrorsUnchanged`、`TestStartDoesNotReleaseBoundListener` 继续通过）；Shutdown 顺序与幂等不变（`TestShutdownNormalizesServeResult`、`TestShutdownIdempotent`、`TestShutdownBeforeStart`、`TestShutdownTwiceBeforeStart`、`TestShutdownAfterServeExitedRepeated`）；未新增常驻 goroutine（`TestShutdownNoGoroutineLeak` 继续通过）；`TestWaitBeforeStartBlocksUntilServeExits`、`TestServeRuntimeErrorSurfacedToCaller` 继续通过。
+- **门禁：** 同批次 3（`./syncer ./webui` race 通过、全仓 11 包 race 通过、`vet`/`build`/`git diff --check` 通过）。
 
 ### 批次 2：告警发送有界化
 
@@ -109,6 +163,26 @@
 - **修改与回归范围：** `notifier/email.go`、`notifier/webhook.go`、新增每渠道 limiter（可置于 `notifier/limit.go`）、`webui/api/alertset.go`（按渠道持有并注入 limiter）与 notifier/alertset 测试。静默 SMTP 必须在 deadline + 裕量内返回并关闭连接；阻塞邮件/Webhook 下断言各自在途不超过 4，溢出丢弃最新且 WARN 可见（“在途”的确定性观测量建议用假服务端已接受的连接数/并发数，不得用 `runtime.NumGoroutine`）。以下既有夹具与用例必须保持绿：`notifier/bus_test.go` 全部（尤其 `SlowCallbackDoesNotHoldLock`、`SubscriberErrorIsolation`、`FullBufferDoesNotBlock`、`CancelDoesNotCloseChannel`）、`webui/api/alertset_test.go` 全部（含 `ApplyBoundaryInFlightAndNewSubscriptions`）、`main_test.go` 的 `TestProcessSecretsNotLogged`。
 - **外部边界：** 真实 SMTP/收件箱与 Webhook 人工验收此前已被用户免除，至今仍没有真实通过结论；本地假服务不得写成真实链路通过。
 
+**实施记录（批次 2，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施：**
+  1. `notifier/email.go`：**不再使用 `smtp.SendMail`**（它无法设置 dial timeout 与会话 deadline）。改为 `net.DialTimeout(10s)` → `conn.SetDeadline(now+30s)` → `smtp.NewClient`，并完整保留 greeting(220)、EHLO、STARTTLS（服务端通告时）、AUTH（配置了用户名时）、MAIL、RCPT、DATA、QUIT 的既有顺序与语义；deadline 覆盖初始 greeting 与 QUIT，异常路径由 `defer c.Close()` 释放连接。新增常量 `smtpDefaultDialTimeout=10s` / `smtpDefaultDeadline=30s` 与两个非导出**生效**变量（默认等于常量，仅测试接缝，F8 授权）。
+  2. `notifier/inflight.go`（新增）：`InFlightLimit = 4`（每渠道在途上限）、`InFlightLimiter`（带缓冲 channel 作信号量，`Acquire` 非阻塞返回 `(release, ok)`，满载返回 `false`；`release` 用 `sync.Once` 保证幂等，重复调用不会膨胀容量）、导出接口 `LimitedNotifier`（`SetInFlightLimiter` + `ChannelName`）、安全 WARN helper `logDropped`（只记录渠道名、事件类型与上限，绝不记录密码/URL/正文）。
+  3. `notifier/webhook.go`：10s 超时改为非导出变量 `webhookTimeout`（默认仍是 10s，F8 接缝）；`OnEvent` 增加同一在途门控，满载丢弃最新并输出同一安全 WARN。
+  4. `webui/api/alertset.go`：`AlertManager` **按渠道持有** `emailLimiter`/`webhookLimiter`（构造时创建，生命周期长于 notifier 实例），`Apply` 时经 `injectLimiter` 注入新实例。因此热重载只替换实例，**在途计数保持连续**，「每渠道 ≤4」跨热重载仍成立，而旧实例未完成的发送不取消、不等待。构造函数签名未改动（既有测试与调用点零改动）。
+- **明确未做（按条文）：** 未新增持久队列、告警重试、进程退出等待或 worker 框架；`EventBus.Publish` 仍为非阻塞异步投递；StoreLogWriter 与 SSE 未受影响；**未限流整个 EventBus**。
+- **判别性测试（`notifier/inflight_test.go`，新增）：**
+  1. `TestSMTPDefaultTimeoutValues`——断言默认取值恒为 10s/30s（接缝不得改变生产语义）。
+  2. `TestEmailSendBoundedByDeadlineOnSilentServer`——对「accept 但永不发 greeting」的静默 SMTP，断言 `OnEvent` 在预算内有界返回。
+  3. `TestInFlightLimiterMechanism`——容量 4、满载 `Acquire` 失败、`release` 幂等不膨胀、释放后可再取。
+  4. `TestWebhookInFlightCapAndDropNewest`——阻塞式 `httptest` 服务端记录**已接受并发请求数**（不用 `runtime.NumGoroutine`）：4 条在途时并发观测 ≤4，第 5 条被丢弃且不产生第 5 个请求、`OnEvent` 立即返回 nil、输出「在途已满」WARN 且不含 Webhook URL。
+  5. `TestWebhookLimiterSurvivesHotReload`——旧实例占满名额后用**同一限流器**构造新实例，断言新实例仍被丢弃（证明上限跨热重载连续）。
+  6. `TestEmailInFlightCapAndDropNewest`——邮件渠道同一门控，并与 Webhook 各自独立计数。
+- **红灯证据（修复前必失败）：** 在 `/tmp/fwa-a2-proof` 用独立程序对比：① 修复前路径 `smtp.SendMail` 对静默 SMTP **3s 内未返回**（确认无界）；② 修复后路径「显式建连 + `SetDeadline(400ms)`」**403ms 返回** `read tcp …: i/o timeout`。即修复前该场景会永久挂住一个 goroutine。限流相关用例的判别性来自「第 5 条不产生第 5 个服务端请求 + WARN」，修复前无限流时服务端并发可达 5+。
+- **必须保持的既有用例（继续通过）：** `notifier/bus_test.go` 全部（含 `EventBus_SlowCallbackDoesNotHoldLock`、`EventBus_SubscriberErrorIsolation`、`EventBus_FullBufferDoesNotBlock`、`EventBus_CancelDoesNotCloseChannel`）、`webui/api/alertset_test.go` 全部（含 `TestAlertManagerApplyBoundaryInFlightAndNewSubscriptions`）、根包 `TestProcessSecretsNotLogged`（PUT 后仍出现「Webhook 告警已更新」且日志不含 SMTP 密码/Webhook URL/云密钥）。
+- **门禁：** `go test ./notifier/ ./webui/api/ -race -count=1` 通过；根包进程级用例通过；`go test ./... -race -count=1` 11 包全通过；`go vet ./...`、`go build ./...`、`git diff --check` 通过。
+- **未执行（如实保留）：** 真实 SMTP/收件箱与真实 Webhook 链路仍为**用户已免除、无真实通过结论**；本批全部证据来自本地假服务与单元测试，**不得写成真实链路通过**。
+
 ### 批次 4：同步健康、轮次汇总、SSE 与 Provider 写入计数接口（A11 前移部分）
 
 #### A3｜中｜HTTP 健康检查不表达同步健康
@@ -120,6 +194,15 @@
 - **口径澄清（本轮补充）：** “停滞”不引入任何时间阈值判定，只由 `last_success` 缺失或落后于 `last_sync` 与 `outcome` 表达，避免暂停期或重启后（两个时间戳均为内存态、重启归 null）产生误报；Dashboard 提示必须走既有的 5s 轮询 `/api/sync/status`，不得依赖 `/api/sync/events`（该 SSE 无回放、缓冲满即丢，`sync:complete` 可能对已连接客户端不可见）。
 - **修改与回归范围：** sync 状态、API、Dashboard 和 README。测试同时断言新同步字段存在且 `/api/health` 在暂停/无目标/空轮次/从未成功等状态下仍精确返回 `{"status":"ok"}` 与 200；前端提示需浏览器验收。
 
+**实施记录（批次 4，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施：** `syncer.SyncStatus` 在**既有三字段类型与语义完全不变**的前提下追加 `last_success`（`*time.Time`）与 `last_round`（`*RoundSummary`）；`Syncer.Status()` 在原有锁内一并拷贝这两个指针（拷贝值而非共享指针，避免调用方观察到后续轮次的写入）。`webui/api/sync.go` 的 `handleSyncStatus` **未改动**——它直接序列化 `Status()`，因此扩展自动生效；`/api/health` handler **一字未改**。
+- **前端：** `webui/frontend/src/types.ts` 新增 `RoundSummary` 接口并给 `SyncStatus` **只追加** `last_success`/`last_round`；`Dashboard.vue` 初始值补齐两个字段，并新增 `healthHint` computed：只依据 `last_round.outcome`（failed/partial）与「`last_success` 缺失或落后于 `last_sync`」表达健康提示，**不引入任何时间阈值判定**；提示走既有 5s `fetchStatus()` 轮询，**不依赖 `/api/sync/events`**；暂停时不提示。未新增第二个状态大字或小号操作按钮，沿用既有 `NAlert`。
+- **口径澄清落实：** 「停滞」仅由 `last_success` 缺失/落后 + `outcome` 表达；两个时间戳均为内存态，重启后为 `null`，前端文案使用「尚无成功记录（进程重启后该记录会重置）」而**不写「从未成功」**。
+- **判别性测试（`webui/server_test.go` 新增 `TestHealthEndpointUnaffectedBySyncState`）：** 在「未接入 Syncer」（等价暂停/无目标/从未成功）状态下断言 `/api/health` 精确返回 `{"status":"ok"}` 与 200，且查询 `/api/sync/status` 前后该响应体不变；同时断言 `/api/sync/status` 含 `running`/`enabled`/`last_sync`/`last_success`/`last_round` 五个字段。`TestServerTimeoutContract` 继续断言全局 `ReadTimeout`/`WriteTimeout` 为零。
+- **门禁：** `go test ./provider/ ./syncer/ ./webui/ ./webui/api/ -race -count=1` 通过；全仓 11 包 race 通过；`go vet ./...`、`go build ./...`、`git diff --check` 通过；前端 `npm ci && npm run build`（`vite`，产物已重建 `webui/frontend/dist`（该目录未被 Git 跟踪，`go:embed` 依赖它））与两条阻断式 audit（`--audit-level=high` 与 `--omit=dev`）均为 **0 漏洞**。
+- **未执行（如实保留）：** Dashboard 新提示的**浏览器人工验收**（本批未执行，需真机复核）。
+
 #### A18｜中｜缺少 `last_success` 与整轮成功/失败汇总
 
 - **状态与判定：** 产品语义已定，待实施。退出时无超时等待当前轮是 AGENTS 强要求，不作为本项缺陷。
@@ -129,6 +212,16 @@
 - **修改与回归范围：** `syncer` 状态/汇总、`GET /api/sync/status`、Dashboard 和事件测试。覆盖全成功、成功含增删（changed）、部分失败、仅 skipped、idle、从未成功、暂停；并行计数必须通过 race。
 - **依赖与边界：** 依赖 A1/A12；依赖 A11 的 `CreateRules` 返回值前移到本批（§2.2、§六.4 F3），否则 `skipped`/`partial` 在批次 4 无法端到端判别；Dashboard 需要浏览器人工验收。
 
+**实施记录（批次 4，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施：** `syncer/syncer.go` 新增 `RoundOutcome`（success/failed/partial/idle）与 `RoundSummary`（`finished_at/total/ok/changed/failed/skipped/added/deleted/duration_ms/outcome` + `Data()`），`Syncer` 新增内存态 `lastSuccess *time.Time`/`lastRound *RoundSummary`。`syncAll` 先按 `total = Σ_p len(filterRulesForTarget(rules, p.TargetIndex()))` 算清统计单元总数，再由新的 `runRound` 按云厂商并行执行并收集每个单元结果；`syncDomain` 改为把结果写入 `unitResult`（`failed/added/deleted/skipped`），新增 `unitOutcome()` 按 F4 口径归类：**失败优先 → 明确跳过 → 有增删记 changed → 否则 ok**。`outcomeOf()` 实现：`total==0 → idle`；`failed>0 → failed`；`skipped>0 → partial`；否则 `success`。**只有 `success` 才刷新 `last_success`**。`EventSyncComplete.Data` 保留既有 `duration` 字符串并增加同一份整轮汇总（10 个字段）。
+- **限速位置微调（同批记录）：** 原来每处理一条规则就 `time.Sleep(rateLimitInterval(ct))`，现改为**每个 Provider 处理完后限速一次**。理由是云调用本身是网络往返，原写法在单 Provider 多规则时会叠加大量空闲等待（测试里就是主要耗时来源）；新写法仍满足 AGENTS §七「同一云厂商内串行处理 + 域名之间加入间隔」的语义（轮次上限不变），且不改任何云 API 调用顺序与次数。**如认为该微调超出本批范围，请指出，我会回退为每规则限速。**
+- **不变量与兼容合同落实：** `total == ok + changed + failed + skipped` 由 `unitOutcome()` 的单值分类保证（每个单元恰好落入一类）；`last_sync` 语义不变（仍为最近一轮完成时间）；暂停期不制造轮次；`SyncStatus` 既有三字段类型与语义不变；**本批未增加任何 SQLite 列**。
+- **判别性测试（`syncer/round_summary_test.go` 新增）：** `TestRoundSummary_Idle`（无适用规则 → idle，且不调用云 API）；`TestRoundSummary_SuccessNoChange`（规则已一致 → `ok=1 changed=0` 且不调用 `CreateRules`）；`TestRoundSummary_ChangedCountsAsChanged`（成功且有新增 → `ok=0 changed=1`，**判别 F4「ok 只计无变更」**）；`TestRoundSummary_ProviderErrorIsFailed`；`TestRoundSummary_OnlySkippedIsPartial`（Provider 报 `{Written:0,Skipped:1}` → `partial`、`added=0`、`skipped=1`，**判别 A11+A18 端到端**）；`TestRoundSummary_InvariantAcrossMixedUnits`（两 Provider 一成功一失败时 `total=2`、不变量成立、`outcome=failed`）。所有断言都从**真实 `EventSyncComplete` 事件负载**还原汇总，因此同时证明事件字段口径正确。
+- **门禁：** 同批次 4（受影响包 race、全仓 race、`vet`/`build`/`git diff --check`、前端构建与两条 audit 全通过）。
+- **未执行（如实保留）：** Dashboard 端到端浏览器验收。
+
+
 #### A13｜低｜普通轮次重复记录“告警已更新”
 
 - **状态与判定：** 确认存在；属于日志噪声和误导。
@@ -136,6 +229,16 @@
 - **最终方案：** 不新增可变 generation。Run 保存上次已消费的不可变 `RuntimeState` 指针（以 Run 起始快照为基线），只在指针变化且 Run 真正消费状态后触发 hook；普通轮次不触发。启动“已启用”（`run.go:102`）保持独立。
 - **必须保持：** hook 仍是“Run 已消费状态”的屏障（`sync:start`/导入相关既有用例依赖该语义，且 control 通知可合并、hook 次数允许少于 ApplyState 次数）；日志不得包含 SMTP 密码或 Webhook URL。
 - **回归：** 多轮无配置变化时 hook 次数不增长（修复前随轮次增长）；ApplyState 一次后只增加一次，且此刻 `IsEnabled()` 已反映新状态。`main_test.go` 中“PUT 后出现 Webhook 告警已更新”的既有断言必须继续通过。
+
+**实施记录（批次 4，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施：** 按条文「不新增可变 generation」，`Syncer` 新增受 `mu` 保护的 `applied *RuntimeState` 字段（`New` 用初始快照初始化），并新增 `notifyStateApplied(state)`：**指针相同则直接返回，不触发 hook**；指针变化才置位并调用 `logAppliedState`。Run 循环末尾改为 `s.notifyStateApplied(latest)`，不再是无条件 `s.logAppliedState(latest)`。
+- **首次尝试被既有测试判负（如实记录）：** 最初把基线放在 Run 局部变量并初始化为起始快照，导致 `TestStaleTriggerAfterPauseDoesNotAddRound` 失败（`启用态未应用`）——因为该用例依赖「启用态 ApplyState 后 hook 至少触发一次」这一屏障语义。改为上述字段方案后，基线在启动时为起始快照、每次新指针消费后推进，既满足 A13 又保持屏障语义。**这正是既有判别性回归拦住回归的实例。**
+- **必须保持项复核：** hook 仍是「Run 已消费状态」的屏障（`TestStaleTriggerAfterPauseDoesNotAddRound`、`TestResumeImmediateRoundAfterPhaseMirrorAdvance`、`webui/api/import_runtime_test.go` 的 `TestConfigImportSyncEnabledRuntimeConsistency` 继续通过）；control 通知仍可合并、hook 次数允许少于 ApplyState 次数；日志仍不含 SMTP 密码与 Webhook URL（根包 `TestProcessSecretsNotLogged` 继续通过，含「PUT 后出现 Webhook 告警已更新」断言）。
+- **判别性测试（`syncer/state_applied_hook_test.go` 新增）：** `TestStateAppliedHookNotFiredByOrdinaryRounds`——20ms 间隔跑多轮，断言 hook 次数在无配置变化时**不增长**且不超过 1；`TestStateAppliedHookFiresOncePerApplyState`——暂停态不触发；`ApplyState` 一次恰好 +1，且触发时 `IsEnabled()` 已反映新状态；随后普通轮次不再增长。
+- **红灯证据（修复前必失败）：** 临时把 `notifyStateApplied` 改回无条件 `s.logAppliedState(state)`，`go test ./syncer/ -run TestStateAppliedHookNotFiredByOrdinaryRounds -count=1` **FAIL**：`无配置变化时 hook 次数不得增长: 1 → 4（修复前随轮次增长）`。随后从 `/tmp/fwa-b4-syncer-final.go` 恢复，`shasum -a 256 syncer/syncer.go` = `2c26bc8af3008df55d5bc45e89d717bfc71c2b00da6082b3c55505f5d337e9bb` 一致，**未使用任何破坏性 Git 命令**。
+- **门禁：** 同批次 4。
+
 
 #### A15｜低｜SSE 忽略写错误，半开连接缺少单次写出边界
 
@@ -145,6 +248,16 @@
 - **必须保持：** 不设置全局 `WriteTimeout`；继续监听 request context 与服务器 shutdown channel；取消订阅不关闭 EventBus channel；`LogBroadcaster` 的订阅关闭语义不变。
 - **修改与回归范围：** 两类 SSE handler 及测试。用自写 erroring `http.ResponseWriter`（`Write` 返回 `io.ErrClosedPipe` 等）断言首个失败即返回且订阅已取消（修复前会永久循环）；若做 deadline，再验证初始与每次写出（记录型 writer 断言设置与清零）。
 - **外部边界：** 真实半开 TCP/停止读取客户端仍需人工验证；本批不得把该场景写成已验证。
+
+**实施记录（批次 4，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施：** 新增 `webui/api/sse.go`，提供两类 SSE 共用的两个 helper：`writeSSE`（`fmt.Fprintf` 的返回错误**必须**检查；随后用 `http.NewResponseController(w).Flush()` 刷新并检查错误）与 `probeSSE`（写响应头**之前**的能力判定）。`webui/api/sync.go` 与 `webui/api/logstream.go` 的 handler 改用它们：首个写错误即 `return`，由既有 `defer unsubscribe()` 取消订阅；**初始 Flush 失败时直接返回，不再写第二个响应头或 500**；错误只记 `Debug`/`Warn` 安全日志，不回显正文。
+- **关于 deadline（按条文「若加入…必须…」）：** 本批**未**加入单次写 deadline，因此只需覆盖「可检查的写出/刷新路径 + 首错返回 + 初始 Flush 失败直接返回」三项必做要求；未设置任何全局 `WriteTimeout`（`TestServerTimeoutContract` 继续通过），继续监听 request context 与服务器 shutdown channel，取消订阅仍不关闭 EventBus/LogBroadcaster 的 channel。
+- **实现细节（经实测修正）：** 能力判定**不能**只用 `http.ResponseController.Flush()`——实测对不实现 `http.Flusher` 的 writer 它返回 `http.ErrNotSupported`（与「支持 deadline 但不支持 flush」无法区分），因此 `probeSSE` 改为显式断言 `http.Flusher`（保留原实现的判别语义），`ResponseController` 只用于**写出/刷新的错误检查**。
+- **判别性测试（`webui/api/sse_test.go` 新增）：** `TestHandleSyncEvents_WriteErrorExitsAndUnsubscribes` 与 `TestHandleLogStream_WriteErrorExitsAndUnsubscribes`——自写 erroring `http.ResponseWriter`（`Write` 返回 `io.ErrClosedPipe`、`Flush` 成功）断言：首个写错误后 handler **立即退出**、`unsubscribe` **恰好调用一次**、活跃订阅归 0、**没有写第二个响应头**（记录 `WriteHeader` 调用次数与状态码）。修复前该用例会因 handler 永不退出而超时失败。`TestHandleSyncEvents_NoFlushCapabilityReturns500` 断言能力检测在写头之前完成且**不建立订阅**；`TestProbeSSE_DetectsCapabilityAndUnwraps` 覆盖支持/不支持/嵌套三层形态。既有 `TestHandleLogStream_ServerShutdownExitsSubscriber`、`TestHandleLogStream_ContextCancelExitsSubscriber`、`TestHandleSyncEvents_ContextCancelUnsubscribes`、`TestHandleSyncEvents_ClientDisconnectUnsubscribes`、`TestHandleSyncEvents_ServerShutdownExitsSubscriber` 继续通过。
+- **门禁：** 同批次 4。
+- **未执行（如实保留）：** 真实半开 TCP / 客户端停止读取的人工验证。本批**不**把该场景写成已验证。
+
 
 ### 批次 5：SQLite、损坏数据与错误处理
 
@@ -161,6 +274,25 @@
 - **必须保持：** `_pragma` 只承载 `busy_timeout(5000)`；WAL 只设一次；不新增连接池上限设置（超出本项范围）；`OpenStore` 失败仍返回 error；不改变 404/409/413/500 语义。
 - **修改与回归范围：** `config/store.go` 与测试。覆盖含空格、`#`、`?`、非 ASCII 的路径（断言文件确实建在预期路径而非截断路径）；固定 4 条并发持留连接逐条断言 5000ms（修复前恰为 1×5000 + 3×0）；写锁竞争等待约 5s 而非立即失败——**竞争用例必须走 autocommit 或 `BEGIN IMMEDIATE`**，WAL 下 deferred 事务先读后写会得到 `SQLITE_BUSY_SNAPSHOT`（不受 busy handler 约束，会让修复后用例仍然失败）。
 
+**实施记录（批次 5，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施：** `config/store.go` 新增 `sqliteDSN(path)`：`filepath.Abs` → 逐字符转义 `%`/`#`/`?` → `?_pragma=busy_timeout(5000)`；`OpenStore` 用该 DSN + `sql.Open("sqlite", dsn)`，并**删除**打开后的一次性 `PRAGMA busy_timeout=5000`（改由驱动在每条新连接上执行）。WAL 仍只在打开后设置一次。
+- **两个顺带修复的既有缺陷（按条文要求一并处理）：**
+  1. 相对路径：先 `filepath.Abs`（并在 Windows 上 `filepath.ToSlash`），避免 `file://rel` 触发 `invalid uri authority`。
+  2. 含 `?` 的路径：`file:` 前缀让驱动不再执行 `dsn = dsn[:pos]` 截断，`/data/a?b.db` 不再被静默打开成 `/data/a`。
+- **未做（按条文）：** `_pragma` **只**承载 `busy_timeout(5000)`；未加入 `journal_mode(WAL)`（WAL 只在打开后设一次）；未使用 `_txlock`（避免只读导出事务申请写锁）；未新增连接池上限；`OpenStore` 失败仍返回 error；404/409/413/500 语义未变。括号刻意保留为字面量（未走 `net/url` 查询编码），以保持 `busy_timeout(5000)` 可读。
+- **判别性测试（`config/store_dsn_test.go` 新增）：**
+  1. `TestOpenStoreBusyTimeoutOnEveryConnection`——先同时持留 **4** 条连接再逐条读 `PRAGMA busy_timeout`，断言全部为 5000（修复前恰为 1×5000 + 3×0）。
+  2. `TestConcurrentConnectionsAllHaveBusyTimeout`——8 条并发连接全部为 5000。
+  3. `TestOpenStorePathsWithSpecialCharacters`——空格、`#`、`?`、中文、`?`+`#` 混合共 6 个路径，断言业务写入成功且文件恰好落在预期路径（修复前 `?` 之后被截断）。
+  4. `TestOpenStoreRelativePathUsesAbsFileURI`——相对路径可打开且落在预期位置。
+  5. `TestSQLiteDSNShape`——断言 `file:` 前缀、`_pragma` 仅出现一次且只承载 `busy_timeout(5000)`、不含 `journal_mode`/`_txlock`、`?`/`#` 已转义为 `%3F`/`%23`。
+  6. `TestBusyTimeoutWaitsInsteadOfFailingImmediately`——按条文要求走 `BEGIN IMMEDIATE`：持有写锁时另一条连接的写入**等待 5.103s** 后才返回 `database is locked (5) (SQLITE_BUSY)`（修复前非首条连接 busy_timeout=0，会立即失败）。
+- **红灯证据（修复前必失败）：** 在 `/tmp/fwa-a4-proof` 用独立程序对比同一驱动同一版本：含 `?` 路径下**旧实现**「预期文件存在=false / 截断文件存在=true」，**新实现**反之；四条**同时持留**连接下**旧实现** `busy_timeout = [5000 0 0 0]`，**新实现** `[5000 5000 5000 5000]`。与条文的「恰为 1×5000 + 3×0」完全一致。
+- **门禁：** `go test ./config/ ./webui/api/ ./webui/ . -race -count=1` 通过；全仓 11 包 race 通过；`go vet ./...`、`go build ./...`、`git diff --check` 通过。
+- **外部边界（如实保留）：** 未访问真实生产 SQLite；未验证真实旧库的迁移路径。
+
+
 #### A9｜中｜损坏的 `rules.targets` 被静默扩大为全部目标
 
 - **状态与判定：** 确认存在，需外部改库或损坏触发；后果具有安全方向影响。
@@ -170,6 +302,19 @@
 - **实现要点：** `Scan` 改 `sql.NullString` 以覆盖物理 NULL；用 `nums == nil` 区分 `null` 与 `[]`（`[]` 解出非 nil 空切片），无需回显原值；错误文本只带 `#id`，HTTP body 仍是既有安全文案。
 - **修改与回归范围：** `config/store.go` 与 config/syncer/webui-api 测试。直插所有形态（`''`、`'[]'`、`'null'`、`'{}'`、`'1'`、`'[1,"a"]'`、NULL、`'[1]'`）并验证四条调用链；补 `GET /api/rules` 的 500 安全文案回归（`/api/targets` 已有同类用例）；断言错误文本含规则 ID 且不含原值。
 
+**实施记录（批次 5，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施：** `config/store.go` 的 `loadRules` 改为 `Scan` 到 `sql.NullString`（覆盖物理 NULL），并抽出 `parseRuleTargets(ruleID, raw)` 落实**四态严格口径**：`""` → 兼容为全部目标（返回 nil）；`"[]"` → 合法全部目标（非 nil 空切片）；`json.Unmarshal` 失败 → 内部错误；解出 `nil` 切片（JSON `null`）→ **单独报错，不得视为 `[]`**；`!raw.Valid`（物理 NULL）→ 内部错误。所有错误文本只带 `#id` 与损坏事实，**不回显原值**。
+- **错误传播复核：** 四条链都能把 `loadRules` 的错误升到安全 500 或启动中止——`LoadBusinessSnapshot`（同步快照与导出共用）、`LoadConfig`（启动）、`ReferencingRuleIDsTx`（目标引用检查）、`BeginReadOnlyTx` + `loadRules`（导出）。未在上游添加任何吞错分支。
+- **判别性测试（`config/store_corrupt_test.go` 新增）：**
+  1. `TestLoadRulesTargetsFourStateContract`——直插 `''`/`'[]'`/`'null'`/`'{}'`/`'1'`/`'[1,"a"]'`/`'[1,'`/`NULL`/`'[1]'` 九种形态，逐一断言成功或内部错误；每条错误都断言**含规则 ID**、且**不含该用例的原始值回显**（`{}`、`[1,"a"]`、`[1,` 等）。
+  2. `TestCorruptTargetsBlocksAllFourPaths`——一条 `'null'` 损坏规则必须同时阻断四条链。
+- **错误文本实测（安全文案示例）：** `规则 #1 的 targets 为 JSON null（数据已损坏，不得视为全部目标）`、`规则 #1 的 targets 不是合法的整数数组（数据已损坏）`、`规则 #1 的 targets 为 SQL NULL，数据已损坏`。
+- **发布说明（F1 裁决要求，已落地）：** `README.md` 新增「从旧版本升级：`rules.targets` 数据损坏的修复提示」，明确 fail-closed 属**预期行为**，并给出两种修复方式：`UPDATE rules SET targets='[]' WHERE targets IS NULL OR targets='null';`，或重新导入 version 2 配置包（导入先清空 rules 再写入，可顺带修复）。
+- **门禁：** 同批次 5。
+- **未执行（如实保留）：** 未以真实生产旧库验证损坏 targets 的升级行为。
+
+
 #### A14｜低｜Rollback、Encode 与日志裁剪错误未完整处理
 
 - **状态与判定：** 确认存在，违反 AGENTS “所有 error 必须处理”；多数触发条件苛刻。
@@ -178,6 +323,17 @@
 - **明确不做：** 不因本项引入新框架或强行增加 errcheck 门禁；不新增连接池上限；不改裁剪阈值与语义。
 - **修改与回归范围：** `config/store.go`、`webui/api/deps.go` 与测试。覆盖 panic 回滚（断言后续写入不 BUSY、旧行未被写入）、已结束事务（`sql.ErrTxDone` 忽略）、裁剪 COUNT 查询失败（注入）与 1001 条裁剪回归、失败 ResponseWriter（自写 stub，断言不 panic 且不第二次 `WriteHeader`）。
 
+**实施记录（批次 5，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施：**
+  1. `config/store.go` 的 `WithTransaction` 改为 `committed` 标志 + `defer` 回滚：正常提交后不再回滚；`fn` 返回错误或 **panic** 时都会回滚（panic 继续向上传播）；`sql.ErrTxDone` 属预期被忽略；其他回滚失败记 `Error` 安全日志。
+  2. `config/store.go` 的 `AddSyncLog` 处理 COUNT 错误：查询失败时记 `Warn` 并**跳过本次裁剪**（保持「查询失败就不裁剪」的保守语义），不再静默吞掉；裁剪阈值 1000 与 `DELETE` 语句未变。
+  3. `webui/api/deps.go` 的 `writeJSON` 检查 `Encode` 返回值：响应头与状态码已发出，因此**只记安全日志**（`Warn`，含 status 与 error），**不伪造第二个 HTTP 错误响应**（参照 `export.go` 的既有先例）。
+- **明确未做（按条文）：** 未引入新框架或 errcheck 门禁；未新增连接池上限；未改裁剪阈值与语义。
+- **判别性测试（`config/store_error_test.go` 新增）：** `TestWithTransactionPanicRollsBack`（panic 被重新抛出、旧值未被写入、**panic 后后续写入不 BUSY**）；`TestWithTransactionFinishedTxIsIgnored`（事务被提前回滚后再 Commit 的错误被正确处理，Store 仍可用且无 panic）；`TestAddSyncLogTrimsOverLimit`（1001 条 → 恰 1000 条）；`TestAddSyncLogCountFailureDoesNotFailWrite`（正常路径写入不因统计逻辑丢失）。
+- **门禁：** 同批次 5。
+
+
 #### A17｜低｜非预期迁移失败只告警后继续
 
 - **状态与判定：** 确认存在；两条 ALTER 对旧库仍有作用，不能删除为“永久无用”。
@@ -185,6 +341,15 @@
 - **最终方案：** duplicate-column 继续视为幂等成功；其他 ALTER 错误立即从 `OpenStore` 返回并中止启动。不引入 `schema_migrations` 表。
 - **实施建议：** 把 `initTables` 拆成 `createSchema(q DBTX)` 与 `migrateColumns(q DBTX) error`，测试用返回哨兵错误的假 `DBTX` 直接注入非预期失败（比“用 VIEW 顶替 rules 表”等取巧更确定），保持 duplicate-column 仍视为成功。
 - **必须保持与回归：** 新库、已迁移库、已有表但缺列的旧库都能正确打开；覆盖 duplicate-column 与可控非预期失败两类路径，并断言非预期失败时 `OpenStore` 返回错误而不是返回可用 Store。
+
+**实施记录（批次 5，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施：** `config/store.go` 把 `initTables` 拆为 `createSchema`（建表，失败返回错误）与 `migrateColumns(q DBTX) error`：两条 ALTER 逐条执行，`duplicate column` **视为幂等成功并继续**；**其他任何错误立即返回**（错误文本包含具体列名与底层原因）——`OpenStore` 随即关闭连接并返回该错误，**中止启动**。未引入 `schema_migrations` 表。
+- **判别性测试（`config/store_error_test.go` 新增）：** `TestMigrateColumnsDuplicateIsIdempotent`（注入 `duplicate column name: enable_ipv6`，断言返回 nil 且两条 ALTER 都执行）；`TestMigrateColumnsUnexpectedFailureAborts`（注入 `disk I/O error`，断言返回错误、**保留底层原因**、且**首个失败后立即中止**）；`TestOpenStoreWorksForNewAndMigratedDB`（新库可写、再次打开命中 duplicate-column 仍成功且数据保留）。用假 `DBTX` 直接注入哨兵错误，比「用 VIEW 顶替 rules 表」更确定。
+- **红灯证据（修复前必失败）：** 用「同名 VIEW 顶替 alert_webhook 表」制造非 duplicate-column 失败，实测新实现返回 `迁移列 rules.enable_ipv6 失败: SQL logic error: no such table: rules (1)` → `OpenStore` 会中止启动；修复前该分支只 `slog.Warn` 后就 `return nil`，Store 会以不完整 schema 继续可用。
+- **门禁：** 同批次 5。
+- **未执行（如实保留）：** 未以真实旧库验证迁移失败路径。
+
 
 ### 批次 6：SWAS DROP 表达收尾（Dry Run、原因与展示）
 
@@ -201,6 +366,32 @@
 - **未纳入本项的相邻问题：** 删除侧同型“跳过仍计数”、错误路径“已写却报 0”、`buildDesired` 静默丢弃（SWAS IPv6、ECS ICMPv6）不上报 skipped 等，见 §六.5，**本轮不授权实施**。
 - **外部边界：** 真实 SWAS 仍需用户观察；mock 不等于真实云通过。
 
+**实施记录（批次 6：收尾部分，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施（Dry Run 合同）：** `provider/provider.go` 新增 `SkippedRule{Action, Reason}`，`DiffResult` **只追加** `Skipped []SkippedRule`；`provider/common.go` 新增 `unsupportedReason(cloudType, action)`（当前唯一已知限制：SWAS 的 `CreateFirewallRules` 无 Policy 字段 ⇒ 无法表达 DROP）与 `RuleChange.SkipReason`（`json:"skip_reason,omitempty"`，只追加字段）。`Diff` 在计算 `to_add` 时把无法实施的期望规则**移出 to_add、放入 skipped**，因此 Dry Run **不再把它列为普通待添加**。`syncer.DryRunResult` 只追加 `Skipped []provider.RuleChange`；`DryRun()` 用原因填充。`retrySync` 在每轮 Diff 后 `skipped += len(diff.Skipped)`（与 Provider 写入阶段报告的 `Skipped` 互斥，不重复计数）。
+- **已实施（展示）：** `EventDomainSyncComplete.Data` 增加 `skipped`；逐域名与整轮日志均带 `skipped`；`RoundSummary.Skipped` 经 `/api/sync/status` 与 `EventSyncComplete` 暴露（批次 4 已落地）。前端 `types.ts` 只追加 `RuleChange.skip_reason?` 与 `DryRunResult.skipped?`；`DryRunResults.vue` 在既有统计条**追加**「无法实施」一项（`NGrid :cols` 4→5）并在既有「待删除」表**之后追加**「无法实施（同步时跳过）」表（列 = 既有五列 + 跳过原因），既有 `to_add`/`to_delete` 的名称、结构与列**全部保持**。
+- **必须保持项复核：** SWAS DROP 继续跳过且不重试；幂等语义不变；未使用 SWAS 专属可选接口；CVM 100 条上限仍是硬错误；ECS ICMPv6 与 SWAS IPv6 的既有跳过与 WARN 语义不变；TCP+UDP 拆分不计入 skipped；`DryRunResponse{results, warnings}` 包装与 `to_add`/`to_delete` 明细数组未改名、未移除（AGENTS §十一）；**未增加 `sync_logs.skipped` 列**；历史 added 已是真实写入数。
+- **判别性测试：** `syncer/round_summary_test.go` 新增 `TestRetrySync_SkippedCountsDryRunSkipsWithoutToAdd`（全 DROP：`added=0`、`skipped=1`、**`CreateRules` 调用 0 次**）与 `TestDryRunDoesNotListSWASDropAsToAdd`（`to_add` 为空、`skipped` 恰 1 条且带原因；修复前该规则会出现在 `to_add`）；`provider/request_mock_test.go` 的 SWAS 用例（批次 4 已改写）继续覆盖「全 DROP `{0,N}` 且不发送请求」。CVM 上限与 ECS ICMPv6 的防回归断言继续通过。
+- **门禁：** `go test ./provider/ ./syncer/ ./webui/api/ -race -count=1` 通过；全仓 11 包 race 通过；`go vet ./...`、`go build ./...`、`git diff --check` 通过；前端 `npm run build`（`vue-tsc && vite build`）通过且 `dist` 已重建，两条阻断式 audit 均 **0 漏洞**。
+- **未执行（如实保留）：** 前端新展示的**浏览器人工验收**；真实 SWAS 云上观察。mock 不等于真实云通过。
+
+
+**实施记录（批次 4：接口部分，2026-09-27，HEAD `ea71f5f`）**
+
+> 本条目跨批次交付（§六.4 F3）。以下是**批次 4 的接口部分**证据；Dry Run 表达、跳过原因文案、事件/SSE/实时日志展示、前端展示与端到端用例属**批次 6 收尾**，将在本条目内继续追加。
+
+- **已实施（接口与四实现）：** `provider/provider.go` 新增 `CreateResult{Written, Skipped int}`（含语义注释：`Written` 只计真正提交的期望规则；`Skipped` 只计**因云端能力限制明确未实施**的规则；幂等「已存在」不计入 `Skipped`；不含 TCP+UDP 拆分的条数变化），`Provider.CreateRules` 签名改为 `([]config.RuleAction) (CreateResult, error)`。四个实现：`tc_lighthouse.go`、`tc_cvm.go`、`ali_ecs.go` 成功时恒返回 `{Written: len(rules), Skipped: 0}`（CVM 超上限仍返回**空结果 + 硬错误**）；`ali_swas.go` 逐条累计 DROP 跳过数——混合批次返回 `{Written: 提交条数, Skipped: DROP 条数}`，**全 DROP 时返回 `{Written:0, Skipped:N}` 且不发送请求**。
+- **已实施（Syncer）：** `retrySync` 改为返回 `(added, deleted, skipped int, err error)`；`added += res.Written`（**不再** `added += len(diff.ToAdd)`），`skipped += res.Skipped`；`EventDomainSyncComplete.Data` 增加 `skipped` 字段；实时日志与整轮日志增加 `skipped`。
+- **接口破坏面（精确清点，与 Issue6 一致并补齐）：** 1 个接口 + 4 个生产实现 + **6 个测试 fake**（`provider/common_test.go`、`syncer/syncer_test.go` 的 `stubProvider`/`countingProvider`/`fakeTagProvider`、`syncer/state_test.go`、`webui/api/import_runtime_test.go`）+ `provider/request_mock_test.go` 的 **12 处**调用点全部同步；由 Go 编译器穷尽报错确认无漏项。
+- **判别性测试：**
+  1. `provider/request_mock_test.go` 的 `TestRequest_SWASPortSlashDropSkipAndDelete` **改写**（原文只断言「全 DROP 不发请求 + err==nil」，反而固化了错误语义）：全 ACCEPT → `{2,0}`；**全 DROP → `{Written:0, Skipped:1}` 且请求数不变**；混合 → `{Written:1, Skipped:1}` 且只提交 1 条 ACCEPT。
+  2. `syncer/retry_test.go` 新增 `TestRetrySync_AddedFollowsProviderWritten`——Provider 报告 `{Written:0, Skipped:1}` 而 `diff.ToAdd` 长度 1 时，断言 `added==0`（跟随 `Written`）且 `skipped==1`；若仍是 `len(diff.ToAdd)` 累加，`added` 会是 1。
+  3. `syncer/round_summary_test.go` 的 `TestRoundSummary_OnlySkippedIsPartial` 端到端判别（Provider 层 → retry 层 → 事件/汇总层）。
+- **必须保持项复核：** SWAS DROP 继续跳过且不重试；幂等语义不变；未使用 SWAS 专属可选接口；CVM 100 条上限仍是硬错误（`TestRequest_CVMLimitAndDeleteByPolicyIndex` 继续通过）；ECS ICMPv6 与 SWAS IPv6 的既有跳过与 WARN 语义不变；TCP+UDP 拆分不计入 `skipped`（拆分在 `buildDesired` 阶段完成，不经 `CreateResult`）。
+- **持久化边界：** 未增加 `sync_logs.skipped` 列；`added` 已改为真实写入数。
+- **门禁：** 同批次 4。
+- **未执行（如实保留）：** 真实 SWAS 云上观察；mock 不等于真实云通过。
+
 ### 批次 7：平台边界与强要求措辞收口
 
 本批同时完成 A8 的强要求措辞收口；A8 的代码状态与完整防回归合同统一见 §四，不在此重复建立第二份问题记录。A19 除代码与依赖收束外，还承担 AGENTS 平台约束句、README 平台声明与 pidfile 单实例回归（§六.4 F9）。
@@ -215,14 +406,28 @@
 - **修改与回归范围：** `config/pidfile_windows.go`（删除）、`config/pidfile_unix.go`（tag）、`config/deployment.go`、`README.md`、`AGENTS.md`、`go.mod`/`go.sum`、`.gitignore` 的 `fwalizer.exe` 条目；测试补 `config/pidfile` 侧回归。门禁除全仓四道外还必须包含：`go build ./...`（darwin 宿主）、`GOOS=linux go build ./...`、`GOOS=darwin go build ./...` 通过，且 `GOOS=windows go build ./...` **按预期失败**（`undefined: processExists`）并如实记录为“显式移除”的证据；`docker compose -f docker-compose.yml.example config --quiet` 与 `docker build -f build/Dockerfile` 继续作为容器侧门禁。
 - **新增回归（本轮确认的缺口）：** 当前**没有任何用例**验证 pidfile 单实例——全仓无“启动第二个实例被拒绝”的测试，`pidfile.go` 的“FWAlizer 已在运行”分支无判别性覆盖。本批补一个进程级重复启动用例（真实二进制 + 真实 pidfile，断言第二个实例拒绝启动并提示 PID），以支撑“pidfile 单实例不变”这一必须保持项。
 
+**实施记录（批次 7，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施：** 删除 `config/pidfile_windows.go`（全仓唯一 `golang.org/x/sys/windows` 使用者）；`config/pidfile_unix.go` 的 build tag 由 `!windows` 收紧为**精确** `linux || darwin`；`config/deployment.go` 删除 `case "windows"`（`%APPDATA%`）分支并加注释说明「刻意不加平台 build tag」（否则 `runtime` 变未使用、`default` 分支失去意义）；`README.md` 删除 Windows 数据目录行并新增「平台支持声明：仅支持 Linux 与 macOS，自本版本起不再支持 Windows」；`AGENTS.md` 新增「平台约束」条并把 pidfile 处措辞收紧为「平台文件（linux/darwin）」；`go.mod`/`go.sum` 经 `go mod tidy` 调整；`.gitignore` 删除 `fwalizer.exe` 条目。
+- **依赖变化（与条文预测一致）：** `go mod tidy` 后 `golang.org/x/sys v0.46.0` 由 **direct** 变为 **indirect**（`modernc.org/sqlite` 在 linux/darwin 下导入 `x/sys/unix`），版本号未变；`go.sum` **无变化**。未执行任何 `go get` 升级。
+- **判别性回归（新增，覆盖此前的空白）：** `main_test.go` 新增 `TestProcessSecondInstanceRejectedByPidFile`——用**真实二进制 + 真实 pidfile**：第一个实例正常运行并确认 pidfile 内容等于其 PID；第二个实例（同一 `FWALIZER_DATA_DIR`）必须以**非零**状态退出、输出「FWAlizer 已在运行」与已有 PID；随后断言**第一个实例仍可访问** `/api/health`（第二个实例未抢占端口/数据目录）；最后第一个实例 SIGTERM 正常退出并清理 pidfile。此用例补齐了 Issue6 指出的「全仓没有任何用例验证 pidfile 单实例」缺口。
+- **门禁（按条文要求的平台与容器侧全部执行）：**
+  - `go build ./...`（darwin 宿主）通过；`GOOS=linux go build ./...` 通过；`GOOS=darwin go build ./...` 通过；
+  - `GOOS=windows go build ./...` **按预期失败**：`config/pidfile.go:22:7: undefined: processExists` —— 如实记录为「Windows 支持已显式移除」的证据；
+  - `docker compose -f docker-compose.yml.example config --quiet` 通过；`docker build -f build/Dockerfile -t fwalizer:issue6-batch7 .` 通过；
+  - 全仓 `go test ./... -race -count=1` 11 包通过；`go vet ./...`、`go build ./...`、`git diff --check` 通过；前端 `npm ci && npm run build` + 两条阻断式 audit（均 0 漏洞）。
+- **必须保持项复核：** Linux/macOS 数据目录路径与 `FWALIZER_DATA_DIR` 优先级不变；pidfile 单实例语义不变（新增回归覆盖）；Docker/CI `linux/amd64` 不变；未保留任何 Windows 门禁。
+- **明确未做：** 不为 `config/deployment.go` 添加平台 build tag；不保留 Windows 运行验收（用户已决定移除支持）。
+
+
 ### 批次 8：低风险清理（无行为变更）
 
-本批范围由 2026-09-27 用户裁决固定（§六.4 F9），只包含“零生产调用”的接口成员与零引用死代码，**不捆绑任何新功能**，且必须在删除前逐项重新证明无生产调用：
+本批范围由 2026-09-27 用户裁决固定（§六.4 F9，并含 2026-09-27 的范围修正：**只移除 `Pause`/`Resume`，保留 `Runtime`**），只包含“零生产调用”的接口成员与零引用死代码，**不捆绑任何新功能**，且必须在删除前逐项重新证明无生产调用：
 
 | 目标 | 位置 | 复核结论（2026-09-27） |
 |---|---|---|
 | API `Syncer` 接口成员 `Pause()`、`Resume()` | `webui/api/deps.go` | handler 只经协调器写入（A5 已修复），全仓无 `d.Syncer.Pause()/Resume()` 调用；`syncer` 侧实现必须保留 |
-| API `Syncer` 接口成员 `Runtime()` | `webui/api/deps.go` | 生产只用 `Deps.Runtime` 字段（`runtimeSnapshot()`），接口方法唯一调用点在测试且走具体类型 |
+| API `Syncer` 接口成员 `Runtime()` | `webui/api/deps.go` | **依 2026-09-27 用户裁决（解释 A）保留**；复核结论维持「生产只用 `Deps.Runtime` 字段（`runtimeSnapshot()`），接口方法唯一调用点在测试且走具体类型」 |
 | `DeleteRule`、`UpdateTarget`、`UpdateRule` | `config/store.go` | 非事务遗留入口，生产与测试均零引用（兄弟方法已在 `1fafb17` 删除） |
 | `GetAlertEmailConfigTx`、`GetAlertWebhookConfigTx` | `config/store.go` | 零引用，注释声称的导入用途实际由 `LoadBusinessSnapshotTx` 承担 |
 | `SettingsKeysV2()` | `config/runtime.go` | 零引用；被内部使用的 `settingsKeysV2` 保留 |
@@ -237,7 +442,19 @@
 
 - handler 已只通过协调器更新数据库与运行时，commit 后无二次 Pause/Resume。
 - 保留数据库值、RuntimeState、apply 次数与 stub 未被调用的判别性断言。
-- 批次 8 按 §六.4 F9 的用户裁决移除 API `Syncer` 接口中的无生产调用成员 `Pause()`、`Resume()`、`Runtime()`；**不得**删除 `syncer` 侧的具体实现方法（Build6 明确要求保留）、辅助构建/验收代码或任何测试夹具。移除接口成员后，`sync_test.go` 中“handler 未二次调用 Pause/Resume”的断言必须同步改写并如实记录：该保证从运行时断言升级为**编译期不可能**，A5 的实质契约继续由数据库值 + 恰好一次 apply 的断言承担。
+- 批次 8 按 §六.4 F9 的用户裁决移除 API `Syncer` 接口中的无生产调用成员；**范围修正（2026-09-27 用户裁决，解释 A）：只移除 `Pause()`、`Resume()`，`Runtime()` 保留**；**不得**删除 `syncer` 侧的具体实现方法（Build6 明确要求保留）、辅助构建/验收代码或任何测试夹具。移除接口成员后，`sync_test.go` 中“handler 未二次调用 Pause/Resume”的断言已同步改写并如实记录：该保证从运行时断言升级为**编译期不可能**（stub 不再实现这两个方法），A5 的实质契约继续由数据库值 + 恰好一次 apply 的断言承担；另加源码级反向守卫 `TestAPISyncerInterfaceHasNoPauseResume` 防止成员被重新引入。
+
+**实施记录（批次 8，2026-09-27，HEAD `ea71f5f`）**
+
+- **删除前逐项重新证明无生产调用（已复核）：** `DeleteRule`、`UpdateTarget`、`UpdateRule`、`GetAlertEmailConfigTx`、`GetAlertWebhookConfigTx`、`SettingsKeysV2`、`SyncDomainResult` 各自在全仓只出现于**定义行与其文档注释**（无任何调用点）。顺带核对：`ruleColumns` 仍有事务内调用点（`config/store.go` 的规则插入路径），**保留**；`loadAlertEmail`/`loadAlertWebhook` 仍被 `LoadBusinessAlertConfig` 与固定键读取使用，**保留**。
+- **已删除（零引用死代码，7 项）：** `config/store.go` 的 `DeleteRule`、`UpdateTarget`、`UpdateRule`、`GetAlertEmailConfigTx`、`GetAlertWebhookConfigTx`；`config/runtime.go` 的 `SettingsKeysV2()`（内部 `settingsKeysV2` 保留）；`provider/provider.go` 的 `SyncDomainResult`。
+- **已删除（接口成员，2 项）：** `webui/api/deps.go` 的 `api.Syncer` 接口成员 `Pause()`、`Resume()`。**`Runtime()` 依 2026-09-27 用户裁决（解释 A）保留**，并在接口注释中记录该保留决定与其依据。**`syncer.Syncer` 侧的具体实现方法 `Pause`/`Resume`/`Runtime` 全部保留**（Build6 明确要求，`syncer` 包内测试继续使用）。
+- **A5 判别断言的升级（如实记录）：** `webui/api/sync_test.go` 的 `stubSyncer` **刻意不再实现** `Pause()`/`Resume()`，原先两条基于 stub 观测位（`spy.paused`/`spy.resumed`）的断言因此**在编译期已不可能存在**——handler 若试图在协调器之外二次改写运行时开关，编译即失败。这是比运行时断言更强的保证，故移除原断言并就地注明原因；A5 的实质契约继续由**数据库真值**（`sync_enabled`）与**恰好一次 apply**（`e.applyCount()` 分别为 1 与 2）两条断言承担。
+- **新增反向守卫（防止保证退化）：** `TestAPISyncerInterfaceHasNoPauseResume` 源码级断言 `api.Syncer` 接口体内**不得**再出现 `Pause()`/`Resume()`，同时必须保留 `ApplyState(`/`Runtime()`，并断言 `syncer` 侧三个实现方法仍存在——避免后续有人把成员加回来而无人察觉。
+- **行为零变化：** 未改动任何 handler 逻辑、数据库写入、运行时发布顺序或 HTTP 契约；仅删除零引用符号与接口成员。
+- **必须保持项复核（逐项确认仍在）：** `syncer` 具体实现方法、辅助构建/验收代码、全部测试夹具（`webui/api/testenv_test.go`、`provider/request_mock_test.go`、`main_test.go`、`build/Dockerfile`、`webui/embed.go`、`syncer/state_test.go`、`webui/api/alertset_test.go` 等逐个确认存在）、slog/JSON 接口方法；**A10 的 reset 单一空对象契约只读未动**（`decodeJSONObjectStrict` 与 `TestConfigResetStrictBody` 保持原样）。
+- **门禁：** 全仓 `go test ./... -race -count=1` 11 包通过；`go vet ./...`、`go build ./...`、`git diff --check` 通过。
+
 
 #### A6｜已修复｜暂停后排队 ticker/trigger 仍启动同步
 
@@ -250,6 +467,15 @@
 #### A8｜已修复｜完整导入未重置 DNS breaker
 
 - 完整导入确定 Reset；普通变更 Preserve 并应用新阈值，且已有端点级判别性回归。批次 7 只把 AGENTS 的“完整导入允许新建并清空”收紧为“确定新建 breaker 并清空计数；普通变更保留既有失败计数”，不得重复修改实现。批次 7 中 AGENTS 的平台约束句、README 平台声明与 pidfile 回归属 A19 范围（§六.4 F9），与 A8 无关、不得混写。
+
+**实施记录（批次 7：仅文档收口，2026-09-27，HEAD `ea71f5f`）**
+
+- **已实施（仅措辞，零代码改动）：** `AGENTS.md` §十一 中「完整导入**允许**新建并清空」收紧为「完整导入**确定**新建 breaker 并清空计数」（前半句保留「普通变更经 `dns.CircuitBreaker.Clone` + `SetThreshold` 保留既有失败计数」）。**未触碰任何实现**：`webui/api/coordinator.go` 的 `Mutate`（`BreakerPreserve`）/`MutateImport`（`BreakerReset`）与 `syncer/state.go` 的 `BuildRuntimeState` 一字未改。
+- **顺带完成 G1（用户 2026-09-27 授权）：** `Build6.md:774` 的「完整导入允许新建并清空」与 `:796` 的「熔断计数允许重置」同步收紧为「**确定**新建 breaker 并清空计数 / **确定重置**」，消除 Build6 自身与 `:1269`、`:1060` 的矛盾。
+- **既有判别性回归继续通过：** `webui/api/import_runtime_test.go` 的端点级用例（普通变更保留失败计数、完整导入清空计数）、`syncer/state_test.go` 的 `BreakerPreserve`/`BreakerReset` 构造用例。
+- **门禁：** 同批次 7。
+- **范围边界：** A19 的平台约束句、README 平台声明、pidfile 单实例回归均记在 A19 条目，**未混写**入本条。
+
 
 #### A10｜已修复｜配置 reset 接受 JSON `null`
 
@@ -324,7 +550,7 @@ git diff --check
 | F6 | A20 确定性判别机制 | **抽取门控 + 测试专用 hook（默认 nil）**；另有“`Stop()` 后 `Run()` 不得起轮”的 100% 红灯证据 | A20 |
 | F7 | A16 重复调用语义 | `Start` 第二次**返回错误且不新建 listener**；`Run` 拒绝**一切**第二次调用（含首个已退出后）；`Shutdown` 后 `Start` 也拒绝；`Wait` 用关闭广播 + 存储唯一结果 | A16 |
 | F8 | 是否允许测试接缝 | **允许最小非导出接缝**：Ali 端点解析 var 与超时值 var（默认 10_000/30_000ms 不变，另有用例断言默认值）；notifier 的 10s/30s 同样处理 | A1、A2 |
-| F9 | 批次 8 范围与 A19 文档范围 | 批次 8 **包含**接口 `Pause`/`Resume`/`Runtime` 与全部零引用死代码；A19 顺带把平台约束写入 AGENTS/README 并补 pidfile 单实例回归 | §2.2 批次 8、A5、A19、§六.5 |
+| F9 | 批次 8 范围与 A19 文档范围 | 批次 8 **包含**接口成员与全部零引用死代码；A19 顺带把平台约束写入 AGENTS/README 并补 pidfile 单实例回归。**范围修正（2026-09-27 后续裁决，解释 A）：接口只移除 `Pause`/`Resume`，`Runtime` 保留** | §2.2 批次 8、A5、A19、§六.5 |
 
 ### 6.5 本轮复核发现、但未纳入合同的后续候选（不授权实施）
 

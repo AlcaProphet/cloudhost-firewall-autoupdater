@@ -37,12 +37,14 @@ func newCountingProvider(ct config.CloudType, blockAll bool) *syncCountProvider 
 	}
 }
 
-func (p *syncCountProvider) Name() string                          { return "counting" }
-func (p *syncCountProvider) CloudType() config.CloudType           { return p.cloudType }
-func (p *syncCountProvider) TargetIndex() int                      { return p.targetIndex }
-func (p *syncCountProvider) ConvertPorts(port string) []string     { return []string{port} }
-func (p *syncCountProvider) CreateRules([]config.RuleAction) error { return nil }
-func (p *syncCountProvider) DeleteRules([]config.RuleInfo) error   { return nil }
+func (p *syncCountProvider) Name() string                      { return "counting" }
+func (p *syncCountProvider) CloudType() config.CloudType       { return p.cloudType }
+func (p *syncCountProvider) TargetIndex() int                  { return p.targetIndex }
+func (p *syncCountProvider) ConvertPorts(port string) []string { return []string{port} }
+func (p *syncCountProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
+	return provider.CreateResult{Written: len(rules)}, nil
+}
+func (p *syncCountProvider) DeleteRules([]config.RuleInfo) error { return nil }
 
 func (p *syncCountProvider) GetRules() ([]config.RuleInfo, error) {
 	p.calls.Add(1)

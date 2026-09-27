@@ -355,7 +355,7 @@ func TestRequest_LighthouseCreateProtocolPortAndIPv6(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		if err := p.CreateRules([]config.RuleAction{tc.rule}); err != nil {
+		if _, err := p.CreateRules([]config.RuleAction{tc.rule}); err != nil {
 			t.Fatalf("%s: CreateRules 失败: %v", tc.name, err)
 		}
 	}
@@ -424,17 +424,17 @@ func TestRequest_CVMICMPOmitsPortAndIPv6Field(t *testing.T) {
 	mock.defaultReply = emptyPolicyReply
 	p := mockCVM(t, host)
 
-	if err := p.CreateRules([]config.RuleAction{
+	if _, err := p.CreateRules([]config.RuleAction{
 		{Protocol: "ICMP", Port: "ALL", Action: "ACCEPT", CidrBlock: "1.2.3.4/32", Description: "[t] icmp"},
 	}); err != nil {
 		t.Fatalf("CreateRules(ICMP) 失败: %v", err)
 	}
-	if err := p.CreateRules([]config.RuleAction{
+	if _, err := p.CreateRules([]config.RuleAction{
 		{Protocol: "ICMP", Port: "ALL", Action: "ACCEPT", Ipv6CidrBlock: "2001:db8::1/128", Description: "[t] icmp6"},
 	}); err != nil {
 		t.Fatalf("CreateRules(ICMPv6) 失败: %v", err)
 	}
-	if err := p.CreateRules([]config.RuleAction{
+	if _, err := p.CreateRules([]config.RuleAction{
 		{Protocol: "TCP", Port: "443", Action: "ACCEPT", CidrBlock: "1.2.3.4/32", Description: "[t] tcp"},
 	}); err != nil {
 		t.Fatalf("CreateRules(TCP) 失败: %v", err)
@@ -530,7 +530,7 @@ func TestRequest_CVMRuleLimitStopsAt100(t *testing.T) {
 		mock.defaultReply = statisticsReply(95)
 		p := mockCVM(t, host)
 
-		err := p.CreateRules(makeRules(6))
+		_, err := p.CreateRules(makeRules(6))
 		if err == nil {
 			t.Fatal("95 + 6 > 100 必须返回错误")
 		}
@@ -547,7 +547,7 @@ func TestRequest_CVMRuleLimitStopsAt100(t *testing.T) {
 		mock.defaultReply = statisticsReply(85)
 		p := mockCVM(t, host)
 
-		if err := p.CreateRules(makeRules(6)); err != nil {
+		if _, err := p.CreateRules(makeRules(6)); err != nil {
 			t.Fatalf("85 + 6 = 91 未超上限，应允许（仅 WARN）: %v", err)
 		}
 		if got := len(requestsWithAction(t, mock.recorded(), "CreateSecurityGroupPolicies")); got != 1 {
@@ -561,7 +561,7 @@ func TestRequest_CVMRuleLimitStopsAt100(t *testing.T) {
 		mock.defaultReply = `{"Response":{"SecurityGroupPolicySet":{"Ingress":[` + ingress + `]},"RequestId":"mock"}}`
 		p := mockCVM(t, host)
 
-		if err := p.CreateRules(makeRules(1)); err == nil {
+		if _, err := p.CreateRules(makeRules(1)); err == nil {
 			t.Fatal("手动计数 100 + 1 > 100 必须返回错误")
 		}
 		if got := len(requestsWithAction(t, mock.recorded(), "CreateSecurityGroupPolicies")); got != 0 {
@@ -593,11 +593,16 @@ func TestRequest_SWASPortSlashDropSkipAndDelete(t *testing.T) {
 	if len(ports) != 1 || ports[0] != "-1/-1" {
 		t.Fatalf("SWAS ConvertPorts(ALL) = %v, want [-1/-1]", ports)
 	}
-	if err := p.CreateRules([]config.RuleAction{
+	// 全 ACCEPT：Written 必须等于实际提交条数，Skipped 为 0（Issue6 A11）
+	res, err := p.CreateRules([]config.RuleAction{
 		{Protocol: "ICMP", Port: ports[0], Action: "ACCEPT", CidrBlock: "1.2.3.4/32", Description: "[t] icmp"},
 		{Protocol: "TCP", Port: "80/80", Action: "ACCEPT", CidrBlock: "1.2.3.4/32", Description: "[t] tcp"},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("CreateRules 失败: %v", err)
+	}
+	if res.Written != 2 || res.Skipped != 0 {
+		t.Errorf("全 ACCEPT 结果 = %+v, want {Written:2 Skipped:0}", res)
 	}
 
 	creates := requestsWithAction(t, mock.recorded(), "CreateFirewallRules")
@@ -618,23 +623,33 @@ func TestRequest_SWASPortSlashDropSkipAndDelete(t *testing.T) {
 		t.Errorf("SWAS SourceCidrIp = %q", got)
 	}
 
-	// 全 DROP：SWAS 不支持 DROP，必须全部跳过且不发送请求
+	// 全 DROP：SWAS 不支持 DROP，必须全部跳过、不发送请求，并如实报告
+	// {Written:0, Skipped:N}——修复前返回 nil，调用方无法区分「写入成功」与「全部跳过」，
+	// 于是 added 虚增且每轮重复出现、永不收敛（Issue6 A11）。
 	before := len(mock.recorded())
-	if err := p.CreateRules([]config.RuleAction{
+	dropRes, err := p.CreateRules([]config.RuleAction{
 		{Protocol: "TCP", Port: "80/80", Action: "DROP", CidrBlock: "1.2.3.4/32", Description: "[t] drop"},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("全 DROP 跳过不应报错: %v", err)
+	}
+	if dropRes.Written != 0 || dropRes.Skipped != 1 {
+		t.Errorf("全 DROP 结果 = %+v, want {Written:0 Skipped:1}", dropRes)
 	}
 	if got := len(mock.recorded()); got != before {
 		t.Errorf("全 DROP 必须跳过且不发送请求：请求数 %d → %d", before, got)
 	}
 
-	// 混合 DROP + ACCEPT：只提交 ACCEPT，DROP 被跳过
-	if err := p.CreateRules([]config.RuleAction{
+	// 混合 DROP + ACCEPT：只提交 ACCEPT，DROP 被跳过，两者分别计数
+	mixedRes, err := p.CreateRules([]config.RuleAction{
 		{Protocol: "TCP", Port: "443/443", Action: "DROP", CidrBlock: "1.2.3.4/32", Description: "[t] drop"},
 		{Protocol: "TCP", Port: "443/443", Action: "ACCEPT", CidrBlock: "1.2.3.4/32", Description: "[t] accept"},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("混合 DROP 不应报错: %v", err)
+	}
+	if mixedRes.Written != 1 || mixedRes.Skipped != 1 {
+		t.Errorf("混合批次结果 = %+v, want {Written:1 Skipped:1}", mixedRes)
 	}
 	mixed := requestsWithAction(t, mock.recorded(), "CreateFirewallRules")
 	rules = decodeJSONArrayText(t, mixed[len(mixed)-1].query("FirewallRules"))
@@ -671,7 +686,7 @@ func TestRequest_ECSPortRangeIPv6DeleteAndBatching(t *testing.T) {
 		t.Fatalf("ECS ConvertPorts(ALL) = %v, want [-1/-1]", got)
 	}
 
-	if err := p.CreateRules([]config.RuleAction{
+	if _, err := p.CreateRules([]config.RuleAction{
 		{Protocol: "ICMP", Port: "-1/-1", Action: "ACCEPT", CidrBlock: "1.2.3.4/32", Description: "[t] icmp"},
 		{Protocol: "TCP", Port: "443/443", Action: "ACCEPT", Ipv6CidrBlock: "2001:db8::1/128", Description: "[t] v6"},
 	}); err != nil {
@@ -720,7 +735,7 @@ func TestRequest_ECSPortRangeIPv6DeleteAndBatching(t *testing.T) {
 
 	// 分批：150 条 → 100 + 50
 	mockBefore := len(requestsWithAction(t, mock.recorded(), "AuthorizeSecurityGroup"))
-	if err := p.CreateRules(makeRules(150)); err != nil {
+	if _, err := p.CreateRules(makeRules(150)); err != nil {
 		t.Fatalf("分批 CreateRules 失败: %v", err)
 	}
 	auths = requestsWithAction(t, mock.recorded(), "AuthorizeSecurityGroup")

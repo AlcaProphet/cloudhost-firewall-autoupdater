@@ -7,7 +7,61 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/tag"
+	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
+	"github.com/alibabacloud-go/tea/tea"
 )
+
+// 阿里云 SDK 单次请求超时（毫秒）——Issue6 A1。
+//
+// 零值语义：darabonba-openapi 把这两个值经 tea/dara 映射为
+//   - http.Client.Timeout = Connect + Read（单次请求整体上限）
+//   - Transport.ResponseHeaderTimeout = Read（响应头上限）
+//   - net.Dialer.Timeout = Connect（拨号上限）
+//
+// 三者全 0 即完全无界（连接成功后不返回、TLS/响应头挂起或网络黑洞会让同步轮次
+// 与 Stop 后的 Wait 长期停滞）。因此四处构造点必须显式设置，且取值完全一致：
+// 正式 Provider（ali_swas.go / ali_ecs.go）与两条扫描路径（scan.go）共用同一个
+// ClientPool 缓存键（cloud_type + region + 账户），先创建者胜出，取值漂移会让
+// 实际生效的超时取决于调用顺序。
+const (
+	aliDefaultConnectTimeoutMS = 10_000 // 拨号上限 10s
+	aliDefaultReadTimeoutMS    = 30_000 // 响应头上限 30s；单次请求整体上限 = Connect + Read = 40s
+)
+
+// aliConnectTimeoutMS / aliReadTimeoutMS 是实际生效的超时值（毫秒）。
+//
+// 非导出变量仅为测试接缝（Issue6 §六.4 F8 用户已裁决）：默认值就等于上面的常量
+// （10_000 / 30_000），生产零行为变化；用例可缩短取值以断言 deadline 机制。
+// 全仓不使用 t.Parallel，接缝不引入竞态。
+var (
+	aliConnectTimeoutMS = aliDefaultConnectTimeoutMS
+	aliReadTimeoutMS    = aliDefaultReadTimeoutMS
+)
+
+// aliResolveEndpoint 把「服务名 + 地域」解析为 (Endpoint, Protocol)。
+//
+// 默认仍为「<service>.<region>.aliyuncs.com + https」，与修改前的硬编码完全一致；
+// 非导出变量仅为测试接缝（Issue6 §六.4 F8），用例据此把四条构造路径指向本地
+// 阻塞服务，从而在真实 HTTP 客户端上验证超时，而不是伪造一个不可取消的等待。
+var aliResolveEndpoint = func(service, region string) (string, string) {
+	return service + "." + region + ".aliyuncs.com", "https"
+}
+
+// newAliOpenAPIConfig 构造阿里云 openapi.Config（唯一样本，避免四处超时值漂移）。
+//
+// 只设置凭据、Endpoint、Protocol 与两个超时；不新增 SQLite 设置或环境变量，
+// 也不改腾讯云 SDK 的既有 60s 行为。
+func newAliOpenAPIConfig(service, region string, creds Credentials) *openapi.Config {
+	endpoint, protocol := aliResolveEndpoint(service, region)
+	return &openapi.Config{
+		AccessKeyId:     tea.String(creds.AliyunAccessKeyID),
+		AccessKeySecret: tea.String(creds.AliyunAccessKeySecret),
+		Endpoint:        tea.String(endpoint),
+		Protocol:        tea.String(protocol),
+		ConnectTimeout:  tea.Int(aliConnectTimeoutMS),
+		ReadTimeout:     tea.Int(aliReadTimeoutMS),
+	}
+}
 
 // OwnedRules 筛选本工具管理的规则（描述以 [TAG] 开头）
 // 同时过滤掉 Port 和 CidrBlock 均为空的规则（可能是模板规则，非本工具创建）
@@ -100,14 +154,22 @@ func Diff(
 	}
 
 	// 4. 计算 toAdd：期望中有、现有中无
+	//    云端能力限制导致无法实施的期望规则进入 skipped，**不**进入 to_add
+	//    （Issue6 A11：修复前 Dry Run 会把 SWAS DROP 列成普通 to_add）
 	var toAdd []config.RuleAction
+	var skipped []SkippedRule
 	desiredKeys := make(map[ruleKey]bool)
 	for _, d := range desired {
 		k := keyOfAction(d)
 		desiredKeys[k] = true
-		if _, exists := existingKeys[k]; !exists {
-			toAdd = append(toAdd, d)
+		if _, exists := existingKeys[k]; exists {
+			continue
 		}
+		if reason, ok := unsupportedReason(p.CloudType(), d); ok {
+			skipped = append(skipped, SkippedRule{Action: d, Reason: reason})
+			continue
+		}
+		toAdd = append(toAdd, d)
 	}
 
 	// 5. 计算 toDelete：当前域名的现有规则中，期望中无的
@@ -119,7 +181,19 @@ func Diff(
 		}
 	}
 
-	return DiffResult{ToAdd: toAdd, ToDelete: toDelete}
+	return DiffResult{ToAdd: toAdd, ToDelete: toDelete, Skipped: skipped}
+}
+
+// unsupportedReason 判断某云产品能否表达这条期望规则；不能则返回给用户看的原因。
+//
+// 目前唯一的已知限制：阿里云轻量云（SWAS）的 CreateFirewallRules 请求参数
+// **没有 Policy 字段**（见 PlatformAPIDocs/AliyunSWASAPIGuide/CreateFirewallRules.md），
+// 因此永远无法创建 DROP 规则。该限制与云端调用无关，故可在 Diff/Dry Run 阶段判定。
+func unsupportedReason(ct config.CloudType, a config.RuleAction) (string, bool) {
+	if ct == config.CloudAliSWAS && strings.EqualFold(a.Action, "DROP") {
+		return "阿里云轻量云不支持 DROP 规则（CreateFirewallRules 无 Policy 字段），将在同步时跳过", true
+	}
+	return "", false
 }
 
 // buildDesired 根据 DNS 结果和规则配置构建期望规则列表
@@ -265,6 +339,9 @@ type RuleChange struct {
 	Action   string `json:"action"`
 	Cidr     string `json:"cidr"` // IPv4 或 IPv6 的 CIDR（如 1.2.3.4/32）
 	Desc     string `json:"desc"` // 规则描述（含 [TAG]）
+	// SkipReason 只用于 skipped 列表：说明为何该规则无法实施
+	// （只追加字段，不改名/不移除既有字段，Issue6 A11 / AGENTS §十一）
+	SkipReason string `json:"skip_reason,omitempty"`
 }
 
 // RuleChangeFromAction 从期望规则构造摘要（to_add）

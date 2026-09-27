@@ -10,7 +10,6 @@ require (
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.142
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/lighthouse v1.3.108
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/vpc v1.3.142
-	golang.org/x/sys v0.46.0
 	modernc.org/sqlite v1.54.0
 )
 
@@ -31,6 +30,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/tjfoc/gmsm v1.4.1 // indirect
 	golang.org/x/net v0.26.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	modernc.org/libc v1.74.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

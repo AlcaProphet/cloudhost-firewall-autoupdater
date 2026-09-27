@@ -15,13 +15,15 @@ const props = defineProps<{
 const stats = computed(() => {
   let toAdd = 0
   let toDelete = 0
+  let skipped = 0
   let errors = 0
   for (const r of props.results) {
     toAdd += r.to_add?.length || 0
     toDelete += r.to_delete?.length || 0
+    skipped += r.skipped?.length || 0
     if (r.error) errors++
   }
-  return { targets: props.results.length, toAdd, toDelete, errors }
+  return { targets: props.results.length, toAdd, toDelete, skipped, errors }
 })
 
 // ─── 按 provider 分组 ───
@@ -42,6 +44,12 @@ const changeColumns = [
   { title: '动作', key: 'action' },
   { title: 'CIDR', key: 'cidr' },
   { title: '描述', key: 'desc' },
+]
+
+// 无法实施（跳过）明细列：在既有五列基础上追加「跳过原因」
+const skippedColumns = [
+  ...changeColumns,
+  { title: '跳过原因', key: 'skip_reason' },
 ]
 
 function providerLabel(name: string): string {
@@ -69,7 +77,7 @@ function emptyChange(): RuleChange[] {
       </NAlert>
 
       <!-- 统计条 -->
-      <NGrid :cols="4" :x-gap="12" style="margin-bottom: 16px">
+      <NGrid :cols="5" :x-gap="12" style="margin-bottom: 16px">
         <NGi>
           <NStatistic label="目标数" :value="stats.targets" />
         </NGi>
@@ -78,6 +86,9 @@ function emptyChange(): RuleChange[] {
         </NGi>
         <NGi>
           <NStatistic label="待删除" :value="stats.toDelete" />
+        </NGi>
+        <NGi>
+          <NStatistic label="无法实施" :value="stats.skipped" />
         </NGi>
         <NGi>
           <NStatistic label="错误" :value="stats.errors" />
@@ -117,6 +128,17 @@ function emptyChange(): RuleChange[] {
                 size="small"
                 :max-height="200"
               />
+              <!-- 无法实施（跳过）的期望规则：该云产品无法表达，同步时会跳过 -->
+              <template v-if="item.skipped?.length">
+                <div style="font-size: 14px; color: #f0a020; margin: 12px 0 4px">无法实施（同步时跳过）</div>
+                <NDataTable
+                  :columns="skippedColumns"
+                  :data="item.skipped"
+                  :bordered="true"
+                  size="small"
+                  :max-height="200"
+                />
+              </template>
             </template>
           </div>
         </NCard>

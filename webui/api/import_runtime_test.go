@@ -21,12 +21,14 @@ type countingImportProvider struct {
 	targetIndex atomic.Int32
 }
 
-func (p *countingImportProvider) Name() string                          { return "counting-import" }
-func (p *countingImportProvider) CloudType() config.CloudType           { return config.CloudTCCVM }
-func (p *countingImportProvider) TargetIndex() int                      { return int(p.targetIndex.Load()) }
-func (p *countingImportProvider) CreateRules([]config.RuleAction) error { return nil }
-func (p *countingImportProvider) DeleteRules([]config.RuleInfo) error   { return nil }
-func (p *countingImportProvider) ConvertPorts(port string) []string     { return portconv.Parse(port) }
+func (p *countingImportProvider) Name() string                { return "counting-import" }
+func (p *countingImportProvider) CloudType() config.CloudType { return config.CloudTCCVM }
+func (p *countingImportProvider) TargetIndex() int            { return int(p.targetIndex.Load()) }
+func (p *countingImportProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
+	return provider.CreateResult{Written: len(rules)}, nil
+}
+func (p *countingImportProvider) DeleteRules([]config.RuleInfo) error { return nil }
+func (p *countingImportProvider) ConvertPorts(port string) []string   { return portconv.Parse(port) }
 
 func (p *countingImportProvider) GetRules() ([]config.RuleInfo, error) {
 	p.calls.Add(1)

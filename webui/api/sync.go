@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -96,11 +95,13 @@ func (d *Deps) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	// 能力检测必须在写响应头之前：不支持 Flush 的 ResponseWriter 无法承载 SSE
+	// （Issue6 A15）。
+	if !probeSSE(w) {
 		writeError(w, http.StatusInternalServerError, "SSE 不可用")
 		return
 	}
+	rc := http.NewResponseController(w)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -111,7 +112,11 @@ func (d *Deps) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 
 	// 立即写出响应头并建立订阅：客户端 http.Get 在收到头后即可确认“连接已建立”。
 	// 不影响任何既有事件推送语义，只让连接建立与订阅建立对调用方可见。
-	flusher.Flush()
+	// 失败时直接返回：响应头已发出，**不得**再写第二个响应头或 500。
+	if err := rc.Flush(); err != nil {
+		slog.Warn("同步事件 SSE 初始刷新失败，结束连接", "error", err)
+		return
+	}
 
 	for {
 		select {
@@ -123,8 +128,11 @@ func (d *Deps) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
+			if err := writeSSE(w, "data: %s\n\n", data); err != nil {
+				// 半开连接 / 客户端停止读取：首个写错误即退出（修复前会永久循环）
+				slog.Debug("同步事件 SSE 写出失败，结束连接", "error", err)
+				return
+			}
 		case <-r.Context().Done():
 			return
 		case <-d.ShutdownCh:

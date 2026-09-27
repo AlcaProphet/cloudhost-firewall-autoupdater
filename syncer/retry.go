@@ -1,7 +1,10 @@
 package syncer
 
 import (
+	"context"
+	"errors"
 	"log/slog"
+	"net"
 	"strings"
 	"time"
 
@@ -16,10 +19,11 @@ const maxRetries = 3
 // retrySync 带重试的完整同步流程（Describe → Diff → Create/Delete）
 // tagStr 为本轮同步捕获的 TAG 快照：OwnedRules 筛选、描述生成和全部重试都只使用该参数，
 // 不再读取可被热重载替换的 s.cfg，保证一轮同步内不混用新旧 TAG
-// 返回实际写入计数 (added, deleted)：累计各轮次中云 API 调用成功的写入量；
+// 返回实际写入计数 (added, deleted, skipped)：added 只累计 Provider 报告的
+// Written（Issue6 A11），skipped 累计 Provider 明确跳过的期望规则条数；
 // 重试轮重新 Diff（云端状态已更新），已生效规则不重复出现，天然避免重复计数；
 // 幂等跳过（规则已存在/已不存在）不计入，与 Dry Run 的 to_add/to_delete 口径一致
-func (s *Syncer) retrySync(p provider.Provider, rule config.DomainRule, resolved []dns.ResolvedIP, tagStr string) (added, deleted int, err error) {
+func (s *Syncer) retrySync(p provider.Provider, rule config.DomainRule, resolved []dns.ResolvedIP, tagStr string) (added, deleted, skipped int, err error) {
 	var lastErr error
 	for i := 0; i < maxRetries; i++ {
 		if i > 0 {
@@ -33,7 +37,7 @@ func (s *Syncer) retrySync(p provider.Provider, rule config.DomainRule, resolved
 		if err != nil {
 			lastErr = err
 			if !isRetryable(err) {
-				return added, deleted, err
+				return added, deleted, skipped, err
 			}
 			continue
 		}
@@ -42,6 +46,14 @@ func (s *Syncer) retrySync(p provider.Provider, rule config.DomainRule, resolved
 		owned := provider.OwnedRules(allRules, tagStr)
 		desc := truncateDesc(tag.Format(tagStr, rule.Comment), p.CloudType())
 		diff := provider.Diff(resolved, rule, desc, owned, p)
+		// Diff 阶段已识别的「无法实施」规则（未进入 to_add）必须无条件计数：
+		// 它们与 Provider 在写入阶段报告的 Skipped 是**互斥**的两类
+		// （前者不在 to_add 中，后者在 to_add 中），因此同一轮内相加不会重复；
+		// 放在 to_add 判断之外，保证「全部都是无法实施」时也能如实报告（Issue6 A11）。
+		//
+		// 注意本轮次内只计一次：成功返回即结束，需要重试时本轮次的计数会被
+		// 丢弃（与 added/deleted 的既有语义一致——它们同样只累计成功轮）。
+		skipped += len(diff.Skipped)
 
 		// 3. 执行删除（成功才计数；幂等"已不存在"视为成功但不计数）
 		if len(diff.ToDelete) > 0 {
@@ -51,7 +63,7 @@ func (s *Syncer) retrySync(p provider.Provider, rule config.DomainRule, resolved
 				} else {
 					lastErr = err
 					if !isRetryable(err) {
-						return added, deleted, err
+						return added, deleted, skipped, err
 					}
 					continue
 				}
@@ -62,35 +74,72 @@ func (s *Syncer) retrySync(p provider.Provider, rule config.DomainRule, resolved
 
 		// 4. 执行添加（成功才计数；幂等"已存在"视为成功但不计数）
 		if len(diff.ToAdd) > 0 {
-			if err := p.CreateRules(diff.ToAdd); err != nil {
+			res, err := p.CreateRules(diff.ToAdd)
+			if err != nil {
 				if isIdempotentCreate(err) {
 					slog.Warn("规则已存在，跳过", "provider", p.Name())
 				} else {
 					lastErr = err
 					if !isRetryable(err) {
-						return added, deleted, err
+						return added, deleted, skipped, err
 					}
 					continue
 				}
 			} else {
-				added += len(diff.ToAdd)
+				// added 只累计**真正写入**的条数（Issue6 A11）：Provider 明确跳过的
+				// 期望规则（如 SWAS 无法表达 DROP）计入 skipped，绝不虚增为新增成功。
+				added += res.Written
+				skipped += res.Skipped
 			}
 		}
 
-		return added, deleted, nil // 成功
+		return added, deleted, skipped, nil // 成功
 	}
-	return added, deleted, lastErr
+	return added, deleted, skipped, lastErr
 }
 
-// isRetryable 判断是否可重试
+// isRetryable 判断是否可重试（Issue6 A12，2026-09-27 用户裁决：结构化与兜底两者都做）。
+//
+// 依序三段判断：
+//  1. 结构化：context.DeadlineExceeded 及其包装（阿里云 tea/dara 原样返回 *url.Error，
+//     可用 errors.Is/errors.As 正确识别）；
+//  2. 结构化：net.Error.Timeout()（覆盖 i/o timeout、真实 http.Client.Timeout）；
+//  3. 字符串兜底（大小写不敏感）：腾讯 SDK 会把网络错误重新包装成
+//     *TencentCloudSDKError{Code:"ClientError.NetworkError", Message:"... context deadline
+//     exceeded (Client.Timeout exceeded while awaiting headers)"}，而该类型**没有
+//     Unwrap**（common/errors/errors.go 全文无 Unwrap），因此结构化判断对腾讯路径不成立，
+//     只能靠云错误码与 message 关键字兜底。
+//
+// 语义：腾讯 SDK 的网络类错误（含超时）进入重试；判定顺序与幂等优先级不变
+// （幂等「已存在/已不存在」先于本函数判定，且不计数不重试）。
+// 放宽带宽后仍不得让有意不可重试的错误变成可重试——CVM 规则上限
+// （tc_cvm.go checkRuleLimit 的「安全组规则总数将达 N（上限 100），停止新增」）
+// 不含任何下列关键字，因此保持不可重试。
 func isRetryable(err error) bool {
-	msg := err.Error()
+	if err == nil {
+		return false
+	}
+
+	// 1. 结构化：超时上下文
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	// 2. 结构化：网络超时
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+
+	// 3. 字符串兜底（大小写不敏感）
+	msg := strings.ToLower(err.Error())
 	retryable := []string{
-		"RequestLimitExceeded",
-		"InternalError",
-		"FirewallBusy",
+		"requestlimitexceeded",
+		"internalerror",
+		"firewallbusy",
 		"timeout",
 		"connection refused",
+		"clienterror.networkerror", // 腾讯 SDK 网络类错误码（netretry.go 重新包装的形状）
 	}
 	for _, r := range retryable {
 		if strings.Contains(msg, r) {

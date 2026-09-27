@@ -771,7 +771,7 @@ git diff --check
 - 开工前只读核验（2026-09-24）全部通过：`go test -race ./config ./provider ./syncer ./webui/api`、`go test ./... -race`（11 包全 ok，0 次 `DATA RACE`）、`go vet ./...`、`go build ./...`、`git diff --check`、`cd webui/frontend && npm ci && npm run build`（vue-tsc + Vite 5.4.21，2818 模块；`package.json`/`package-lock.json` sha256 前后一致）；详见同轮开工前核验报告
 - 开工前已知既存债务（经用户确认的处理方式）：`provider/ali_ecs.go`、`provider/ali_swas.go`、`provider/common_test.go`、`provider/credentials.go`、`provider/scan.go`、`provider/tc_lighthouse.go` 在 `c289744` 即为 `gofmt` 未格式化状态（纯对齐空格差异，工作树无本地改动）。用户确认：本 Step 施工时把该 6 个文件全部 `gofmt` 一遍
 - 本 Step 文件范围：`config/config.go`、`config/store.go`、新增 `config/runtime.go`、`config/runtime_test.go`；`provider/credentials.go`（重写为不可变值类型）、`provider/common.go`、`provider/tc_lighthouse.go`、`provider/tc_cvm.go`、`provider/ali_swas.go`、`provider/ali_ecs.go`、`provider/scan.go` 及对应测试；新增 `syncer/state.go`、`syncer/state_test.go`，修改 `syncer/syncer.go`、`syncer/retry.go`、`syncer/syncer_test.go`；`dns/circuitbreaker.go`；`webui/api/coordinator.go`、`decode.go`、`deps.go`、`settings.go`、`alerts.go`、`targets.go`、`scan.go`、`sync.go`、新增 `webui/api/bundle_v2.go`、`webui/api/export.go`、`webui/api/alertset.go` 及对应测试、`webui/api/testenv_test.go`；`webui/server.go`；`run.go`、`main_test.go`；`webui/frontend/src/views/Settings.vue`；`.gitignore`、`README.md`；取证后更新 `Build6.md`、`Issue5.md`、`ProdTestList.md`
-- 固定不变量：version 2 唯一协议（version 1 及其他版本 400，不迁移、不猜测、不补全、无隐藏兼容入口）；导出为唯一只读事务快照、ID 与 `target_export_ids` 升序、marshal 先于写响应头、`no-store` 与固定附件文件名；导入先完成全部纯数据预校验（含 `export_id` 唯一性与引用闭包）再开写事务，事务内按依赖序清表并以 `LastInsertId` 建 `export_id → 新数据库 ID` 映射重写规则引用，显式写 v2 完整 settings 键集合，清 `scanned_resources`、保留 `sync_logs`、不碰 `sqlite_sequence`；`provider.Credentials` 为不可变值、`ClientPool` 构造时持有凭据且无 setter、删除包级可变凭据与 `SetCredentials`；`RuntimeState`（Config/Pool/Providers/Resolver/Breaker）发布后不可修改，同步轮次、Dry Run、连接测试与资源扫描各只取一次快照；协调器在 commit 前构造候选与候选告警集合（不访问云 API/DNS/SMTP/Webhook），commit 后只做无 error 内存操作且顺序为「日志级别 → 告警集合 → 发布 RuntimeState」；普通变更保留 DNS 熔断计数、完整导入允许新建并清空；提交失败或任一构造失败完整回滚且不 apply
+- 固定不变量：version 2 唯一协议（version 1 及其他版本 400，不迁移、不猜测、不补全、无隐藏兼容入口）；导出为唯一只读事务快照、ID 与 `target_export_ids` 升序、marshal 先于写响应头、`no-store` 与固定附件文件名；导入先完成全部纯数据预校验（含 `export_id` 唯一性与引用闭包）再开写事务，事务内按依赖序清表并以 `LastInsertId` 建 `export_id → 新数据库 ID` 映射重写规则引用，显式写 v2 完整 settings 键集合，清 `scanned_resources`、保留 `sync_logs`、不碰 `sqlite_sequence`；`provider.Credentials` 为不可变值、`ClientPool` 构造时持有凭据且无 setter、删除包级可变凭据与 `SetCredentials`；`RuntimeState`（Config/Pool/Providers/Resolver/Breaker）发布后不可修改，同步轮次、Dry Run、连接测试与资源扫描各只取一次快照；协调器在 commit 前构造候选与候选告警集合（不访问云 API/DNS/SMTP/Webhook），commit 后只做无 error 内存操作且顺序为「日志级别 → 告警集合 → 发布 RuntimeState」；普通变更保留 DNS 熔断计数、完整导入**确定**新建 breaker 并清空计数（与 §12.3 第 7 条一致；2026-09-27 用户决策）；提交失败或任一构造失败完整回滚且不 apply
 - 本轮不处理：Step 6 的 Vite 主版本升级与 lockfile 变更（不运行 `npm audit fix --force`）；Step 7 的总验收闭环与高影响补测；云 Provider 增量算法与云 API 业务行为；`HistoryDocs/` 正文；配置包加密/签名；前端登录鉴权；真实云 API、SMTP、Webhook 与浏览器人工验收（留待用户环境，不在本轮声称通过）
 - **目标：** 端到端实现 §三的完整敏感配置快照、R5-01 ID 关联恢复、事务覆盖以及一致的运行时切换。
 - **实施参照：** §12.3～12.12；必须把 Step 4 协调器骨架收束成完整不可变状态发布，删除分次 reload 和包级可变凭据，不能只实现配置包 JSON 表面协议。
@@ -793,7 +793,7 @@ git diff --check
 - **运行时应用：**
   1. Syncer 提供一次性 `ReloadState` 接口，在一个锁边界内替换 Config、Provider slice 和 Resolver；
   2. 正在执行的同步/Dry Run 使用旧快照，后续执行使用新快照；
-  3. 同步 interval、enabled、DNS 失败阈值同步更新；导入为完整快照，熔断计数允许重置；`false → true` 与 Resume 一致立即触发一轮，`true → true` 只重置 ticker、不额外触发，导入为 false 时当前轮完成后进入暂停；
+  3. 同步 interval、enabled、DNS 失败阈值同步更新；导入为完整快照，熔断计数**确定重置**（2026-09-27 用户决策）；`false → true` 与 Resume 一致立即触发一轮，`true → true` 只重置 ticker、不额外触发，导入为 false 时当前轮完成后进入暂停；
   4. `slog.LevelVar` 更新日志级别；
   5. 取消旧邮件/Webhook 订阅并按新配置注册；旧的已在途异步通知允许完成；
   6. Commit 后的上述 setter/锁内替换无 error 返回，不重新读库、不构造 Provider、不访问网络；
@@ -846,7 +846,7 @@ git diff --check
 - 证据边界：
   1. 版本 2 配置包与原子运行时切换的验证全部基于**本地 SQLite + httptest + 真实二进制进程**；未在真实云账号、真实 SMTP 或真实 Webhook 上验证；
   2. 「普通变更保留 DNS 熔断失败计数」「完整导入重置计数」由 `syncer/state_test.go` 的 `BreakerPreserve`/`BreakerReset` 单测覆盖，未在长跑真实环境复现熔断进度；
-  3. `moderntc.org/sqlite` 驱动不强制 `sql.TxOptions.ReadOnly` 的写入拒绝，导出契约由「独立只读事务 + handler 不含写入语句」保证（测试只锁定可读取一致快照）；
+  3. `modernc.org/sqlite` 驱动不强制 `sql.TxOptions.ReadOnly` 的写入拒绝，导出契约由「独立只读事务 + handler 不含写入语句」保证（测试只锁定可读取一致快照）；
   4. 浏览器复核已由用户于 2026-09-27 在真机环境完成并确认通过；配置包中的 Email/Webhook 字段随对应外部链路移交后续验收。
 - 后续事项（不阻塞 Step 5）：
   1. **告警外部链路**：真实 Email/SMTP/收件箱与每个实际支持渠道的 Webhook 移交 `ProdTestList.md` 和 Step 7；告警配置相关浏览器核对随此外部链路一并处理；
