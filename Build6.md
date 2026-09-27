@@ -312,7 +312,7 @@ log_level, theme
 | 3 | HTTP Listener、Server 生命周期与优雅关闭 | Issue5 O5-04、O5-05 | ✅ 验收通过 |
 | 4 | API 最小持久化校验边界 | Issue5 O5-06、本文件 §四 | ✅ 验收通过 |
 | 5 | version 2 完整配置包与原子运行时切换 | Issue5 R5-01、本文件 §三 | ◧ 进行中（工程实现与本地门禁完成；浏览器与真实外部链路待用户验收） |
-| 6 | 前端依赖受控升级 | Issue5 O5-01 | ☐ 未开始 |
+| 6 | 前端依赖受控升级 | Issue5 O5-01 | ◧ 进行中 |
 | 7 | 高影响路径补测、真实验收与文档闭环 | Issue5 O5-03 | ☐ 未开始 |
 
 > 状态标记：☐ 未开始 / ◧ 进行中 / ✅ 验收通过
@@ -585,7 +585,7 @@ git diff --check
 
 ### Step 3：HTTP Listener、Server 生命周期与优雅关闭
 
-**实施状态：** ◧ 进行中（2026-09-23）
+**实施状态：** ✅ 验收通过（2026-09-23；远端 CI 与下列证据边界仍按待办记录）
 
 - 当前 HEAD：开工时 `55fa1fb`；实施结果由用户提交为 `44bef2b`（`fix(build6): Step 3 HTTP 生命周期落地，同步 AGENTS/Build6/Design5/Issue5/ProdTestList 状态与源码边界映射`）；提交后复核改动见本 Step“与计划偏差”第 6～7 条
 - 工作树基线：干净（`git status --short --branch` 仅分支行；无未跟踪文件，无用户已有改动）
@@ -670,9 +670,9 @@ git diff --check
 
 ### Step 4：API 最小持久化校验边界
 
-**实施状态：** ◧ 进行中（2026-09-24）
+**实施状态：** ✅ 验收通过（2026-09-24；浏览器复核与远端 CI 仍按待办记录）
 
-- 当前 HEAD：`f5c6ea75aa02cebb4cba1968b0f554914f085be2`（`f5c6ea7`），与 `origin/main` 一致
+- 实施前基线 HEAD：`f5c6ea75aa02cebb4cba1968b0f554914f085be2`（`f5c6ea7`），当时与 `origin/main` 一致
 - 工作树基线：干净（`git status --short --branch` 仅分支行；`git status --porcelain` 与 `git diff --stat` 均为空，无用户已有改动）
 - 本 Step 文件范围：新增 `config/validate.go`、`webui/api/decode.go`、`webui/api/coordinator.go`；修改 `config/store.go`、`webui/api/deps.go`、`webui/api/targets.go`、`webui/api/rules.go`、`webui/api/settings.go`、`webui/api/alerts.go`、`webui/api/scan.go`、`webui/api/sync.go`、`webui/api/logstream.go`、`app/logutil.go`、`dns/circuitbreaker.go`、`syncer/syncer.go`、`run.go`、`webui/frontend/src/views/Settings.vue`；测试 `config/*_test.go`、`webui/api/*_test.go`、`dns/circuitbreaker_test.go`、`app/logutil_test.go`；文档 `Build6.md`、`Issue5.md`、`ProdTestList.md`（仅在取得实测证据后更新）
 - 固定不变量：校验顺序 presence/type → Trim/大写归一化 → 单字段 → 跨字段 → 数据库引用/存在性 → 写入；非法输入在任何写入与 reload 前返回（0 次），合法事务提交后只 apply 一次；更新/删除 RowsAffected=0 → 404，删除被引用目标 → 409，规则目标 ID 必须为正/不重复/真实存在，空数组仍表示“适用于全部目标”；settings 用 11 个 pointer 字段 DTO 单事务写入，alerts 两个对象与全部子字段必需且单事务覆盖；body 超限 413、请求与领域 400、不存在 404、冲突 409、内部 500（安全通用文案，真实 error 只进服务日志）；日志与错误不含云凭据、SMTP 密码、Webhook URL；地域不做实时校验；`slog.LevelVar` 保存后即时生效，DNS 阈值 setter 保留既有失败计数
@@ -762,11 +762,12 @@ git diff --check
 
 ### Step 5：version 2 完整配置包与原子运行时切换
 
-**实施状态：** ◧ 进行中（2026-09-25；工程实现与本地自动门禁完成，浏览器人工复核与真实外部链路待用户执行）
+**实施状态：** ◧ 进行中（2026-09-24；工程实现与本地自动门禁完成，浏览器人工复核与真实外部链路待用户执行）
 
-- 当前 HEAD：`c2897440c565a23ee1dc6492da4f5e5ace80dea4`（`c289744`），本地 `main` 比 `origin/main`（`f5c6ea7`）超前 1 个提交（即 Step 4 提交，未推送，保持不变）；Step 5 的改动尚未提交
-- 工作树基线：干净（`git status --short --branch` 仅分支行 `## main...origin/main [领先 1]`；`git status --porcelain`、`git diff --stat`、`git diff --check` 均为空，无用户已有改动）
-- 开工前只读核验（2026-09-25）全部通过：`go test -race ./config ./provider ./syncer ./webui/api`、`go test ./... -race`（11 包全 ok，0 次 `DATA RACE`）、`go vet ./...`、`go build ./...`、`git diff --check`、`cd webui/frontend && npm ci && npm run build`（vue-tsc + Vite 5.4.21，2818 模块；`package.json`/`package-lock.json` sha256 前后一致）；详见同轮开工前核验报告
+- 实施前基线 HEAD：`c2897440c565a23ee1dc6492da4f5e5ace80dea4`（`c289744`）；这是 Step 5 开工时的代码基线，不代表当前分支状态
+- 本轮开始核验时的基线（2026-09-24）：HEAD `559453221ec8984e48a2e16d260f74940ff9f5bb`（`5594532`），`main` 比 `origin/main` 超前 3 个提交，工作树干净；Step 5 已由 `c35eb9d` 提交，之后有 Step 6 同步触发门控提交 `5594532`。随后用户继续进行 Step 6，当前未提交文件见 Step 6 工作树记录
+- 实施时工作树基线：干净（当时 `git status --short --branch` 为 `## main...origin/main [领先 1]`；`git status --porcelain`、`git diff --stat`、`git diff --check` 均为空，无用户已有改动）
+- 开工前只读核验（2026-09-24）全部通过：`go test -race ./config ./provider ./syncer ./webui/api`、`go test ./... -race`（11 包全 ok，0 次 `DATA RACE`）、`go vet ./...`、`go build ./...`、`git diff --check`、`cd webui/frontend && npm ci && npm run build`（vue-tsc + Vite 5.4.21，2818 模块；`package.json`/`package-lock.json` sha256 前后一致）；详见同轮开工前核验报告
 - 开工前已知既存债务（经用户确认的处理方式）：`provider/ali_ecs.go`、`provider/ali_swas.go`、`provider/common_test.go`、`provider/credentials.go`、`provider/scan.go`、`provider/tc_lighthouse.go` 在 `c289744` 即为 `gofmt` 未格式化状态（纯对齐空格差异，工作树无本地改动）。用户确认：本 Step 施工时把该 6 个文件全部 `gofmt` 一遍
 - 本 Step 文件范围：`config/config.go`、`config/store.go`、新增 `config/runtime.go`、`config/runtime_test.go`；`provider/credentials.go`（重写为不可变值类型）、`provider/common.go`、`provider/tc_lighthouse.go`、`provider/tc_cvm.go`、`provider/ali_swas.go`、`provider/ali_ecs.go`、`provider/scan.go` 及对应测试；新增 `syncer/state.go`、`syncer/state_test.go`，修改 `syncer/syncer.go`、`syncer/retry.go`、`syncer/syncer_test.go`；`dns/circuitbreaker.go`；`webui/api/coordinator.go`、`decode.go`、`deps.go`、`settings.go`、`alerts.go`、`targets.go`、`scan.go`、`sync.go`、新增 `webui/api/bundle_v2.go`、`webui/api/export.go`、`webui/api/alertset.go` 及对应测试、`webui/api/testenv_test.go`；`webui/server.go`；`run.go`、`main_test.go`；`webui/frontend/src/views/Settings.vue`；`.gitignore`、`README.md`；取证后更新 `Build6.md`、`Issue5.md`、`ProdTestList.md`
 - 固定不变量：version 2 唯一协议（version 1 及其他版本 400，不迁移、不猜测、不补全、无隐藏兼容入口）；导出为唯一只读事务快照、ID 与 `target_export_ids` 升序、marshal 先于写响应头、`no-store` 与固定附件文件名；导入先完成全部纯数据预校验（含 `export_id` 唯一性与引用闭包）再开写事务，事务内按依赖序清表并以 `LastInsertId` 建 `export_id → 新数据库 ID` 映射重写规则引用，显式写 v2 完整 settings 键集合，清 `scanned_resources`、保留 `sync_logs`、不碰 `sqlite_sequence`；`provider.Credentials` 为不可变值、`ClientPool` 构造时持有凭据且无 setter、删除包级可变凭据与 `SetCredentials`；`RuntimeState`（Config/Pool/Providers/Resolver/Breaker）发布后不可修改，同步轮次、Dry Run、连接测试与资源扫描各只取一次快照；协调器在 commit 前构造候选与候选告警集合（不访问云 API/DNS/SMTP/Webhook），commit 后只做无 error 内存操作且顺序为「日志级别 → 告警集合 → 发布 RuntimeState」；普通变更保留 DNS 熔断计数、完整导入允许新建并清空；提交失败或任一构造失败完整回滚且不 apply
@@ -815,7 +816,7 @@ git diff --check
   - 响应、应用日志和运行日志无密钥泄露。
 - **人工验收：** 两个具有不同自增历史的数据库交叉导入；逐项核对业务关系、主题、同步状态和告警；再分别执行连接测试、资源扫描、真实云 API 同步、SMTP/收件箱和 Webhook。各证据单独记录。
 
-**实际证据（2026-09-25）：**
+**实际证据（2026-09-24）：**
 
 - 实际改动：
   1. `config/runtime.go`（新增）：`Credentials`、`BusinessSnapshot`（事务内完整快照）、`RuntimeConfig`（含 `Theme`/`Credentials`/Email/Webhook）、`SettingsKeysV2()`、`DeepCopyRules()`/`DeepCopy()`；`config/config.go` 的 `Config` 删除 `TCAccessID/TCAccessKey/AliAccessID/AliAccessKey` 冗余字段，只保留 `Credentials` 并新增 `Theme`。
@@ -850,7 +851,7 @@ git diff --check
   1. **浏览器人工复核**：导出附件下载与文件名、导入危险确认文案、导入成功后整页刷新、导入失败不刷新、设置保存、告警保存与目标 409 提示（同时承接 Step 4 遗留项）；
   2. **真实外部链路**：连接测试/资源扫描、真实云 API 增量写入与精确删除、SMTP/收件箱、Webhook；
   3. **远端 CI**：仍无 GitHub Actions 运行结果（O5-02 收尾，需用户授权推送）；
-  4. Step 5 改动尚未提交（等待用户验收决定）。
+  4. Step 5 尚待用户验收决定是否关闭；代码已提交为 `c35eb9d`。远端 CI 仍待运行，且当前分支尚未推送。
 - 与计划偏差：
   1. 候选构造失败在 HTTP 路径上无法由 version 2 导入触发（未注册云类型在事务前的预校验即被 400 拒绝），因此该项改为对协调器直接注入失败 builder 验证防御路径，并在 `import_failure_test.go` 中说明；
   2. `Config` 的四个凭据冗余字段（`TCAccessID` 等）随实现收尾一并删除（属「不保留全局/显式双凭据」的同一目标，未提前到 Step 4）；
@@ -860,6 +861,18 @@ git diff --check
 
 ### Step 6：前端依赖受控升级
 
+**实施状态：** ◧ 进行中（2026-09-24；阶段 A、阶段 B 工程实施与本地自动门禁已完成，Docker 构建与容器 health/stop 验收已完成，浏览器人工复核待用户执行）
+
+- 当前 HEAD：`559453221ec8984e48a2e16d260f74940ff9f5bb`（`5594532`）；`main` 比 `origin/main`（`f5c6ea7`）超前 3 个提交（`c289744`、`c35eb9d`、`5594532`，均未推送，保持不变）
+- 当前工作树：Step 6 代码/依赖改动正在进行；本轮观察到未提交改动涉及 `webui/frontend/package.json`、`webui/frontend/package-lock.json` 与 `.github/workflows/docker-publish.yml`。本轮另修正了 `AGENTS.md`、`Build6.md`、`Design5.md`、`Issue5.md`、`ProdTestList.md` 的进度文档；未修改 Step 6 代码或依赖。
+- 开工前只读核验（2026-09-24）已完成：Git 恢复点、两依赖文件 sha256、工具链、`npm ls`、`npm audit`、`npm view`、`npm outdated`、`npm audit fix --dry-run`、`npm ci && npm run build`、`go test ./... -race`、`go vet ./...`、`go build ./...`、`git diff --check` 全部记录；详见同轮《Build6 Step 6 开工前核验报告》
+- 本轮经用户明确确认的决策（2026-09-24）：
+  1. **允许在 Step 5 保持 ◧ 且浏览器/真实外部链路待办未关闭的情况下开始 Step 6**；Step 5 待办继续保留，不因 Step 6 开始或完成而自动关闭，R5-01 不关闭；
+  2. **Step 6 同步增加远端 CI audit 阻断门禁**：前端构建后执行 `npm audit --omit=dev --audit-level=high` 与 `npm audit --audit-level=high` 两个阻断步骤；
+  3. `vite` 与 `@vitejs/plugin-vue` 在 `package.json` 中采用 caret 范围（`^8.3.1` / `^6.0.9`）。
+- 本 Step 文件范围：`webui/frontend/package.json`、`webui/frontend/package-lock.json`（阶段 A 预期只改 lockfile）；必要的 `webui/frontend/vite.config.ts`；`.github/workflows/docker-publish.yml` 的 audit 门禁；取证后同步 `Build6.md`、`Issue5.md`、`Design5.md`、`ProdTestList.md`
+- 固定不变量：`npm run build` 保持 `vue-tsc && vite build`；不升级 Vue Router 5、TypeScript 7、npm 12；不升 Go 依赖与业务代码；不添加 overrides/resolutions；不使用 `--force`、不使用 `sudo`、不修改全局 npm cache；不启用 Vite 8 实验功能、bundled dev mode、Devtools 或 `resolve.tsconfigPaths`；不改造路由/路径系统；`webui/frontend/src/**`、`index.html`、`tsconfig.json`、`build/Dockerfile`、`Makefile` 不在改动范围
+- 本轮不处理：Step 7 高影响补测与总验收；Step 5 的浏览器人工复核与真实云 API/SMTP/Webhook 验收（继续作为 Step 5 待办）；业务代码、Provider 算法、SQLite Schema、配置包协议
 - **目标：** 清除当前 high/critical 审计项，同时把 Vite 主版本变化与业务重构隔离。
 - **已核验基线（2026-09-22）：**
   - `npm audit`：3 high、1 moderate；
@@ -899,6 +912,78 @@ git diff --check
 ```
 
 人工打开仪表盘、目标、规则、设置、日志、模拟测试和告警页面，并完整复测配置导入导出。研究依据以 [Vite 8 官方说明](https://vite.dev/blog/announcing-vite8) 和 [Vite 官方版本策略](https://vite.dev/releases) 为准。
+
+**阶段 A 实际证据（2026-09-24）：**
+
+- 环境：Node `v26.7.0`、npm `11.19.0`；因用户 `~/.npm/_cacache` 存在 root 所有的 `content-v2/sha512/96/` 子树导致 `EACCES`/`EEXIST`，本轮全部写操作使用任务专用隔离 cache `/tmp/fwalizer-step6-npm-cache`（未 `sudo`、未 `chown`、未清理全局 cache、未使用 `--force`）
+- 改动前：`npm audit --json` = 1 moderate + 3 high（`nanoid` high、`brace-expansion` high、`vite` high、`esbuild` moderate）；`npm audit --omit=dev` = 1 high（`nanoid`）
+- `npm audit fix --dry-run --json`（写盘前预演）：`changed=2, added=0, removed=0, audited=71`，仅 `nanoid 3.3.16 → 3.3.19`、`brace-expansion 2.1.2 → 2.1.7`；预演后 `package.json` 与 `package-lock.json` sha256 与预演前完全一致
+- `npm audit fix`（**未使用 `--force`**）：`package-lock.json` 仅 6 增 6 删，只替换 `node_modules/brace-expansion`（2.1.2→2.1.7）与 `node_modules/nanoid`（3.3.16→3.3.19）两个嵌套条目的 `version`/`resolved`/`integrity`；**无新增、无删除、无主版本变化、无 overrides**
+- `package.json` sha256 改动前 `793fe6da…e0b4` → 改动后 `793fe6da…e0b4`（**未变化**，符合"间接依赖只改 lockfile"的预期）；`package-lock.json` sha256 `4f022a5d…042f` → `306c1659…7de0`
+- `npm ci` → 通过（70 packages，audited 71）；`npm run build` → 通过（vue-tsc + Vite 5.4.21，built in 1.29s）
+- `npm audit --json`（阶段 A 后）= **1 moderate + 1 high**，仅剩 `vite` high（直接依赖，`<=6.4.2`）与 `esbuild` moderate（间接，`<=0.24.2`），两者 `fixAvailable` 均为 `vite@8.3.1`（`isSemVerMajor: true`）→ 归阶段 B
+- `npm audit --omit=dev --audit-level=high` → **通过**（`found 0 vulnerabilities`）；`npm audit --audit-level=high` → 仍失败（exit 1，由 `vite` high 触发，属阶段 B 目标）
+- `dist` 与阶段 A 前基线**逐字节一致**（19 文件 / 18 JS / 0 CSS / 796 KB / 0 sourcemap，全部文件 sha256 相同）——依赖修复不改变产物，符合预期
+- `git diff --check` → 通过；阶段 A 未触碰任何 Go 代码、前端源码、配置文件或文档以外的文件
+- 阶段 A 无停止条件触发：无无关依赖漂移、无 peer conflict、无需 overrides、无需修改 `package.json`
+
+**阶段 B 实际证据（2026-09-24）：**
+
+- 实际改动（仅 2 个依赖文件）：
+  1. `webui/frontend/package.json`：`vite` `^5.4.0` → `^8.3.1`，`@vitejs/plugin-vue` `^5.0.0` → `^6.0.9`（caret 范围，经用户确认）；**`vue`、`vue-router`、`naive-ui`、`typescript`、`vue-tsc` 的声明范围与解析版本均未改动**；`scripts`/`name`/`version`/`type` 未改动；
+  2. `webui/frontend/package-lock.json`：由 `npm install --save-dev vite@^8.3.1 @vitejs/plugin-vue@^6.0.9` 重新生成（543 增 / 699 删），顶层包 54 个；`esbuild` 与其 20 个平台包、`rollup` 与其平台包全部移除，改由 `rolldown@1.2.10` + `lightningcss@1.33.0` 接管；`postcss` 8.5.23→8.5.28、`nanoid` 保持 3.3.19；
+  3. `.github/workflows/docker-publish.yml`：前端构建后新增两个阻断步骤（已获用户确认）；
+  4. `vite.config.ts` **未修改**（Vite 8 兼容层覆盖本项目仅有的 `defineConfig`/`plugin(vue())`/`server.proxy`/`build.outDir`，官方迁移文档未要求改动）；`tsconfig.json`、`webui/frontend/src/**`、`index.html`、`build/Dockerfile`、`Makefile` 均未修改。
+- 版本事实（实测）：
+  - `vite 8.3.1`（engines `^20.19.0 || >=22.12.0`）、`@vitejs/plugin-vue 6.0.9`（peer `vite ^5||^6||^7||^8`、`vue ^3.2.25`）、`rolldown 1.2.10`、`lightningcss 1.33.0`；
+  - 保留不动：`vue 3.5.40`、`vue-router 4.6.4`、`naive-ui 2.44.1`、`typescript 5.9.3`、`vue-tsc 2.2.12`；
+  - 越界核对：**无 Vue Router 5、无 TypeScript 7、无 npm 12 相关改动、无 Go 依赖改动、无 overrides/resolutions**。
+- 自动检查（真实结果）：
+  - `cd webui/frontend && npm ci` → 通过（75 packages，audited 76，`found 0 vulnerabilities`）；
+  - `npm run build`（`vue-tsc && vite build`）→ 通过；日志 `vite v8.3.1 building client environment for production...`、`✓ 2819 modules transformed`、**`✓ built in 135ms`**（`vue-tsc` 类型检查以现有 `vue-tsc 2.2.12` + `typescript 5.9.3` 通过，无需升级）；`npm ci` 后二次构建产物与首次构建**逐字节一致**（确定性通过）；
+  - `npm audit --json` → **0 vulnerabilities（info/low/moderate/high/critical 全为 0）**；`npm audit --audit-level=high` → **通过**（`found 0 vulnerabilities`）；`npm audit --omit=dev --audit-level=high` → **通过**；
+  - `go test ./... -race -count=1`（`go clean -testcache` 冷缓存）→ 通过，11 包全 ok，0 次 `WARNING: DATA RACE`（root 10.866s、syncer 15.486s、webui/api 6.642s、webui 3.857s 等）；
+  - `go vet ./...`、`go build ./...`、`git diff --check` → 全部通过；
+  - CI 工作流结构核对：13 个步骤，审计步骤位于「构建前端」之后、「编译检查」之前，缩进与制表符无异常。
+- 产物对比（升级前 Vite 5.4.21 → 升级后 Vite 8.3.1，均为生产构建）：
+
+| 指标 | 升级前（Vite 5.4.21） | 升级后（Vite 8.3.1 / Rolldown） | 判定 |
+|------|---------------------|-------------------------------|------|
+| 模块数 | 2818 | 2819 | 正常 |
+| 构建耗时（vite build） | 1.34s | **135ms** | 显著改善（Rolldown） |
+| dist 文件总数 | 19 | 21 | 增加 2 个（见下） |
+| JS 文件数 | 18 | 20 | 拆包策略变化 |
+| CSS 文件数 | 0 | 0 | 无 CSS 产物，样式仍由 naive-ui 运行时代码注入 |
+| dist 总字节 | 815,104 | **752,499** | 减少约 7.7% |
+| sourcemap | 0 | 0 | 未启用，无泄漏 |
+| `index.html` 资源 | 1 个 script | 1 个 script + 2 个 `modulepreload` | 全部引用逐一存在性校验通过 |
+| 7 个视图路由 chunk | Dashboard/Targets/Rules/Settings/Logs/RunTest/Alerts 各一 | **完全对应保留** | 动态加载结构未破坏 |
+| naive-ui 组件 chunk | DataTable/Select/FormItem/Modal/Grid/Space/Alert/use-message | **完全对应保留** | 未破坏 |
+| `__vite__mapDeps` | 存在 | 存在 | 动态 chunk 映射完整 |
+
+  - 两个新增 chunk 经内容核验为依赖拆分产物：`api-Cgz6hAsk.js`（194,937 B，Vue 运行时核心）、`light-Slo-5Vyt.js`（15,873 B，naive-ui 轻量公共部分）；升级前这两部分合并在 `index-BS22DnWm.js`（400,800 B）中，现拆为 `index-DMKGbtVO.js`（181,922 B）+ 上述两块。chunk 文件名与内容哈希变化**本身不是失败**，引用关系已确认完整。
+- 单二进制运行时证据（真实进程 + 真实 SQLite 空库）：
+  - `go build -o /tmp/fwalizer-step6 .` 后用 `FWALIZER_DATA_DIR=<临时目录> WEBUI_HOST=127.0.0.1 WEBUI_PORT=60999` 启动真实二进制；
+  - `GET /api/health` → `HTTP 200` `{"status":"ok"}`；`GET /` → `HTTP 200`，返回 471 字节的新 `index.html`（含 2 个 `modulepreload`）；
+  - 新产物逐一可达（全部 `HTTP 200`）：`index-DMKGbtVO.js` 181,922 B、`api-Cgz6hAsk.js` 194,937 B、`light-Slo-5Vyt.js` 15,873 B、`Dashboard-DqhbmvGv.js`、`DataTable-BFsNTdS3.js`、`Settings-B-oOj7B-.js`；
+  - 动态路由 chunk 抽查全部 `HTTP 200`：`Targets`、`Rules`、`Logs`、`RunTest`、`Alerts`；
+  - 停止进程后端口不再监听；**证明 Go embed 能完整读取 Rolldown 产物并由单二进制提供**。
+- Docker 构建与容器验收（2026-09-24，用户启动 Docker Desktop 后补做）：
+  - `docker build -f build/Dockerfile -t fwalizer:build6-step6 .` → **通过**（exit 0；三阶段构建，`frontend-builder` 阶段日志显示 `vite v8.3.1 building client environment for production...`、`✓ 2819 modules transformed`、`✓ built in 225ms`；`CGO_ENABLED=0 go build -ldflags="-s -w"` 完成；镜像 `fwalizer:build6-step6` 74.1 MB）；
+  - **Node 版本固定**：`build/Dockerfile` 的浮动 tag `node:24-alpine` 改为 `node:24.21-alpine`，`.github/workflows/docker-publish.yml` 的 `node-version: '24'` 改为 `'24.21.0'`，两者保持一致。实测 `node:24-alpine`、`node:24.21-alpine`、`node:24.21.0-alpine` 三者 digest 相同（`sha256:ebfe2f90…`），即浮动 tag 当时已解析为 24.21.0，固定后不改变构建结果、只消除未来 minor 漂移；`frontend-builder` 阶段实测 **Node v24.21.0 / npm 11.19.0**，与本机 npm 版本完全一致；
+  - 容器运行验收（`-p 62100:60200`、挂载临时数据目录）：health 于 **6s** 转为 `healthy`；`GET /api/health` → `HTTP 200` `{"status":"ok"}`；`GET /` → `HTTP 200`（471 B 新 `index.html`）；`index-DMKGbtVO.js`(181,922 B)、`api-Cgz6hAsk.js`(194,937 B)、`light-Slo-5Vyt.js`(15,873 B)、`Targets-CV95Zb0J.js`、`Settings-B-oOj7B-.js` 全部 `HTTP 200`；容器内进程为 `uid=1000(appuser)`（非 root）；
+  - `docker stop` → **ExitCode=0**、`OOMKilled=false`、耗时 0.155s；日志顺序为 `收到停止信号，等待当前轮次完成 → 开始 HTTP 关闭 → 同步引擎停止 → HTTP 关闭完成`；停止后端口释放；
+  - `docker compose -f docker-compose.yml.example config --quiet` → 通过（该命令不需要 daemon）；
+  - **Docker Desktop 环境异常（非本仓库问题）**：完成上述构建与容器验收后，本机 Docker Desktop VM 的容器创建能力失效——`docker run` 对**所有**镜像（含此前成功运行过的 `fwalizer:build6-step6` 与 `alpine:3.24`）均挂起在 `State=created`，切换 `--runtime=runc` 与 `docker compose run` 同样挂起；`docker version`、`docker system df`、`docker images`、`docker build` 仍正常响应，磁盘充足（Images 766 MB、Build Cache 8.9 GB 可回收）。因此计划中的容器化 Node 24 交叉复验未能执行，需用户重启 Docker Desktop 后补做（见 `ProdTestList.md` 二之五节）。
+- 未完成项（不得由上述自动证据替代）：
+  1. **浏览器人工回归未执行**：七个页面、hash 路由与刷新、深浅主题、卡片式确认、目标/规则弹窗、暂停/恢复、配置 version 2 导入导出、Console 与 Network 检查均待用户按 `ProdTestList.md` 二之五节执行；
+  2. **Node 24 容器化交叉复验未执行**：Docker 构建本身已在 `node:24.21-alpine` 的 `frontend-builder` 阶段真实执行 `npm ci && npm run build` 并产出完整 `dist`（等于已在 Node 24.21.0 下验证构建链），但"同一份源码在 Node 24 容器中重新生成 dist 并与本机 dist 逐字节比对"这一独立复验因 Docker Desktop 异常而待补做；
+  3. **远端 CI 仍无运行结果**（当前分支未推送，O5-02 与 Step 5 的远端待办继续保留）。
+- 与计划偏差：
+  1. `vite.config.ts` 按预判**无需修改**，兼容层已覆盖本项目全部配置面，未产生任何 `vite.config.ts` 变更；
+  2. `vue-tsc 2.2.12` + `typescript 5.9.3` 在 Vite 8 下类型检查通过，因此**未做任何 Vue/Naive UI/vue-tsc/TypeScript 更新**，符合"能通过则保持不动"的固定范围；
+  3. `npm audit fix --dry-run --json` 在 npm 11 下会先向 stdout 打印 `change …` 文本行再输出 JSON，导致直接管道给 JSON 解析器失败（非命令失败）；实际使用 `npm audit fix`（不带 `--force`）并按 `package-lock.json` diff 逐条核对，结果与 dry-run 预告完全一致。
+- **状态：** ◧ 进行中（阶段 A、阶段 B 的工程实施与本地自动门禁已完成；high/critical 已清零、两条 audit 门禁均通过、Go race/vet/build 通过、单二进制与 Docker 镜像均可完整提供新产物；**浏览器人工回归待用户执行**，因此不标记验收通过）
 
 ### Step 7：高影响路径补测、真实验收与文档闭环
 
@@ -1005,7 +1090,7 @@ git diff --check
 说明：
 
 - 前端必须先构建 `dist`，再运行依赖嵌入资源的 Go 门禁；
-- `npm audit` 在 Step 6 前作为已知失败基线记录，Step 6 后 high/critical 必须清零；
+- `npm audit` 在 Step 6 前作为已知失败基线记录，Step 6 后 high/critical 必须清零（2026-09-24 阶段 A 修复 `nanoid`/`brace-expansion`、阶段 B 升级 `vite 8.3.1` + `@vitejs/plugin-vue 6.0.9` 后，完整 audit 与生产依赖 audit 均为 0 漏洞）；
 - `go test -race` 不能替代 build 和 vet；
 - Docker 构建不能替代 Compose 配置、健康检查和 stop 验收；
 - 自动测试、mock、源码核验或 build 成功不得替代真实浏览器、云 API、SMTP/收件箱和 Webhook 证据；
@@ -1069,7 +1154,7 @@ git diff --check
 | settings/alerts | `webui/api/settings.go`、`alerts.go`、`coordinator.go` | settings 使用 11 个 pointer 字段固定 DTO 并在单事务写入（未知键 400、省略不变、仅凭据可显式空串）；alerts 要求两对象全子字段必需并单事务覆盖；两者均经协调器 commit 后只 apply 一次 | Step 2、4 | `webui_port` 入口**已解除（Step 2）**；任意 map 键与部分成功**已解除（Step 4）** |
 | 配置包协议 | `webui/api/bundle_v2.go`、`webui/api/export.go` | `POST /api/config/export` 在只读事务内导出 v2 完整敏感快照（ID 与 `target_export_ids` 升序、marshal 先于写头、`no-store`、固定附件名）；导入使用 presence DTO + 10 MiB 严格解码 + 预校验 + 固定顺序事务 + `LastInsertId` 映射；version 1 及其他版本 400 | Step 4、5 | 严格解码与协调器接入**已解除（Step 4）**；v2 协议与 ID 映射**已解除（Step 5）** |
 | 前端导入导出 | `webui/frontend/src/views/Settings.vue` | 设置保存为 11 键白名单 payload（Step 4）；导入/导出均为危险级卡片确认（`type="error"`，文案列出四类密钥），导出走 `POST + fetch + Blob` 并从 `Content-Disposition` 解析安全文件名（含固定 fallback），导入成功整页 reload、失败不 reload | Step 4、5 | 设置保存 payload**已解除（Step 4）**；敏感快照与整页刷新**已解除（Step 5）** |
-| 前端依赖 | `webui/frontend/package*.json` | 审计基线见 §十一 | Step 6 | **仍存在** |
+| 前端依赖 | `webui/frontend/package*.json`、`build/Dockerfile`、`.github/workflows/docker-publish.yml` | Step 6 阶段 A 只改 lockfile：`nanoid 3.3.16→3.3.19`、`brace-expansion 2.1.2→2.1.7`；阶段 B：`vite ^5.4.0→^8.3.1`、`@vitejs/plugin-vue ^5.0.0→^6.0.9` 并重生成 lockfile（`esbuild`/`rollup` 移除，改由 `rolldown 1.2.10` + `lightningcss 1.33.0`）；`vue`/`vue-router`/`naive-ui`/`typescript`/`vue-tsc` 未改动；Node 固定为 `node:24.21-alpine` / `node-version: '24.21.0'`；完整 audit 与 `--omit=dev` audit 均 0 漏洞；CI 已增加两个阻断式 audit 门禁；Docker 构建与容器 health/stop 验收通过 | Step 6 | **已解除（Step 6：审计清零、构建与 Go 门禁通过、单二进制与 Docker 镜像均可提供新产物；仅浏览器人工复核待用户执行，故 Step 6 仍为 ◧）** |
 
 实施者应优先在这些现有边界上收束，不创建第二套 store、第二个事件总线或平行 Web server。删除旧实现后再更新本表的“当前问题”，不能让旧/新入口长期共存。
 
@@ -1582,6 +1667,9 @@ Build6 最终关闭前，必须能从本文追溯：
 | v1.2 | 2026-09-22 | Step 0 验收通过：切换当前文档体系，建立 Design5，同步 AGENTS/Issue5/README 边界并存档 Design4/Build5/Issue4 |
 | v1.4 | 2026-09-23 | Step 2 验收通过：唯一 WebUI + SQLite 运行时，删除 CLI/`.env` Headless/`version` 与编译期注入，三个部署变量收束，`webui_port` 从 API 与配置包移除，健康检查去 `pgrep`；附真实进程、Compose、Docker 构建与容器健康证据 |
 | v1.5 | 2026-09-23 | Step 2 独立复检：记录用户侧提交 `0975f95`、冷缓存门禁与从该提交重建镜像的容器复核；修正本 Step 起始状态行、参数用例计数与残留搜索表述；登记 `AGENTS.md`/`Design5.md`/README 的陈旧表述为待办 |
-| v1.8 | 2026-09-25 | Step 5 工程实现与本地自动门禁完成（状态 ◧ 进行中）：version 2 完整敏感快照导出（`POST /api/config/export`、只读事务、稳定排序、`no-store`、固定附件名）与 version 1 拒绝；presence DTO + 10 MiB 严格解码 + 引用闭包预校验 + 固定顺序事务 + `export_id → 新数据库 ID` 映射导入；不可变 `provider.Credentials` + 无 setter `ClientPool`（删除 `SetCredentials` 与包级凭据）；`syncer.RuntimeState`/`RuntimeManager`/`BuildRuntimeState` 原子发布与单一调度控制语义；告警候选集合与无失败 Apply；协调器收束为事务内快照 + 候选构造 + commit 后「日志级别 → 告警集合 → RuntimeState」；前端危险确认与 Blob 导出 + 整页 reload；README/`.gitignore` 同步；附门禁、专项测试矩阵、失败注入与证据边界；浏览器与真实外部链路待用户验收 |
+| v1.8 | 2026-09-24 | Step 5 工程实现与本地自动门禁完成（状态 ◧ 进行中）：version 2 完整敏感快照导出（`POST /api/config/export`、只读事务、稳定排序、`no-store`、固定附件名）与 version 1 拒绝；presence DTO + 10 MiB 严格解码 + 引用闭包预校验 + 固定顺序事务 + `export_id → 新数据库 ID` 映射导入；不可变 `provider.Credentials` + 无 setter `ClientPool`（删除 `SetCredentials` 与包级凭据）；`syncer.RuntimeState`/`RuntimeManager`/`BuildRuntimeState` 原子发布与单一调度控制语义；告警候选集合与无失败 Apply；协调器收束为事务内快照 + 候选构造 + commit 后「日志级别 → 告警集合 → RuntimeState」；前端危险确认与 Blob 导出 + 整页 reload；README/`.gitignore` 同步；附门禁、专项测试矩阵、失败注入与证据边界；浏览器与真实外部链路待用户验收 |
+| v1.9 | 2026-09-24 | 文档核验修正：Step 3/4 章节状态统一为验收通过；区分 Step 4/5 的实施前 HEAD 与当前 HEAD；更新 Step 5 提交状态、远端 CI 待办和记录日期 |
+| v2.0 | 2026-09-24 | Step 6 阶段 A 与阶段 B 工程实施及本地自动门禁完成（状态 ◧ 进行中）：阶段 A 经 `npm audit fix`（无 `--force`）在 lockfile 内修复 `nanoid 3.3.16→3.3.19`、`brace-expansion 2.1.2→2.1.7`（`package.json` 未改，dist 逐字节不变）；阶段 B 将 `vite ^5.4.0→^8.3.1`、`@vitejs/plugin-vue ^5.0.0→^6.0.9` 并重生成 lockfile（`esbuild`/`rollup` 移除，`rolldown 1.2.10` + `lightningcss 1.33.0` 接管），`vue`/`vue-router`/`naive-ui`/`typescript`/`vue-tsc` 保持不动、`vite.config.ts` 无需修改；完整 audit 与 `--omit=dev` audit 均 0 漏洞，`npm ci`/`npm run build`（2819 模块、135ms）、冷缓存 `go test ./... -race`、`go vet`、`go build`、`git diff --check` 全通过；单二进制实测可完整提供 Rolldown 产物与动态路由 chunk；新增 CI 双阻断 audit 门禁；附升级前后 dist 对比矩阵、越界核对与证据边界 |
+| v2.1 | 2026-09-24 | Step 6 补做 Docker 验收与 Node 版本固定：`docker build -f build/Dockerfile -t fwalizer:build6-step6 .` 通过（frontend-builder 阶段实测 Node v24.21.0 / npm 11.19.0，日志 `vite v8.3.1`、2819 模块、`built in 225ms`）；容器 health 6s 转 `healthy`、`/api/health` 与 `/` 及全部新产物 `HTTP 200`、非 root `appuser`、`docker stop` ExitCode=0 且耗时 0.155s；按用户决策把 `node:24-alpine`/`node-version: '24'` 固定为 `node:24.21-alpine`/`'24.21.0'`（三者 digest 原本相同，固定后消除 minor 漂移）；记录本机 Docker Desktop VM 容器创建能力失效导致容器化 Node 24 交叉复验待补做 |
 | v1.7 | 2026-09-24 | Step 4 验收通过：统一严格 JSON 解码（1 MiB/未知字段/尾随值与多顶层值）与严格路径 ID；新增 `config` 轻量领域校验/归一化并让 `LoadConfig` 对既有非法值返回带键名错误；Store 增加 `DBTX`/事务内读写/`RowsAffected`/`LastInsertId`/规则引用检查；新增配置变更协调器骨架并让 targets/rules/settings/alerts/pause/resume/reset 与 version 1 导入全部经其单事务写入、非法输入零 reload、合法事务一次 apply；settings 改 11 pointer DTO 单事务、alerts 两对象全字段单事务、删除被引用目标 409；500 改安全文案并移除 Webhook URL 日志；日志级别改为可动态更新的 `slog.LevelVar`、DNS 阈值提供保留计数的线程安全 setter；前端设置保存改 11 键白名单 payload；附四道门禁、专项测试矩阵与证据边界 |
 | v1.6 | 2026-09-23 | Step 3 验收通过：HTTP 生命周期收束为同步 `net.Listen` + 同一 listener 交给 `Serve`（仅 `EADDRINUSE` 降级）、显式 `http.Server` 超时、`Wait`、幂等 `Shutdown`（超时强制 `Close`）、两类 SSE 服务器级 shutdown 退出、main 信号与 Serve 错误统一收尾（HTTP 10s 上限、Syncer 无超时完成当前轮次）；附门禁、真实进程信号/在途轮次/SSE 与 Docker health/stop 证据及证据边界；同步 §12.2 状态映射并关闭 Issue5 O5-04/O5-05 |

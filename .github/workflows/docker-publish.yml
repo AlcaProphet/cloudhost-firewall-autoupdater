@@ -43,10 +43,20 @@ jobs:
       - name: 设置 Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          # 固定到具体补丁版本，与 build/Dockerfile 的 node:24.21-alpine 保持一致
+          node-version: '24.21.0'
 
       - name: 构建前端
         run: cd webui/frontend && npm ci && npm run build
+
+      # 依赖审计门禁（Build6 Step 6）：两层均阻断。
+      # 生产依赖审计只统计会进入发布链路的生产依赖；完整审计覆盖 devDependency 构建链；
+      # 二者在 Step 6 升级后均为 0 漏洞，故都作为阻断项，失败即阻止后续镜像构建与推送。
+      - name: 前端依赖审计（生产依赖，阻断）
+        run: cd webui/frontend && npm audit --omit=dev --audit-level=high
+
+      - name: 前端依赖审计（完整，阻断）
+        run: cd webui/frontend && npm audit --audit-level=high
 
       - name: 编译检查
         run: |

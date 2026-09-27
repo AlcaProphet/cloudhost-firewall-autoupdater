@@ -1,7 +1,7 @@
 # Issue5.md — FWAlizer 问题追踪（当前）
 
 > **文档定位：** 本文档是 FWAlizer 的当前问题记录（非强制，经验参考），记录 2026-09-22 只读审查发现的 R5-01～R5-03、O5-01～O5-06 和 A5-01。已确认的修复口径由 [Build6.md](./Build6.md) 分步实施，未经对应 Step 验收不得标记为已修复。
-> **当前进度（2026-09-25）：** Build6 Step 0～4 已验收通过；O5-04、O5-05 随 Step 3 关闭，O5-06 随 Step 4 关闭。Step 5 的工程实现与本地自动门禁已完成（version 2 配置包、显式凭据、原子运行时切换），但浏览器人工复核与真实外部链路仍待用户验收，因此 Step 5 保持 ◧ 进行中，R5-01 尚未正式关闭；O5-01、O5-03 仍待 Step 6/7。
+> **当前进度（2026-09-24）：** Build6 Step 0～4 已验收通过；O5-04、O5-05 随 Step 3 关闭，O5-06 随 Step 4 关闭。Step 5 的工程实现与本地自动门禁已完成（version 2 配置包、显式凭据、原子运行时切换），但浏览器人工复核与真实外部链路仍待用户验收，因此 Step 5 保持 ◧ 进行中，R5-01 尚未正式关闭；远端 GitHub Actions 仍待运行确认；**Step 6 的阶段 A（lockfile 内修复 `nanoid`/`brace-expansion`）与阶段 B（`vite 8.3.1` + `@vitejs/plugin-vue 6.0.9`）工程实施已完成，O5-01 的 high/critical 已清零、CI 双阻断 audit 门禁已落地、Docker 构建与容器 health/stop 验收已通过，仅浏览器人工回归待用户执行，因此 O5-01 与 Step 6 保持 ◧ 进行中**；O5-03 仍待 Step 7。
 > 编码指令以 [AGENTS.md](./AGENTS.md) 为唯一强要求；设计记录见 [Design5.md](./Design5.md)；上一阶段的 Design4、Build5 和 Issue4 已原文移入 [HistoryDocs/](./HistoryDocs/)。
 
 ---
@@ -53,11 +53,11 @@
   - 验证每条规则关联到与导出前相同的目标，而不是只比较数字 ID；
   - 验证导入事务失败时旧配置不被部分替换；
   - 运行 `go test ./... -race`、`go vet ./...` 与 `git diff --check`。
-- **实施记录（2026-09-25，Build6 Step 5）：**
+- **实施记录（2026-09-24，Build6 Step 5；提交 `c35eb9d`）：**
   - 代码：配置包协议升级为 version 2（`webui/api/bundle_v2.go` + `webui/api/export.go`）：导出固定 `POST /api/config/export`，在单个只读事务内读取 targets/rules/settings/alert_email/alert_webhook，目标与规则按数据库 ID 升序、每条规则的 `target_export_ids` 按 export_id 升序，marshal 先于写响应头，附件名固定 `fwalizer-config-v2-<UTC 20060102T150405Z>.json` 并带 `Cache-Control: no-store`；导入使用独立 presence DTO（缺失与 `null` 均可与合法零值/空数组区分，数组元素内未知字段同样拒绝）+ 10 MiB 严格解码，在打开写事务前完成 version/metadata/必需字段/枚举/时长/TAG/DNS/告警/`export_id` 唯一性与引用闭包校验，随后在固定顺序事务内清表（rules→targets→settings→alert_email→alert_webhook）、插入目标取 `LastInsertId` 建立 `export_id → 新数据库 ID` 映射、为每条规则创建副本重写引用、显式写入 version 2 完整 12 键设置、写入完整 email/webhook、清空 `scanned_resources`（保留 `sync_logs`、不触碰 `sqlite_sequence`）；version 1 及其他版本返回 400，不迁移、不补全、无隐藏兼容入口。
   - 事务与运行时：`ConfigCoordinator` 收束为「锁 → 单事务 → 事务内完整业务快照 → 事务内构造候选 `RuntimeState` 与候选告警集合（零网络）→ commit → 无失败发布：日志级别 → 告警集合 → `RuntimeState`」；任一阶段失败完整回滚，旧数据库、旧运行时状态指针、旧日志级别、旧告警订阅与扫描缓存全部保持不变且不产生部分映射。
   - 回归测试：`webui/api/export_test.go`（同实例自增历史后导出→清空→导入，规则仍关联同一业务目标；跨实例不同 ID；多目标/一条规则多目标/多规则复用/空引用；清空扫描缓存、保留同步日志、不重置自增序列；空库与完整库 Schema、默认值、UTC metadata、响应头与稳定排序）；`webui/api/import_test.go`（35 项非法输入零写入零发布：重复/零/负 `export_id`、未知与重复引用、`null`、缺失字段、任意层级未知字段、version 1/3、尾随 JSON、多顶层值、10 MiB 边界、完整凭据覆盖与空凭据清除）；`webui/api/import_failure_test.go`（清表、目标、规则、settings、email、webhook、`scanned_resources` 清空、commit 共 8 项 trigger 失败注入 + 候选构造失败 + commit 失败，逐项断言旧库完整、零发布、500 不回显底层错误）；`main_test.go` 的 `TestProcessConfigExportImportRoundTrip`（真实二进制 + 真实 SQLite 跨数据目录导入并校验业务关系、version 1 → 400、两个进程日志无敏感 sentinel）。
-  - 门禁（2026-09-25）：`go test -race ./config ./provider ./syncer ./webui/api` 通过；`go test ./... -race -count=1` 通过（11 包，0 次 `DATA RACE`）；`go vet ./...`、`go build ./...`、`git diff --check` 通过；`npm ci && npm run build` 通过且 lockfile 未变化。
+  - 门禁（2026-09-24）：`go test -race ./config ./provider ./syncer ./webui/api` 通过；`go test ./... -race -count=1` 通过（11 包，0 次 `DATA RACE`）；`go vet ./...`、`go build ./...`、`git diff --check` 通过；`npm ci && npm run build` 通过且 lockfile 未变化。
   - 证据边界：上述均为本地 SQLite/httptest/真实二进制进程证据；**真实浏览器导入导出、真实云 API、SMTP 与 Webhook 未执行**，两库交叉导入的**人工**逐项核对仍待用户按下方验收建议执行（`ProdTestList.md` 已登记）。
 - **状态：** ◧ 工程实现与本地自动门禁完成（Build6 Step 5）；真实浏览器人工复核与外部链路待用户验收，尚未标记验收通过
 
@@ -155,7 +155,16 @@
   - `npm audit` 的剩余条目逐项记录接受、升级或上游等待理由；
   - 人工打开仪表盘、目标、规则、设置、日志、模拟测试和告警页面，检查路由、主题、弹窗和表单；
   - 随后运行 Go race 测试、vet 和 Docker 构建，确认嵌入前端产物仍可被单二进制提供。
-- **状态：** ☐ 已决策 / 待 Build6 Step 6 实施
+- **实施记录（2026-09-24，Build6 Step 6）：**
+  - **阶段 A（lockfile 内修复，未改 `package.json`）：** 先以 `npm audit fix --dry-run --json` 预演（`changed=2, added=0, removed=0`，仅 `nanoid 3.3.16→3.3.19`、`brace-expansion 2.1.2→2.1.7`；预演前后两文件 sha256 一致），再执行 `npm audit fix`（**未使用 `--force`**）。`package-lock.json` 仅 6 增 6 删，只替换 `node_modules/nanoid`、`node_modules/brace-expansion` 两个嵌套条目的 `version`/`resolved`/`integrity`；`package.json` sha256 前后一致（`793fe6da…e0b4`）；`npm ci`、`npm run build` 通过，`dist` 与修复前**逐字节一致**。`npm audit --omit=dev --audit-level=high` 由 1 high 转为**通过**；完整 audit 降为 1 high + 1 moderate，仅剩 `vite`/`esbuild`。
+  - **阶段 B（构建器升级）：** 依据 Vite 官方 [8.0 发布说明](https://vite.dev/blog/announcing-vite8)、[版本与支持策略](https://vite.dev/releases) 与 [7→8 迁移指南](https://vite.dev/guide/migration)（Vite 5 已不在任何支持范围）：`vite ^5.4.0→^8.3.1`（8.3.1）、`@vitejs/plugin-vue ^5.0.0→^6.0.9`（6.0.9，其 peer 已含 `vite ^8.0.0`；注意 `plugin-vue 6.0.0` 的 peer 尚不含 8）；重新生成 lockfile 后 `esbuild` 与 `rollup` 及其平台包全部移除，改由 `rolldown 1.2.10` + `lightningcss 1.33.0` 接管。**`vue 3.5.40`、`vue-router 4.6.4`、`naive-ui 2.44.1`、`typescript 5.9.3`、`vue-tsc 2.2.12` 均未改动**（`vue-tsc 2.2.12` 是该主版本最高版且 peer 仅要求 `typescript >=5.0.0`，在 Vite 8 下类型检查通过）；**`vite.config.ts` 无需修改**（Vite 8 兼容层覆盖 `defineConfig`/`plugin(vue())`/`server.proxy`/`build.outDir`；项目未使用 `rollupOptions`、`manualChunks`、`splitVendorChunkPlugin`、Sass、PostCSS 插件、SSR、legacy 或自定义 Rollup 插件）。
+  - **审计结果：** 完整 `npm audit` = **0 漏洞**（info/low/moderate/high/critical 全 0）；`npm audit --audit-level=high` 与 `npm audit --omit=dev --audit-level=high` 均**通过**。
+  - **CI 门禁（经用户确认）：** `.github/workflows/docker-publish.yml` 在「构建前端」之后、「编译检查」之前新增两个**阻断**步骤：`npm audit --omit=dev --audit-level=high` 与 `npm audit --audit-level=high`；两者当前均为 0 漏洞，故完整 audit 也已具备阻断条件（满足本项第 5 条"待告警清零后再决定是否阻断"的前置条件）。
+  - **门禁：** `npm ci`、`npm run build`（`vite v8.3.1`，2819 模块，`built in 135ms`）、`go test ./... -race -count=1`（冷缓存，11 包全 ok，0 次 `DATA RACE`）、`go vet ./...`、`go build ./...`、`git diff --check` 全部通过；产物对比升级前 19 文件/815,104 B → 升级后 21 文件/752,499 B（JS 18→20、CSS 0→0、sourcemap 0→0），7 个视图路由 chunk 与 naive-ui 组件 chunk 全部保留，`index.html` 引用与动态 chunk 逐一可达。
+  - **单二进制证据：** 真实二进制（临时数据目录、`WEBUI_PORT=60999`）启动后 `GET /api/health` → 200、`GET /` → 200（471 B 新 `index.html`），新产物与 5 个动态路由 chunk 全部 `HTTP 200`。
+  - **Docker 构建与容器验收（2026-09-24，用户启动 Docker Desktop 后补做）：** `docker build -f build/Dockerfile -t fwalizer:build6-step6 .` → **通过**（exit 0；`frontend-builder` 阶段实测 **Node v24.21.0 / npm 11.19.0**，日志 `vite v8.3.1`、2819 模块、`built in 225ms`；镜像 74.1 MB）；容器 `-p 62100:60200` 于 **6s** 转 `healthy`，`/api/health` 与 `/` 及全部新产物 `HTTP 200`，容器内为 `uid=1000(appuser)`，`docker stop` **ExitCode=0**、耗时 0.155s 且日志顺序为「收到停止信号 → 开始 HTTP 关闭 → 同步引擎停止 → HTTP 关闭完成」；`docker compose … config --quiet` 通过。按用户决策把 `build/Dockerfile` 的 `node:24-alpine` 与 `.github/workflows/docker-publish.yml` 的 `node-version: '24'` 固定为 `node:24.21-alpine` / `'24.21.0'`（实测三者 digest 原本相同，固定后不改变构建结果、仅消除 minor 漂移；未采用 v26，因其为 Current 非 LTS 且不在 Vite CI 测试范围）。
+  - **证据边界与未完成项：** ① **浏览器人工回归未执行**（七页面、hash 路由与刷新、深浅主题、卡片确认、弹窗、暂停/恢复、配置 version 2 导入导出、Console/Network）待用户执行；② **Node 24 容器化交叉复验待补做**——Docker 构建本身已在 `node:24.21-alpine` 阶段真实跑通 `npm ci && npm run build`，但"独立复现并与本机 `dist` 逐字节比对"因本机 Docker Desktop VM 容器创建能力失效（`docker run` 对所有镜像挂起在 `State=created`，而 `docker version`/`docker system df`/`docker build` 仍正常）而未能执行，需用户重启 Docker Desktop；③ 本地构建环境为 Node 26.7.0 / npm 11.19.0，Docker 构建环境为 Node 24.21.0 / npm 11.19.0；④ 本地 Docker 镜像为 linux/arm64，CI 发布平台为 `linux/amd64`（既有设计），本地构建不覆盖 amd64 交叉验证；⑤ 开发服务器类漏洞（`server.fs.deny` 绕过、dev server 跨站读取、`launch-editor` NTLMv2）**只影响 `vite dev`，生产单二进制仅嵌入 `dist` 静态文件、不含 dev server**；⑥ 远端 CI 仍无运行结果。
+- **状态：** ◧ 工程实施与自动验收完成（Build6 Step 6 阶段 A + 阶段 B）；high/critical 已清零、audit 门禁已入 CI、Docker 构建与容器 health/stop 已通过；**浏览器人工回归待用户执行**，未标记验收通过
 
 ### O5-02 CI 未运行 Go race detector
 

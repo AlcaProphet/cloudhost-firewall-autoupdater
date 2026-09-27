@@ -12,7 +12,7 @@
 - **产品与兼容标识**：产品显示名、二进制名、`FWALIZER_DATA_DIR` 部署变量、数据目录及 GHCR 镜像继续使用 `FWAlizer` / `fwalizer`，避免破坏保留的部署边界
 - **Go 版本**：`go 1.25`
 - **文档定位与优先级**：编码前先阅读本文件（强要求）。设计记录见 [Design5.md](./Design5.md)（当前，非强制，供参考）；详细构建方案见 [Build6.md](./Build6.md)（当前）；当前问题记录见 [Issue5.md](./Issue5.md)；历史文档（Design1-4、Build1-5、Issue1-4）见 [HistoryDocs/](./HistoryDocs/)（已存档，仅记录，不再用于构建，仅用于核查等情况）
-- **Build6 过渡边界**：当前目标形态已固定为 WebUI 单二进制 + SQLite。截至 Build6 Step 2 验收通过（2026-09-23），CLI、`.env` Headless 与业务环境变量入口已从代码、部署示例和 README 中移除；Step 3（HTTP Listener、Server 生命周期与优雅关闭）已于 2026-09-23 验收通过；Step 4（API 最小持久化校验边界）已于 2026-09-24 验收通过。Step 5（version 2 完整配置包与原子运行时切换）的**工程实现与本地自动门禁已完成**，但浏览器人工复核与真实云 API/SMTP/Webhook 外部链路仍待用户执行，因此 Step 5 保持 ◧ 进行中，尚未标记验收通过。Step 6-7 尚未实施，后续文档不得被表述为这些 Step 已经完成。
+- **Build6 过渡边界**：当前目标形态已固定为 WebUI 单二进制 + SQLite。截至 Build6 Step 2 验收通过（2026-09-23），CLI、`.env` Headless 与业务环境变量入口已从代码、部署示例和 README 中移除；Step 3（HTTP Listener、Server 生命周期与优雅关闭）已于 2026-09-23 验收通过；Step 4（API 最小持久化校验边界）已于 2026-09-24 验收通过。Step 5（version 2 完整配置包与原子运行时切换）的**工程实现与本地自动门禁已完成**，但浏览器人工复核、真实云 API/SMTP/Webhook 外部链路与远端 GitHub Actions 运行结果仍待确认，因此 Step 5 保持 ◧ 进行中，尚未标记验收通过。Step 6 正在处理，Step 7 尚未实施，后续文档不得把未完成事项写成已完成。
 
 ---
 

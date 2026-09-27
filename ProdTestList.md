@@ -1,7 +1,7 @@
 # ProdTestList.md — 长耗时 / 外部验收测试清单
 
 > **用途：** 集中记录单次耗时较长、或需要远端与外部环境才能执行完成的验收项，便于安排时段批量处理。
-> **状态时间：** 2026-09-25。Build6 Step 1、Step 2、Step 3、Step 4 与 Step 5 的本地门禁均已执行完毕（见第一、二、二之二、二之三、二之四节）；其余待办见第三节。
+> **状态时间：** 2026-09-24。Build6 Step 1、Step 2、Step 3、Step 4、Step 5 与 Step 6 的本地门禁均已执行完毕（见第一、二、二之二、二之三、二之四、二之五节）；远端 GitHub Actions、Docker 构建、人工浏览器和真实外部链路待办见第三节及各 Step 记录。
 > **原则：** 本清单只记录"尚未执行/需重跑"的项；已通过的项如实记录命令与结果，绝不以更窄的命令替代原门禁。
 
 ---
@@ -100,7 +100,7 @@ Build6 Step 2 规定的自动门禁已在本机真实执行并通过：
 
 ---
 
-## 二之四、Build6 Step 5 门禁：本地自动门禁已完成（2026-09-25）
+## 二之四、Build6 Step 5 门禁：本地自动门禁已完成（2026-09-24）
 
 | # | 命令 / 动作 | 结果 | 备注 |
 |---|------------|------|------|
@@ -128,7 +128,62 @@ Build6 Step 2 规定的自动门禁已在本机真实执行并通过：
 - 「普通变更保留 DNS 熔断失败计数 / 完整导入重置计数」由 `syncer` 单测覆盖，未在长跑真实环境复现熔断进度；
 - `modernc.org/sqlite` 驱动不强制 `sql.TxOptions.ReadOnly` 的写入拒绝，导出契约由「独立只读事务 + handler 不含写入语句」保证，测试只锁定可读取一致快照；
 - 真实浏览器的 Blob 下载文件名与整页 reload 行为未验证；
-- Step 5 改动尚未提交，远端 CI 无对应运行结果。
+- Step 5 已提交为 `c35eb9d`，但当前分支尚未推送，远端 CI 无对应运行结果。
+
+---
+
+## 二之五、Build6 Step 6 门禁：本地自动门禁已完成（2026-09-24）
+
+| # | 命令 / 动作 | 结果 | 备注 |
+|---|------------|------|------|
+| 1 | 阶段 A：`npm audit fix --dry-run --json` → `npm audit fix`（均无 `--force`） | **通过** | `changed=2, added=0, removed=0`；仅 `nanoid 3.3.16→3.3.19`、`brace-expansion 2.1.2→2.1.7`；`package-lock.json` 6 增 6 删；`package.json` sha256 不变（`793fe6da…e0b4`） |
+| 2 | 阶段 A：`npm ci` / `npm run build` | **通过** | vue-tsc + Vite 5.4.21；`dist` 与修复前**逐字节一致**（19 文件 / 796 KB） |
+| 3 | 阶段 B：`npm install --save-dev vite@^8.3.1 @vitejs/plugin-vue@^6.0.9` | **通过** | 解析为 `vite 8.3.1`、`@vitejs/plugin-vue 6.0.9`；lockfile 543 增 / 699 删；`esbuild`、`rollup` 及其平台包全部移除，改由 `rolldown 1.2.10` + `lightningcss 1.33.0` 接管 |
+| 4 | `npm ci` | **通过** | 75 packages，audited 76，`found 0 vulnerabilities` |
+| 5 | `npm run build`（`vue-tsc && vite build`） | **通过** | `vite v8.3.1 building client environment for production...`、2819 模块、**`built in 135ms`**；`npm ci` 后二次构建与首次**逐字节一致** |
+| 6 | `npm audit --audit-level=high` | **通过** | `found 0 vulnerabilities`（升级前为 1 moderate + 3 high） |
+| 7 | `npm audit --omit=dev --audit-level=high` | **通过** | `found 0 vulnerabilities`（阶段 A 后即已通过） |
+| 8 | 产物对比（升级前 → 升级后） | **通过** | 文件 19→21、JS 18→20、CSS 0→0、总字节 815,104→752,499、sourcemap 0→0；7 个视图路由 chunk 与 naive-ui 组件 chunk 全部保留；新增 `api-Cgz6hAsk.js`（Vue 运行时）与 `light-Slo-5Vyt.js`（naive-ui 公共部分） |
+| 9 | `index.html` 引用完整性 | **通过** | 1 个 script + 2 个 `modulepreload`，逐一存在性校验通过 |
+| 10 | `go test ./... -race -count=1`（`go clean -testcache` 冷缓存） | **通过** | 11 包全 ok，0 次 `WARNING: DATA RACE`（root 10.866s、syncer 15.486s、webui/api 6.642s、webui 3.857s） |
+| 11 | `go vet ./...` / `go build ./...` / `git diff --check` | **通过** | 无输出 / 退出码 0 |
+| 12 | 单二进制运行时（真实进程 + 临时数据目录） | **通过** | `/api/health` → 200；`/` → 200（471 B 新 `index.html`）；`index-DMKGbtVO.js`、`api-Cgz6hAsk.js`、`light-Slo-5Vyt.js`、`Dashboard`、`DataTable`、`Settings` 与 5 个动态路由 chunk 全部 `HTTP 200`；停止后端口不再监听 |
+| 13 | `docker compose -f docker-compose.yml.example config --quiet` | **通过** | 该命令不需要 daemon |
+| 14 | CI 工作流核对 | **通过** | `.github/workflows/docker-publish.yml` 13 个步骤；新增 `npm audit --omit=dev --audit-level=high` 与 `npm audit --audit-level=high` 两个**阻断**步骤，位于「构建前端」之后、「编译检查」之前 |
+| 15 | 越界核对 | **通过** | 无 Vue Router 5、无 TypeScript 7、无 npm 12 改动、无 Go 依赖改动、无 overrides/resolutions；`vue`/`vue-router`/`naive-ui`/`typescript`/`vue-tsc` 与 `vite.config.ts`、`tsconfig.json`、前端源码均未改动 |
+
+**补充：Docker 构建与容器验收（2026-09-24 已完成，用户启动 Docker Desktop 后执行）**
+
+| # | 命令 / 动作 | 结果 | 备注 |
+|---|------------|------|------|
+| 1 | `docker build -f build/Dockerfile -t fwalizer:build6-step6 .` | **通过** | exit 0；`frontend-builder` 阶段实测 **Node v24.21.0 / npm 11.19.0**；日志 `vite v8.3.1`、2819 模块、`built in 225ms`；`CGO_ENABLED=0` 静态编译；镜像 74.1 MB |
+| 2 | Node 版本固定（用户决策） | **已落地** | `build/Dockerfile`：`node:24-alpine` → `node:24.21-alpine`；`.github/workflows/docker-publish.yml`：`node-version: '24'` → `'24.21.0'`。实测三者 digest 原本相同（`sha256:ebfe2f90…`），固定后不改变构建结果、仅消除 minor 漂移；未采用 v26（Current、非 LTS、不在 Vite CI 测试范围） |
+| 3 | 容器 health（`-p 62100:60200`） | **通过** | **6s** 转为 `healthy`；`GET /api/health` → 200；`GET /` → 200（471 B 新 `index.html`）；`index-DMKGbtVO.js`、`api-Cgz6hAsk.js`、`light-Slo-5Vyt.js`、`Targets-*`、`Settings-*` 全部 200；容器内 `uid=1000(appuser)` |
+| 4 | `docker stop` 优雅停止 | **通过** | **ExitCode=0**、`OOMKilled=false`、耗时 0.155s；日志顺序 `收到停止信号 → 开始 HTTP 关闭 → 同步引擎停止 → HTTP 关闭完成`；停止后端口释放 |
+| 5 | `docker compose -f docker-compose.yml.example config --quiet` | **通过** | 不需要 daemon |
+
+**本 Step 仍待用户执行（不得由本地自动测试替代）：**
+
+| # | 项目 | 动作 | 原因 |
+|---|------|------|------|
+| 1 | 浏览器人工回归 | 打开生产构建对应的 WebUI（非 `vite dev`）：七个页面、hash 路由与整页刷新、深浅主题、页面级大按钮与表格内小按钮、卡片式二次确认、目标/规则弹窗、暂停/恢复、配置 version 2 导出（危险确认/Blob/文件名）、导入成功整页 reload、损坏 JSON 与 version 1 导入失败不 reload、Console 无构建器错误、Network 无 404 | `vue-tsc`、生产构建、curl 探测与容器 health 均不能替代真实浏览器行为；Rolldown 产物与拆包策略变化需真实浏览器确认 |
+| 2 | Node 24 容器化交叉复验 | 重启 Docker Desktop 后执行 `docker run --rm -v "$PWD/webui/frontend":/w -w /w node:24.21-alpine sh -c 'npm ci && npm run build'`，并与本机 `dist` 逐字节比对 | Docker 构建本身已在 `node:24.21-alpine` 阶段真实跑通 `npm ci && npm run build`（等于已验证 Node 24 构建链），但"独立复现同一份 dist"这一步因本机 Docker Desktop VM 容器创建能力失效而未能执行（见下方环境异常记录） |
+| 3 | 远端 GitHub Actions 运行 | 推送分支/PR，确认两个 audit 阻断步骤与 race 命令真实运行 | 同第三节第 1 项（O5-02 收尾）；当前分支尚未推送 |
+
+**本机 Docker Desktop 环境异常（非本仓库问题，2026-09-24）：**
+
+- 完成上述构建与容器验收后，Docker Desktop VM 的**容器创建能力失效**：`docker run` 对**所有**镜像均挂起在 `State=created`，包括此前已成功运行过的 `fwalizer:build6-step6` 与 `alpine:3.24`；切换 `--runtime=runc` 与 `docker compose run` 同样挂起；镜像拉取已完成（`node:24.21-alpine` 238 MB 在本地）；
+- 同时 `docker version`、`docker system df`、`docker images`、`docker build` 均正常响应，磁盘充足（Images 766 MB；Build Cache 8.9 GB / 可回收 8.2 GB）；
+- 结论：**需用户重启 Docker Desktop** 才能继续执行容器相关操作（第 2 项待办）。这是本机 Docker 环境问题，**不改变**已取得的构建与容器 health/stop 证据，也不是仓库或依赖升级引入的问题。
+
+**Step 6 的证据边界（不得扩大解释）：**
+
+- 阶段 A 与阶段 B 的构建/审计/Go 门禁取自**本机 Node 26.7.0 / npm 11.19.0**；Docker 构建与容器验收取自 `node:24.21-alpine`（Node v24.21.0 / npm 11.19.0）；**远端 CI 未执行**；
+- Docker 镜像为 **linux/arm64**（本机 Apple Silicon daemon 默认平台）；CI 发布平台为 `linux/amd64`，该差异属既有设计（`docker-publish.yml` 中 `platforms: linux/amd64`），本地构建不覆盖 amd64 交叉验证；
+- 全部写操作使用任务专用隔离 cache `/tmp/fwalizer-step6-npm-cache`（用户 `~/.npm/_cacache` 存在 root 所有的 `content-v2/sha512/96/` 子树导致 `EACCES`/`EEXIST`）；**未使用 `sudo`、未 `chown`、未清理全局 cache、未使用 `--force`**；
+- 开发服务器类漏洞（`server.fs.deny` Windows 绕过、dev server 跨站读取、`launch-editor` NTLMv2）**只影响 `vite dev`**；生产单二进制仅嵌入 `dist` 静态文件，不含 dev server，不得描述为已确认的生产 WebUI 漏洞；
+- `nanoid` 在 lockfile 中未被标记为 `dev`（经 `postcss` 引入），因此 `npm audit --omit=dev` 会统计它；该依赖只参与构建，不进入单二进制产物；
+- 本轮浏览器回归若执行，可顺带补充 Step 5 的前端导入导出证据，但**不能替代**两库人工交叉导入、真实云 API、SMTP 或 Webhook；**Step 5 与 R5-01 的关闭仍由用户决定**。
 
 ---
 
@@ -137,7 +192,9 @@ Build6 Step 2 规定的自动门禁已在本机真实执行并通过：
 | # | 项目 | 命令或动作 | 归属 | 说明 |
 |---|------|-----------|------|------|
 | 1 | 远端 GitHub Actions 真实运行 | 推送分支/PR（或 tag），观察 `Docker Build & Publish` 工作流，确认 race 测试真实运行且失败会阻止镜像推送 | Step 1（O5-02 收尾）、各 Step | 本地只能证明工作流文件内容与本地命令；远端结果必须在 GitHub 上确认。当前 Issue5 O5-02 保持 ◧ |
-| 2 | 前端依赖审计 | `cd webui/frontend && npm audit --audit-level=high` | Step 6 | Step 2 的 `npm ci && npm run build` 已通过；审计仍为 Step 6 范围 |
+| 2 | Docker 构建（Step 6 验收项） | `docker build -f build/Dockerfile -t fwalizer:build6-step6 .` | Step 6 | **已于 2026-09-24 完成**（exit 0；frontend-builder 阶段 Node v24.21.0 / npm 11.19.0）；容器 health/stop 亦已通过，见二之五节；不再作为待办 |
+| 2b | 前端依赖审计 | `cd webui/frontend && npm audit --audit-level=high` 与 `npm audit --omit=dev --audit-level=high` | Step 6 | **已于 2026-09-24 完成**：两者均 `found 0 vulnerabilities`，并已加入 CI 双阻断门禁；不再作为待办 |
+| 2c | Node 24 容器化交叉复验 | 重启 Docker Desktop 后 `docker run --rm -v "$PWD/webui/frontend":/w -w /w node:24.21-alpine sh -c 'npm ci && npm run build'` 并与本机 `dist` 逐字节比对 | Step 6 | **待办**：Docker 构建已在 Node 24.21.0 阶段真实跑通构建链，但独立复现比对因本机 Docker Desktop VM 容器创建能力失效而未执行（见二之五节环境异常记录） |
 | 3 | 进程级信号验收（完整） | 真实二进制 SIGTERM/SIGINT、`docker stop`，验证"完成当前轮次再退出"与 SSE 退出 | Step 3 | **已于 2026-09-23 完成**（见二之二节第 3～7 项）；不再作为待办 |
 | 4 | 真实外部链路 | 真实云 API 连接测试/扫描/增量写入/精确删除、SMTP 收件箱、各渠道 Webhook、浏览器人工验收 | Step 5、Step 7 | 需用户凭据与环境；不得用 mock 替代后标记通过。Step 5 的凭据模型与运行时快照语义已变更，本轮需重跑（见二之四节） |
 | 5 | Step 4 浏览器复核 | 设置保存（11 键白名单 payload）、告警保存、删除被引用目标的 409 提示 | Step 4 | 见二之三节；未执行真实浏览器交互 |
@@ -151,3 +208,4 @@ Build6 Step 2 规定的自动门禁已在本机真实执行并通过：
 3. 若未来把 `-count=100` 固化为 CI 门禁，建议单独拆一个 race job 并让 Docker 发布依赖其成功（Build6 / Issue5 O5-02 第 5 条已给出方向），同时注意上文的 `-timeout` 要求。
 4. Step 3 的证据边界（容器 0 targets、`EACCES` 不可构造、进程外 Serve 运行错误）已记录在二之二节；Step 4 的证据边界（SDK 错误返回、sentinel 作用域、协调器过渡结构）已记录在二之三节；Step 5 的证据边界（本地 SQLite/httptest/真实二进制、熔断计数仅单测、只读事务不强制拒写、浏览器与外部链路未验证）已记录在二之四节；若后续 Step 需要更强证据，应在有真实同步负载与真实外部环境时补做。
 5. **Step 5 待办优先级建议**：先做二之四节第 1、2 项（浏览器导入导出 + 两库交叉导入人工核对），这两项无需云凭据即可完成；再做第 3 项（真实云/SMTP/Webhook，需用户凭据）；第 4 项（远端 CI）可与 Step 6 一并安排。
+6. **Step 6 待办优先级建议**：Docker 构建与容器 health/stop 已于 2026-09-24 完成。剩余三项：① **重启 Docker Desktop** 后执行二之五节第 2 项 Node 24 容器化交叉复验（重新生成 `dist` 并与本机产物逐字节比对）；② 执行二之五节第 1 项浏览器人工回归（同时可补充 Step 5 的前端导入导出证据）；③ 远端 CI 与 O5-02 一并安排。Step 6 的浏览器回归**不替代** Step 5 的两库人工交叉导入、真实云 API、SMTP 与 Webhook。

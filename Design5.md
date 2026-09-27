@@ -2,11 +2,11 @@
 
 > **文档定位：** 本文档是 FWAlizer 的当前设计记录（设计大方向、架构构想与决策记录，非强制，供参考），承接已存档的 [Design1-4](./HistoryDocs/)。
 > 编码约束遵循 [AGENTS.md](./AGENTS.md)（唯一强要求）；详细分步实施和验收见 [Build6.md](./Build6.md)；问题追踪见 [Issue5.md](./Issue5.md)。
-> **实施状态：** 2026-09-25 Build6 Step 1、Step 2、Step 3 与 Step 4 已验收通过：运行时已收束为唯一 WebUI + SQLite，CLI、`.env` Headless、业务环境变量入口和 `webui_port` 业务设置已从代码与当前文档移除，监听参数只由三个部署变量提供；HTTP 生命周期已形成最终形态（同步 listener、仅 `EADDRINUSE` 降级、显式 `http.Server`、`Wait`、幂等 `Shutdown`、两类 SSE 服务器级退出、main 统一收尾）；普通 API 最小持久化校验边界已落地（统一严格解码与 1 MiB、领域校验与归一化、`RowsAffected`/引用检查、事务化 settings/alerts、删除被引用目标 409、500 安全文案、日志级别动态更新）。
+> **实施状态：** 2026-09-24 Build6 Step 1、Step 2、Step 3 与 Step 4 已验收通过：运行时已收束为唯一 WebUI + SQLite，CLI、`.env` Headless、业务环境变量入口和 `webui_port` 业务设置已从代码与当前文档移除，监听参数只由三个部署变量提供；HTTP 生命周期已形成最终形态（同步 listener、仅 `EADDRINUSE` 降级、显式 `http.Server`、`Wait`、幂等 `Shutdown`、两类 SSE 服务器级退出、main 统一收尾）；普通 API 最小持久化校验边界已落地（统一严格解码与 1 MiB、领域校验与归一化、`RowsAffected`/引用检查、事务化 settings/alerts、删除被引用目标 409、500 安全文案、日志级别动态更新）。远端 GitHub Actions 运行结果仍待确认。
 >
-> **Step 5（version 2 完整配置包与原子运行时切换）工程实现与本地自动门禁已完成，状态为 ◧ 进行中：** version 2 完整敏感快照导出（`POST /api/config/export` + 只读事务 + 稳定排序 + `no-store` + 固定附件名）、version 1 拒绝、`export_id → 新数据库 ID` 映射导入、显式不可变 `provider.Credentials` + 无 setter `ClientPool`、`syncer.RuntimeState`/`RuntimeManager` 原子发布、单一调度控制语义、告警候选集合与无失败 Apply、前端危险确认与 Blob 导出均已落地；**浏览器人工复核与真实云 API/SMTP/Webhook 外部链路仍待用户执行**，因此尚未标记验收通过。
+> **Step 5（version 2 完整配置包与原子运行时切换）工程实现与本地自动门禁已完成，代码于 2026-09-24 提交（`c35eb9d`），状态为 ◧ 进行中：** version 2 完整敏感快照导出（`POST /api/config/export` + 只读事务 + 稳定排序 + `no-store` + 固定附件名）、version 1 拒绝、`export_id → 新数据库 ID` 映射导入、显式不可变 `provider.Credentials` + 无 setter `ClientPool`、`syncer.RuntimeState`/`RuntimeManager` 原子发布、单一调度控制语义、告警候选集合与无失败 Apply、前端危险确认与 Blob 导出均已落地；**浏览器人工复核与真实云 API/SMTP/Webhook 外部链路仍待用户执行**，远端 GitHub Actions 运行结果仍待确认，因此尚未标记验收通过。
 >
-> 本文档其余内容是已固定的目标契约；Step 6-7（前端依赖升级、总验收）仍须按 Build6 实施，不得把本文档视为全部已完成。
+> 本文档其余内容是已固定的目标契约；Step 6（前端依赖受控升级）阶段 A 与阶段 B 的工程实施与本地自动门禁已完成（`nanoid`/`brace-expansion` lockfile 内修复，`vite 8.3.1` + `@vitejs/plugin-vue 6.0.9` 升级，`esbuild`/`rollup` 由 `rolldown`/`lightningcss` 取代，完整 audit 与生产依赖 audit 均为 0 漏洞，CI 双阻断 audit 门禁已落地，Node 固定为 `node:24.21-alpine` / `node-version: '24.21.0'`，Docker 构建与容器 health/stop 验收通过；前端源码、`vite.config.ts`、`tsconfig.json` 与业务代码未改动），仅浏览器人工回归待用户执行，因此 Step 6 仍为 ◧；Step 7（总验收）尚未开始，不得把本文档视为全部已完成。
 
 ---
 

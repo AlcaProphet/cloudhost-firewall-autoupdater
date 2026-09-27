@@ -1,5 +1,6 @@
 # 前端构建阶段（与 CI 的 setup-node 版本保持一致，见 docker-publish.yml）
-FROM node:24-alpine AS frontend-builder
+# 固定到具体补丁版本以保证可复现：24.21.0 为 Node v24 LTS（Krypton）线当前最高补丁
+FROM node:24.21-alpine AS frontend-builder
 WORKDIR /src/webui/frontend
 COPY webui/frontend/package*.json ./
 RUN npm ci
