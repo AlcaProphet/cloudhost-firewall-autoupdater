@@ -1,7 +1,7 @@
 # Issue5.md — FWAlizer 问题追踪（当前）
 
 > **文档定位：** 本文档是 FWAlizer 的当前问题记录（非强制，经验参考），记录 2026-09-22 只读审查发现的 R5-01～R5-03、O5-01～O5-06 和 A5-01。已确认的修复口径由 [Build6.md](./Build6.md) 分步实施，未经对应 Step 验收不得标记为已修复。
-> **当前进度（2026-09-27）：** Build6 Step 0～6 已验收通过。Step 5 的工程、本地门禁、生产浏览器、真实腾讯云/阿里云、DNS 增量同步及真实负载运行时行为均已完成；跨实例不同自增历史数据库的人工交叉导入因无使用场景而免除，ID 映射仍由自动化覆盖，R5-01 已关闭。Step 7 的自动补测、统一门禁、真实二进制/Docker 容器验收与文档闭环已完成，并按用户确认边界最小修复 Issue6 A10/A5/A7/A6/A8（A1/A2/A3/A4/A9/A11～A19 继续留在 Issue6）；真实 Email/SMTP/收件箱与 Webhook 待用户真机执行，故 Step 7/O5-03 保持 ◧ 进行中。远端 GitHub Actions 由 O5-02 跟踪（本轮已获用户 push 授权，推送后回写真实结果）。
+> **当前进度（2026-09-27）：** Build6 Step 0～6 已验收通过。Step 5 的工程、本地门禁、生产浏览器、真实腾讯云/阿里云、DNS 增量同步及真实负载运行时行为均已完成；跨实例不同自增历史数据库的人工交叉导入因无使用场景而免除，ID 映射仍由自动化覆盖，R5-01 已关闭。Step 7 的自动补测、统一门禁、真实二进制/Docker 容器验收与文档闭环已完成，并按用户确认边界最小修复 Issue6 A10/A5/A7/A6/A8（A1/A2/A3/A4/A9/A11～A19 继续留在 Issue6）；真实 Email/SMTP/收件箱与 Webhook 待用户真机执行，故 Step 7/O5-03 保持 ◧ 进行中。O5-02 的远端 race 缺口已由真实 GitHub Actions 运行关闭（见 O5-02）。
 > 编码指令以 [AGENTS.md](./AGENTS.md) 为唯一强要求；设计记录见 [Design5.md](./Design5.md)；上一阶段的 Design4、Build5 和 Issue4 已原文移入 [HistoryDocs/](./HistoryDocs/)。
 
 ---
@@ -188,8 +188,15 @@
   - 证据边界：**未推向远端、未获得 GitHub Actions 运行结果**，因此不得声称 CI 已通过；该自动化/远端验证继续由本 O5-02 跟踪，不进入只记录人工真机验收的 `ProdTestList.md`。
   - 耗时说明：`./syncer -count=100` 会超出 Go 默认 10 分钟包级超时（需 `-timeout 40m`），因此 CI 侧维持单轮 race 测试；若后续需要 100 轮门禁，按本项第 5 条拆分为独立 job 并让发布依赖其成功。
   - 门禁（2026-09-23）：Build6 Step 1 四道门禁在本机全部真实通过（含 `./notifier`、`./webui/api`、`./syncer` 各自 100 轮 race）。
-  - 补充（2026-09-27，Build6 Step 7）：用户已授权本轮推送 `v2.0.0` tag 以触发真实工作流；推送前的当前状态仍为「未取得远端运行结果」，真实 Actions 结论在推送后回写本项，回写前不得声称 CI 已通过。
-- **状态：** ◧ 代码已实施并有本地静态/命令证据 / 待远端 GitHub Actions 运行确认
+  - **远端运行结果（2026-09-27，真实取得）：** 按用户授权推送 tag `v2.0.0`（提交 `8a075f368447cc5321b24e9c021f96fc0d1eb730`）后，工作流 **成功**：run id `36300428681`（event `push`、head_branch `v2.0.0`、run_attempt 1、2026-09-27T06:33:08Z→06:38:25Z、https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/36300428681）。14 个步骤全部 `success`，其中：
+    - 「运行测试」= `go test -race -v ./...`（本项要求的 race 门禁在远端真实执行并通过）；
+    - 「编译检查」= `go build -v ./...` + `go vet ./...`（build/vet 未被 race 取代，均保留并通过）；
+    - 「更新所有 SDK 到最新版」按 AGENTS §十 策略执行成功；
+    - 「前端依赖审计（生产依赖，阻断）」「前端依赖审计（完整，阻断）」「构建前端」均成功；
+    - 「登录 ghcr.io」「构建并推送 Docker 镜像」成功，镜像真实推送（见下）。
+  - **发布镜像证据：** 匿名拉取 `ghcr.io/alcaprophet/fwalizer:2.0.0` 成功（digest `sha256:72c3166d…`，约 76.5 MB）；`org.opencontainers.image.revision` = `8a075f368447cc5321b24e9c021f96fc0d1eb730`（与本仓库提交一致）、`version` = `2.0.0`、`source` = 本仓库 URL；semver 派生标签 `2.0`、`2` 同时存在。
+  - **证据边界：** 上述为真实远端 CI 与真实镜像发布证据（`platforms: linux/amd64`，故本机 arm64 需 `--platform linux/amd64` 拉取）；它不构成真实云 API、SMTP/收件箱或 Webhook 证据。
+- **状态：** ✅ 已修复并验收通过（2026-09-27；本地 race/vet/build 证据 + 真实远端 Actions 运行 `36300428681` 成功 + 真实镜像推送 `ghcr.io/alcaprophet/fwalizer:2.0.0`）
 
 ---
 
@@ -237,7 +244,7 @@
   - **专项门禁：** notifier `-race -count=100`（44.0s）、syncer 调度用例 `-race -count=100`（517.4s）、provider `-race -count=20`、webui/api 整包 `-race` 与相关用例 `-race -count=10` 全部通过；`go test ./... -race -count=1` 11 包全 ok、0 次 `DATA RACE`。
   - **随测修复（经用户逐项确认的边界，详见 Build6 Step 7）：** Issue6 A10（reset 接受 `null`）、A5（pause/resume 在协调器外二次写运行时开关）、A7（恢复漏掉立即一轮）、A6（ticker 分支缺已发布状态守卫）、A8（完整导入未重置 DNS 熔断计数，按用户决策改为确定重置）。A1/A2/A3/A4/A9/A11～A19 未被本轮测试触发，继续留在 Issue6 待处理。
   - **证据边界：** 上述全部为本地自动测试/mock/真实进程与容器证据；Provider mock **不构成**真实腾讯云/阿里云验收；真实云/DNS/浏览器证据仍为用户 2026-09-27 真机确认，本轮直接继承未重复执行。
-  - **未完成：** 真实 Email/SMTP/收件箱（PT-B6-08）与真实 Webhook（PT-B6-09）待用户真机执行；远端 GitHub Actions 由 O5-02 跟踪。
+  - **未完成：** 真实 Email/SMTP/收件箱（PT-B6-08）与真实 Webhook（PT-B6-09）待用户真机执行（远端 GitHub Actions 已由 O5-02 于 2026-09-27 取得真实结果，见该条目）。
 - **状态：** ◧ 自动补测、统一门禁与文档闭环已完成（2026-09-27）；真实 Email/SMTP/收件箱与 Webhook 待用户执行，故本项未完全关闭
 
 ---
@@ -415,6 +422,7 @@
 |------|--------|
 | 2026-09-22 | 建立 R5、O5、A5 问题清单并映射 Build6 Step 0～7。 |
 | 2026-09-23 | 关闭 R5-02、R5-03、A5-01、O5-04、O5-05；O5-02 进入远端 CI 待确认状态。 |
+| 2026-09-27 | 关闭 O5-02：tag `v2.0.0` 触发真实 GitHub Actions 运行 `36300428681` 成功（含远端 `go test -race -v ./...`），并真实推送 `ghcr.io/alcaprophet/fwalizer:2.0.0`/`2.0`/`2`。 |
 | 2026-09-24 | 关闭 O5-06；完成 R5-01 与 O5-01 的工程实现、自动门禁和 Docker 证据。 |
 | 2026-09-27 | 用户真机证据补齐，关闭 R5-01、O5-01并验收 Build6 Step 5～6；Email/SMTP/收件箱与 Webhook 移交 O5-03/Step 7 后续处理。 |
-| 2026-09-27 | Build6 Step 7 自动补测、统一门禁、真实二进制/Docker 容器验收与文档闭环完成（provider 覆盖率 22.6%→53.0%）；按用户确认边界修复 Issue6 A10/A5/A7/A6/A8，A1/A2/A3/A4/A9/A11～A19 继续待处理；O5-03 转为 ◧（真实 SMTP/收件箱与 Webhook 待用户执行）；O5-02 待推送后回写远端 Actions 结果。 |
+| 2026-09-27 | Build6 Step 7 自动补测、统一门禁、真实二进制/Docker 容器验收与文档闭环完成（provider 覆盖率 22.6%→53.0%）；按用户确认边界修复 Issue6 A10/A5/A7/A6/A8，A1/A2/A3/A4/A9/A11～A19 继续待处理；O5-03 转为 ◧（真实 SMTP/收件箱与 Webhook 待用户执行）；O5-02 关闭（远端 Actions 运行 `36300428681` 成功 + 真实镜像推送）。 |

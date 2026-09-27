@@ -483,6 +483,7 @@ git diff --check
   - CI 工作流：`ruby -e YAML.load_file` 解析通过，步骤顺序仍为 前端构建(4) → build+vet(5) → race 测试(6) → Docker 推送(10，仅 tag)；`go build -v ./...`、`go vet ./...` 与 `CGO_ENABLED=0` 产物约束未改动。
 - **人工检查：** 已执行的静态人工核验为 `grep` 确认 `retrySync` 不再出现 `s.cfg.Tag`、`bus.go` 中不再存在 `close(`、CI 为 `go test -race -v ./...`、新测试未使用 `recover`；**未执行**真实浏览器、真实云 API、SMTP/Webhook 与真实 GitHub Actions 远端运行，证据边界仅限本地源码、本地测试与工作流文件静态内容。
 - **未完成项：** GitHub Actions 是否真实通过未获得远端结果，不得声称 CI 已通过；该自动化/远端验证由 `Issue5.md` O5-02 继续跟踪，不进入只记录人工真机验收的 `ProdTestList.md`。
+  - **已于 2026-09-27 关闭：** tag `v2.0.0` 触发的真实 Actions 运行 `36300428681` **成功**，其中「运行测试」步骤即 `go test -race -v ./...`；详见 Build6 Step 7 与 Issue5 O5-02。
 - **与计划偏差：**
   1. 本 Step 门禁以**逐包**方式执行（`./notifier`、`./webui/api`、`./syncer` 各一次），且 `./syncer` 需显式 `-timeout 40m` 才能跑满 100 轮（默认 10 分钟上限不足）。测试集与轮次数未做任何削减。
   2. 构建前报告预计 TAG 快照测试会在当前代码下被 `-race` 报告竞态；实际确定性交错用例（阻塞 Describe → 真实 Reload → 释放）因测试侧同步（`RLock` 轮询 + channel 释放）构成 happens-before 边而**不会**产生竞态报告，其红灯表现为**语义失败**（同一轮混用新旧 TAG）。为覆盖锁旁路本身，新增无严格交错点的 `TestSyncRound_ConcurrentReloadStress`，它在修复前确实报告了 `retry.go:40` 的竞态。两类证据均已如实记录，未互相替代。
@@ -566,7 +567,7 @@ git diff --check
 - **人工检查：** 未执行真实浏览器交互。已执行的是对真实二进制的本地 HTTP 探测（`/api/health` 200、`/` 返回内嵌 SPA 的 `index.html` 并引用新构建的 `assets/index-DLe-uTEM.js`、`/api/settings` 响应中无 `webui_port`）；`/settings` 等前端路由直接 GET 返回 404 属现有 SPA 静态服务行为，与 Step 2 无关（未在浏览器中加载路由）。
 - **未完成项：**
   1. 未在浏览器中打开设置页并手动执行一次配置导入/导出（本 Step 修改了 `/api/settings`、导出内容与导出确认文案，建议人工复核，已登记到 `ProdTestList.md`）；
-  2. 未推向远端，未获得 GitHub Actions 运行结果，因此不得声称 CI 已通过（工作流 race 命令由 Step 1 引入，其远端确认仍属 O5-02 未完成项）；
+  2. 未推向远端，未获得 GitHub Actions 运行结果，因此不得声称 CI 已通过（工作流 race 命令由 Step 1 引入，其远端确认仍属 O5-02 未完成项）；**该项已于 2026-09-27 由 tag `v2.0.0` 的真实 Actions 运行 `36300428681` 关闭（成功），见 Build6 Step 7 与 Issue5 O5-02**；
   3. 未执行真实云 API、SMTP、Webhook 验收（不属本 Step）。
 - **与计划偏差：**
   1. `config/env.go` 未按 Issue5 第 3 条拆分为“语义明确的运行时配置文件”，而是整体删除并在新文件 `config/deployment.go` 中重建部署参数读取；结果语义与固定口径一致（`FWALIZER_DATA_DIR` 空白按未设置、端口 `1～65535`），仅文件命名不同。
@@ -613,7 +614,7 @@ git diff --check
   - 绑定失败：`WEBUI_HOST=fwalizer-step3.invalid WEBUI_PORT=60200` → `exit=1`，输出 `WebUI 监听失败: … bind: can't assign requested address`，日志无 `开始同步`，pidfile 已清理
 - Docker 证据：镜像 `fwalizer:build6-step3`（本 Step 代码新建，`sha256:1583753f…`）；隔离 named volume + `-p 127.0.0.1:60422:60200`；`/api/health` → `{"status":"ok"}`、`health=healthy`（5s）；`docker stop` 耗时 **0.19s**、`ExitCode=0`；日志顺序 `收到停止信号… → 开始 HTTP 关闭 → 同步引擎停止 → HTTP 关闭完成`；容器与 volume 已清理，无残留
 - 未完成项：
-  1. **远端 CI**：仍无 GitHub Actions 运行结果（属 O5-02 收尾，非本 Step 门禁）；
+  1. **远端 CI**：仍无 GitHub Actions 运行结果（属 O5-02 收尾，非本 Step 门禁）；**已于 2026-09-27 由运行 `36300428681` 关闭（成功）**；
   2. **Docker stop 的证据边界**：空库轮次为 0 targets，容器日志的“同步完成 耗时=0s”不能证明有真实同步负载时的“完成当前轮次”；该语义由上文真实二进制的在途轮次证据支撑，容器侧未重复构造；
   3. **`EACCES` 权限错误**未能构造（需低端口 + 非 root），以 `EADDRNOTAVAIL` 等非占用类错误代替“非 EADDRINUSE 不随机降级”的证据；
   4. **进程级 Serve 运行错误**只覆盖到“绑定失败非零退出”与自动测试中的 `Wait()` 错误传播；未在进程外制造 listener 被关闭的 Serve 异常并断言退出码 1（受进程边界限制）。
@@ -739,7 +740,7 @@ git diff --check
   3. 协调器为 Step 4 过渡结构：`run.go` 的 apply 仍分次执行 providers/resolver/告警重订阅；commit 后若 `LoadConfig` 失败只记录 ERROR 而不更新运行时（正常写入路径已被校验拦在前面），该无失败原子发布属 Step 5。
 - 未完成项：
   1. **浏览器人工复核**：设置白名单保存、告警保存、目标删除 409 提示；
-  2. **远端 CI**：仍无 GitHub Actions 运行结果（O5-02 收尾，非本 Step 门禁）；
+  2. **远端 CI**：仍无 GitHub Actions 运行结果（O5-02 收尾，非本 Step 门禁）；**已于 2026-09-27 由运行 `36300428681` 关闭（成功）**；
   3. **Step 5 收口项**：完整 `RuntimeState`/`RuntimeManager` 原子发布、`export_id → 新 ID` 映射、显式 `Credentials` 与 `ClientPool` 重构、删除 `provider.SetCredentials`、version 2 协议（含 v2 专用版本语义与 10 MiB 导入 DTO）、前端危险确认与整页 reload。严格解码与 10 MiB 上限已在本 Step 对 version 1 导入落地。
 - 与计划偏差：
   1. 经用户确认新增范围：`LoadConfig` 对既有非空非法值返回带键名错误（§12.10）；
@@ -850,7 +851,7 @@ git diff --check
 - 后续事项（不阻塞 Step 5）：
   1. **告警外部链路**：真实 Email/SMTP/收件箱与每个实际支持渠道的 Webhook 移交 `ProdTestList.md` 和 Step 7；告警配置相关浏览器核对随此外部链路一并处理；
   2. **跨实例人工交叉导入**：用户确认当前不存在该使用场景，故免除人工真机验收；底层 ID 映射继续由自动化覆盖；
-  3. **远端 CI**：仍无 GitHub Actions 运行结果，继续由 Issue5 O5-02 跟踪。
+  3. **远端 CI**：仍无 GitHub Actions 运行结果，继续由 Issue5 O5-02 跟踪（**该待办已于 2026-09-27 由运行 `36300428681` 关闭，成功**）。
 - **浏览器验收补充（2026-09-27）：** 使用两个独立临时数据目录启动当前 HEAD 的真实二进制，并通过 Codex 内置浏览器打开生产内嵌前端（`127.0.0.1:62205`、`127.0.0.1:62206`）。第一个实例的「全局设置」中真实打开导出危险确认，页面可见明文完整敏感快照提示及腾讯云密钥、阿里云密钥、SMTP 密码、Webhook URL 四项；确认后前端显示「配置已导出，请妥善保管（含全部密钥）」。导出端点返回 `200`、`Cache-Control: no-store` 和 `Content-Disposition: attachment; filename="fwalizer-config-v2-20260927T045506Z.json"`。在第一个实例经浏览器保存临时 TAG `acceptance-a` 后导出 version 2 配置包，以本机 HTTP 请求将包导入第二个独立实例，导入返回 `200`，刷新第二实例后在内置浏览器「全局设置」看到 `acceptance-a`。另以本机 HTTP 请求验证 version 1 导入返回 `400` 和「不支持的配置版本: 1」。
   - **当时边界：** 本轮点击导入入口后，内置浏览器未出现可操作的原生文件选择窗口，故没有完成通过页面文件选择器上传导出文件、检查成功提示后的自动整页 reload、上传损坏 JSON 并确认页面不刷新；version 1 拒绝与跨实例导入使用 HTTP 请求，不能计作相应的浏览器人工验收。跨实例演示只含设置 TAG，不含不同自增历史下的目标/规则引用、主题、同步状态与告警逐项核对。该轮证据随后由下一条用户真机确认补足；跨实例人工场景被免除，Email/Webhook 转为后续事项。
 - **用户真机验收补充（2026-09-27）：** 用户随后确认 `ProdTestList.md` 的 PT-B6-01～03、PT-B6-05～07 均已在真机环境运行并通过，覆盖生产 WebUI、配置包页面导入导出、真实云连接/扫描、真实 DNS→Diff→增量写入→精确删除以及真实同步负载下的运行时切换与退出。PT-B6-04 因无跨实例迁移使用场景而免除人工验收；PT-B6-08～09（Email/SMTP/收件箱、Webhook）移交后续处理。该确认补足上段浏览器与真实云边界，但不构成 Email/Webhook 或远端 CI 证据。
@@ -980,7 +981,7 @@ git diff --check
 - 人工检查：2026-09-27 用户确认 `ProdTestList.md` PT-B6-01、PT-B6-03 已在真机生产 WebUI 中运行并通过，覆盖七页面、hash 路由与刷新、深浅主题、卡片式确认、目标/规则弹窗、暂停/恢复、version 2 页面导入导出以及 Console/Network 检查；该证据补足 Vite 8/Rolldown 的浏览器行为验收。
 - 补充边界（不阻塞 Step 6 验收）：
   1. Docker 构建已在 `node:24.21-alpine` 的 `frontend-builder` 阶段真实执行 `npm ci && npm run build` 并产出完整 `dist`；因 Docker Desktop 异常未再独立生成第二份 dist 与本机逐字节比较，该重复复验不再作为 Step 6 关闭条件；
-  2. 远端 CI 仍无运行结果，继续归属 O5-02，不作为 Step 6 验收证据。
+  2. 远端 CI 仍无运行结果，继续归属 O5-02，不作为 Step 6 验收证据（**该待办已于 2026-09-27 由运行 `36300428681` 关闭，成功**）。
 - 与计划偏差：
   1. `vite.config.ts` 按预判**无需修改**，兼容层已覆盖本项目全部配置面，未产生任何 `vite.config.ts` 变更；
   2. `vue-tsc 2.2.12` + `typescript 5.9.3` 在 Vite 8 下类型检查通过，因此**未做任何 Vue/Naive UI/vue-tsc/TypeScript 更新**，符合"能通过则保持不动"的固定范围；
@@ -1044,10 +1045,11 @@ git diff --check
 - **当前轮次退出边界（分层）：** 0 目标轮次立即结束（真实二进制/容器日志）；**在途轮次**必须等当前轮完成由自动化进程级用例覆盖——`TestProcessCompletesInFlightRoundAfterSignal`、`TestProcessSIGTERMGracefulShutdown`、`TestProcessSIGINTGracefulShutdown`（本轮 `-race` 全通过）。
 - **人工检查：** 本轮**未新增**浏览器或真实云人工步骤——2026-09-27 用户已确认的生产浏览器、真实腾讯云/阿里云、DNS 增量同步与真实负载运行时证据按原记录继承（`Build6.md:844`、`:856`）；本 Step 的 provider 证据全部是本地 mock 端点与纯转换，**不声称真实云 API 验收**。
 - **外部链路检查：未执行。** PT-B6-08（真实 Email/SMTP + 收件箱）与 PT-B6-09（真实 Webhook 渠道及测试渠道）环境已具备，但**须由用户本人在真机执行**；AI 不接触 SMTP 密码或完整 Webhook URL，也不以 mock/HTTP 假服务替代。未取得前 Step 7 保持 ◧。
-- **远端 CI：** 本轮文档闭环完成后按用户授权推送 `v2.0.0` tag 触发真实 GitHub Actions；推送前 O5-02 记录保持"未取得远端运行结果"，推送后单独回写。
+- **远端 GitHub Actions（真实结果）：** 按用户授权推送 tag `v2.0.0`（指向本 Step 提交 `8a075f368447cc5321b24e9c021f96fc0d1eb730`）后，真实工作流运行 **成功**：run id `36300428681`（event `push`，head_branch `v2.0.0`，run_attempt 1，2026-09-27T06:33:08Z→06:38:25Z，https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/36300428681）；14 个步骤全部 `success`，含「更新所有 SDK 到最新版」「构建前端」「前端依赖审计（生产依赖，阻断）」「前端依赖审计（完整，阻断）」「编译检查」「**运行测试（`go test -race -v ./...`）**」「登录 ghcr.io」「构建并推送 Docker 镜像」。因此 **Issue5 O5-02 的「远端 race 未运行」缺口已由真实远端结果关闭**。
+- **发布镜像（真实推送）：** 从 GHCR 匿名拉取 `ghcr.io/alcaprophet/fwalizer:2.0.0` 成功（digest `sha256:72c3166d…`），镜像标签 `org.opencontainers.image.revision` = `8a075f368447cc5321b24e9c021f96fc0d1eb730`（与本 Step 提交一致）、`version` = `2.0.0`、`source` = 本仓库 URL；semver 派生标签 `2.0`、`2` 同时存在。该镜像由 CI 使用最新 SDK 构建，属**真实远端发布证据**。
 - **未完成项：**
   1. PT-B6-08（真实 SMTP 发信/收件箱/告警触发与禁用后行为）与 PT-B6-09（每个实际支持渠道的真实 Webhook）——待用户真机执行；
-  2. 远端 GitHub Actions 实际运行结果——待本轮 push 后回写；
+  2. ~~远端 GitHub Actions 实际运行结果~~——**已完成**：运行 `36300428681` 成功，镜像 `ghcr.io/alcaprophet/fwalizer:2.0.0` 已真实推送（见上条「远端 GitHub Actions」与「发布镜像」）；
   3. 导出 handler 的只读事务失败注入（`BeginReadOnlyTx`/快照/`Commit`）未做：当前 driver 不强制 `ReadOnly`，需额外失败注入 seam（见 §12.16 边界）；
   4. 进程级 `Serve` 异常退出 → 退出码 1 的路径无独立注入 seam，仅由 `webui` 包内 `Wait()` 返回值用例与代码审查覆盖；
   5. `Resolver` 维度的单轮快照未单独替换（无注入式 resolver 接口）：与 TAG/`Providers` 共用同一 `state` 指针，属结构性覆盖。
@@ -1057,7 +1059,7 @@ git diff --check
   3. ECS/SWAS 的真实线上请求格式与初版假设不同（ECS 用 `Permissions.1.X` 扁平下标参数、`SecurityGroupRuleId.1`；SWAS 用逗号分隔 `RuleIds`）；已按真实格式改写解析 helper（先以临时 debug 用例打印真实 URL 确定，debug 文件已删除）。
   4. A5 修复后 `Syncer.Pause/Resume` 与 `api.Syncer` 接口成员保留但生产不再调用；删除接口成员会扩大改动面且无行为收益，故保留。
   5. A8 由"允许重置"改为"完整导入确定重置"（用户 2026-09-27 决策），因此 §12.3 第 7 条与 `AGENTS.md` 的措辞由许可性改为确定性；普通变更仍保留计数。
-- **状态：** ◧ 进行中（自动补测、统一门禁、Docker/真实二进制验收与文档闭环已完成；仅剩 PT-B6-08/09 真实 SMTP/收件箱与 Webhook 待用户真机执行，以及 push 后的远端 Actions 结果回写）
+- **状态：** ◧ 进行中（自动补测、统一门禁、Docker/真实二进制验收、文档闭环与远端 GitHub Actions 结果均已完成；**仅剩 PT-B6-08/09 真实 SMTP/收件箱与 Webhook 待用户真机执行**）
 
 ---
 
@@ -1069,7 +1071,7 @@ git diff --check
 | R5-02 EventBus panic | Step 1 | channel 不关闭；接口和 channel 订阅快照都复制 |
 | R5-03 TAG 快照越界 | Step 1、Step 5 | TAG 显式传递；最终运行时状态一次替换 |
 | O5-01 前端依赖漏洞 | Step 6 | 范围内修复后升级 Vite 8/plugin-vue 6 |
-| O5-02 CI 无 race | Step 1 | CI 强制 race，保留 build/vet |
+| O5-02 CI 无 race | Step 1 | CI 强制 race，保留 build/vet；远端确认于 2026-09-27 由 tag `v2.0.0` 的运行 `36300428681` 取得（成功） |
 | O5-03 高影响测试不足 | 各 Step + Step 7 | 修复随测，末步补齐并分层记录 |
 | O5-04 端口 TOCTOU | Step 3 | 单一 listener 从绑定到 Serve 不释放 |
 | O5-05 HTTP 生命周期 | Step 3 | 显式 Server、SSE shutdown、10s HTTP 收尾 |
@@ -1723,3 +1725,4 @@ Build6 最终关闭前，必须能从本文追溯：
 | 2026-09-24 | Step 4～6 工程与自动门禁完成：严格 API/事务、version 2 与原子运行时、Vite 8 升级、Docker/Node 24 验收。 |
 | 2026-09-27 | 用户真机确认浏览器、真实云/DNS/同步链路通过，Step 5、Step 6 验收完成；跨实例人工迁移免除，Email/SMTP/收件箱与 Webhook 移交 Step 7/后续清单。 |
 | 2026-09-27 | Step 7 自动补测、统一门禁、真实二进制/Docker 容器验收与文档闭环完成（`provider` 覆盖率 22.6%→53.0%，11 包 race 全绿，镜像 `fwalizer:build6-step7` 74.1MB）；按用户确认边界最小修复 Issue6 A10/A5/A7/A6/A8（reset 拒绝 `null`、pause/resume 单一运行时写入口、恢复立即一轮、ticker 已发布状态守卫、完整导入重置 DNS 熔断计数），A1/A2/A3/A4/A9/A11～A19 继续留在 Issue6；PT-B6-08/09 真实 SMTP/收件箱与 Webhook 待用户真机执行，故 Step 7 保持 ◧ 进行中。 |
+| 2026-09-27 | 推送 tag `v2.0.0`（提交 `8a075f3`）触发真实 GitHub Actions：运行 `36300428681` **成功**（14 步全 success，含远端 `go test -race -v ./...` 与两条阻断式 npm audit），并真实推送 `ghcr.io/alcaprophet/fwalizer:2.0.0` / `2.0` / `2`（revision 标签与提交一致）；Issue5 O5-02 的远端 race 缺口就此关闭。 |
