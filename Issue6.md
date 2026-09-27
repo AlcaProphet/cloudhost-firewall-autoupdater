@@ -574,3 +574,59 @@ git diff --check
 ---
 
 **当前结论：** Issue6 已完成第二轮全量只读复核，全部冲突已由用户裁决并并入本文（§六.4），§六.5 的后续候选明确不授权实施。本文已具备构建前使用条件，但待处理项仍未获代码实施授权。下一步等待用户最终审核并给出一次性授权后，再严格按 §2.2 顺序（`1 → 3 → 2 → 4 → 5 → 6 → 7 → 8`）处理全部批次。
+
+## 七、2026-09-28 Issue6 修复后独立核验报告
+
+> **核验边界：** 本节复核 Codex 任务「核验 Issue6 修复」所报告的问题，只记录当前源码、测试和文档中能够重新证实的结论；不授权修改实现、测试、依赖或其他文档。核验基线为 `main` / `b38678a8d28612517f3cff4f4fc9610a3cc33b95`，核验开始时工作树干净且与 `origin/main` 同步。本轮执行 `go test ./webui ./syncer ./webui/api ./notifier -race -count=1`，四包均通过；未重跑浏览器、Docker、真实云、真实 SMTP/Webhook、远端 CI 或 GHCR 发布。
+
+### 7.1 确认仍存在的实现问题
+
+#### R6-01｜中｜A11 的具体跳过原因未贯通正式同步事件与日志
+
+- **判定：确认存在。** Dry Run 已通过 `RuleChange.skip_reason` 展示具体原因，但正式同步的 `retrySync` 只返回 `added/deleted/skipped` 三个整数；`EventDomainSyncComplete.Data` 与 `slog.Info("同步完成", ...)` 也只有 `skipped` 数量，没有被跳过的规则或 `skip_reason`。
+- **历史日志口径：** `StoreLogWriter` 收到 `EventDomainSyncComplete` 后固定写 `result="success"`，只保存 `added/deleted`，不读取 `skipped`。这与 §3 A11 固定的“跳过原因、事件/SSE/实时日志展示”收尾合同不一致。§3 A11 同时明确“不增加 `sync_logs.skipped` 列”，因此持久化 Schema 不应被本报告擅自扩大；历史日志如何表达 partial/skipped 仍需另行裁决。
+- **影响：** 用户可从整轮状态看到 `partial` 和跳过数量，也可在 Dry Run 中看到具体原因，但正式同步的逐域事件、SSE/实时日志和历史日志无法说明“哪条规则因何被跳过”；历史记录还可能把含跳过的逐域结果显示为 `success`。
+- **相关既有记录：** §6.5 第 13 项已记录 `sync_logs.result` 的 skipped 语义未定义；本项新增确认的是 A11 已宣称完成的“具体原因贯通正式事件/实时展示”实际上也未完成。
+
+#### R6-02｜中低｜A16 仍有 `Shutdown` 与首次 `Start` 的生命周期窗口
+
+- **判定：确认存在。** `Server.Shutdown()` 会置 `shutdown=true` 并关闭 `shutdownCh`，但不会置 `started=true`；因此在从未启动的实例上先调用 `Shutdown()`，随后首次调用 `Start()`，当前门控仍会放行并建立监听。这与 A16/F7 的“Shutdown 后 Start 也拒绝”字面合同不一致。
+- **并发窗口：** `Start()` 在锁内先置 `started=true`，随后解锁执行 `net.Listen` 和构造 `http.Server`，最后才再次加锁发布 `httpServer/listener`。若 `Shutdown()` 在两次加锁之间执行，它会看到 `httpServer == nil` 并返回成功；之后 `Start()` 仍可发布并启动 Serve，形成“Shutdown 已返回，服务随后启动”的逻辑竞态。该问题不会由 Go race detector 报告，因为字段访问有锁，缺口在生命周期状态机。
+- **边界澄清：** §6.5 第 14 项已经记录 `Syncer.Wait()` 在 `Run()` 从未启动时永久阻塞，仍然成立，不重复编号。“首次 `Start` 监听失败后不能重试”则来自当前一次性 `Start` 门控；既有 F7 未明确允许失败重试，本报告不把它直接判为回归，需产品裁决后才能改变。
+
+#### R6-03｜中低｜Webhook 发送错误可能把完整敏感 URL 写入 WARN 日志
+
+- **判定：确认存在。** `WebhookNotifier.OnEvent` 调用 `http.Client.Post(n.url, ...)`，失败时以 `%w` 返回底层错误；Go HTTP 客户端的请求错误通常包含完整请求 URL。`EventBus.Publish` 随后把该错误作为 `error` 属性写入“事件处理失败” WARN。
+- **影响：** 钉钉、飞书、Slack 等 Webhook URL 常把 token/signature 放在路径或查询参数中；网络失败、TLS 失败或超时可能使该敏感 URL 进入 stdout / `docker logs`。这与项目既有“不记录 Webhook URL”的安全口径不一致。
+- **范围：** 该问题不同于 §6.5 第 9 项的 response body 未 drain / Close 错误被忽略；两者可分别处理。修复时应保留渠道名和安全错误类别，不应记录完整 URL。
+
+### 7.2 确认存在、但已由 §6.5 记录的残余
+
+以下报告结论均由当前源码再次证实，不另建重复条目：
+
+1. **A18 Dashboard 数字双口径：** `Dashboard.vue` 的“最近同步 新增/删除”仍取 `/api/sync/logs` 第一条逐域日志，而不是 `status.last_round.added/deleted`；对应 §6.5 第 7 项。
+2. **错误路径已写计数丢失：** `syncDomainInternal` 在 `retrySync` 返回错误时先进入错误分支，未把已经发生的 added/deleted 写入 `unitResult`；对应 §6.5 第 2 项。
+3. **历史 skipped 语义未定义：** `SyncLog.Result` 注释允许 skipped，但生产只写 success/failed；对应 §6.5 第 13 项，并与 R6-01 相邻。
+4. **`Syncer.Wait()` 未运行即阻塞：** `Wait()` 直接等待仅由首个 `Run()` 关闭的 `doneCh`；对应 §6.5 第 14 项。
+
+### 7.3 确认存在的测试与外部证据缺口
+
+这些缺口不等同于已经复现的生产故障，但不应被“通用门禁通过”替代：
+
+1. **A3/A18 状态 API 值级回归不足：** `round_summary_test.go` 已从真实 `EventSyncComplete` 验证 success/failed/partial/idle 汇总；`webui/server_test.go` 只验证 `/api/sync/status` 含五个字段，没有通过 HTTP 端点验证各轮次后的 `last_success/last_round` 具体值。Dashboard 新提示的浏览器人工验收仍未执行，Issue6 原记录对此已如实保留。
+2. **A9 HTTP 安全文案回归缺失：** config 层已覆盖九种损坏 `rules.targets` 与四条加载链，但 §3 A9 要求的 `GET /api/rules` 安全 500 端点级判别用例未找到；当前结论主要依赖错误传播源码复核。
+3. **A14 故障注入不完整：** `TestAddSyncLogCountFailureDoesNotFailWrite` 的注释明确说明无法直接注入 COUNT 失败，实际只覆盖正常写入；未找到 `writeJSON` 的 Encode 失败专用回归。实现已经检查并记录这两类错误，但对应失败分支尚无判别性测试。
+4. **外部层仍未验证：** Issue6 修复后的真实云弱网/超时、真实 SWAS DROP、A11/A18 新前端展示、真实 SMTP/收件箱、Webhook、真实半开 TCP 与当前 HEAD 的远端 CI/GHCR 均无新增证据。既有 `v2.0.0` Actions/镜像结果属于更早 revision，不能证明当前 `b38678a`；SMTP/Webhook 则是用户明确免除人工验收，不得改写为通过。
+
+### 7.4 文档状态与当前代码互相矛盾
+
+- **判定：确认存在。** 本文顶部仍把 `0d9e2d6`、源码零变化和“等待一次性实施授权”写成当前基线，文末旧结论也仍称批次尚未实施；但当前 HEAD `b38678a` 已包含批次 1～8 的 52 文件实现、测试和文档改动，§2.1 又已写为全部实施完成。
+- `AGENTS.md` 与 `Design5.md` 仍称批次 8 视后续执行或仍剩余，但当前源码和本文 §3 批次 8 实施记录都表明低风险清理已经完成。
+- `Build6.md` 和 `Issue5.md` 多处仍称 A1/A2/A3/A4/A9/A11～A19 “继续留在 Issue6/待处理”，与当前实现和 Issue6 状态表冲突。
+- 各实施记录标题把 `ea71f5f` 写成 HEAD；该提交实际是修复前的文档裁决提交，承载实现改动的是后继提交 `b38678a`。记录可说明实施时工作树基线，但不能写成最终实现提交。
+- **结论：** 在上述冲突完成对账前，Issue6 不能作为无歧义的“全部关闭”状态基线；本节只记录冲突，没有获授权改写其他段落或其他文档。
+
+### 7.5 本轮未确认的新问题
+
+- 引用报告提到 A1 阻塞服务用例和 A15 SSE 用例各出现过一次偶发失败；本轮受影响四包 race 测试全部通过，现有证据不足以把两次偶发现象定性为稳定可复现缺陷。若后续再次出现，应保留完整失败输出、随机种子/次数和运行环境后另行跟踪。
+- A1/A2/A4/A5～A8/A10/A12/A13/A15/A17/A19/A20 的核心本地实现，本轮源码复核未发现报告所述范围之外的新确定性回归；这不扩大为外部链路或当前 HEAD 远端发布已经通过。
