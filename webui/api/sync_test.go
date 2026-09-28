@@ -191,7 +191,7 @@ func TestHandleSyncEvents_ContextCancelUnsubscribes(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/api/sync/events", nil).WithContext(ctx)
-	w := httptest.NewRecorder()
+	w := newDeadlineResponseRecorder()
 
 	handlerDone := make(chan struct{})
 	go func() {
@@ -287,7 +287,7 @@ func TestHandleSyncEvents_ServerShutdownExitsSubscriber(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	req := httptest.NewRequest(http.MethodGet, "/api/sync/events", nil).WithContext(ctx)
-	w := httptest.NewRecorder()
+	w := newDeadlineResponseRecorder()
 
 	handlerDone := make(chan struct{})
 	go func() {

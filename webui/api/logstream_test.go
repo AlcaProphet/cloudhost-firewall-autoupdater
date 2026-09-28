@@ -142,7 +142,7 @@ func TestHandleLogStream_ServerShutdownExitsSubscriber(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	req := httptest.NewRequest(http.MethodGet, "/api/logs/stream", nil).WithContext(ctx)
-	w := httptest.NewRecorder()
+	w := newDeadlineResponseRecorder()
 
 	handlerDone := make(chan struct{})
 	go func() {
@@ -182,7 +182,7 @@ func TestHandleLogStream_ContextCancelExitsSubscriber(t *testing.T) {
 	before := b.subCount()
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/api/logs/stream", nil).WithContext(ctx)
-	w := httptest.NewRecorder()
+	w := newDeadlineResponseRecorder()
 
 	handlerDone := make(chan struct{})
 	go func() {

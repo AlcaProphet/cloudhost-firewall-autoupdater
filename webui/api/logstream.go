@@ -132,13 +132,13 @@ func (d *Deps) handleLogStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 能力检测必须在写响应头之前：不支持 Flush 的 ResponseWriter 无法承载 SSE
-	// （Issue6 A15）。
-	if !probeSSE(w) {
+	// 能力检测必须在写响应头之前：两类 SSE 都要求 Flush 与单次写 deadline
+	// 可用，不能静默降级为可能无限阻塞的连接（Issue6 A15）。
+	if err := probeSSE(w); err != nil {
+		slog.Warn("日志流 SSE 能力检测失败", "error", err)
 		writeError(w, http.StatusInternalServerError, "SSE 不可用")
 		return
 	}
-	rc := http.NewResponseController(w)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -149,7 +149,7 @@ func (d *Deps) handleLogStream(w http.ResponseWriter, r *http.Request) {
 
 	// 立即写出响应头：客户端可在 Subscribe（含历史回放）完成后确认连接已建立。
 	// 失败时直接返回：响应头已发出，不得再写第二个响应头或 500。
-	if err := rc.Flush(); err != nil {
+	if err := flushSSE(w); err != nil {
 		slog.Warn("日志流 SSE 初始刷新失败，结束连接", "error", err)
 		return
 	}

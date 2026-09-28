@@ -1,40 +1,87 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+	"time"
 )
+
+const sseWriteTimeout = 5 * time.Second
 
 // writeSSE 向长连接写出一条 SSE 消息并立即刷新（两类 SSE 共用）。
 //
-// Issue6 A15：修复前 `fmt.Fprintf` 与 `Flush` 的返回值都被忽略，半开连接或客户端
-// 停止读取时 handler 会无界循环，订阅也永不取消。这里改用
-// `http.ResponseController` 的可检查路径：任一写出或刷新失败都返回 error，
-// 调用方立即退出，由既有 `defer unsubscribe()` 取消订阅。
+// Issue6 A15：每次写出都单独设置 5 秒 deadline，成功或失败后都尝试清除。
+// 客户端保持连接但停止读取时，底层写入因此不会无限等待发送缓冲区。
 //
 // 约定：**任一失败都不得再写第二个响应头或 500**——响应头通常已经发出。
 func writeSSE(w http.ResponseWriter, format string, args ...any) error {
+	return withSSEWriteDeadline(w, func(rc *http.ResponseController) error {
+		if _, err := fmt.Fprintf(w, format, args...); err != nil {
+			return fmt.Errorf("写出 SSE 消息失败: %w", err)
+		}
+		if err := rc.Flush(); err != nil {
+			return fmt.Errorf("刷新 SSE 消息失败: %w", err)
+		}
+		return nil
+	})
+}
+
+// flushSSE 在单次写 deadline 内刷新初始 SSE 响应头。
+func flushSSE(w http.ResponseWriter) error {
+	return withSSEWriteDeadline(w, func(rc *http.ResponseController) error {
+		if err := rc.Flush(); err != nil {
+			return fmt.Errorf("刷新 SSE 响应头失败: %w", err)
+		}
+		return nil
+	})
+}
+
+// withSSEWriteDeadline 为一次 Write/Flush 设置并清除独立 deadline。
+// 清除失败也必须结束连接，因为此后 deadline 状态已不可信。
+func withSSEWriteDeadline(w http.ResponseWriter, write func(*http.ResponseController) error) (err error) {
 	rc := http.NewResponseController(w)
-	if _, err := fmt.Fprintf(w, format, args...); err != nil {
-		return fmt.Errorf("写出 SSE 消息失败: %w", err)
+	if err := rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout)); err != nil {
+		return fmt.Errorf("设置 SSE 写 deadline 失败: %w", err)
 	}
-	if err := rc.Flush(); err != nil {
-		// 不支持 Flush 的 writer 由调用方在建立连接前已判定并拒绝，
-		// 这里出现的错误只可能是真实 I/O 失败。
-		return fmt.Errorf("刷新 SSE 消息失败: %w", err)
+	defer func() {
+		if clearErr := rc.SetWriteDeadline(time.Time{}); clearErr != nil {
+			err = errors.Join(err, fmt.Errorf("清除 SSE 写 deadline 失败: %w", clearErr))
+		}
+	}()
+	return write(rc)
+}
+
+// probeSSE 在写响应头**之前**判定 writer 是否同时支持 Flush 与写 deadline。
+//
+// 探测 deadline 后立即清除；任一步失败时，调用方仍可安全返回普通 HTTP 500。
+func probeSSE(w http.ResponseWriter) error {
+	if !supportsSSEFlush(w) {
+		return fmt.Errorf("ResponseWriter 不支持 Flush: %w", http.ErrNotSupported)
+	}
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout)); err != nil {
+		return fmt.Errorf("ResponseWriter 不支持写 deadline: %w", err)
+	}
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("清除 SSE 能力探测 deadline 失败: %w", err)
 	}
 	return nil
 }
 
-// probeSSE 在写响应头**之前**判定 writer 是否可用于 SSE。
-//
-// 返回 false 表示必须按普通 HTTP 错误响应结束（此时尚未写头，可以安全改写状态码）；
-// 返回 true 表示后续写出错误只能直接返回、不得再写第二个响应头。
-//
-// 注意：不能只用 `http.ResponseController.Flush()` 做能力判定——对不实现
-// `http.Flusher` 的 writer 它返回 `http.ErrNotSupported`，与「支持 deadline
-// 但不支持 flush」无法区分，必须显式断言 `http.Flusher`。
-func probeSSE(w http.ResponseWriter) bool {
-	_, ok := w.(http.Flusher)
-	return ok
+type responseWriterUnwrapper interface {
+	Unwrap() http.ResponseWriter
+}
+
+func supportsSSEFlush(w http.ResponseWriter) bool {
+	for {
+		if _, ok := w.(http.Flusher); ok {
+			return true
+		}
+		unwrapper, ok := w.(responseWriterUnwrapper)
+		if !ok {
+			return false
+		}
+		w = unwrapper.Unwrap()
+	}
 }

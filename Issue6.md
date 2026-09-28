@@ -28,7 +28,7 @@
 
 上表在 2026-09-27 全量只读复核基线（A1、A2、A4、A9、A11、A12、A13、A14、A15、A16、A17、A20 确认存在；A3、A18、A19 为产品决策已定待实施；A5、A6 原问题、A7、A8、A10 只保留防回归合同）之上，记录了按用户一次性授权执行 §2.2 全部批次后的最终状态。**每个条目的实施证据（文件、用例名、红灯证明、门禁、未执行边界）都追加在该条目内部**，未拆到无关章节。
 
-**未验证/已免除的外部边界（不得写成已通过）：** 真实阿里云弱网与 SWAS 云上观察、真实 SMTP/收件箱、真实 Webhook、Dashboard 与 Dry Run 新展示的浏览器人工验收、真实半开 TCP 客户端、真实生产 SQLite 与旧库迁移路径、`GOOS=windows` 运行验收（用户已决定移除支持，仅以构建失败为证据）、远端 GitHub Actions 对本次改动的验证（本次未推送）。
+**未验证/已免除的外部边界（不得写成已通过）：** 真实阿里云弱网与 SWAS 云上观察、真实 SMTP/收件箱、真实 Webhook、Dashboard 与 Dry Run 新展示的浏览器人工验收、真实 WAN/反向代理异常或经典故障型半开 TCP、真实生产 SQLite 与旧库迁移路径、`GOOS=windows` 运行验收（用户已决定移除支持，仅以构建失败为证据）、远端 GitHub Actions 对本次改动的验证（本次未推送）。A15 的 loopback TCP“客户端保持连接但停止读取”已由当前本地判别性测试覆盖，见该条目第二阶段实施记录。
 
 ### 2.2 固定实施顺序
 
@@ -242,12 +242,12 @@
 
 #### A15｜低｜SSE 忽略写错误，半开连接缺少单次写出边界
 
-- **状态与判定：** 忽略写错误已确认并隔离复现；Flush 半开阻塞尚未真实网络复现。
-- **当前证据：** `webui/api/sync.go:126-127` 与 `webui/api/logstream.go:158-159` 在 `fmt.Fprintf` 后直接 `Flush`，两者的返回值都未检查；`http.ResponseController` 全仓零使用；全局 `WriteTimeout` 按长连接契约保持零（`server.go:155-156`，并有 `TestServerTimeoutContract` 断言）。当前的 Flusher 能力检测分支（`sync.go:99`、`logstream.go:136`）在初始 Flush 失败时无法再改写状态码。
-- **最终方案：** 使用可检查错误的写出/刷新路径（优先 `http.ResponseController`），写错误立即返回并由既有 `defer unsubscribe()` 取消订阅；初始 Flush 失败时直接返回，**不得再写第二个响应头或 500**。若加入单次写 deadline，必须覆盖初始 Flush、每次写前刷新并在写后清除，并容忍 `http.ErrNotSupported`。
+- **状态与判定：** 已完成两阶段修复：批次 4 先收口可观察写错误；2026-09-28 第二阶段再为初始 Flush 与每条消息建立 5 秒单次写出边界，并由真实 loopback TCP 停止读取测试验证。
+- **原始证据：** 修复前 `webui/api/sync.go` 与 `webui/api/logstream.go` 在 `fmt.Fprintf` 后直接 `Flush`，两者返回值均未检查，且全仓无 `http.ResponseController`；全局 `WriteTimeout` 按长连接契约保持零。第一阶段之后虽能在错误可观察时退出，但客户端保持连接并停止读取时仍可能阻塞在 Write/Flush，不能回到 select 检查取消信号。
+- **最终方案：** 共用 `http.ResponseController` 可检查写出路径；初始 Flush 与每次 `Write + Flush` 前设置 5 秒 deadline，完成后清除；写头前严格检查 Flush/deadline 能力，不支持时安全返回 500；响应开始后的任一错误立即返回并由既有 `defer unsubscribe()` 取消订阅，**不得再写第二个响应头或 500**。
 - **必须保持：** 不设置全局 `WriteTimeout`；继续监听 request context 与服务器 shutdown channel；取消订阅不关闭 EventBus channel；`LogBroadcaster` 的订阅关闭语义不变。
-- **修改与回归范围：** 两类 SSE handler 及测试。用自写 erroring `http.ResponseWriter`（`Write` 返回 `io.ErrClosedPipe` 等）断言首个失败即返回且订阅已取消（修复前会永久循环）；若做 deadline，再验证初始与每次写出（记录型 writer 断言设置与清零）。
-- **外部边界：** 真实半开 TCP/停止读取客户端仍需人工验证；本批不得把该场景写成已验证。
+- **修改与回归范围：** 两类 SSE handler、共用 helper 与测试。自写 erroring/记录型 `http.ResponseWriter` 覆盖首错退出、初始 Flush、能力拒绝、deadline 设置/清除；真实 loopback TCP 用例覆盖客户端保持 socket 但停止读取的写入背压。
+- **外部边界：** loopback TCP 停止读取已验证；真实 WAN、反向代理异常、操作系统故障型经典半开 TCP 与远端 CI/GHCR 仍未验证，不得外推为通过。
 
 **实施记录（批次 4，2026-09-27，HEAD `ea71f5f`）**
 
@@ -258,13 +258,23 @@
 - **门禁：** 同批次 4。
 - **未执行（如实保留）：** 真实半开 TCP / 客户端停止读取的人工验证。本批**不**把该场景写成已验证。
 
-**真实半开 TCP / 停止读取客户端研究补充（2026-09-28；研究完成，等待用户评估/裁决）：**
+**真实半开 TCP / 停止读取客户端研究补充（2026-09-28；研究完成，以下边界随后已由用户授权实施）：**
 
-- **现有合同与证据边界：** A15 当前合同是：`Write` 或 `Flush` 一旦返回可观察错误，SSE handler 立即退出，并由既有 `defer unsubscribe()` 取消订阅。错误 `ResponseWriter` 测试覆盖了 `Write` 返回 `io.ErrClosedPipe` 后首错返回、无第二个响应头和恰好一次取消；正常断开、请求 context 取消及服务器 shutdown 也已有本地订阅退出证据。这些证据证明“错误已被观察到时”的处理，不证明所有停滞 TCP 连接都会在固定时间内退出。
-- **停止读取时的限制：** 客户端可以保持 socket 打开但停止读取 SSE 数据；服务端 TCP 发送缓冲区逐渐填满后，某次 `Write`/`Flush` 可能等待缓冲区空间而长期阻塞。当前没有单次 SSE 写 deadline，因此 handler 可能无法回到 `select` 检查 request context 或 server shutdown 信号。服务器级 shutdown 上限不等于该次底层写入已经有界返回。
+- **研究时合同与证据边界：** A15 当时合同是：`Write` 或 `Flush` 一旦返回可观察错误，SSE handler 立即退出，并由既有 `defer unsubscribe()` 取消订阅。错误 `ResponseWriter` 测试覆盖了 `Write` 返回 `io.ErrClosedPipe` 后首错返回、无第二个响应头和恰好一次取消；正常断开、请求 context 取消及服务器 shutdown 也已有本地订阅退出证据。这些证据证明“错误已被观察到时”的处理，不证明所有停滞 TCP 连接都会在固定时间内退出。
+- **研究时停止读取限制：** 客户端可以保持 socket 打开但停止读取 SSE 数据；服务端 TCP 发送缓冲区逐渐填满后，某次 `Write`/`Flush` 可能等待缓冲区空间而长期阻塞。当时没有单次 SSE 写 deadline，因此 handler 可能无法回到 `select` 检查 request context 或 server shutdown 信号。服务器级 shutdown 上限不等于该次底层写入已经有界返回。
 - **影响定性：** 这是资源占用、handler 退出时延和当前证据边界问题，不是已经确认的数据正确性问题，也没有证据表明它会造成云防火墙规则故障。RST、正常断开或错误 `ResponseWriter` 的测试不能冒充“客户端保持连接但停止读取”的真实半开/停滞连接验证。
 - **术语澄清：** 经典 TCP“半开”通常指一端已丢失或连接状态不一致而另一端尚未获知；本研究同时覆盖的“socket 仍建立、应用层停止读取”更准确地称为慢客户端/写入背压导致的停滞连接。两者对服务端的共同风险是：底层写入可能暂时没有可观察错误。
-- **当前裁决边界：** 若保持现有合同，应继续记录为“对客户端停止读取无有界退出保证/未验证”，不得标记已修复或已通过。若要完整关闭缺口，需用户另行授权生产代码改动：为初始 `Flush` 及每次 SSE 写出设置、按写刷新并在完成后清除 deadline；同时明确 deadline 时长、`http.ErrNotSupported` 的处理策略和日志语义，并补充真实停止读取客户端测试。当前不实施这些改动。
+- **研究时裁决边界：** 若保持当时合同，应继续记录为“对客户端停止读取无有界退出保证/未验证”，不得标记已修复或已通过。若要完整关闭缺口，需用户另行授权生产代码改动：为初始 `Flush` 及每次 SSE 写出设置、按写刷新并在完成后清除 deadline；同时明确 deadline 时长、`http.ErrNotSupported` 的处理策略和日志语义，并补充真实停止读取客户端测试。该授权已在下述第二阶段实施中给出，本段保留为实施前研究证据。
+
+**有界退出第二阶段实施记录（2026-09-28；起点 HEAD `747dbb4`，当前工作树）：**
+
+- **最终合同：** `webui/api/sse.go` 将单次 SSE 写出上限固定为 5 秒；能力探测、初始响应头 `Flush`、每条消息的 `Write + Flush` 均通过 `http.ResponseController.SetWriteDeadline` 实施，完成或失败后都尝试清除 deadline。这里保证的是“某次写入进入背压后约 5 秒内返回”，不保证无事件写出时主动识别客户端停止读取；未新增 heartbeat，`http.Server.WriteTimeout` 继续保持零值。
+- **严格能力边界：** 两类 handler 在写响应头和建立订阅之前同时检查 Flush 与写 deadline 能力；不支持或探测后无法清除 deadline 时返回安全 HTTP 500 `SSE 不可用`，不静默降级。响应开始后的初始刷新、消息写入、刷新或 deadline 清理任一失败均直接退出，不再写第二个响应头；能力失败/初始刷新失败记 WARN，已建立连接后的写错误保持 DEBUG，日志不含 SSE 正文。
+- **红灯证据：** 新测试先在未修改生产实现上运行。`TestWriteSSE_SetsAndClearsDeadline` 失败为 `调用顺序 = [write flush], want [deadline:set write flush deadline:clear]`；两类 `NoDeadlineCapabilityReturns500` 证明旧实现仍进入 SSE（同步事件实际建立 1 次订阅、状态码为空且 Content-Type 已为 `text/event-stream`）；`TestHandleSyncEvents_StoppedTCPReaderExitsAtWriteDeadline` 使用真实 loopback TCP、1 KiB 服务端写缓冲和 16 MiB 事件，客户端只读响应头后保持 socket 打开且停止读取，旧实现在 7 秒内未取消订阅而失败。
+- **判别性回归：** `TestWriteSSE_SetsAndClearsDeadline` 固定 `deadline:set → Write → Flush → deadline:clear` 顺序并检查约 5 秒值；`TestHandleSyncEvents_InitialFlushErrorExitsAndUnsubscribes` 覆盖初始 Flush 超时、清理 deadline 与恰好一次取消；同步事件/日志流各有不支持 deadline 时写头前 500；真实 TCP 停止读取用例在修复后约 5 秒触发 handler 返回并恰好取消一次订阅。原有 broken-pipe、request context、真实客户端断开和 server shutdown 用例继续通过，测试 recorder 仅补齐生产 `ResponseWriter` 已具备的 deadline 能力。
+- **自动门禁：** A15 专项 race 通过；`go test ./webui/api -race -count=1 -timeout=60s` 通过；`go test ./... -race -count=1` 11 包通过；`go vet ./...`、`go build ./...`、`git diff --check` 通过。未改前端源码、依赖、Docker 或云协议，因此未运行 npm、Docker、真实云、SMTP 或 Webhook 验收。
+- **真实运行与浏览器：** 使用隔离 `FWALIZER_DATA_DIR` 和当前真实二进制启动 WebUI。curl 对 `/api/logs/stream` 保持 8 秒、对 `/api/sync/events` 保持 10 秒，均为 HTTP 200 且未被 5 秒 deadline 当作连接总时长切断；手动 trigger 收到原格式 `sync:start` / `sync:complete`。真实浏览器打开当前 `frontend/dist` 的同步日志页，空闲 15 秒后连接仍在，并实时显示随后触发同步产生的三条日志；SIGINT 后 HTTP 与同步引擎正常收尾。
+- **仍未验证：** 未在真实 WAN、反向代理异常、操作系统故障型经典半开 TCP 或远端 CI/GHCR 上验证当前改动。这些边界不得改写为已通过；但本地真实 socket“客户端保持连接但停止读取”已经取得判别性证据，不再属于未验证项。
 
 
 ### 批次 5：SQLite、损坏数据与错误处理
@@ -534,7 +544,7 @@ git diff --check
 
 - 未以 Issue6 修复版本验证真实云弱网/超时、SWAS DROP 计数、真实 SMTP/收件箱或 Webhook。
 - 未访问生产 SQLite，也未验证真实旧库的损坏 targets 或迁移失败。
-- 未执行 Issue6 新功能的浏览器、Docker、真机、半开 TCP、长跑资源耗尽或远端 CI 验收。
+- Issue6 各批次的 Docker、真机、长跑资源耗尽或远端 CI 验收未整体重跑；A15 已补当前真实二进制/浏览器回归与 loopback TCP 停止读取判别测试，但未覆盖真实 WAN、反向代理异常或操作系统故障型经典半开 TCP。
 - Windows 仅曾交叉编译通过；用户已决定移除支持，不再要求 Windows 运行验收。
 - 本轮为纯只读复核，未运行 `go test`/`go vet`/`go build`/`go mod tidy`/`npm`/`docker`，因此不产生新的自动门禁证据；上述 SDK 与驱动行为结论来自源码阅读，属静态推理，需在实施批次用真实用例确认。
 
@@ -658,7 +668,7 @@ git diff --check
 1. **A3/A18 状态 API 值级回归不足：已收口（2026-09-28）：** 新增未跟踪判别性用例 `webui/sync_status_test.go:TestSyncStatusEndpointRoundValues`，通过真实 `Syncer`、`RuntimeManager`、`Server` 与 HTTP GET 端点验证初始 null、success、failed、partial、idle、paused 的 `last_success`、`last_round`、`last_sync`、不变量与暂停不制造新轮次；使用 `EventSyncComplete` 作为确定性屏障，无固定 sleep。独立专项与相关包 race、全仓 race、vet、build、前端 `npm ci`/build、两条 audit 及 `git diff --check` 均通过。另以临时本地 HTTP mock 完成 Dashboard 六状态浏览器人工验收：提示、整轮新增/删除、5 秒 `/api/sync/status` 轮询和不建立 `/api/sync/events` 均符合合同。该证据仅覆盖本地自动化与浏览器展示，不代表真实云、Docker、SMTP、Webhook 或远端 CI/GHCR 已通过。
 2. **A9 HTTP 安全文案回归缺失：已收口（2026-09-28）：** 新增 `webui/api/rules_test.go:TestRuleReadCorruptTargetsUsesSafe500`，通过真实 `GET /api/rules` 路由和损坏 SQLite `rules.targets` 验证 HTTP 500、精确 JSON Content-Type、仅安全 `error` 字段、无原值/规则 ID/内部诊断/部分合法规则，服务端日志保留动作/规则 ID/损坏类别但不回显原值，且 `applyCount=0`。A9 九种损坏值/四条加载链专项、问题 2 端点专项、`webui/api` + `config` race、全仓 `go test ./... -race -count=1`、`go vet ./...`、`go build ./...` 与 `git diff --check` 均通过。本项无需前端构建、浏览器、Docker 或外部服务，均未执行且不适用；未以真实生产旧库验证损坏 targets 的升级行为仍保持原边界。
 3. **A14 故障注入不完整：已收口（2026-09-28）：** `config/store_error_test.go:TestAddSyncLogCountFailureDoesNotFailWrite` 通过 `sql.OpenDB` + 标准库 `driver.Connector` 精确注入非 `driver.ErrBadConn` 的 COUNT 哨兵错误，确认 INSERT 已成功、COUNT 失败后 `AddSyncLog` 仍返回 nil、严格只有一次 INSERT 与一次 COUNT、无重试/DELETE，且日志包含错误类别但不泄露 target/domain/error 业务值。`webui/api/deps_test.go:TestWriteJSONEncodeFailureLogsWithoutSecondHeader` 通过非零短写后返回 `io.ErrClosedPipe` 的 ResponseWriter 触发 Encode 失败，确认只写一次状态头、只发生一次 Write、响应体为非零短前缀且日志不泄露 payload，不会伪造第二个错误响应。两项均为对既有生产处理的判别性补测试，未修改生产代码，**无先红证据**。专项、trim 回归、`config + webui/api` race、全仓 `go test ./... -race -count=1`、`go vet ./...`、`go build ./...` 与 `git diff --check` 均通过；前端、浏览器、Docker、真实 SQLite 故障环境和外部服务不适用且未执行。
-4. **外部层仍未验证：** Issue6 修复后的真实云弱网/超时、真实 SWAS DROP、A11/A18 新前端展示、真实 SMTP/收件箱、Webhook、真实半开 TCP 与当前 HEAD 的远端 CI/GHCR 均无新增证据。真实半开 TCP / 客户端停止读取的研究结论与裁决边界见 A15 的“真实半开 TCP / 停止读取客户端研究补充”：当前为**研究完成，等待用户评估/裁决**，保持“无有界退出保证/未验证”，不得写成已修复或已通过。既有 `v2.0.0` Actions/镜像结果属于更早 revision，不能证明当前 `b38678a`；SMTP/Webhook 则是用户明确免除人工验收，不得改写为通过。
+4. **外部层仍未验证：** Issue6 修复后的真实云弱网/超时、真实 SWAS DROP、A11/A18 新前端展示、真实 SMTP/收件箱、Webhook、真实 WAN/反向代理异常或操作系统故障型经典半开 TCP，以及当前工作树的远端 CI/GHCR 均无新增证据。A15 已按第二阶段合同建立 5 秒单次写出边界，并取得真实 loopback TCP 停止读取、当前二进制 curl 与浏览器日志流证据；这不外推为上述外部网络环境已通过。既有 `v2.0.0` Actions/镜像结果属于更早 revision，不能证明当前改动；SMTP/Webhook 则是用户明确免除人工验收，不得改写为通过。
 
 ### 7.4 文档状态与当前代码互相矛盾
 
