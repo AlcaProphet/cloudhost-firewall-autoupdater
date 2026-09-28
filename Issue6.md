@@ -258,6 +258,14 @@
 - **门禁：** 同批次 4。
 - **未执行（如实保留）：** 真实半开 TCP / 客户端停止读取的人工验证。本批**不**把该场景写成已验证。
 
+**真实半开 TCP / 停止读取客户端研究补充（2026-09-28；研究完成，等待用户评估/裁决）：**
+
+- **现有合同与证据边界：** A15 当前合同是：`Write` 或 `Flush` 一旦返回可观察错误，SSE handler 立即退出，并由既有 `defer unsubscribe()` 取消订阅。错误 `ResponseWriter` 测试覆盖了 `Write` 返回 `io.ErrClosedPipe` 后首错返回、无第二个响应头和恰好一次取消；正常断开、请求 context 取消及服务器 shutdown 也已有本地订阅退出证据。这些证据证明“错误已被观察到时”的处理，不证明所有停滞 TCP 连接都会在固定时间内退出。
+- **停止读取时的限制：** 客户端可以保持 socket 打开但停止读取 SSE 数据；服务端 TCP 发送缓冲区逐渐填满后，某次 `Write`/`Flush` 可能等待缓冲区空间而长期阻塞。当前没有单次 SSE 写 deadline，因此 handler 可能无法回到 `select` 检查 request context 或 server shutdown 信号。服务器级 shutdown 上限不等于该次底层写入已经有界返回。
+- **影响定性：** 这是资源占用、handler 退出时延和当前证据边界问题，不是已经确认的数据正确性问题，也没有证据表明它会造成云防火墙规则故障。RST、正常断开或错误 `ResponseWriter` 的测试不能冒充“客户端保持连接但停止读取”的真实半开/停滞连接验证。
+- **术语澄清：** 经典 TCP“半开”通常指一端已丢失或连接状态不一致而另一端尚未获知；本研究同时覆盖的“socket 仍建立、应用层停止读取”更准确地称为慢客户端/写入背压导致的停滞连接。两者对服务端的共同风险是：底层写入可能暂时没有可观察错误。
+- **当前裁决边界：** 若保持现有合同，应继续记录为“对客户端停止读取无有界退出保证/未验证”，不得标记已修复或已通过。若要完整关闭缺口，需用户另行授权生产代码改动：为初始 `Flush` 及每次 SSE 写出设置、按写刷新并在完成后清除 deadline；同时明确 deadline 时长、`http.ErrNotSupported` 的处理策略和日志语义，并补充真实停止读取客户端测试。当前不实施这些改动。
+
 
 ### 批次 5：SQLite、损坏数据与错误处理
 
@@ -650,7 +658,7 @@ git diff --check
 1. **A3/A18 状态 API 值级回归不足：已收口（2026-09-28）：** 新增未跟踪判别性用例 `webui/sync_status_test.go:TestSyncStatusEndpointRoundValues`，通过真实 `Syncer`、`RuntimeManager`、`Server` 与 HTTP GET 端点验证初始 null、success、failed、partial、idle、paused 的 `last_success`、`last_round`、`last_sync`、不变量与暂停不制造新轮次；使用 `EventSyncComplete` 作为确定性屏障，无固定 sleep。独立专项与相关包 race、全仓 race、vet、build、前端 `npm ci`/build、两条 audit 及 `git diff --check` 均通过。另以临时本地 HTTP mock 完成 Dashboard 六状态浏览器人工验收：提示、整轮新增/删除、5 秒 `/api/sync/status` 轮询和不建立 `/api/sync/events` 均符合合同。该证据仅覆盖本地自动化与浏览器展示，不代表真实云、Docker、SMTP、Webhook 或远端 CI/GHCR 已通过。
 2. **A9 HTTP 安全文案回归缺失：已收口（2026-09-28）：** 新增 `webui/api/rules_test.go:TestRuleReadCorruptTargetsUsesSafe500`，通过真实 `GET /api/rules` 路由和损坏 SQLite `rules.targets` 验证 HTTP 500、精确 JSON Content-Type、仅安全 `error` 字段、无原值/规则 ID/内部诊断/部分合法规则，服务端日志保留动作/规则 ID/损坏类别但不回显原值，且 `applyCount=0`。A9 九种损坏值/四条加载链专项、问题 2 端点专项、`webui/api` + `config` race、全仓 `go test ./... -race -count=1`、`go vet ./...`、`go build ./...` 与 `git diff --check` 均通过。本项无需前端构建、浏览器、Docker 或外部服务，均未执行且不适用；未以真实生产旧库验证损坏 targets 的升级行为仍保持原边界。
 3. **A14 故障注入不完整：已收口（2026-09-28）：** `config/store_error_test.go:TestAddSyncLogCountFailureDoesNotFailWrite` 通过 `sql.OpenDB` + 标准库 `driver.Connector` 精确注入非 `driver.ErrBadConn` 的 COUNT 哨兵错误，确认 INSERT 已成功、COUNT 失败后 `AddSyncLog` 仍返回 nil、严格只有一次 INSERT 与一次 COUNT、无重试/DELETE，且日志包含错误类别但不泄露 target/domain/error 业务值。`webui/api/deps_test.go:TestWriteJSONEncodeFailureLogsWithoutSecondHeader` 通过非零短写后返回 `io.ErrClosedPipe` 的 ResponseWriter 触发 Encode 失败，确认只写一次状态头、只发生一次 Write、响应体为非零短前缀且日志不泄露 payload，不会伪造第二个错误响应。两项均为对既有生产处理的判别性补测试，未修改生产代码，**无先红证据**。专项、trim 回归、`config + webui/api` race、全仓 `go test ./... -race -count=1`、`go vet ./...`、`go build ./...` 与 `git diff --check` 均通过；前端、浏览器、Docker、真实 SQLite 故障环境和外部服务不适用且未执行。
-4. **外部层仍未验证：** Issue6 修复后的真实云弱网/超时、真实 SWAS DROP、A11/A18 新前端展示、真实 SMTP/收件箱、Webhook、真实半开 TCP 与当前 HEAD 的远端 CI/GHCR 均无新增证据。既有 `v2.0.0` Actions/镜像结果属于更早 revision，不能证明当前 `b38678a`；SMTP/Webhook 则是用户明确免除人工验收，不得改写为通过。
+4. **外部层仍未验证：** Issue6 修复后的真实云弱网/超时、真实 SWAS DROP、A11/A18 新前端展示、真实 SMTP/收件箱、Webhook、真实半开 TCP 与当前 HEAD 的远端 CI/GHCR 均无新增证据。真实半开 TCP / 客户端停止读取的研究结论与裁决边界见 A15 的“真实半开 TCP / 停止读取客户端研究补充”：当前为**研究完成，等待用户评估/裁决**，保持“无有界退出保证/未验证”，不得写成已修复或已通过。既有 `v2.0.0` Actions/镜像结果属于更早 revision，不能证明当前 `b38678a`；SMTP/Webhook 则是用户明确免除人工验收，不得改写为通过。
 
 ### 7.4 文档状态与当前代码互相矛盾
 
