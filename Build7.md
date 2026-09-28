@@ -1,12 +1,12 @@
-# FWAlizer 告警与运行健康构建计划（Build7：研究与待授权方案）
+# FWAlizer 告警与运行健康构建计划（Build7：已定案，待分步实施）
 
-> **文档定位：** 本文档记录 Build6 完成后的下一阶段方案，聚焦告警触发开关、纯文本邮件内容、测试邮件，以及轻量运行健康检查与外部心跳监控。Build 文档仍为非强制执行建议，唯一强要求是 [AGENTS.md](./AGENTS.md)。
+> **文档定位：** 本文档记录 Build6 完成后的下一阶段已定案方案，聚焦告警触发开关、纯文本邮件内容、测试邮件、轻量运行健康检查，以及 Uptime Kuma HTTP/Push 外部监控。Build 文档仍为非强制执行建议，唯一强要求是 [AGENTS.md](./AGENTS.md)。
 >
-> **当前基线：** 2026-09-28 只读核验基线为 `main` / `be41fb4ae38ed12fa8f218195123a8cc2cc17726`，工作区在建立本文档前无未提交改动，分支相对 `origin/main` ahead 1。当前邮件与 Webhook 已订阅 DNS 解析失败和 Provider × 域名同步最终失败事件，但没有测试邮件 API、触发条件开关、可编辑邮件主题/正文或运行健康反向心跳。
+> **当前基线：** 2026-09-28 初始只读核验基线为 `main` / `be41fb4ae38ed12fa8f218195123a8cc2cc17726`，工作区在建立本文档前无未提交改动，分支相对 `origin/main` ahead 1；初稿随后提交为 `641c09c`，本次定案在该初稿上继续更新。当前邮件与 Webhook 已订阅 DNS 解析失败和 Provider × 域名同步最终失败事件，但没有测试邮件 API、触发条件开关、可编辑邮件主题/正文或运行健康反向心跳。
 >
-> **授权边界：** 用户当前只授权研究并把已确认内容写入 `Build7.md`。本文档的建立不授权修改生产代码、测试、Schema、前端、现有 Design/Issue/Build 文档或 `AGENTS.md`，也不授权访问真实 SMTP、真实 Webhook、Uptime Kuma 或云服务。后续代码必须在用户确认本文档中仍待裁决的运行健康方案后，再按单 Step 授权实施。
+> **授权边界：** 用户已确认本文档的告警、运行健康、Uptime Kuma Push 与破坏性配置协议方向；当前只授权把详细定案写入 `Build7.md`。本文档的更新不授权修改生产代码、测试、Schema、前端、现有 Design/Issue/Build 文档或 `AGENTS.md`，也不授权访问真实 SMTP、真实 Webhook、Uptime Kuma 或云服务。后续代码仍须按 Step 单独授权实施。
 >
-> **与现有强要求的关系：** `AGENTS.md` 当前仍把 Build6 和 version 2 配置包写为现行固定边界。用户已明确本阶段没有兼容性包袱，允许破坏性改动；但配置包最终版本号、`AGENTS.md`/Design/Issue 的切换时机仍需在 Build7 Step 0 明确后再同步，本文档不提前修改强要求。
+> **与现有强要求的关系：** `AGENTS.md` 当前仍把 Build6 和 version 2 配置包写为现行固定边界。用户已明确本阶段没有兼容性包袱，允许破坏性改动，并确认 Build7 配置包提升为 version 3、旧 version 1/2 直接拒绝。正式编码前必须先执行 Build7 Step 0，把 `AGENTS.md`、Design/Issue 和当前构建文档定位同步到该新合同；本文档本轮不提前修改强要求。
 
 ---
 
@@ -21,7 +21,7 @@
 3. 邮件支持一套可编辑的纯文本主题和正文，不引入 HTML、Markdown 或模板引擎。
 4. 增加测试邮件 API，使用页面当前未保存的表单值，直接报告 SMTP 是否已接受邮件或返回完整阶段错误。
 5. 测试邮件结果只保留在当前告警页面内存中，并写入现有实时日志，不新增发送历史表。
-6. 研究并预留 Uptime Kuma 等外部监控的两种最小接法：外部拉取 operational health、应用主动推送 heartbeat。
+6. 同时支持 Uptime Kuma 两种最小接法：外部拉取 operational health、应用主动推送 heartbeat。
 
 ### 1.2 明确非目标
 
@@ -53,6 +53,14 @@
 | 10 | 测试结果 | 只保留在当前告警页面内存态；刷新页面或重启后消失；同时写现有 stdout/WebUI 实时日志 |
 | 11 | 成功口径 | 只显示“SMTP 服务器已接受测试邮件”，不得写成“已送达收件箱” |
 | 12 | 失败口径 | 直接向用户展示完整 SMTP 阶段错误；不得主动拼接密码或完整邮件正文 |
+| 13 | 第三触发条件 | 名称固定为“运行健康异常”；由统一 operational health 计算，不声称能由进程自身覆盖进程死亡 |
+| 14 | 健康超时 | 只设置一个 `health_timeout`，默认 `10m`；同时作为单轮执行超时和计划完成后的宽限 |
+| 15 | 异常轮次 | 最近一轮 `failed` 或 `partial` 都视为 operational unhealthy，并使 operational 端点返回 HTTP 503 |
+| 16 | 健康端点 | 保留 `/api/health` 的静态 Docker 存活语义；新增 `/api/health/operational` 表达应用工作状态 |
+| 17 | 内部监督 | 每 30 秒检查一次；只在健康→异常边沿发布一次告警，持续异常不重复刷屏，恢复只写 INFO |
+| 18 | Uptime Kuma | 同时支持 HTTP Monitor 拉取 operational 端点和 Push Monitor 反向心跳；Push 默认关闭 |
+| 19 | Push 周期 | 可配置，默认 `60s`，最小 `20s`；每次都发送当前 up/down 状态，不因状态未变化停止心跳 |
+| 20 | 配置包 | 提升到 version 3；version 1/2 和其他版本全部直接拒绝，不迁移、不补全、不兼容 |
 
 ### 2.1 默认关闭的组合语义
 
@@ -64,6 +72,7 @@ webhook.enabled            = false
 trigger.dns_failed         = false
 trigger.sync_error         = false
 trigger.operational_error  = false
+uptime_kuma_push.enabled   = false
 ```
 
 - 只有渠道开关和对应触发开关同时开启，才安装该事件的订阅；
@@ -96,7 +105,7 @@ trigger.operational_error  = false
 
 ## 四、告警配置与纯文本邮件合同
 
-### 4.1 建议领域结构
+### 4.1 固定领域结构
 
 触发策略独立于具体渠道：
 
@@ -105,6 +114,7 @@ type AlertPolicyConfig struct {
     DNSFailedEnabled        bool
     SyncErrorEnabled        bool
     OperationalErrorEnabled bool
+    HealthTimeout           time.Duration
 }
 ```
 
@@ -115,22 +125,138 @@ Subject string
 Body    string
 ```
 
-运行健康研究若最终采用可配置超时，可再向策略增加一个正时长字段；字段名和默认值在第七节裁决后固定。
+Uptime Kuma Push 使用独立配置，不与普通 Webhook 混用：
+
+```go
+type UptimeKumaPushConfig struct {
+    Enabled  bool
+    URL      string
+    Interval time.Duration
+}
+```
+
+`HealthTimeout` 默认 `10m`；Push `Interval` 默认 `60s`，允许配置但不得小于 `20s`。
 
 ### 4.2 持久化边界
 
 - 渠道配置、触发开关、邮件主题和正文属于业务配置，必须进入 SQLite；
-- 推荐新建单行 `alert_policy` 表承载全局触发策略，不把共用策略错误地塞进 `alert_email`；
+- 新建单行 `alert_policy` 表承载全局触发策略，不把共用策略错误地塞进 `alert_email`；
 - `alert_email` 增加主题与正文字段；
+- 新建单行 `uptime_kuma_push` 表承载启用状态、敏感 Push URL 和发送间隔；不复用普通 `alert_webhook`，避免把告警目标与 dead-man 心跳端点混为一个渠道；
 - 测试发送结果不进入 SQLite；
 - reset 必须清除新的告警策略并恢复第二节的全部关闭默认值；
 - 配置导出必须包含完整的新告警结构，配置导入必须覆盖式原子替换；
 - 既然用户明确不保留兼容性，新 Schema 和新配置包可以严格要求全部新字段存在，旧包可以直接拒绝，不做缺字段补默认或迁移猜测；
-- 配置包最终继续使用 version 2 还是提升版本号，在 Step 0 与 `AGENTS.md` 的固定 version 2 合同一起裁决，不能在代码 Step 中临时决定。
+- 配置包固定提升为 version 3；version 1/2 和其他版本直接返回 400，不迁移、不猜测、不补字段；
+- 现有数据库实施最小显式 Schema 变更：增加新表/列并把邮件、Webhook、三个触发条件和 Push 启用状态统一写为 false；允许破坏旧启用状态，但不需要为了“无兼容负担”无意义删除目标、规则、凭据或同步日志；
+- Step 0 必须先把 `AGENTS.md` 中 version 2 唯一协议和 reset 表清单改为 version 3 新合同，再进入 Schema 实施。
 
-### 4.3 邮件主题与正文
+目标 Schema 形态固定为：
 
-建议默认值：
+```sql
+CREATE TABLE alert_policy (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    dns_failed_enabled INTEGER NOT NULL DEFAULT 0,
+    sync_error_enabled INTEGER NOT NULL DEFAULT 0,
+    operational_error_enabled INTEGER NOT NULL DEFAULT 0,
+    health_timeout TEXT NOT NULL DEFAULT '10m'
+);
+
+CREATE TABLE alert_email (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    host TEXT NOT NULL DEFAULT '',
+    port TEXT NOT NULL DEFAULT '587',
+    username TEXT NOT NULL DEFAULT '',
+    password TEXT NOT NULL DEFAULT '',
+    from_addr TEXT NOT NULL DEFAULT '',
+    to_addr TEXT NOT NULL DEFAULT '',
+    subject TEXT NOT NULL DEFAULT '[FWAlizer] 告警通知',
+    body TEXT NOT NULL DEFAULT 'FWAlizer 检测到运行异常，请检查同步日志。'
+);
+
+CREATE TABLE uptime_kuma_push (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    url TEXT NOT NULL DEFAULT '',
+    interval TEXT NOT NULL DEFAULT '60s'
+);
+```
+
+`alert_webhook` 保持现有字段形态，但 `enabled` 默认和迁移结果固定为 0。实际迁移可使用安全的建表/复制/替换或等价显式 SQL；不得依赖 `CREATE TABLE IF NOT EXISTS` 自动补列。迁移完成必须保证各单行表至多一行且业务 ID 固定为 1。
+
+### 4.3 version 3 配置包告警与监控结构
+
+version 3 继续保留 Build6 已有的 metadata、targets、rules 与 settings 主体，但 `alerts` 固定扩展策略和纯文本字段，并新增 `monitoring`。相关字段全部必需，数组/对象不得为 `null`：
+
+```json
+{
+  "version": 3,
+  "metadata": {
+    "exported_at": "2026-09-28T12:00:00Z"
+  },
+  "targets": [],
+  "rules": [],
+  "settings": {
+    "credentials": {
+      "tencent": { "secret_id": "", "secret_key": "" },
+      "aliyun": { "access_key_id": "", "access_key_secret": "" }
+    },
+    "tag": "auto-dns",
+    "interval": "5m",
+    "dns": "223.5.5.5",
+    "dns_timeout": "10s",
+    "dns_fail_threshold": 5,
+    "log_level": "info",
+    "sync_enabled": true,
+    "theme": "light"
+  },
+  "alerts": {
+    "policy": {
+      "dns_failed_enabled": false,
+      "sync_error_enabled": false,
+      "operational_error_enabled": false,
+      "health_timeout": "10m"
+    },
+    "email": {
+      "enabled": false,
+      "host": "",
+      "port": "587",
+      "username": "",
+      "password": "",
+      "from_addr": "",
+      "to_addr": "",
+      "subject": "[FWAlizer] 告警通知",
+      "body": "FWAlizer 检测到运行异常，请检查同步日志。"
+    },
+    "webhook": {
+      "enabled": false,
+      "url": "",
+      "channel": "dingtalk"
+    }
+  },
+  "monitoring": {
+    "uptime_kuma_push": {
+      "enabled": false,
+      "url": "",
+      "interval": "60s"
+    }
+  }
+}
+```
+
+固定规则：
+
+- version 3 是唯一可导入/导出的版本；
+- Push URL 与 SMTP 密码、Webhook URL 一样属于敏感完整快照字段；导出响应体允许包含，其他日志和错误响应不得包含；
+- 导入仍是覆盖式原子事务；targets/rules ID 映射、保留 `sync_logs`、清空 `scanned_resources`、不重置 `sqlite_sequence` 等 Build6 未被本方案改变的合同继续保留；
+- 导入必须在事务内同时写入 policy、email、webhook、uptime_kuma_push，并在 commit 前构造完整候选；
+- commit 后应用顺序扩展为：日志级别 → 告警集合/策略 → 运行健康监督配置 → Uptime Kuma Push 配置 → `RuntimeState`；全部必须是无失败的内存发布，外部网络请求不得发生在协调器锁内；
+- 导入成功后下一次监督 tick/Push tick 使用新配置；已经在途的 SMTP/Webhook/Push 请求允许按旧快照完成。
+
+### 4.4 邮件主题与正文
+
+固定默认值：
 
 ```text
 主题：[FWAlizer] 告警通知
@@ -159,7 +285,7 @@ Provider：tc_lighthouse(lhins-example)
 
 不同事件缺少的字段用 `-` 表示。固定详情顺序必须稳定，不再遍历 map 产生随机顺序。
 
-### 4.4 最小校验
+### 4.5 最小校验
 
 - `subject` Trim 后不能为空，禁止换行和控制字符，最多 200 个 Unicode 字符；
 - `body` 允许普通换行，最大 10 KiB；
@@ -167,6 +293,70 @@ Provider：tc_lighthouse(lhins-example)
 - SMTP host/port/from/to 与渠道启用时的既有最小校验保留；
 - 测试邮件按“实际要发送”校验 SMTP 字段，即使邮件自动通知开关关闭也要求 host/from/to 完整；
 - 多收件人继续使用逗号分隔，实施时应逐项 Trim，避免页面示例 `a@example.com, b@example.com` 把第二个地址连同前导空格传给 SMTP。
+- `health_timeout` 必须是大于 0 的 Go duration，默认 `10m`；
+- Push `interval` 必须是可解析且不少于 `20s` 的 Go duration，默认 `60s`；
+- Push 启用时 URL 必须是 host 非空的绝对 `http/https` URL；禁用时允许 URL 为空；
+- Push URL 允许直接粘贴 Uptime Kuma 页面给出的完整地址及既有 query；发送时解析 URL 并覆盖 `status`、`msg`、`ping` 三个参数，不做字符串拼接。
+
+### 4.6 告警配置 API
+
+继续使用现有端点，不增加第二套保存入口：
+
+```text
+GET /api/alerts
+PUT /api/alerts
+```
+
+GET/PUT 顶层固定为四个完整对象：
+
+```json
+{
+  "policy": {
+    "dns_failed_enabled": false,
+    "sync_error_enabled": false,
+    "operational_error_enabled": false,
+    "health_timeout": "10m"
+  },
+  "email": {
+    "enabled": false,
+    "host": "",
+    "port": "587",
+    "username": "",
+    "password": "",
+    "from_addr": "",
+    "to_addr": "",
+    "subject": "[FWAlizer] 告警通知",
+    "body": "FWAlizer 检测到运行异常，请检查同步日志。"
+  },
+  "webhook": {
+    "enabled": false,
+    "url": "",
+    "channel": "dingtalk"
+  },
+  "uptime_kuma_push": {
+    "enabled": false,
+    "url": "",
+    "interval": "60s"
+  }
+}
+```
+
+- PUT 四个对象及其全部子字段都必须出现，拒绝 `null`、缺字段、未知字段、尾随 JSON 和多个顶层值；
+- 四部分在同一个 `ConfigCoordinator` 写事务内覆盖保存，任一步失败全部回滚；
+- transaction 内构造包含 RuntimeState、AlertSet、OperationalSupervisorConfig 与 UptimeKumaPushConfig 的完整候选；
+- commit 后只替换内存配置和唤醒对应循环，不在 HTTP handler/协调器锁内等待 SMTP、Webhook 或 Uptime Kuma；
+- GET 为现有告警表单返回完整敏感对象的既有边界，仍会返回 SMTP 密码、Webhook URL 和 Push URL；响应必须 `Cache-Control: no-store`，不得被日志中间件记录 body。
+
+### 4.7 告警页面布局
+
+现有 `/alerts` 页面保持单页，按以下顺序放置四张卡片：
+
+1. **触发条件**：DNS 解析失败、Provider × 域名最终失败、运行健康异常三个开关；第三个开关下显示 `health_timeout`；
+2. **邮件告警**：渠道开关、SMTP 字段、主题、纯文本正文、测试发送按钮和本次测试结果；
+3. **Webhook 告警**：渠道开关、URL、钉钉/飞书/Slack 选择；
+4. **外部运行监控（Uptime Kuma Push）**：启用开关、Push URL、发送间隔，以及“Uptime Kuma Heartbeat Interval 应大于本值；默认建议 120s”的提示。
+
+页面底部保留一个“保存配置”按钮，一次提交第 4.6 节的完整对象。页面级保存和测试按钮均使用 `size="large"`；测试按钮不触发保存。SMTP 与 Push URL 输入使用密码型/可切换显示的敏感输入样式，不在页面额外复制显示完整值。
 
 ---
 
@@ -204,7 +394,7 @@ POST /api/alerts/test-email
 - 测试主题追加固定后缀 ` - 测试邮件`；
 - 测试正文追加“这是一次手动测试邮件”与当前时间；
 - 复用生产邮件的 SMTP 会话实现、10 秒连接上限和 30 秒整会话 deadline；
-- 前端请求上限建议 35 秒；
+- 前端请求上限固定为 35 秒；
 - 测试不经过自动告警的事件开关和每渠道在途订阅路径。
 
 ### 5.2 响应
@@ -289,7 +479,7 @@ WARN 邮件告警发送失败 event=sync:error error="..."
 
 ---
 
-## 七、运行健康检查研究
+## 七、运行健康检查固定合同
 
 ### 7.1 能力边界
 
@@ -311,9 +501,9 @@ WARN 邮件告警发送失败 event=sync:error error="..."
 
 因此“运行健康异常”必须拆成内部 best-effort 检查和外部 dead-man 检查，不能只靠内部邮件。
 
-### 7.2 推荐的最小内部健康判定
+### 7.2 最小内部健康判定
 
-建议新增一个纯读取的统一 `OperationalHealth` 计算函数，供内部监督器和 HTTP 端点共用。初步推荐如下：
+固定新增一个纯读取的统一 `OperationalHealth` 计算函数，供内部监督器、HTTP 端点与 Uptime Kuma Push 共用；不得在三处各写一套判断。判断如下：
 
 ```text
 SQLite：Ping/SELECT 1 成功
@@ -325,18 +515,43 @@ Syncer：主循环 running=true
 空目标/空规则：idle 视为正常，避免新安装永久异常
 ```
 
-建议只保留一个用户可配置正时长 `health_timeout`，默认候选为 `10m`。它同时作为“单轮最长容忍时间”和“超过下一次计划时间后的宽限”，避免增加多组阈值。
+只保留一个用户可配置正时长 `health_timeout`，默认 `10m`。它同时作为“单轮最长容忍时间”和“超过下一次计划时间后的宽限”，不增加多组阈值。
+
+为使上述判断可复现，Syncer 内存状态固定追加：
+
+```go
+RoundStartedAt *time.Time // 当前无轮次时为 nil
+ProcessStartedAt time.Time
+```
+
+精确判断顺序：
+
+1. 使用最多 2 秒的 context 执行 SQLite `PingContext` 或等价 `SELECT 1`；失败即 unhealthy；
+2. 非 shutdown 阶段 `SyncStatus.running=false` 即 unhealthy；应用已经进入正常 shutdown 时停止监督，不再制造“引擎停止”告警；
+3. `sync_enabled=false` 时跳过轮次结论、轮次超时和调度停滞，只保留 SQLite/Syncer 检查；
+4. `RoundStartedAt != nil` 且 `now-RoundStartedAt > health_timeout` 时记“同步轮次超时”；
+5. `last_round.outcome` 为 `failed` 或 `partial` 时记“最近一轮失败/部分完成”，直到后续 `success` 或 `idle` 覆盖；
+6. `sync_enabled=true` 且当前没有在途轮次时：
+   - 有 `last_sync`：`now-last_sync > interval+health_timeout` 记“同步调度停滞”；
+   - 无 `last_sync`：`now-ProcessStartedAt > health_timeout` 记“启动后尚无完成轮次”；
+7. `idle` 本身是健康结果；它仍会刷新 `last_sync`，因此若调度随后停止，仍可由第 6 条发现；
+8. 任一原因成立即 unhealthy；多项同时成立时全部返回，但相同原因去重并使用固定排序。
+
+状态读取必须取一份一致的内存快照；SQLite 检查在快照之外有界执行，不持有 Syncer 或配置协调器锁。
 
 这套判定有意偏敏感，允许较高误报，但每项都有清晰证据和可展示原因，不使用 CPU、内存、goroutine 数或主机负载等容易把宿主问题与应用问题混淆的指标。
 
 ### 7.3 内部监督器
 
-若采用第 7.2 节，建议使用一个轻量 `time.Ticker` 每 30 秒计算一次统一健康状态：
+固定使用一个轻量 `time.Ticker` 每 30 秒计算一次统一健康状态：
 
 - `healthy → unhealthy`：发布一次新的运行健康异常事件，并写 WARN；
 - 持续 unhealthy：不重复发送，避免每 30 秒刷屏；原因变化只更新日志；
 - `unhealthy → healthy`：写 INFO 恢复日志，当前阶段不要求发送恢复邮件；
 - 只有第三个触发开关开启时，运行健康异常事件才进入邮件/Webhook；
+- 新事件类型固定为 `notifier.EventOperationalUnhealthy`，事件数据只包含检查时间与稳定原因数组；
+- 监督器始终计算和记录健康状态；第三开关只控制邮件/Webhook 是否订阅，不关闭 operational endpoint 或 Uptime Kuma Push；
+- 保存新配置后立即唤醒一次监督检查，不等待最长 30 秒；若从“第三开关关闭”变为开启且当前已经 unhealthy，下一次检查视为需要发送一次当前异常；
 - 监督器停止和应用 shutdown 使用同一生命周期，不引入孤立 goroutine；
 - 外部心跳发送失败只写 WARN，不反向把“监控服务不可达”加入应用健康，避免自激循环。
 
@@ -344,7 +559,7 @@ Syncer：主循环 running=true
 
 ### 7.4 Operational HTTP 端点
 
-推荐保留现有 Docker 端点：
+保留现有 Docker 端点：
 
 ```text
 GET /api/health
@@ -352,7 +567,7 @@ GET /api/health
 
 它继续只表示 HTTP 服务可达，避免一次同步失败直接让 Docker 把容器标为 unhealthy 或触发编排重启。
 
-另新增供外部监控使用的端点，候选名称：
+另新增供外部监控使用的固定端点：
 
 ```text
 GET /api/health/operational
@@ -382,10 +597,14 @@ GET /api/health/operational
 - 内部日志可以记录已归类的详细错误，但 HTTP 只返回稳定原因；
 - Uptime Kuma、其他 HTTP 监控或反向代理可以按 2xx/503 直接判断；
 - 不改变 Dockerfile/Compose 对现有 `/api/health` 的使用。
+- 响应固定使用 `Content-Type: application/json; charset=utf-8` 与 `Cache-Control: no-store`；
+- 该端点不要求请求体、不接受 query 控制检查范围，也不提供“强制健康”旁路；
+- 单次请求现场计算健康，不只返回监督器最多 30 秒前的缓存结果；
+- SQLite 检查超过 2 秒按失败返回 503，避免外部监控请求自身长期挂住。
 
 ### 7.5 Uptime Kuma 外部拉取
 
-如果 Uptime Kuma 能访问 FWAlizer，最简单可靠的方式是建立 HTTP(s) Monitor，目标指向：
+如果 Uptime Kuma 能访问 FWAlizer，固定支持通过 HTTP(s) Monitor 指向：
 
 ```text
 http(s)://<FWAlizer>/api/health/operational
@@ -410,25 +629,32 @@ Uptime Kuma 官方 Push Monitor 提供：
 
 官方文档说明该端点接受 GET/POST/PUT/PATCH，成功返回 `{"ok":true}`；Push Monitor 可以用“规定窗口内未收到 heartbeat”判定异常。
 
-建议在告警配置页之外新增一个简洁的“外部运行监控”卡片：
+在现有告警配置页增加第三张“外部运行监控（Uptime Kuma Push）”卡片，与邮件/Webhook 一次保存但使用独立配置对象：
 
 ```text
-启用外部心跳：false
+启用 Uptime Kuma Push：false
 Push URL：空
 心跳间隔：60s
 ```
 
-推荐行为：
+固定行为：
 
 - 默认关闭；
 - URL 作为敏感业务配置写入 SQLite 和完整配置包，但绝不写日志或错误响应；
-- 每 60 秒计算一次与 operational endpoint 完全相同的健康状态；
+- 保存后通过协调器无失败发布配置，并立即唤醒 Push 循环；从关闭变为开启或 URL 变化时立即发送第一条，不等待完整 interval；
+- 此后按配置 interval 计算一次与 operational endpoint 完全相同的健康状态；
 - 健康时请求 `status=up&msg=OK`；
-- 已检测到内部异常时可立即请求一次 `status=down&msg=<短原因>`；
+- unhealthy 时请求 `status=down&msg=<短原因>`，短原因由稳定 reasons 用 `; ` 连接并截断到 250 字符以内；
 - 进程死亡或完全卡死时不再有 push，Uptime Kuma 依靠缺失 heartbeat 判 DOWN；
-- HTTP client 使用 10 秒上限，不排队、不重试；失败只写不含 URL 的 WARN；
+- 使用 HTTP GET；解析用户填写的完整 URL，覆盖 `status`、`msg`、`ping` query，保留 Uptime Kuma 自带 token 和其他未知 query；
+- `ping` 填写本次 operational health 计算耗时的毫秒数；
+- HTTP client 使用 10 秒上限，同一时刻最多一条在途，不排队、不重试；某次仍在途时到达的新 tick 直接跳过并写安全 WARN；
+- HTTP 2xx 且 JSON 为 `{"ok":true}` 才算 Push 成功；非 2xx、无效 JSON、`ok!=true` 或网络错误均记失败；
+- 成功只写 DEBUG（不含 URL），失败写 WARN（只含安全类别和状态码，不含 URL/token 或底层可能回显 URL 的文本）；
 - 不把 Push 失败再发布为邮件/Webhook 告警，避免网络故障时循环放大；
-- Uptime Kuma 的 heartbeat interval 应大于 FWAlizer 的 60 秒发送间隔并留余量，具体操作值在真实联调时记录。
+- Push 配置关闭或 URL/interval 非法时不启动循环、不发任何网络请求；
+- 应用 shutdown 取消在途请求并退出 Push 循环，不等待完整 10 秒；
+- UI 明示：Uptime Kuma 侧的 Heartbeat Interval 必须大于 FWAlizer 的发送间隔并留余量；默认发送 60 秒时推荐 Kuma 设置 120 秒。
 
 官方依据：
 
@@ -436,23 +662,17 @@ Push URL：空
 - [Uptime Kuma 官方 Go Push 示例](https://github.com/louislam/uptime-kuma/blob/master/extra/push-examples/go/index.go)
 - [Uptime Kuma README - HTTP/JSON Query/Push 等监控类型](https://github.com/louislam/uptime-kuma/blob/master/README.md)
 
-### 7.7 当前推荐组合与待裁决点
+### 7.7 最终组合
 
-当前研究推荐同时提供：
+本 Build 固定同时提供：
 
 1. 保持 `/api/health` 作为 Docker HTTP 存活检查；
 2. 新增 `/api/health/operational` 作为应用工作状态检查；
 3. 新增内部 30 秒健康监督器，负责在进程仍可运行时发布第三类告警；
-4. 可选 Uptime Kuma Push URL，每 60 秒发送一次健康心跳；
+4. 可选 Uptime Kuma Push URL，默认每 60 秒发送一次健康心跳；
 5. 外部环境能主动访问时，优先再配置 Uptime Kuma HTTP Monitor 拉取 operational endpoint。
 
-仍需用户在代码实施前确认：
-
-- 第三开关的最终展示名称是否使用“运行健康异常”；
-- `health_timeout` 是否采用一个字段、默认 `10m`；
-- failed/partial 是否都让 operational health 返回 503；
-- 是否同时实施 operational endpoint 和可选 Push，还是本期只实施其中一个；
-- 配置包版本号如何处理（无兼容要求已固定，但 `AGENTS.md` 当前仍固定 version 2）。
+固定值为：第三开关“运行健康异常”、`health_timeout=10m`、failed/partial 均 unhealthy、operational endpoint 与 Push 同期实施、配置包 version 3 且拒绝旧版本。代码 Step 不再重新询问这些产品决策；只有发现与 `AGENTS.md` 其他未覆盖强要求的新冲突时才停止。
 
 ---
 
@@ -460,16 +680,16 @@ Push URL：空
 
 ### Step 0：合同收口
 
-- 用户裁决第 7.7 节；
-- 固定配置包版本号与完整 JSON；
-- 确认 Build7 成为当前构建方案后，再同步 `AGENTS.md`、Design/Issue/README 的文档定位；
+- 把已确认的 version 3、默认全关闭、运行健康与 Uptime Kuma Push 合同同步到 `AGENTS.md`；
+- 将 Build7 标为当前构建方案，并同步 Design/Issue/README 的文档定位和旧 version 2 边界；
+- 检查所有并行状态文案，避免 Build6“当前方案”与 Build7“待实施”互相矛盾；
 - 本 Step 只改文档，不改代码。
 
 ### Step 1：Schema、配置模型与严格 API
 
 - 新增告警策略持久化、邮件主题/正文和可选健康/Push 设置；
 - 更新完整快照、RuntimeState、reset、导入导出和失败回滚；
-- 先写旧 Schema/旧包拒绝、默认全关闭、事务失败零发布的判别性测试；
+- 先写 version 1/2/其他版本拒绝、默认全关闭、破坏性 Schema 状态归零和事务失败零发布的判别性测试；
 - 不连接任何外部服务。
 
 ### Step 2：测试邮件
@@ -491,13 +711,17 @@ Push URL：空
 - 增加轮次开始时间/超时观测；
 - 实现健康状态边沿事件，持续异常不重复通知；
 - 保持 shutdown 有界且 race 通过。
+- 判别性覆盖：SQLite 正常/失败/2 秒超时、Syncer 未运行、暂停、启动宽限、在途未超时/超时、success/failed/partial/idle、调度停滞、多原因固定排序、恢复后再次异常重新发送一次；
+- 端点覆盖：健康 200、异常 503、静态 `/api/health` 始终不受同步状态影响、响应不泄露底层错误。
 
 ### Step 5：外部监控接入
 
 - 实现 operational endpoint；
-- 若获授权，实现 Uptime Kuma Push；
+- 实现 Uptime Kuma Push 与配置热重载；
 - URL 脱敏、超时、无重试和无自激循环；
 - 使用本地 `httptest` 验证协议，不访问真实 Uptime Kuma。
+- 判别性覆盖：默认/关闭时零请求、启用后立即首发、周期 up、异常 down、恢复 up、query 安全覆盖且 token 保留、`ping` 数值、250 字符 msg、非 2xx、`ok=false`、坏 JSON、10 秒有界超时、在途时丢弃新 tick、URL/interval 热重载、关闭后停止、shutdown 取消、全部日志不含完整 URL/token；
+- 文档给出 Uptime Kuma HTTP Monitor 与 Push Monitor 的最小配置步骤，但真实 DOWN/恢复通知仍留给外部人工验收。
 
 ### Step 6：统一验收与文档闭环
 
@@ -534,5 +758,14 @@ Push URL：空
 - 必须引入外部库、持久队列、后台框架或新前端依赖；
 - 需要记录 SMTP 密码、Webhook URL、Uptime Kuma Push URL 或完整正文才能诊断；
 - “系统未响应”只能通过虚假成功保证或无法测试的内部推断实现；
-- 配置包版本号、health timeout 或 failed/partial 健康口径尚未裁决；
+- 实现者试图把 version 3、`health_timeout=10m`、failed/partial unhealthy 或 Push 同期实施重新改为未裁决；
 - 真实外部服务凭据不可用时，任何人试图用 mock 替代并把外部验收写成通过。
+
+---
+
+## 十一、文档变更记录
+
+| 版本 | 日期 | 说明 |
+|------|------|------|
+| v0.1 | 2026-09-28 | 建立 Build7 研究初稿：记录告警开关、纯文本邮件、测试邮件、运行健康与 Uptime Kuma 两种接法；运行健康和配置协议尚待裁决 |
+| v1.0 | 2026-09-28 | 用户确认完整方向：固定默认全部关闭、运行健康异常、`health_timeout=10m`、failed/partial→503、operational endpoint、Uptime Kuma Push、version 3 且拒绝旧版本；补齐 Schema、配置包、API、页面、健康算法、Push 生命周期、测试矩阵与 Step 0～6 合同 |
