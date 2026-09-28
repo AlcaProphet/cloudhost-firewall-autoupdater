@@ -132,13 +132,19 @@ func (s *Syncer) SetStateAppliedHook(fn func(*RuntimeState)) {
 // Run 启动同步主循环（阻塞，直到收到停止信号）。
 //
 // 重复调用契约（Issue6 A16，2026-09-27 用户裁决）：用锁保护的 runGuard 拒绝**一切**
-// 第二次调用（含首个 Run 已退出之后），WARN 后立即返回，绝不 panic。
+// 第二次调用（含首个 Run 已退出之后），WARN 后立即返回，绝不 panic。Stop 是吸收态：
+// 若 Stop 在首次 Run 前完成，Run 同样立即拒绝，doneCh 已由 Stop 关闭。
 // 刻意不使用 sync.Once.Do——那会让第二个调用等待首个 Run 结束，语义不同。
 func (s *Syncer) Run() {
 	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		slog.Warn("同步引擎已停止，忽略 Run 调用")
+		return
+	}
 	if s.runGuard {
 		s.mu.Unlock()
-		slog.Warn("同步引擎已在运行，忽略重复的 Run 调用")
+		slog.Warn("同步引擎已运行过，忽略重复的 Run 调用")
 		// 不关闭 doneCh：doneCh 归首个 Run 所有，关闭两次会 panic
 		return
 	}
@@ -377,13 +383,22 @@ func (s *Syncer) setEnabledMirror(enabled bool) {
 // Stop 优雅停止（幂等：重复调用安全，不 panic）。
 //
 // 语义（Issue6 A20）：Stop 只阻止**新轮次**，绝不取消或中断已经开始的 syncAll；
-// 当前轮完成后 Run 才退出。因此这里只置位 stopped 标记并关闭 stopCh，
-// 不改变 IsEnabled()（开关真值仍由 SQLite 与已发布运行时状态决定）。
+// 当前轮完成后 Run 才退出。若 Run 已取得生命周期所有权，doneCh 仍只由 Run 在退出时
+// 关闭；若 Stop 发生在首次 Run 之前，则 Stop 直接关闭 doneCh，后续 Run 因 stopped
+// 吸收态而被拒绝。两种所有权由同一把 mu 线性化，不会重复关闭。
+// Stop 不改变 IsEnabled()（开关真值仍由 SQLite 与已发布运行时状态决定）。
 func (s *Syncer) Stop() {
-	s.mu.Lock()
-	s.stopped = true
-	s.mu.Unlock()
-	s.stopOnce.Do(func() { close(s.stopCh) })
+	s.stopOnce.Do(func() {
+		s.mu.Lock()
+		s.stopped = true
+		neverStarted := !s.runGuard
+		s.mu.Unlock()
+
+		close(s.stopCh)
+		if neverStarted {
+			close(s.doneCh)
+		}
+	})
 }
 
 // isStopped 报告是否已请求停止。抽取为可单测的门控谓词（Issue6 A20 测试机制）。

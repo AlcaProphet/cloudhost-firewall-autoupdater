@@ -44,6 +44,79 @@ func TestBeginRoundGateAfterStop(t *testing.T) {
 	}
 }
 
+// TestStopBeforeRunWaitReturns Stop 在 Run 从未取得生命周期所有权时，必须直接完成
+// Syncer 生命周期，使 Wait 有界返回。修复前 doneCh 只由 Run 关闭，本用例会超时。
+func TestStopBeforeRunWaitReturns(t *testing.T) {
+	p := newCountingProvider(config.CloudTCCVM, false)
+	st := gatedState(t, true, time.Hour)
+	st.Providers = []provider.Provider{p}
+	s := New(NewRuntimeManager(st))
+
+	s.Stop()
+
+	waited := make(chan struct{})
+	go func() {
+		s.Wait()
+		close(waited)
+	}()
+	select {
+	case <-waited:
+	case <-time.After(time.Second):
+		t.Fatal("Run 从未启动时，Stop 后 Wait 必须有界返回")
+	}
+
+	// Stop 是吸收态：生命周期已完成后，首次 Run 也必须立即拒绝，不能短暂进入 running。
+	runReturned := make(chan struct{})
+	go func() {
+		s.Run()
+		close(runReturned)
+	}()
+	select {
+	case <-runReturned:
+	case <-time.After(time.Second):
+		t.Fatal("Stop 后的首次 Run 必须有界返回")
+	}
+	if s.Status().Running {
+		t.Error("Stop 后的首次 Run 不得进入 running 状态")
+	}
+	if got := p.calls.Load(); got != 0 {
+		t.Fatalf("Stop 后的首次 Run 不得调用 Provider：GetRules = %d, want 0", got)
+	}
+}
+
+// TestWaitBeforeRunAndStopBlocksUntilStop 固定 Wait 的调用合同：尚未 Run 且尚未 Stop 时
+// 继续等待；Stop 才把未启动实例推进到终止态，并广播释放全部 Wait 调用者。
+func TestWaitBeforeRunAndStopBlocksUntilStop(t *testing.T) {
+	p := newCountingProvider(config.CloudTCCVM, false)
+	st := gatedState(t, true, time.Hour)
+	st.Providers = []provider.Provider{p}
+	s := New(NewRuntimeManager(st))
+
+	const waiters = 4
+	waited := make(chan struct{}, waiters)
+	for range waiters {
+		go func() {
+			s.Wait()
+			waited <- struct{}{}
+		}()
+	}
+
+	select {
+	case <-waited:
+		t.Fatal("Run/Stop 均未发生时 Wait 不得提前返回")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	s.Stop()
+	for i := 0; i < waiters; i++ {
+		select {
+		case <-waited:
+		case <-time.After(time.Second):
+			t.Fatalf("Stop 后第 %d/%d 个 Wait 未有界返回", i+1, waiters)
+		}
+	}
+}
+
 // TestStopBeforeRunStartsNoRound Stop() 先于 go Run()：不得启动任何轮次。
 //
 // 这是 100% 确定性的红灯证据：修复前 Run 入口的启动轮位于循环之外、stop 检查之前，

@@ -569,7 +569,7 @@ git diff --check
 11. **时间戳纯内存**：`last_sync` 与新增的 `last_success` 重启归 null，UI 文案需避免表述为“从未成功”。
 12. **SQLite 其他缺口**：未设置任何连接池上限；`AddSyncLog` 的 `COUNT(*)` 是全表扫描且不在事务内；`WithTransaction` 使用无 context 的 `Begin()`；`PRAGMA foreign_keys` 未设置。
 13. **`sync_logs.result` 的 `skipped` 语义**：`SyncLog.Result` 注释已预留 `skipped`，但生产只写 success/failed，A11 明确不加列，因此“零写入且有跳过”如何落库仍未定义。
-14. **生命周期边角**：`Server.Addr()` 在 Shutdown 后仍返回已关闭地址；`Syncer.Wait()` 在 Run 从未启动时会永久阻塞（A16 的拒绝路径需保证可观测，避免调用方随后 Wait 挂死）。
+14. **生命周期边角**：`Server.Addr()` 在 Shutdown 后仍返回已关闭地址；`Syncer.Wait()` 原先在 Run 从未启动时会永久阻塞，后者已于 2026-09-28 按“Stop 完成未启动生命周期、Run 拒绝 Stop 后启动”的合同修复并加入判别性回归，实施与证据见 §7.2 第 4 项。`Server.Addr()` 语义仍未处理。
 
 ---
 
@@ -633,7 +633,14 @@ git diff --check
    - **门禁：** 判别性选择测试、`go test ./provider ./syncer ./webui/api -race -count=1`、`go test ./... -race -count=1`、`go vet ./...`、`go build ./...` 与 `git diff --check` 全部通过。
    - **明确未扩张与未验证：** 未全面修改 `DeleteRules` 接口，未处理 §6.5 第 1 项删除侧在正常成功返回下的跳过虚增，未新增 Schema、前端或依赖。未执行真实腾讯云逐条删除中途失败、真实阿里云分批后批失败、弱网响应丢失、Docker、远端 CI 或其他外部验收；自动 mock 结果不得写成真实云已通过。
 3. **历史 skipped 语义原先未定义（已由当前 HEAD 收口；本轮复核被用户中断）：** 核验时 `SyncLog.Result` 注释允许 skipped，但生产只写 success/failed；提交 `8898263d` 已随 R6-01 使用 `skipped/partial` 并把详情写入既有 `error` 列，见 §7.1 与 §7.6。本轮原计划再派独立研究代理复核这一关闭结论，但用户在代理完成前要求中断；该代理未修改文件，其未完成研究不得记作本轮验证证据，也没有派发修复代理。
-4. **`Syncer.Wait()` 未运行即阻塞：** `Wait()` 直接等待仅由首个 `Run()` 关闭的 `doneCh`；对应 §6.5 第 14 项。
+4. **`Syncer.Wait()` 未运行即阻塞（已修复，当前未提交工作树）：**
+   - **研究结论：** 修复前 `Wait()` 直接等待仅由首个 `Run()` 关闭的 `doneCh`；`Stop()` 只关闭 `stopCh`，因此从未调用 Run 的实例即使已经 Stop，后续 Wait 仍永久阻塞。不能简单让 Wait 在 `runGuard=false` 时返回，否则并发 `go Run(); Stop(); Wait()` 可能由 Wait 抢先返回、Run 随后才取得生命周期所有权，破坏“Wait 返回即完全退出”。
+   - **最终合同：** Wait 仍是“Stop 后调用”的等待接口；Run/Stop 均未发生时继续阻塞。Run 与 Stop-before-Run 二选一取得 `doneCh` 关闭权：Run 先取得 `runGuard` 时，Stop 只关闭 `stopCh`，当前轮完成后由 Run 关闭 `doneCh`；Stop 先发生时直接关闭 `stopCh` 与 `doneCh`，stopped 成为吸收态，后续首次 Run 也立即拒绝且不进入 running。
+   - **实施：** `syncer/syncer.go` 的 Run 在同一 `mu` 锁边界先检查 `stopped`、再检查 `runGuard`；Stop 把 `stopped=true` 与 `neverStarted := !runGuard` 放在 `stopOnce` 内并由同一锁线性化，先关闭 `stopCh`，仅在 neverStarted 时关闭 `doneCh`。未新增状态枚举、channel、goroutine、timeout、context 或公开 API。
+   - **判别性红灯：** 只加入新测试、尚未改生产实现时，`TestStopBeforeRunWaitReturns` 在 1s 后失败“Run 从未启动时，Stop 后 Wait 必须有界返回”；`TestWaitBeforeRunAndStopBlocksUntilStop` 在 Stop 后仍无法释放第 1/4 个 Wait，二者直接证明缺陷。
+   - **判别性与回归绿灯：** 新增 `TestStopBeforeRunWaitReturns`（Stop 后 Wait 返回、首次 Run 拒绝、不进入 running、不调用 Provider）与 `TestWaitBeforeRunAndStopBlocksUntilStop`（Stop 前阻塞、Stop 后广播释放 4 个 Wait）。两条新用例连同 `TestStopBeforeRunStartsNoRound`、`TestStopWaitsForBlockedRound`、`TestStopIdempotent`、`TestRunSecondCallRejectedWithoutPanic` 在 `-race -count=20` 下通过；后者继续证明 Run 已开始时 Wait 不得在当前轮完成前返回。
+   - **门禁：** `go test ./syncer -race -count=1`、上述生命周期选择测试 `-race -count=20`、`go test ./... -race -count=1`（11 包）、`go vet ./...`、`go build ./...` 与 `git diff --check` 全部通过。
+   - **未扩张：** 未处理同属 §6.5 第 14 项的 `Server.Addr()` Shutdown 后地址语义，未修改主启动顺序、同步开关、Dry Run、Provider、数据库、前端、依赖或其他 §6.5 候选；本问题不需要浏览器、Docker 或外部服务验收。
 
 ### 7.3 确认存在的测试与外部证据缺口
 
@@ -668,16 +675,16 @@ git diff --check
 
 **当前结论：** R6-01、R6-02、R6-03 已按本节裁决完成修复、经独立测试代理验证，并提交、推送为当前 HEAD `8898263d`；Docker/远端 CI 及上述外部人工验收仍不在该批已完成证据内。§6.5 其他候选当时维持未授权状态，后续 §7.2 残余处理进度见 §7.7。
 
-### 7.7 §7.2 残余问题串行处理进度（2026-09-28，中断点）
+### 7.7 §7.2 残余问题串行处理进度（2026-09-28）
 
-> **执行方式：** 用户授权按“单个问题只运行一个子代理：独立研究完成后，再由新的独立代理修复；逐项完成；最后另派测试代理”的严格串行方式处理 §7.2。当前基线为 `main` / `8898263d8e25fbd8503811bcea11429629bb88ff`，开始时与 `origin/main` 同步。用户在第 3 项研究期间要求中断并优先更新本文；该研究代理已立即中断，未再派发任何代理。
+> **执行方式：** 第 1～3 项沿用此前严格串行处理记录；第 1、2 项随后由提交 `043ac36` 纳入 `main`，第 3 项由 `8898263d` 的 R6-01 实现收口。用户于 2026-09-28 重新授权直接研究并修复第 4 项；本次由主任务实施并执行统一门禁，未另派独立测试代理。
 
 | §7.2 项目 | 当前状态 | 代码与证据边界 |
 |---|---|---|
-| 1. A18 Dashboard 数字双口径 | **研究、修复与本项门禁完成；当前未提交工作树** | 仅修改 `webui/frontend/src/views/Dashboard.vue`；统一改取 `SyncStatus.last_round.added/deleted`。failure-first 源码判别、`npm ci/build`、两条 audit、`go test ./webui -race`、全仓 race/vet/build 与 `git diff --check` 已通过；浏览器与外部验收未执行。 |
-| 2. 错误路径已写计数丢失 | **研究、修复与本项门禁完成；当前未提交工作树** | 修改 Provider 部分成功传递、retry 累计、失败事件/汇总与 `sync_logs` 计数，并新增判别性测试；受影响三包 race、全仓 race/vet/build 与 `git diff --check` 已通过。真实云分批/逐条中途失败和弱网响应丢失未验证。 |
+| 1. A18 Dashboard 数字双口径 | **已由当前 HEAD `043ac36` 收口** | 仅修改 `webui/frontend/src/views/Dashboard.vue`；统一改取 `SyncStatus.last_round.added/deleted`。failure-first 源码判别、`npm ci/build`、两条 audit、`go test ./webui -race`、全仓 race/vet/build 与 `git diff --check` 已通过；浏览器与外部验收未执行。 |
+| 2. 错误路径已写计数丢失 | **已由当前 HEAD `043ac36` 收口** | 修改 Provider 部分成功传递、retry 累计、失败事件/汇总与 `sync_logs` 计数，并新增判别性测试；受影响三包 race、全仓 race/vet/build 与 `git diff --check` 已通过。真实云分批/逐条中途失败和弱网响应丢失未验证。 |
 | 3. 历史 skipped 语义 | **当前 HEAD 已由 R6-01 收口；本轮独立复核被用户中断** | `8898263d` 的既有实现与 §7.1/§7.6 记录仍在；本轮研究代理未完成、未修改文件，因此没有新增研究或测试结论，也未派修复代理。 |
-| 4. `Syncer.Wait()` 未运行即阻塞 | **尚未开始** | 未派研究或修复代理，源码与文档状态均未改变。 |
-| 最终独立测试 | **尚未开始** | 尚未派测试代理；第 1、2 项各自门禁通过不等于最终合并工作树已经由独立测试代理验收。 |
+| 4. `Syncer.Wait()` 未运行即阻塞 | **研究、修复与本项门禁完成；当前未提交工作树** | `Stop` 完成未启动生命周期并关闭 `doneCh`，`Run` 拒绝 Stop 后启动；两条新判别性回归先红后绿，生命周期选择测试 `-race -count=20`、全仓 race/vet/build 与 `git diff --check` 通过。 |
+| 最终独立测试 | **尚未执行** | 本次由主任务完成统一本地门禁，未另派独立测试代理；这不影响判别性自动测试结论，但不得记作独立代理验收。 |
 
-**当前工作树：** 除本文外，包含第 1 项的 `Dashboard.vue` 修改，以及第 2 项在 `provider/`、`syncer/`、`webui/api/` 的实现与测试修改；没有第 3、4 项产生的文件改动。当前未提交、未推送，未执行 Docker、远端 GitHub Actions、GHCR、浏览器人工回归或真实云/API/DNS/SMTP/Webhook 验收。后续若恢复，应从第 3 项是否需要重新独立复核或直接进入第 4 项开始，由用户另行指示；不得把本次中断写成全部完成。
+**当前工作树：** 第 1、2 项已由提交 `043ac36` 纳入当前 `main`；第 3 项仍由 `8898263d` 的 R6-01 实现收口。本次未提交工作树仅包含第 4 项的 `syncer/syncer.go`、`syncer/stop_gate_test.go` 与本文记录。未执行 Docker、远端 GitHub Actions、GHCR、浏览器人工回归或真实云/API/DNS/SMTP/Webhook 验收；同属 §6.5 第 14 项的 `Server.Addr()` 语义及其他候选仍未授权处理。
