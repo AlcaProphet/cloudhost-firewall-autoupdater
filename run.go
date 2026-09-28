@@ -46,6 +46,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return runWebUI(deploy, stderr)
 }
 
+// syncerStartWait 是「等待同步主循环进入运行态」的有界上限。
+//
+// 正常路径下 Run 会在微秒级关闭 Started 信号；上限只用于兜底
+// 「Stop 先于 Run 导致 Run 被吸收态拒绝」这类不可能出现在本启动序列的情况。
+const syncerStartWait = 2 * time.Second
+
+// waitSyncerRunning 有界等待同步主循环进入运行态（running=true 已可见）。
+//
+// 超时不阻塞启动：记录 WARN 后继续，后续由运行健康判定兜底
+// （启动宽限内不视为异常，超过宽限仍按「同步引擎未运行」处理）。
+func waitSyncerRunning(s *syncer.Syncer) {
+	select {
+	case <-s.Started():
+	case <-time.After(syncerStartWait):
+		slog.Warn("等待同步主循环进入运行态超时，继续启动运行健康监督器与 Push 心跳")
+	}
+}
+
 // runWebUI 启动唯一运行形态：WebUI + SQLite + Syncer。
 func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 	// pidfile 防多实例
@@ -166,9 +184,14 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 		slog.Info("WebUI 已启动，请通过浏览器配置云资源凭据和目标", "访问地址", srv.Addr())
 	}
 
+	// 先启动同步主循环并有界等待其进入运行态，再启动运行健康监督器与 Push 心跳：
+	// 两者的首检/首发都会现场计算健康，若先于 Syncer.Run 置 running=true，
+	// 会把「引擎尚未启动」误判为「引擎未运行」——导致启动即误报 WARN、
+	// Push 首条心跳误报 DOWN，甚至（第三开关 + 渠道开启时）发出一次误报告警（Build7 Step 7）。
+	go s.Run()
+	waitSyncerRunning(s)
 	go supervisor.Run()
 	go pusher.Run()
-	go s.Run()
 
 	// Serve 结果通道：非正常退出必须能被 main 感知（关闭流程内的收尾会被归一化为 nil）
 	serveErrCh := make(chan error, 1)

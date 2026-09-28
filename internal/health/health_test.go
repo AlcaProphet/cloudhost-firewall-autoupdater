@@ -61,12 +61,13 @@ func (p *stubPinger) SetBlock(block bool) {
 
 // healthTestDeps 可变夹具：字段由 mu 保护，运行中可通过 set* 方法安全变更。
 type healthTestDeps struct {
-	mu       sync.Mutex
-	pinger   *stubPinger
-	status   syncer.SyncStatus
-	policy   config.AlertPolicyConfig
-	interval time.Duration
-	now      time.Time
+	mu           sync.Mutex
+	pinger       *stubPinger
+	status       syncer.SyncStatus
+	policy       config.AlertPolicyConfig
+	interval     time.Duration
+	now          time.Time
+	startupGrace time.Duration
 }
 
 // setRunning 运行中调整主循环状态
@@ -92,11 +93,12 @@ func (d *healthTestDeps) setup(fn func()) {
 
 func newHealthTestDeps() *healthTestDeps {
 	return &healthTestDeps{
-		pinger:   &stubPinger{},
-		status:   syncer.SyncStatus{Running: true, Enabled: true, ProcessStartedAt: time.Now().Add(-time.Minute)},
-		policy:   config.DefaultAlertPolicy(),
-		interval: 5 * time.Minute,
-		now:      time.Now(),
+		pinger:       &stubPinger{},
+		status:       syncer.SyncStatus{Running: true, Enabled: true, ProcessStartedAt: time.Now().Add(-time.Minute)},
+		policy:       config.DefaultAlertPolicy(),
+		interval:     5 * time.Minute,
+		now:          time.Now(),
+		startupGrace: DefaultStartupGrace,
 	}
 }
 
@@ -123,7 +125,8 @@ func (d *healthTestDeps) checker() *Checker {
 			defer d.mu.Unlock()
 			return d.now
 		},
-		PingTimeout: 100 * time.Millisecond,
+		PingTimeout:  100 * time.Millisecond,
+		StartupGrace: d.startupGrace,
 	})
 }
 
@@ -353,5 +356,51 @@ func TestEvaluateDoesNotExposeUnderlyingError(t *testing.T) {
 		if strings.Contains(reason, "disk I/O error") || strings.Contains(reason, "/var/lib") {
 			t.Errorf("稳定原因不得泄露底层错误或路径: %q", reason)
 		}
+	}
+}
+
+// TestEvaluateStartupGrace Build7 Step 7：启动宽限三分支的判别性用例。
+//
+//   - 从未进入运行态且仍在宽限内 → 不视为异常（进程刚启动，主循环可能尚未被调度）；
+//   - 从未进入运行态但宽限已过 → 仍按「同步引擎未运行」上报（不掩盖真死）；
+//   - 已进入运行后停止 → 立即异常，不受宽限影响。
+func TestEvaluateStartupGrace(t *testing.T) {
+	// 场景 1：宽限内未运行 → 健康
+	within := newHealthTestDeps()
+	within.setup(func() {
+		within.status = baseStatus(within.now)
+		within.status.Running = false
+		within.status.StartedAt = nil
+		within.status.ProcessStartedAt = within.now.Add(-time.Second)
+	})
+	if res := within.checker().Evaluate(context.Background()); !res.Healthy {
+		t.Fatalf("启动宽限内的未运行不得报异常: %+v", res)
+	}
+
+	// 场景 2：超出宽限仍未进入运行 → unhealthy（同步引擎未运行）
+	over := newHealthTestDeps()
+	over.setup(func() {
+		over.status = baseStatus(over.now)
+		over.status.Running = false
+		over.status.StartedAt = nil
+		over.status.ProcessStartedAt = over.now.Add(-DefaultStartupGrace - time.Second)
+	})
+	res2 := over.checker().Evaluate(context.Background())
+	if res2.Healthy || len(res2.Reasons) != 1 || res2.Reasons[0] != ReasonSyncerStopped {
+		t.Fatalf("超出启动宽限必须按同步引擎未运行上报: %+v", res2)
+	}
+
+	// 场景 3：已进入运行后停止 → 立即 unhealthy，即使距 ProcessStartedAt 只有 2 秒
+	stopped := newHealthTestDeps()
+	stopped.setup(func() {
+		stopped.status = baseStatus(stopped.now)
+		stopped.status.Running = false
+		started := stopped.now.Add(-2 * time.Second)
+		stopped.status.StartedAt = &started
+		stopped.status.ProcessStartedAt = stopped.now.Add(-2 * time.Second)
+	})
+	res3 := stopped.checker().Evaluate(context.Background())
+	if res3.Healthy || len(res3.Reasons) != 1 || res3.Reasons[0] != ReasonSyncerStopped {
+		t.Fatalf("已启动后停止必须立即异常（不受启动宽限影响）: %+v", res3)
 	}
 }

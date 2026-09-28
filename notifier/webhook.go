@@ -93,7 +93,9 @@ func (n *WebhookNotifier) OnEvent(event Event) error {
 		defer release()
 	}
 
-	content := fmt.Sprintf("[FWAlizer] %s\n%s", event.Type, formatEventBody(event))
+	// 详情块与邮件共用同一固定渲染器（Build7 Step 7）：顺序稳定、缺失写 "-"、
+	// operational 事件追加固定「原因」行；首行保留事件类型标识便于检索。
+	content := fmt.Sprintf("[FWAlizer] %s\n%s", event.Type, formatEventDetails(event))
 	var payload map[string]any
 	switch n.channel {
 	case "feishu":

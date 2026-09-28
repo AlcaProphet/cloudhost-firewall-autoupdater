@@ -39,6 +39,15 @@ const (
 // DefaultPingTimeout SQLite 探活的硬上限（Build7 §7.2 第 1 步）。
 const DefaultPingTimeout = 2 * time.Second
 
+// DefaultStartupGrace 是「同步主循环尚未进入运行态」的固定启动宽限（Build7 Step 7）。
+//
+// 进程启动后的这段窗口内，running=false 可能只是主循环尚未被调度（或尚未启动），
+// 不视为异常；超过宽限仍未进入运行态，才按「同步引擎未运行」上报。
+// 宽限只在「从未进入过运行态」时生效：已进入运行后停止会立即上报。
+//
+// 该值是内部固定常量，不新增用户可配置项（Build7 §7.2 只保留一个 health_timeout）。
+const DefaultStartupGrace = 10 * time.Second
+
 // Pinger 是有界 SQLite 探活入口（生产由 *config.Store 实现）。
 type Pinger interface {
 	PingContext(ctx context.Context) error
@@ -58,6 +67,8 @@ type Deps struct {
 	Now func() time.Time
 	// PingTimeout 是探活上限（测试接缝）；<= 0 时使用 DefaultPingTimeout。
 	PingTimeout time.Duration
+	// StartupGrace 是启动宽限（测试接缝）；<= 0 时使用 DefaultStartupGrace。
+	StartupGrace time.Duration
 }
 
 // Result 是一次运行健康判定的结果。
@@ -83,13 +94,17 @@ func New(deps Deps) *Checker {
 	if deps.PingTimeout <= 0 {
 		deps.PingTimeout = DefaultPingTimeout
 	}
+	if deps.StartupGrace <= 0 {
+		deps.StartupGrace = DefaultStartupGrace
+	}
 	return &Checker{deps: deps}
 }
 
 // Evaluate 按 Build7 §7.2 的固定顺序计算一次健康状态。
 //
 //  1. 最多 2 秒的 SQLite 探活，失败即 unhealthy；
-//  2. 非 shutdown 阶段主循环未运行即 unhealthy；
+//  2. 非 shutdown 阶段主循环未运行即 unhealthy；但进程启动后的固定启动宽限内、
+//     且主循环从未进入过运行态时不算异常（Build7 Step 7）；
 //  3. sync_enabled=false 时只保留以上两项，直接返回；
 //  4. 当前轮次超过 health_timeout 未完成 → 轮次超时；
 //  5. 最近一轮 failed / partial → 最近一轮失败 / 部分完成；
@@ -120,9 +135,17 @@ func (c *Checker) Evaluate(ctx context.Context) Result {
 		healthTimeout = config.DefaultHealthTimeout
 	}
 
-	// 2) 主循环
+	// 2) 主循环（Build7 Step 7 三分支）：
+	//   - 已进入运行后停止 → 立即异常，不受启动宽限影响；
+	//   - 从未进入运行且启动宽限已过 → 按引擎未运行处理；
+	//   - 从未进入运行但在启动宽限内 → 主循环可能只是尚未被调度，不制造伪异常。
 	if !status.Running {
-		res.Reasons = append(res.Reasons, ReasonSyncerStopped)
+		switch {
+		case status.StartedAt != nil:
+			res.Reasons = append(res.Reasons, ReasonSyncerStopped)
+		case now.Sub(status.ProcessStartedAt) > c.deps.StartupGrace:
+			res.Reasons = append(res.Reasons, ReasonSyncerStopped)
+		}
 	}
 
 	// 3) 暂停：跳过全部轮次结论、轮次超时与调度停滞检查

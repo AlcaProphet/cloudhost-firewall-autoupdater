@@ -6,7 +6,7 @@
 >
 > **授权边界：** 2026-09-27 已完成全量只读复核与用户裁决；本次只把裁决结果并入本文，不修改设计、源码、测试、依赖、配置或其他文档，也不开始任何修复。§2.2 各批次的可实施性由用户后续一次性授权决定。
 >
-> **Build7（2026-09-28）：** 当前构建方案为 [Build7.md](./Build7.md)（告警与运行健康）；Build7 **Step 0～6 已全部实施完成**（逐步证据见 Build7 第八节）。§6.5 第 10 项（SMTP 多收件人未逐项 Trim）已由 Build7 合同显式接管并**随 Build7 Step 3 实施完成**：`notifier/email.go` 对 `To` 逐项 `TrimSpace` 并跳过空项，判别性用例见 `notifier/email_test.go:TestEmailRecipientsAreTrimmed`；§6.5 其余候选保持不变，继续不授权实施。
+> **Build7（2026-09-28）：** 当前构建方案为 [Build7.md](./Build7.md)（告警与运行健康）；Build7 **Step 0～6 已全部实施完成，Step 7（核验缺陷修复）亦已完成**（逐步证据见 Build7 第八节 Step 7 与 §十一 v1.3；本轮核验发现与处置见本文 §7.8）。§6.5 第 10 项（SMTP 多收件人未逐项 Trim）已由 Build7 合同显式接管并**随 Build7 Step 3 实施完成**：`notifier/email.go` 对 `To` 逐项 `TrimSpace` 并跳过空项，判别性用例见 `notifier/email_test.go:TestEmailRecipientsAreTrimmed`；§6.5 其余候选保持不变，继续不授权实施。
 
 ## 一、使用规则
 
@@ -709,3 +709,31 @@ git diff --check
 | 最终独立测试 | **尚未执行** | 本次由主任务完成统一本地门禁，未另派独立测试代理；这不影响判别性自动测试结论，但不得记作独立代理验收。 |
 
 **当前工作树：** 第 1、2 项已由提交 `043ac36` 纳入当前 `main`；第 3 项仍由 `8898263d` 的 R6-01 实现收口。本次未提交工作树仅包含第 4 项的 `syncer/syncer.go`、`syncer/stop_gate_test.go` 与本文记录。未执行 Docker、远端 GitHub Actions、GHCR、浏览器人工回归或真实云/API/DNS/SMTP/Webhook 验收；同属 §6.5 第 14 项的 `Server.Addr()` 语义及其他候选仍未授权处理。
+
+### 7.8 Build7 Step 7：核验缺陷修复记录（2026-09-28）
+
+> **执行方式：** Build7 Step 0～6 完成后，按用户要求对 Build7 构建情况做一次只读全量核验（逐版块比对
+> 合同 + 自动门禁 + 真实二进制 + Docker 容器 + 前端审计），核验发现的缺陷经用户裁决后由主任务一次性修复。
+> 核验同时确认：**「前端发送后端 DTO 没有的字段」这一类缺陷全项目仅一处**（19 处写请求与全部 GET
+> 响应字段逐字段核对，其余 18 处对齐）。
+
+| 编号 | 问题 | 根因 | 处置 | 状态 |
+|---|---|---|---|---|
+| R7-01 | 告警页「测试发送邮件」必然 HTTP 400，Build7 §5.3 的「SMTP 已接受」成功态在 UI 中不可达 | `Alerts.vue` 的 `testSend()` 序列化整个 email 表单对象（含 `enabled`），而 `POST /api/alerts/test-email` 的请求 DTO 只有 8 个字段并使用严格解码（拒绝未知字段） | 按用户裁决**只改前端**：新增 `TestEmailPayload` 类型并显式构造 8 个发送字段；后端 DTO 与严格解码契约不变（测试邮件 API 的严格性不得放宽） | 已修复（2026-09-28） |
+| R7-02 | 进程重启时把「同步引擎尚未启动」误判为「引擎未运行」：启动即写 WARN「运行健康异常」，Push 首条心跳为 `status=down&msg=同步引擎未运行`；开启第三触发开关 + 渠道时**实测发出一次误报 Webhook/邮件** | `run.go` 先启动监督器/Push goroutine、后启动 `Syncer.Run`，而 `running=true` 只在 `Run` 内 `setRunning(true)` 才置位；监督器首检与 Push 首发立即执行 | 按用户裁决同时采纳两层修复：① **启动顺序确定性化**——`Syncer` 暴露 `Started()`（在 `running=true` 可见后关闭一次），`run.go` 有界等待（上限 2s，超时 WARN 后继续）再启动监督器与 Push；② **健康判定启动宽限**——新增 `SyncStatus.started_at` 与固定 `StartupGrace=10s`：从未进入运行态且在宽限内不判异常，超宽限仍按未运行上报，已进入运行后停止立即异常（不受宽限影响） | 已修复（2026-09-28） |
+
+**同批低风险收口（无行为变更或仅文案/样式）：**
+
+- **R7-03（注释滞后）**：`config/store.go`、`webui/api/bundle_v3.go`、`webui/api/coordinator.go`、`webui/api/settings.go`、`webui/frontend/src/views/Settings.vue` 中残留的「version 2」表述统一改为 version 3；`webui/api/export.go` 与 `coordinator.go` 的 commit 后发布顺序注释补齐为「日志级别 → 告警集合 → 运行健康监督器唤醒 → Uptime Kuma Push 唤醒 → RuntimeState」。
+- **R7-04（注释与实现不符）**：`config/runtime.go` 的 `BusinessSnapshot` 注释改为与实现一致（policy/push 读取时解析校验；email/webhook 按原值读取，合法性由 PUT 与配置导入共用校验保证）。
+- **R7-05（Webhook 详情块非确定）**：`notifier/webhook.go` 原用 `formatEventBody` 遍历 map，同一事件可能产生不同文本顺序；现与邮件共用 `formatEventDetails` 固定渲染器（顺序稳定、缺失写 `-`），并删除 `formatEventBody`。按用户裁决，运行健康异常事件在详情块末尾追加固定 `原因` 行（稳定原因用 `; ` 连接，无原因不输出），避免丢失 reasons。
+- **R7-06（提示与样式）**：`Settings.vue` 导出/导入二次确认弹窗的敏感清单补 `Uptime Kuma Push URL（含 token）`；`Alerts.vue` 的 Webhook URL 改为密码型可切换显示输入。
+
+**判别性证据（本机 2026-09-28）：**
+
+- R7-01：`main_test.go:TestProcessTestEmailWithUIPayload`（真实二进制 + 本地假 SMTP）——与页面一致的 8 字段载荷返回 `200 {"success":true,"message":"SMTP 服务器已接受测试邮件"}`，并断言主题固定后缀、正文固定说明、多收件人逐项 Trim；同一载荷多带 `enabled` 返回 `400 请求体包含未知字段: enabled`（修复前页面载荷正是该形态）。修复前现场复现：带 `enabled` → 400。
+- R7-02：`main_test.go:TestProcessRestartPushFirstHeartbeatIsUp`（Push 配置持久化 + `GOMAXPROCS=1` 重启）——首条心跳必须 `status=up&msg=OK`、token 与未知 query 保留、启动日志不得出现「运行健康异常」；修复前在 `GOMAXPROCS=1` 下 12/12 复现 `status=down&msg=同步引擎未运行`，并实测收到误报 Webhook。新增 `internal/health:TestEvaluateStartupGrace`（宽限内健康 / 超宽限异常 / 已启动后停止立即异常）、`syncer:TestStartedSignalClosesAfterRunBegins`、`syncer:TestStartedNeverClosesWhenStopPrecedesRun`。
+- R7-05：`notifier:TestWebhookContentIsDeterministicAndUnified`（同一事件连续 20 次渲染逐字节一致、三渠道、固定顺序、不含未固定键）、`notifier:TestWebhookSyncEventUsesFixedBlockWithoutExtraKeys`、`notifier:TestEmailOperationalEventIncludesReasons`。
+- 统一门禁：`gofmt -l` 无输出、`go build ./...`、`go vet ./...`、`go test ./... -race -count=1`（12 包全绿）、前端 `npm run build` 与两条 `npm audit`（0 漏洞）、`docker build` + 容器非 root（uid 1000）/`HEALTHCHECK` 仍指 `/api/health`/`healthy`/`docker stop` 有界且退出码 0。
+
+**证据边界（不得写成通过）：** 本地假 SMTP/本地 HTTP mock 不等于真实 SMTP 收件箱、真实 Webhook 或真实 Uptime Kuma；浏览器人工交互回归（ProdTestList PT-B7-07）仍未执行；真实云 API 与远端 CI/GHCR 未执行。契约同步见 `AGENTS.md` §9.1（启动宽限、两渠道共用详情块与「原因」行）与 `Build7.md` §4.4/§7.2/§7.3/Step 7。

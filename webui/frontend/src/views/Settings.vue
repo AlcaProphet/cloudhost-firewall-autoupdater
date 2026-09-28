@@ -157,10 +157,10 @@ async function save() {
   }
 }
 
-// ─── 配置导入导出（version 2 完整敏感快照，Build6 Step 5） ───
+// ─── 配置导入导出（version 3 完整敏感快照，Build6 Step 5 / Build7 §4.3） ───
 //
 // 安全边界：配置包是**明文完整敏感快照**（含腾讯云/阿里云密钥、SMTP 密码、
-// Webhook URL），安全等级等同于生产 Secret 或 SQLite 数据库备份。
+// Webhook URL 与 Uptime Kuma Push URL），安全等级等同于生产 Secret 或 SQLite 数据库备份。
 // 因此导出使用 POST + fetch + Blob，不把响应交给通用 JSON 请求封装，
 // 不在 console 输出响应体；文件名从 Content-Disposition 解析，不可用时用固定安全名。
 
@@ -415,6 +415,7 @@ async function confirmImport() {
         <li>阿里云密钥（AccessKeyId / AccessKeySecret）</li>
         <li>SMTP 密码</li>
         <li>Webhook URL</li>
+        <li>Uptime Kuma Push URL（含 token）</li>
       </ul>
       <p style="margin: 0 0 16px; line-height: 1.7">
         请勿提交到 Git、上传公共网盘或通过不可信渠道传输。该文件安全等级等同于生产密钥或数据库备份，
@@ -432,8 +433,9 @@ async function confirmImport() {
         导入将<b>整体覆盖</b>当前全部业务配置：目标、规则、设置、云凭据与告警。
       </p>
       <p style="margin: 0 0 12px; line-height: 1.7">
-        配置包是明文完整敏感快照，包含腾讯云密钥、阿里云密钥、SMTP 密码与 Webhook URL，
-        因此也会一并覆盖现有密钥。导入成功后页面会自动刷新；失败时保持当前配置不变。
+        配置包是明文完整敏感快照，包含腾讯云密钥、阿里云密钥、SMTP 密码、Webhook URL
+        与 Uptime Kuma Push URL（含 token），因此也会一并覆盖现有密钥。
+        导入成功后页面会自动刷新；失败时保持当前配置不变。
       </p>
       <p v-if="importFilename" style="margin: 0 0 16px; color: #d03050; line-height: 1.7">
         待导入文件：{{ importFilename }}

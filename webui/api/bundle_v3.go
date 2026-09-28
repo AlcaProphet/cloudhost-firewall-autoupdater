@@ -271,7 +271,7 @@ type bundleV3WireAlerts struct {
 	Webhook *bundleV3WireWebhook `json:"webhook"`
 }
 
-// bundleV3Wire 是导入使用的强类型 version 2 DTO。
+// bundleV3Wire 是导入使用的强类型 version 3 DTO。
 //
 // 必需 scalar 用指针、必需 object 用指针、必需 array 用 presenceSlice，
 // 因此「字段缺失」「显式 null」与「合法零值/空数组」可以严格区分。
@@ -434,7 +434,7 @@ func toBundleV3(snapshot *config.BusinessSnapshot, exportedAt time.Time) bundleV
 // 校验全部复用 config 包已实现的领域校验函数，不建立第二套更宽松或重复的规则
 // （Build6 §3.2、§4.2～§4.5、§12.10、§12.12）。
 func validateAndNormalizeBundle(wire *bundleV3Wire) (*checkedBundleV3, error) {
-	// version：只接受 2，缺失/null/其他一律 400，不做迁移或字段补全
+	// version：只接受 3，缺失/null/其他一律 400，不做迁移或字段补全
 	if wire.Version == nil {
 		return nil, badRequest("version 字段缺失")
 	}
@@ -833,7 +833,7 @@ func normalizeBundleWebhook(w *bundleV3WireWebhook) (config.AlertWebhookConfig, 
 
 // bundleSettingsToStore 把已校验的配置包设置转换为**显式**的落库键值集合。
 //
-// 必须逐键写入 version 2 的完整键集合（Build6 §12.12）：不遍历任意 map，
+// 必须逐键写入 version 3 的完整键集合（Build6 §12.12）：不遍历任意 map，
 // 因此旧数据库的未知键不会进入新快照。
 func bundleSettingsToStore(s checkedBundleV3Settings) map[string]string {
 	syncEnabled := "false"

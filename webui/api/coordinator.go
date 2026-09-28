@@ -32,7 +32,7 @@ type Candidate struct {
 
 // ConfigCoordinator 进程内配置变更协调器（Build6 §12.4）。
 //
-// 职责：把目标、规则、settings、alerts、pause/resume、reset 与 version 2 配置
+// 职责：把目标、规则、settings、alerts、pause/resume、reset 与 version 3 配置
 // 导入的写入口串行化，并在**同一个 SQLite 事务内**完成变更、读取完整业务快照、
 // 构造候选运行时状态与候选告警集合；commit 之后只做无失败的内存发布。
 //
@@ -47,9 +47,9 @@ type ConfigCoordinator struct {
 	// 完整导入新建 breaker 并清空计数（Build6 §12.3 第 7 条）。
 	buildCandidate func(snapshot *config.BusinessSnapshot, policy syncer.BreakerPolicy) (Candidate, error)
 
-	// apply 在 commit 之后按固定顺序执行无失败发布：
-	// 日志级别 → 告警集合 → RuntimeState。**不得返回 error**：
-	// commit 之后不存在可失败出口，避免“接口报错但数据库已经改变”（Build6 §3.5）。
+	// apply 在 commit 之后按固定顺序执行无失败发布（Build7 §4.3、Step 7）：
+	// 日志级别 → 告警集合 → 运行健康监督器唤醒 → Uptime Kuma Push 唤醒 → RuntimeState。
+	// **不得返回 error**：commit 之后不存在可失败出口，避免“接口报错但数据库已经改变”（Build6 §3.5）。
 	apply func(candidate Candidate)
 }
 

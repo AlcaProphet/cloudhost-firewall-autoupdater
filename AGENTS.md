@@ -1,7 +1,7 @@
 # AGENTS.md — FWAlizer AI 编码指令
 
 > 本文档是给 AI 编码助手的指令集，也是项目**唯一的强要求文档**（详见「十二、文档体系与优先级」）。
-> 项目设计方向见 [Design5.md](./Design5.md)（设计记录，当前），当前构建方案见 [Build7.md](./Build7.md)（告警与运行健康，Step 0～6 分步实施），问题记录见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)，人工验收清单见 [ProdTestList.md](./ProdTestList.md)；[Build6.md](./Build6.md) 已收束为**已完成的历史构建记录**（其 version 2 配置包边界已由 Build7 的 version 3 取代）；历史文档（Design1-4、Build1-5、Issue1-4）已移入 [HistoryDocs/](./HistoryDocs/)（已存档，仅记录，不再用于构建，仅用于核查等情况）。
+> 项目设计方向见 [Design5.md](./Design5.md)（设计记录，当前），当前构建方案见 [Build7.md](./Build7.md)（告警与运行健康，Step 0～7 分步实施），问题记录见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)，人工验收清单见 [ProdTestList.md](./ProdTestList.md)；[Build6.md](./Build6.md) 已收束为**已完成的历史构建记录**（其 version 2 配置包边界已由 Build7 的 version 3 取代）；历史文档（Design1-4、Build1-5、Issue1-4）已移入 [HistoryDocs/](./HistoryDocs/)（已存档，仅记录，不再用于构建，仅用于核查等情况）。
 
 ---
 
@@ -12,9 +12,9 @@
 - **产品与兼容标识**：产品显示名、二进制名、`FWALIZER_DATA_DIR` 部署变量、数据目录及 GHCR 镜像继续使用 `FWAlizer` / `fwalizer`，避免破坏保留的部署边界
 - **Go 版本**：`go 1.25`
 - **平台约束**：仅支持 **Linux 与 macOS**（平台文件 build tag 精确为 `linux || darwin`）；**不支持 Windows**（Windows pidfile 实现与 `%APPDATA%` 数据目录分支已移除，`GOOS=windows` 构建按预期失败）；构建与发布面向 `linux/amd64`
-- **文档定位与优先级**：编码前先阅读本文件（强要求）。设计记录见 [Design5.md](./Design5.md)（当前，非强制，供参考）；当前详细构建方案见 [Build7.md](./Build7.md)（Step 0～6）；[Build6.md](./Build6.md) 为已完成的历史构建记录（其 version 2 配置包条款已由 Build7 的 version 3 取代，仅用于核查）；问题记录见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)；人工验收清单见 [ProdTestList.md](./ProdTestList.md)；历史文档（Design1-4、Build1-5、Issue1-4）见 [HistoryDocs/](./HistoryDocs/)（已存档，仅记录，不再用于构建，仅用于核查等情况）
+- **文档定位与优先级**：编码前先阅读本文件（强要求）。设计记录见 [Design5.md](./Design5.md)（当前，非强制，供参考）；当前详细构建方案见 [Build7.md](./Build7.md)（Step 0～7）；[Build6.md](./Build6.md) 为已完成的历史构建记录（其 version 2 配置包条款已由 Build7 的 version 3 取代，仅用于核查）；问题记录见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)；人工验收清单见 [ProdTestList.md](./ProdTestList.md)；历史文档（Design1-4、Build1-5、Issue1-4）见 [HistoryDocs/](./HistoryDocs/)（已存档，仅记录，不再用于构建，仅用于核查等情况）
 - **Build6 已完成构建（历史记录）**：目标形态固定为 WebUI 单二进制 + SQLite。截至 2026-09-27，Step 0～7 已验收通过。Step 5 的工程实现、本地自动门禁、浏览器人工回归及真实云/DNS/同步链路已经完成并由用户确认真机通过；跨实例不同自增历史的人工交叉导入因当前无该使用场景而免除（底层 ID 映射仍由自动化覆盖）。Step 7 的自动补测、统一验收门禁、真实二进制/Docker 容器验收与文档闭环已完成，并按用户确认的最小边界修复 Issue6 A10/A5/A7/A6/A8；**在此之后按用户一次性授权完成 Issue6 批次 1（A1、A12）、批次 3（A20、A16）、批次 2（A2）、批次 4（A3、A18、A13、A15 与 A11 接口部分）、批次 5（A4、A9、A14、A17）、批次 6（A11 收尾）与批次 7（A19、A8 文档收口）**，批次 8（低风险清理）亦已完成，Issue6 §2.1 状态表为权威记录。远端 GitHub Actions 已取得真实结果（tag `v2.0.0` → 运行 `36300428681` 成功，含远端 `go test -race -v ./...`，并真实推送 `ghcr.io/alcaprophet/fwalizer:2.0.0`），Issue5 O5-02 已关闭。真实 Email/SMTP/收件箱与 Webhook 的人工验收（原 `ProdTestList.md` PT-B6-08/09）经用户 2026-09-27 明确决定跳过、由用户自行处理，属**人工验收免除**（沿用 PT-B6-04 先例），不阻塞 Step 7，**但这两个外部链路仍无真实通过结论，不得写成已经通过**。
-- **Build7 实施状态（2026-09-28）**：Build7（[Build7.md](./Build7.md)，告警与运行健康）**Step 0～6 已全部实施完成**：告警三个触发开关（默认全部关闭，渠道与触发同时开启才订阅）、可编辑纯文本邮件主题与正文（固定事件后缀与稳定详情顺序）、`POST /api/alerts/test-email`、唯一 `OperationalHealth` 计算源（`internal/health`）+ 30 秒内部监督器 + `GET /api/health/operational`、Uptime Kuma Push（默认关闭、默认 60s、最小 20s）；配置包为 version 3，version 1/2 与其他版本直接拒绝。**本机已取得的证据**：`go test ./... -race -count=1`（12 包）、`go vet ./...`、`go build ./...`、前端 `npm ci`/`npm run build`/两条 `npm audit`（0 漏洞）、`docker compose config`、`docker build`、容器非 root（uid 1000）+ `healthy` + `docker stop` 有界且退出码 0、真实二进制进程级用例（静态 `/api/health` 与 `/api/health/operational` 200、Push 心跳发往本地 mock、SIGTERM 干净退出）。**仍无真实通过结论（不得写成通过）**：真实 SMTP 接受、真实收件箱投递、真实 Webhook、真实 Uptime Kuma HTTP Monitor 与 Push 的 DOWN/恢复通知、真实云 API、远端 CI/GHCR 均未执行，清单见 [ProdTestList.md](./ProdTestList.md)。
+- **Build7 实施状态（2026-09-28）**：Build7（[Build7.md](./Build7.md)，告警与运行健康）**Step 0～6 已全部实施完成，Step 7（核验缺陷修复）亦已完成**：告警三个触发开关（默认全部关闭，渠道与触发同时开启才订阅）、可编辑纯文本邮件主题与正文（固定事件后缀与稳定详情顺序）、`POST /api/alerts/test-email`、唯一 `OperationalHealth` 计算源（`internal/health`）+ 30 秒内部监督器 + `GET /api/health/operational`、Uptime Kuma Push（默认关闭、默认 60s、最小 20s）；配置包为 version 3，version 1/2 与其他版本直接拒绝。Step 7 修复了两项核验缺陷：告警页测试邮件请求体多带 `enabled` 导致必然 HTTP 400（前端改为显式 8 字段载荷，后端严格契约不变）；启动窗口把「同步引擎尚未启动」误判为「未运行」导致重启误报 Push DOWN 与运行健康异常（启动顺序确定性化 + 固定 10 秒启动宽限）。**本机已取得的证据**：`go test ./... -race -count=1`（12 包）、`go vet ./...`、`go build ./...`、前端 `npm ci`/`npm run build`/两条 `npm audit`（0 漏洞）、`docker compose config`、`docker build`、容器非 root（uid 1000）+ `healthy` + `docker stop` 有界且退出码 0、真实二进制进程级用例（静态 `/api/health` 与 `/api/health/operational` 200、Push 心跳发往本地 mock、SIGTERM 干净退出、UI 载荷测试邮件走完假 SMTP、重启后首条心跳为 up）。**仍无真实通过结论（不得写成通过）**：真实 SMTP 接受、真实收件箱投递、真实 Webhook、真实 Uptime Kuma HTTP Monitor 与 Push 的 DOWN/恢复通知、真实云 API、远端 CI/GHCR 均未执行，清单见 [ProdTestList.md](./ProdTestList.md)。
 
 ---
 
@@ -137,18 +137,18 @@
 
 ### 9.1 已固定实施契约（Build7 已实施合同 + Build6 既有边界）
 
-> 本节同时承载 Build6 已落地边界与 Build7 已实施合同。Build7 条款自 2026-09-28 起已随 Step 1～6 实施完成（逐步证据见 [Build7.md](./Build7.md) 第八节与第十一节）；Build6 条款中未被 Build7 明确替代的部分继续有效。
+> 本节同时承载 Build6 已落地边界与 Build7 已实施合同。Build7 条款自 2026-09-28 起已随 Step 1～7 实施完成（逐步证据见 [Build7.md](./Build7.md) 第八节与第十一节）；Build6 条款中未被 Build7 明确替代的部分继续有效。
 
-**Build7 已实施合同（告警与运行健康，Step 1～6 于 2026-09-28 完成）**
+**Build7 已实施合同（告警与运行健康，Step 1～7 于 2026-09-28 完成；Step 7 为核验缺陷修复）**
 
 - 配置包只接受 version 3；version 1/2 及其他版本一律 HTTP 400，不迁移、不补全、不兼容；version 3 固定包含 `metadata`、`targets`、`rules`、`settings`、`alerts`（`policy`/`email`/`webhook`）与 `monitoring.uptime_kuma_push` 全字段，数组与对象不得为 `null`
 - 告警配置持久化固定为 `alert_policy`（三个触发开关 + `health_timeout`）、`alert_email`（含 `subject`/`body`）、`alert_webhook`、`uptime_kuma_push` 四张单行表；现有数据库执行一次性最小显式迁移，保证各单行表至多一行且业务 ID 固定为 1，不得依赖 `CREATE TABLE IF NOT EXISTS` 自动补列，也不得在每次启动重复重置用户配置
 - 告警默认值固定全部关闭：`email.enabled`、`webhook.enabled`、三个触发开关与 `uptime_kuma_push.enabled` 的初始值与迁移结果均为 false；只有“渠道开关 + 对应触发开关”同时开启才安装该事件订阅；只开启触发条件但不启用渠道、或只启用渠道但不开启触发条件，都不发送自动通知；测试邮件独立于这些开关
 - 三个触发开关是邮件与 Webhook **共用**的全局策略，不为两个渠道复制两套开关；`health_timeout` 默认 `10m` 且只保留这一个健康超时；Push 间隔默认 `60s`、最小 `20s`
-- 邮件固定一套可编辑纯文本主题与正文，自动邮件主题追加固定后缀（`DNS 解析失败` / `同步失败` / `运行健康异常`），正文为“用户文本 + 系统固定详情块”（`事件类型`/`时间`/`Provider`/`域名`/`错误`，缺失字段写 `-`，顺序稳定，不遍历 map）；多收件人逗号分隔并逐项 Trim；邮件固定 `text/plain; charset=UTF-8`
+- 邮件固定一套可编辑纯文本主题与正文，自动邮件主题追加固定后缀（`DNS 解析失败` / `同步失败` / `运行健康异常`），正文为“用户文本 + 系统固定详情块”（`事件类型`/`时间`/`Provider`/`域名`/`错误`，缺失字段写 `-`，顺序稳定，不遍历 map）；该详情块由**邮件与 Webhook 共用同一渲染器**（Webhook 首行保留事件类型标识），两渠道顺序一致；运行健康异常事件在详情块末尾追加固定 `原因` 行（稳定原因用 `; ` 连接，无原因则不输出该行）；多收件人逗号分隔并逐项 Trim；邮件固定 `text/plain; charset=UTF-8`
 - `GET/PUT /api/alerts` 顶层固定为 `policy`、`email`、`webhook`、`uptime_kuma_push` 四个完整对象；PUT 的四个对象及其全部子字段必须出现，拒绝 `null`、缺字段、未知字段、尾随 JSON 与多个顶层值；四部分在同一协调器写事务内覆盖保存，任一步失败全部回滚；commit 后只做无失败内存发布与循环唤醒，不在协调器锁内等待 SMTP、Webhook 或 Uptime Kuma；GET 必须 `Cache-Control: no-store`
 - 新增 `POST /api/alerts/test-email`：使用请求中的未保存表单值，不写 SQLite、不进入配置协调器、不 Apply 告警集合、不改变订阅、不要求邮件渠道已启用；复用生产 SMTP 会话的 10 秒连接上限与 30 秒整会话 deadline；成功文案固定为“SMTP 服务器已接受测试邮件”，不得表述为已送达收件箱；测试结果只存在于页面内存与既有实时日志
-- 运行健康固定由唯一 `OperationalHealth` 计算源提供（内部监督器、`/api/health/operational` 与 Uptime Kuma Push 共用，禁止各写一套）：SQLite 探活最多 2 秒且不持有 Syncer/协调器锁；Syncer 主循环未运行即 unhealthy（正常 shutdown 阶段除外）；`sync_enabled=false` 时只保留 SQLite 与主循环检查；最近一轮 `failed` 或 `partial` 视为 unhealthy（直到后续 `success`/`idle` 覆盖）；当前轮次超过 `health_timeout` 未完成、以及 `sync_enabled=true` 时距最近完成时间超过 `interval + health_timeout` 均视为 unhealthy；`idle` 与空目标/空规则视为正常；多原因去重并使用固定排序
+- 运行健康固定由唯一 `OperationalHealth` 计算源提供（内部监督器、`/api/health/operational` 与 Uptime Kuma Push 共用，禁止各写一套）：SQLite 探活最多 2 秒且不持有 Syncer/协调器锁；Syncer 主循环未运行即 unhealthy（正常 shutdown 阶段不监督；进程启动后的固定启动宽限 `StartupGrace=10s` 内、主循环尚未进入运行态不视为异常，超出宽限仍按未运行处理；已进入运行后停止则立即 unhealthy，不受宽限影响）；内部监督器与 Push 循环必须在同步主循环进入运行态后才启动（启动顺序确定性化，不得让首检/首发读到尚未启动）；`sync_enabled=false` 时只保留 SQLite 与主循环检查；最近一轮 `failed` 或 `partial` 视为 unhealthy（直到后续 `success`/`idle` 覆盖）；当前轮次超过 `health_timeout` 未完成、以及 `sync_enabled=true` 时距最近完成时间超过 `interval + health_timeout` 均视为 unhealthy；`idle` 与空目标/空规则视为正常；多原因去重并使用固定排序
 - `/api/health` 保持静态 Docker 存活语义不变（不反映同步或运行健康）；新增 `GET /api/health/operational`：健康 200、异常 503，固定 `Content-Type: application/json; charset=utf-8` 与 `Cache-Control: no-store`，每次请求现场计算，响应只含稳定原因，不泄露 SQL、路径、凭据或 URL；Dockerfile 与 Compose 的 `HEALTHCHECK` 继续使用 `/api/health`
 - 新增 30 秒内部健康监督器：仅在健康→异常边沿发布一次 `notifier.EventOperationalUnhealthy`（事件数据只含检查时间与稳定原因数组），持续异常不重复发送、原因变化只更新日志，恢复只写 INFO 且恢复后再次异常可重新发布一次；配置保存后立即唤醒一次检查；第三触发开关只控制该事件是否进入邮件/Webhook，不关闭 operational 端点与 Push；监督器与进程 shutdown 同一生命周期，不产生孤立 goroutine
 - Uptime Kuma 同时支持 HTTP Monitor 拉取 `/api/health/operational` 与 Push Monitor 反向心跳；Push 默认关闭，解析用户填写的完整 URL 后覆盖 `status`/`msg`/`ping` 并保留 token 与其他未知 query；HTTP 上限 10 秒、同一时刻最多一条在途、不排队不重试；仅 2xx 且响应 JSON 为 `{"ok":true}` 算成功；down 的 `msg` 由稳定原因用 `; ` 连接并截断到 250 字符以内；Push 失败不改写应用健康、不产生自激告警；日志不得包含完整 Push URL 或 token；shutdown 取消在途请求
@@ -212,7 +212,7 @@
 |---------|------|------|--------|
 | **强要求** | **AGENTS.md（本文件）** | AI 编码指令与约束 | **唯一强要求，尽量不违背** |
 | 设计构想 | [Design5.md](./Design5.md)（当前）；历史：[HistoryDocs/](./HistoryDocs/)（Design1-4 已存档） | 设计大方向、架构构想、决策记录 | 非强制，供参考 |
-| 构建方案 | [Build7.md](./Build7.md)（当前，Step 0～6）；历史构建记录：[Build6.md](./Build6.md)（已完成）；更早：[HistoryDocs/](./HistoryDocs/)（Build1-5 已存档） | 详细的分步构建方案与验收命令 | 非强制，执行建议 |
+| 构建方案 | [Build7.md](./Build7.md)（当前，Step 0～7）；历史构建记录：[Build6.md](./Build6.md)（已完成）；更早：[HistoryDocs/](./HistoryDocs/)（Build1-5 已存档） | 详细的分步构建方案与验收命令 | 非强制，执行建议 |
 | 问题记录 | [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)（当前）；历史：[HistoryDocs/](./HistoryDocs/)（Issue1-4 已存档） | 记录的错误与修复方案 | 非强制，经验参考 |
 
 **执行规则：**
@@ -229,7 +229,7 @@
 |------|---------|------|------|
 | AGENTS.md（本文件） | AI 编码助手 | 编码指令与约束（**唯一强要求**） | 活跃 |
 | [Design5.md](./Design5.md) | 人类（开发者/用户） | 当前设计记录：WebUI 单二进制目标形态、配置边界与安全决策 | 活跃 |
-| [Build7.md](./Build7.md) | 开发者 | 当前构建方案：告警与运行健康，Step 0～6 的分步实施与验收 | 活跃 |
+| [Build7.md](./Build7.md) | 开发者 | 当前构建方案：告警与运行健康，Step 0～7（含核验缺陷修复）的分步实施与验收 | 活跃 |
 | [Build6.md](./Build6.md) | 开发者 | 已完成的历史构建记录：Step 0-7（version 2 配置包边界已被 Build7 的 version 3 取代，仅用于核查） | 已完成 |
 | [Issue5.md](./Issue5.md) | 开发者 | 问题追踪：R5、O5 与 A5 事项 | 活跃 |
 | [Issue6.md](./Issue6.md) | 开发者 | 问题追踪：A1～A20 批次、后续核验与残余候选 | 活跃 |

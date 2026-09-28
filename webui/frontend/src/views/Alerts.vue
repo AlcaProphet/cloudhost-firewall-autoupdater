@@ -2,7 +2,7 @@
 import { NCard, NForm, NFormItem, NInput, NSelect, NSwitch, NButton, NText, NAlert, useMessage } from 'naive-ui'
 import { ref, onMounted } from 'vue'
 import { request } from '../api'
-import type { AlertEmailConfig, AlertPolicyConfig, AlertUptimeKumaPushConfig, AlertWebhookConfig } from '../types'
+import type { AlertEmailConfig, AlertPolicyConfig, AlertUptimeKumaPushConfig, AlertWebhookConfig, TestEmailPayload } from '../types'
 
 // 告警配置页（Build7 §4.7）：单页四张卡片，一次提交四个完整对象。
 // 默认值：渠道、三个触发开关与 Push 全部关闭；health_timeout=10m、Push interval=60s。
@@ -56,16 +56,29 @@ const testResult = ref<{ ok: boolean; text: string } | null>(null)
 
 // 测试发送：使用当前表单值，不触发保存；请求上限固定 35 秒。
 // 成功只表述为「SMTP 服务器已接受测试邮件」，不表示已投递到收件箱。
+//
+// 请求体必须显式只取 8 个发送字段（Build7 §5.1）：不得直接序列化整个 email 表单对象，
+// 它多一个 enabled，而后端 testEmailRequest 使用严格解码，多带字段会被 HTTP 400 拒绝。
 async function testSend() {
   testing.value = true
   testResult.value = null
   try {
+    const payload: TestEmailPayload = {
+      host: email.value.host,
+      port: email.value.port,
+      username: email.value.username,
+      password: email.value.password,
+      from_addr: email.value.from_addr,
+      to_addr: email.value.to_addr,
+      subject: email.value.subject,
+      body: email.value.body,
+    }
     const data = await request<{ success: boolean; message?: string; error?: string }>(
       '/api/alerts/test-email',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(email.value),
+        body: JSON.stringify(payload),
       },
       35000,
     )
@@ -201,6 +214,8 @@ async function save() {
         <NFormItem label="Webhook URL">
           <NInput
             v-model:value="webhook.url"
+            type="password"
+            show-password-on="click"
             placeholder="https://oapi.dingtalk.com/robot/send?access_token=xxx"
             :disabled="!webhook.enabled"
           />

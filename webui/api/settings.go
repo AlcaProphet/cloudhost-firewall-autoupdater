@@ -10,7 +10,7 @@ import (
 
 // 设置键边界（Build6 Step 2 最小清理 + Step 4 固定 DTO）：
 // settingsEditableKeys 是 GET 返回并可经 PUT /api/settings 落库的 11 个键；
-// sync_enabled 只由 pause/resume 端点或 version 2 配置导入写入，
+// sync_enabled 只由 pause/resume 端点或 version 3 配置导入写入，
 // webui_port 已改为部署参数 WEBUI_PORT，二者都不属于本 DTO。
 var settingsEditableKeys = map[string]bool{
 	"tc_access_id": true, "tc_access_key": true,

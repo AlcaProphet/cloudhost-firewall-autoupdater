@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"errors"
@@ -1172,5 +1173,348 @@ func TestProcessUptimeKumaPushHeartbeat(t *testing.T) {
 	}
 	if exitCode, err := waitForProcessExit(t, cmd, 20*time.Second); err != nil || exitCode != 0 {
 		t.Fatalf("进程退出失败: code=%d err=%v; 日志:\n%s", exitCode, err, out.String())
+	}
+}
+
+// ─── Build7 Step 7：测试邮件的 UI 载荷（P1 修复） ───
+
+// postJSONWithBody 发送 JSON POST 请求并返回状态码与响应体（进程级用例专用）。
+func postJSONWithBody(t *testing.T, url, body string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("构造请求失败: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 35 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("请求 %s 失败: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	buf := &strings.Builder{}
+	if _, err := io.Copy(buf, resp.Body); err != nil {
+		t.Fatalf("读取 %s 响应失败: %v", url, err)
+	}
+	return resp.StatusCode, buf.String()
+}
+
+// fakeSMTPRecord 记录最小假 SMTP 服务器收到的一次会话内容。
+type fakeSMTPRecord struct {
+	mu    sync.Mutex
+	rcpts []string
+	data  string
+}
+
+func (r *fakeSMTPRecord) addRcpt(v string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rcpts = append(r.rcpts, v)
+}
+
+func (r *fakeSMTPRecord) setData(v string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.data = v
+}
+
+func (r *fakeSMTPRecord) Data() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.data
+}
+
+func (r *fakeSMTPRecord) Rcpts() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.rcpts...)
+}
+
+// startFakeSMTPForProcessTest 启动一个最小假 SMTP 服务器（不宣告 STARTTLS/AUTH），
+// 供真实二进制的测试邮件用例使用；返回监听地址与采集器。
+//
+// 证据边界：这是本地假 SMTP，不代表真实 SMTP 服务器或收件箱投递。
+func startFakeSMTPForProcessTest(t *testing.T) (string, string, *fakeSMTPRecord) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("启动假 SMTP 监听失败: %v", err)
+	}
+	rec := &fakeSMTPRecord{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go serveFakeSMTP(conn, rec)
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-done
+	})
+	addr := ln.Addr().(*net.TCPAddr)
+	return "127.0.0.1", strconv.Itoa(addr.Port), rec
+}
+
+// serveFakeSMTP 处理一条最小 SMTP 会话：220 → EHLO → MAIL/RCPT → DATA → QUIT。
+func serveFakeSMTP(conn net.Conn, rec *fakeSMTPRecord) {
+	defer func() { _ = conn.Close() }()
+	reader := bufio.NewReader(conn)
+	write := func(s string) bool {
+		if _, err := conn.Write([]byte(s)); err != nil {
+			return false
+		}
+		return true
+	}
+	if !write("220 fake ESMTP ready\r\n") {
+		return
+	}
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return
+		}
+		switch {
+		case strings.HasPrefix(line, "EHLO"), strings.HasPrefix(line, "HELO"):
+			if !write("250-fake\r\n250 OK\r\n") {
+				return
+			}
+		case strings.HasPrefix(line, "MAIL FROM"):
+			if !write("250 OK\r\n") {
+				return
+			}
+		case strings.HasPrefix(line, "RCPT TO"):
+			rec.addRcpt(strings.TrimSpace(line))
+			if !write("250 OK\r\n") {
+				return
+			}
+		case strings.HasPrefix(line, "DATA"):
+			if !write("354 End data with <CR><LF>.<CR><LF>\r\n") {
+				return
+			}
+			var sb strings.Builder
+			for {
+				dataLine, derr := reader.ReadString('\n')
+				if derr != nil {
+					return
+				}
+				if dataLine == ".\r\n" || dataLine == ".\n" {
+					break
+				}
+				sb.WriteString(dataLine)
+			}
+			rec.setData(sb.String())
+			if !write("250 OK\r\n") {
+				return
+			}
+		case strings.HasPrefix(line, "QUIT"):
+			_ = write("221 Bye\r\n")
+			return
+		default:
+			if !write("250 OK\r\n") {
+				return
+			}
+		}
+	}
+}
+
+// TestProcessTestEmailWithUIPayload 真实进程：与告警页现在构造的**完全一致的 8 字段载荷**
+// 必须走完 SMTP 会话并返回成功；同时锁定严格解码契约（多带 enabled 必须 400）。
+//
+// 判别性：修复前告警页序列化整个 email 表单对象（含 enabled），后端必然 400，
+// 页面「SMTP 已接受」成功态不可达；本用例锁住修复后的 UI 载荷形状。
+//
+// 证据边界：使用本地假 SMTP，不代表真实 SMTP 服务器或收件箱投递。
+func TestProcessTestEmailWithUIPayload(t *testing.T) {
+	host, port, rec := startFakeSMTPForProcessTest(t)
+
+	dataDir := t.TempDir()
+	webPort := freePort(t)
+	base := fmt.Sprintf("http://127.0.0.1:%d", webPort)
+	cmd, out := startProcess(t, dataDir, map[string]string{"WEBUI_PORT": fmt.Sprintf("%d", webPort)})
+	waitForHTTP(t, base+"/api/health")
+
+	// 邮件渠道保持关闭：测试发送不要求 email.enabled=true（Build7 §5.1），
+	// 但 SMTP 字段必须完整（按「实际要发送」校验）。
+	alertsBody := `{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,` +
+		`"operational_error_enabled":false,"health_timeout":"10m"},` +
+		`"email":{"enabled":false,"host":"` + host + `","port":"` + port + `",` +
+		`"username":"","password":"","from_addr":"from@example.com",` +
+		`"to_addr":"a@example.com, b@example.com","subject":"[FWAlizer] 告警通知",` +
+		`"body":"FWAlizer 检测到运行异常，请检查同步日志。"},` +
+		`"webhook":{"enabled":false,"url":"","channel":"dingtalk"},` +
+		`"uptime_kuma_push":{"enabled":false,"url":"","interval":"60s"}}`
+	if code := putJSON(t, base+"/api/alerts", alertsBody); code != http.StatusOK {
+		t.Fatalf("PUT /api/alerts 状态码 = %d, want 200；日志:\n%s", code, out.String())
+	}
+
+	// 与 webui/frontend/src/views/Alerts.vue 的 testSend() 显式构造的载荷逐字段一致：
+	// 只有 8 个发送字段，不含 enabled（Build7 §5.1）。
+	uiPayload := fmt.Sprintf(`{"host":%q,"port":%q,"username":"","password":"",`+
+		`"from_addr":"from@example.com","to_addr":"a@example.com, b@example.com",`+
+		`"subject":"[FWAlizer] 告警通知","body":"FWAlizer 检测到运行异常，请检查同步日志。"}`,
+		host, port)
+
+	code, body := postJSONWithBody(t, base+"/api/alerts/test-email", uiPayload)
+	if code != http.StatusOK {
+		t.Fatalf("POST /api/alerts/test-email 状态码 = %d, want 200; body=%s；日志:\n%s", code, body, out.String())
+	}
+	if !strings.Contains(body, `"success":true`) || !strings.Contains(body, "SMTP 服务器已接受测试邮件") {
+		t.Fatalf("测试邮件成功口径错误: %s", body)
+	}
+
+	// 服务端必须真的走完 SMTP 会话：主题追加固定后缀、正文追加固定说明与时间
+	mailData := rec.Data()
+	if !strings.Contains(mailData, "Subject: [FWAlizer] 告警通知 - 测试邮件") {
+		t.Errorf("测试邮件主题缺少固定后缀: %q", mailData)
+	}
+	if !strings.Contains(mailData, "这是一次手动测试邮件") {
+		t.Errorf("测试邮件正文缺少固定说明: %q", mailData)
+	}
+	if !strings.Contains(mailData, "Content-Type: text/plain; charset=UTF-8") {
+		t.Errorf("测试邮件必须固定为纯文本 UTF-8: %q", mailData)
+	}
+	// 多收件人必须逐项 Trim 后分别投递
+	rcpts := rec.Rcpts()
+	if len(rcpts) != 2 {
+		t.Fatalf("RCPT 数量 = %d, want 2: %v", len(rcpts), rcpts)
+	}
+	for i, want := range []string{"a@example.com", "b@example.com"} {
+		if !strings.Contains(rcpts[i], "<"+want+">") {
+			t.Errorf("第 %d 个收件人未逐项 Trim: %q", i+1, rcpts[i])
+		}
+	}
+
+	// 反向断言：修复前的页面载荷（整个 email 对象，多一个 enabled）必须被严格拒绝。
+	withEnabled := `{"enabled":false,` + strings.TrimPrefix(uiPayload, "{")
+	code2, body2 := postJSONWithBody(t, base+"/api/alerts/test-email", withEnabled)
+	if code2 != http.StatusBadRequest || !strings.Contains(body2, "enabled") {
+		t.Errorf("多带 enabled 必须 400 且指明未知字段: code=%d body=%s", code2, body2)
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("发送 SIGTERM 失败: %v", err)
+	}
+	if exitCode, err := waitForProcessExit(t, cmd, 20*time.Second); err != nil || exitCode != 0 {
+		t.Fatalf("进程退出失败: code=%d err=%v; 日志:\n%s", exitCode, err, out.String())
+	}
+}
+
+// ─── Build7 Step 7：重启后 Push 首发不得误报 DOWN（P2 判别性用例） ───
+
+// pushHitRecord 记录一次 Push 心跳的路径与 query。
+type pushHitRecord struct {
+	path  string
+	query string
+}
+
+// drainPushHits 非阻塞排空 channel 中已到达的心跳。
+func drainPushHits(ch chan pushHitRecord) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
+	}
+}
+
+// TestProcessRestartPushFirstHeartbeatIsUp Build7 Step 7：
+// Push 配置持久化后重启进程，**第一条**心跳必须是 status=up&msg=OK，且启动日志
+// 不得出现「运行健康异常」。
+//
+// 判别性：修复前 run.go 先启动监督器/Push、后启动 Syncer，而 running 只在
+// Syncer.Run 内才置 true —— 子进程设 GOMAXPROCS=1 时首检必然读到 running=false，
+// 于是首条心跳为 status=down&msg=同步引擎未运行 并写 WARN（实测 12/12 复现）。
+//
+// 证据边界：本地 HTTP mock，不代表真实 Uptime Kuma。
+func TestProcessRestartPushFirstHeartbeatIsUp(t *testing.T) {
+	hits := make(chan pushHitRecord, 16)
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case hits <- pushHitRecord{path: r.URL.Path, query: r.URL.RawQuery}:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer mock.Close()
+
+	dataDir := t.TempDir()
+	const token = "p2-restart-token"
+
+	// 第一次启动：保存 Push 配置（触发条件开启，便于同时观察是否误发边沿事件）
+	port1 := freePort(t)
+	base1 := fmt.Sprintf("http://127.0.0.1:%d", port1)
+	cmd1, out1 := startProcess(t, dataDir, map[string]string{"WEBUI_PORT": fmt.Sprintf("%d", port1)})
+	waitForHTTP(t, base1+"/api/health")
+
+	alertsBody := `{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,` +
+		`"operational_error_enabled":true,"health_timeout":"10m"},` +
+		`"email":{"enabled":false,"host":"","port":"587","username":"","password":"",` +
+		`"from_addr":"","to_addr":"","subject":"[FWAlizer] 告警通知",` +
+		`"body":"FWAlizer 检测到运行异常，请检查同步日志。"},` +
+		`"webhook":{"enabled":false,"url":"","channel":"dingtalk"},` +
+		`"uptime_kuma_push":{"enabled":true,"url":"` + mock.URL + `/api/push/` + token + `?foo=bar","interval":"20s"}}`
+	if code := putJSON(t, base1+"/api/alerts", alertsBody); code != http.StatusOK {
+		t.Fatalf("PUT /api/alerts 状态码 = %d, want 200；日志:\n%s", code, out1.String())
+	}
+	// 启用后立即首发（保存时的正常心跳），等待并丢弃
+	select {
+	case <-hits:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("保存 Push 配置后未收到首发心跳；日志:\n%s", out1.String())
+	}
+	if err := cmd1.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("第一实例 SIGTERM 失败: %v", err)
+	}
+	if exitCode, err := waitForProcessExit(t, cmd1, 20*time.Second); err != nil || exitCode != 0 {
+		t.Fatalf("第一实例退出失败: code=%d err=%v", exitCode, err)
+	}
+	drainPushHits(hits)
+
+	// 第二次启动：同一数据目录（Push 配置已持久化），GOMAXPROCS=1 放大启动竞态
+	port2 := freePort(t)
+	base2 := fmt.Sprintf("http://127.0.0.1:%d", port2)
+	cmd2, out2 := startProcess(t, dataDir, map[string]string{
+		"WEBUI_PORT": fmt.Sprintf("%d", port2),
+		"GOMAXPROCS": "1",
+	})
+	waitForHTTP(t, base2+"/api/health")
+
+	var first pushHitRecord
+	select {
+	case first = <-hits:
+	case <-time.After(15 * time.Second):
+		t.Fatalf("重启后未收到 Push 心跳；日志:\n%s", out2.String())
+	}
+	values, err := url.ParseQuery(first.query)
+	if err != nil {
+		t.Fatalf("解析首条心跳 query 失败: %v", err)
+	}
+	if values.Get("status") != "up" || values.Get("msg") != "OK" {
+		t.Errorf("重启后首条心跳必须为 up/OK（不得把尚未启动误判为引擎未运行）: %q", first.query)
+	}
+	if !strings.Contains(first.path, token) {
+		t.Errorf("Push 路径必须保留 token: %q", first.path)
+	}
+	if values.Get("foo") != "bar" {
+		t.Errorf("未知 query 必须保留: %q", first.query)
+	}
+
+	// 启动日志不得出现伪运行健康异常（修复前该 WARN 必然出现）
+	if strings.Contains(out2.String(), "运行健康异常") {
+		t.Errorf("启动日志出现伪运行健康异常:\n%s", out2.String())
+	}
+
+	if err := cmd2.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("第二实例 SIGTERM 失败: %v", err)
+	}
+	if exitCode, err := waitForProcessExit(t, cmd2, 20*time.Second); err != nil || exitCode != 0 {
+		t.Fatalf("第二实例退出失败: code=%d err=%v; 日志:\n%s", exitCode, err, out2.String())
 	}
 }

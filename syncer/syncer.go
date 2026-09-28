@@ -35,6 +35,13 @@ type Syncer struct {
 	stopOnce  sync.Once
 	doneCh    chan struct{}
 
+	// startedCh 在 Run 首次进入运行态（running=true 已可见）后关闭一次（Build7 Step 7）。
+	//
+	// 启动方（run.go）据此把「监督器与 Push 循环」安排在同步主循环进入运行之后，
+	// 避免 30 秒监督器的首检与 Push 首发读到 running=false 而误报「同步引擎未运行」。
+	// Stop 先于 Run 时 Run 被拒绝，本通道永不关闭，因此等待方必须有界等待。
+	startedCh chan struct{}
+
 	// 生命周期标记（由 mu 保护）
 	stopped  bool // Stop 已请求：所有新轮次的硬门控
 	runGuard bool // Run 已被调用过（拒绝一切第二次调用，含首个已退出后）
@@ -46,6 +53,7 @@ type Syncer struct {
 	// 状态追踪（保护以下字段）
 	mu             sync.RWMutex
 	running        bool
+	startedAt      *time.Time // Run 进入运行态的时间；从未进入过运行态时为 nil（Build7 Step 7）
 	lastSync       time.Time
 	lastSuccess    *time.Time    // 最近一次「整轮成功」完成时间（内存态，重启归 null）
 	lastRound      *RoundSummary // 最近一轮的整轮汇总（内存态，重启归 null）
@@ -85,6 +93,7 @@ func New(runtime *RuntimeManager) *Syncer {
 		controlCh: make(chan struct{}, 1),
 		stopCh:    make(chan struct{}),
 		doneCh:    make(chan struct{}),
+		startedCh: make(chan struct{}),
 	}
 	s.processStarted = time.Now()
 	if st := runtime.Snapshot(); st != nil {
@@ -92,6 +101,17 @@ func New(runtime *RuntimeManager) *Syncer {
 		s.applied = st
 	}
 	return s
+}
+
+// Started 返回「同步主循环已进入运行态」信号（Build7 Step 7）。
+//
+// 通道在 Run 首次把 running=true 置为可见之后关闭一次；等待方读到关闭即可确认
+// SyncStatus.Running 已为 true（channel close 与锁释放共同提供 happens-before）。
+//
+// 若 Stop 先于 Run 完成，Run 按吸收态被拒绝，本通道永不关闭——调用方必须有界等待，
+// 不得无限阻塞。
+func (s *Syncer) Started() <-chan struct{} {
+	return s.startedCh
 }
 
 // EventBus 返回事件总线（供外部订阅）
@@ -155,7 +175,7 @@ func (s *Syncer) Run() {
 	s.mu.Unlock()
 
 	defer close(s.doneCh)
-	s.setRunning(true)
+	s.markRunning()
 	defer s.setRunning(false)
 
 	initial := s.runtime.Snapshot()
@@ -477,6 +497,11 @@ type SyncStatus struct {
 	RoundStartedAt *time.Time `json:"round_started_at"`
 	// ProcessStartedAt 是 Syncer 构造时间，作为「启动后尚无完成轮次」的基准。
 	ProcessStartedAt time.Time `json:"process_started_at"`
+	// StartedAt 是 Run 首次进入运行态的时间；从未进入过运行态时为 null（Build7 Step 7）。
+	//
+	// 运行健康判定据此区分「进程启动宽限内尚未进入运行」（不算异常）与
+	// 「进入运行后又停止」（立即异常，不受宽限影响）。
+	StartedAt *time.Time `json:"started_at"`
 }
 
 // Status 返回当前同步状态
@@ -501,6 +526,10 @@ func (s *Syncer) Status() SyncStatus {
 		t := *s.roundStarted
 		status.RoundStartedAt = &t
 	}
+	if s.startedAt != nil {
+		t := *s.startedAt
+		status.StartedAt = &t
+	}
 	status.ProcessStartedAt = s.processStarted
 	return status
 }
@@ -509,6 +538,23 @@ func (s *Syncer) setRunning(v bool) {
 	s.mu.Lock()
 	s.running = v
 	s.mu.Unlock()
+}
+
+// markRunning 进入运行态：置 running=true、记录首次进入时间，并在状态可见后
+// 关闭 Started() 信号（Build7 Step 7）。
+//
+// 顺序保证：锁内写入 → 解锁 → close(startedCh)。读到通道关闭的等待方必然也能
+// 看到 running=true（channel close 提供 happens-before），因此启动方无需轮询。
+func (s *Syncer) markRunning() {
+	now := time.Now()
+	s.mu.Lock()
+	s.running = true
+	if s.startedAt == nil {
+		started := now
+		s.startedAt = &started
+	}
+	s.mu.Unlock()
+	close(s.startedCh)
 }
 
 // ErrDryRunInProgress 防重入冲突错误（多个 Dry Run 并发执行时返回）

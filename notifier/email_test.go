@@ -489,3 +489,69 @@ func TestEmailSuccessLogDoesNotLeakSecrets(t *testing.T) {
 		t.Errorf("日志不得包含完整正文: %s", logs)
 	}
 }
+
+// TestEmailOperationalEventIncludesReasons Build7 Step 7：运行健康异常事件在固定详情块
+// 末尾追加固定「原因」行；DNS/同步事件不出现该行（既有正文形态逐字节不变）。
+func TestEmailOperationalEventIncludesReasons(t *testing.T) {
+	host, port, rec := startFakeSMTP(t, fakeSMTPOptions{rcptOK: true, dataOK: true})
+	n := NewEmailNotifier(EmailConfig{
+		Host: host, Port: port, From: "f@example.com", To: "t@example.com",
+		Subject: "[FWAlizer] 告警通知", Body: "正文",
+	})
+
+	if err := n.OnEvent(Event{
+		Type:      EventOperationalUnhealthy,
+		Timestamp: time.Date(2026, 9, 28, 12, 34, 56, 0, time.Local),
+		Data: map[string]any{
+			"checked_at": time.Now(),
+			"reasons":    []string{"最近一轮同步失败", "SQLite 检查失败"},
+		},
+	}); err != nil {
+		t.Fatalf("运行健康异常邮件应成功: %v", err)
+	}
+
+	payload := rec.Data()
+	if !strings.Contains(payload, "Subject: [FWAlizer] 告警通知 - 运行健康异常") {
+		t.Errorf("运行健康异常主题后缀错误: %q", payload)
+	}
+	for _, fragment := range []string{
+		"事件类型：运行健康异常", "时间：2026-09-28 12:34:56",
+		"Provider：-", "域名：-", "错误：-",
+		"原因：最近一轮同步失败; SQLite 检查失败",
+	} {
+		if !strings.Contains(payload, fragment) {
+			t.Fatalf("详情块缺少 %q: %q", fragment, payload)
+		}
+	}
+	if strings.Contains(payload, "checked_at") {
+		t.Errorf("详情块不得遍历 map 输出未固定字段: %q", payload)
+	}
+	// 固定顺序：原因行必须排在错误行之后
+	if strings.Index(payload, "错误：-") > strings.Index(payload, "原因：") {
+		t.Errorf("原因行必须位于固定详情块末尾: %q", payload)
+	}
+
+	// DNS 事件不得出现原因行
+	rec.setData("")
+	if err := n.OnEvent(Event{
+		Type: EventDNSFailed, Timestamp: time.Now(),
+		Data: map[string]any{"domain": "d.example.com", "error": "dns boom"},
+	}); err != nil {
+		t.Fatalf("DNS 告警应成功: %v", err)
+	}
+	if dnsPayload := rec.Data(); strings.Contains(dnsPayload, "原因：") {
+		t.Errorf("非运行健康异常事件不得输出原因行: %q", dnsPayload)
+	}
+
+	// 空 reasons 列表同样不输出原因行
+	rec.setData("")
+	if err := n.OnEvent(Event{
+		Type: EventOperationalUnhealthy, Timestamp: time.Now(),
+		Data: map[string]any{"reasons": []string{""}},
+	}); err != nil {
+		t.Fatalf("运行健康异常邮件应成功: %v", err)
+	}
+	if emptyPayload := rec.Data(); strings.Contains(emptyPayload, "原因：") {
+		t.Errorf("空原因列表不得输出原因行: %q", emptyPayload)
+	}
+}

@@ -1,4 +1,4 @@
-# FWAlizer 告警与运行健康构建计划（Build7：Step 0～6 已实施完成）
+# FWAlizer 告警与运行健康构建计划（Build7：Step 0～7 已实施完成）
 
 > **文档定位：** 本文档记录 Build6 完成后的下一阶段已定案方案，聚焦告警触发开关、纯文本邮件内容、测试邮件、轻量运行健康检查，以及 Uptime Kuma HTTP/Push 外部监控。Build 文档仍为非强制执行建议，唯一强要求是 [AGENTS.md](./AGENTS.md)。
 >
@@ -285,6 +285,18 @@ Provider：tc_lighthouse(lhins-example)
 
 不同事件缺少的字段用 `-` 表示。固定详情顺序必须稳定，不再遍历 map 产生随机顺序。
 
+该详情块由**邮件与 Webhook 共用同一渲染器**（Build7 Step 7）：Webhook 正文为
+`[FWAlizer] <事件类型>` 首行 + 同一详情块，因此两个渠道顺序一致、缺失字段同样写 `-`。
+
+运行健康异常事件（`EventOperationalUnhealthy`）在详情块末尾追加固定行：
+
+```text
+原因：最近一轮同步失败; SQLite 检查失败
+```
+
+`原因` 行由事件数据中的稳定原因数组用 `; ` 连接；无原因（或原因全为空）时该行不输出，
+因此 DNS 解析失败与同步失败事件的正文保持既有形态不变。
+
 ### 4.5 最小校验
 
 - `subject` Trim 后不能为空，禁止换行和控制字符，最多 200 个 Unicode 字符；
@@ -508,6 +520,7 @@ WARN 邮件告警发送失败 event=sync:error error="..."
 ```text
 SQLite：Ping/SELECT 1 成功
 Syncer：主循环 running=true
+启动宽限：从未进入运行态且距进程启动未超过固定 10s 时，不因「主循环未运行」判异常（Step 7）
 最近轮次：failed 或 partial 视为 unhealthy，直到下一轮 success/idle 覆盖
 当前轮次：开始后超过 health_timeout 仍未完成，视为 unhealthy
 调度停滞：sync_enabled=true，距最近完成时间超过 interval + health_timeout，视为 unhealthy
@@ -527,7 +540,11 @@ ProcessStartedAt time.Time
 精确判断顺序：
 
 1. 使用最多 2 秒的 context 执行 SQLite `PingContext` 或等价 `SELECT 1`；失败即 unhealthy；
-2. 非 shutdown 阶段 `SyncStatus.running=false` 即 unhealthy；应用已经进入正常 shutdown 时停止监督，不再制造“引擎停止”告警；
+2. 非 shutdown 阶段 `SyncStatus.running=false` 按三分支判定（Build7 Step 7）：
+   - `SyncStatus.started_at != null`（已进入运行态后停止）→ **立即** unhealthy，不受启动宽限影响；
+   - 从未进入运行态且距 `process_started_at` **未超过**固定启动宽限 `StartupGrace=10s` → 跳过（进程刚启动，主循环可能尚未被调度）；
+   - 从未进入运行态且**超过**宽限 → 按「同步引擎未运行」上报。
+   应用已经进入正常 shutdown 时停止监督，不再制造“引擎停止”告警；
 3. `sync_enabled=false` 时跳过轮次结论、轮次超时和调度停滞，只保留 SQLite/Syncer 检查；
 4. `RoundStartedAt != nil` 且 `now-RoundStartedAt > health_timeout` 时记“同步轮次超时”；
 5. `last_round.outcome` 为 `failed` 或 `partial` 时记“最近一轮失败/部分完成”，直到后续 `success` 或 `idle` 覆盖；
@@ -553,6 +570,7 @@ ProcessStartedAt time.Time
 - 监督器始终计算和记录健康状态；第三开关只控制邮件/Webhook 是否订阅，不关闭 operational endpoint 或 Uptime Kuma Push；
 - 保存新配置后立即唤醒一次监督检查，不等待最长 30 秒；若从“第三开关关闭”变为开启且当前已经 unhealthy，下一次检查视为需要发送一次当前异常；
 - 监督器停止和应用 shutdown 使用同一生命周期，不引入孤立 goroutine；
+- 启动顺序确定性化（Step 7）：`run.go` 先启动同步主循环并有界等待其进入运行态（`Syncer.Started()`，此时 `running=true` 已可见），再启动监督器与 Push 循环；二者首检/首发因此不会读到「尚未启动」而误报；
 - 外部心跳发送失败只写 WARN，不反向把“监控服务不可达”加入应用健康，避免自激循环。
 
 该监督器仍无法覆盖进程已经死亡的场景，必须由第 7.5/7.6 节补足。
@@ -676,7 +694,7 @@ Push URL：空
 
 ---
 
-## 八、实施步骤（Step 0～6 已完成后附统一证据）
+## 八、实施步骤（Step 0～7 已完成后附统一证据）
 
 ### Step 0：合同收口
 
@@ -756,9 +774,31 @@ Push URL：空
 - 真实 SMTP/收件箱、真实 Webhook、真实 Uptime Kuma HTTP/Push 分层记录，未执行不得写成通过；
 - 最后更新 README、AGENTS、Design、Issue 与生产测试清单。
 
+### Step 7：核验缺陷修复
+
+**实施状态：** ✅ 已完成（2026-09-28）。本节记录 Step 0～6 完成后一次独立只读核验所发现问题的修复。
+该核验同时确认：**P1 是全项目唯一一处「前端发送后端 DTO 没有的字段」缺陷**（19 处写请求与全部
+GET 响应字段已逐字段核对，其余 18 处对齐）。
+
+| 编号 | 问题 | 根因 | 修复 |
+|---|---|---|---|
+| P1 | 告警页「测试发送邮件」必然 HTTP 400，成功态不可达 | `Alerts.vue` 序列化整个 email 表单对象（多一个 `enabled`），而后端 `testEmailRequest` 只有 8 个字段且严格解码拒绝未知字段 | 前端新增 `TestEmailPayload` 类型并显式构造 8 个发送字段（`webui/frontend/src/types.ts`、`Alerts.vue`）；后端 DTO 与严格解码契约不变 |
+| P2 | 重启时把「同步引擎尚未启动」误判为「引擎未运行」：WARN 运行健康异常、Push 首条心跳 `status=down`；开启第三开关 + 渠道时误发一次告警 | `run.go` 先启动监督器/Push、后启动 `Syncer.Run`，而 `running=true` 只在 `Run` 内置位 | ① 启动顺序确定性化：`Syncer` 暴露 `Started()` 信号（在 `running=true` 可见后关闭一次），`run.go` 有界等待后再启动监督器与 Push；② 健康判定增加固定启动宽限 `StartupGrace=10s`，并用 `SyncStatus.started_at` 区分「从未启动」与「启动后停止」（后者立即异常） |
+| P3 | Webhook 正文遍历 map，同一事件顺序随机 | `notifier/webhook.go` 使用 `formatEventBody`（map 遍历） | 抽取共用固定渲染器：Webhook 复用 `formatEventDetails`，删除 `formatEventBody`；运行健康异常事件在详情块末尾追加固定「原因」行（无原因不输出） |
+| P4 / P4b / P5 | 滞后注释：多处仍写「version 2」、发布顺序注释缺监督器/Push、快照注释与实现不符 | 文档滞后 | 注释与实现、合同口径对齐（零行为变更） |
+| P6 / P7 | 导出/导入弹窗敏感清单未列 Push URL；Webhook URL 为明文输入 | 体验与一致性 | 弹窗补 `Uptime Kuma Push URL（含 token）`；Webhook URL 改密码型可切换显示 |
+
+**判别性证据（本机 2026-09-28）：**
+
+- P1：新增 `main_test.go:TestProcessTestEmailWithUIPayload`（真实二进制 + 本地假 SMTP）：与页面一致的 8 字段载荷 → `200 {"success":true,"message":"SMTP 服务器已接受测试邮件"}`，并断言主题固定后缀、正文固定说明与多收件人逐项 Trim；同一载荷多带 `enabled` → `400 请求体包含未知字段: enabled`（修复前页面载荷正是该形态）。
+- P2：新增 `main_test.go:TestProcessRestartPushFirstHeartbeatIsUp`（持久化 Push 配置 + `GOMAXPROCS=1` 重启）：首条心跳必须 `status=up&msg=OK`、token 与未知 query 保留、启动日志不得出现「运行健康异常」；修复前实测 12/12 复现 `status=down&msg=同步引擎未运行`，并真实向本地 mock 发出一次误报 Webhook。新增 `internal/health:TestEvaluateStartupGrace`（宽限内健康 / 超宽限异常 / 已启动后停止立即异常）与 `syncer:TestStartedSignalClosesAfterRunBegins`、`syncer:TestStartedNeverClosesWhenStopPrecedesRun`。
+- P3：新增 `notifier:TestWebhookContentIsDeterministicAndUnified`（同一事件连续 20 次渲染逐字节一致、三渠道、固定顺序、不含未固定键）、`notifier:TestWebhookSyncEventUsesFixedBlockWithoutExtraKeys`、`notifier:TestEmailOperationalEventIncludesReasons`。
+- 统一门禁：`gofmt -l`（无输出）、`go build ./...`、`go vet ./...`、`go test ./... -race -count=1`（12 包全绿）、前端 `npm run build` 与两条 `npm audit`（0 漏洞）、`docker build` + 容器非 root（uid 1000）/`healthy`/`docker stop` 有界且退出码 0。
+- **未执行 / 无真实结论（不得写成通过）**：真实 SMTP 与收件箱、真实 Webhook、真实 Uptime Kuma HTTP/Push 的 DOWN/恢复通知、浏览器人工交互回归（本环境无浏览器工具，PT-B7-07 仍未执行）、真实云 API 与远端 CI/GHCR。
+
 ---
 
-### Step 0～6 统一证据（2026-09-28，本机）
+### Step 0～7 统一证据（2026-09-28，本机）
 
 - **自动门禁**：前端 `npm ci`、`npm run build`、`npm audit --audit-level=high`、`npm audit --omit=dev --audit-level=high`（均 0 漏洞）；`go test ./... -race -count=1`（12 包全绿）、`go vet ./...`、`go build ./...`、`gofmt -l`（本次修改文件无输出）、`docker compose -f docker-compose.yml.example config --quiet`、`docker build -f build/Dockerfile -t fwalizer:build7 .`、`git diff --check`。
 - **真实二进制（进程级）**：静态 `/api/health` 恒为 `{"status":"ok"}`；`/api/health/operational` 返回 200/`reasons:[]`；Push 配置保存后立即向本地 HTTP mock 首发 `status=up&msg=OK&ping=<ms>` 且保留 token 与未知 query；SIGTERM 退出码 0。
@@ -766,6 +806,7 @@ Push URL：空
 - **健康/监督器判别性覆盖**：SQLite 失败与探活阻塞、主循环未运行、暂停跳过轮次类检查、轮次超时、failed/partial 与 success/idle 覆盖、启动宽限、调度停滞、多原因固定顺序去重、边沿一次发布/原因变化不重发/恢复 INFO/恢复后再异常再发一次/开关补发一次/Wake 立即检查/Stop 有界静默。
 - **Push 判别性覆盖**：关闭零请求、启用立即首发、周期 up→down→up、query 覆盖与 token 保留、`ping` 数值、250 字符 msg、非 2xx/`ok=false`/坏 JSON、超时有界、在途跳过不排队、URL/interval 热重载、关闭停止、shutdown 取消、日志脱敏、失败不影响健康与不发布事件。
 - **未执行/无真实结论（不得写成通过）**：真实 SMTP 接受与收件箱投递、真实 Webhook、真实 Uptime Kuma HTTP Monitor 与 Push 的 DOWN/恢复通知、真实云 API、真实 WAN/反向代理异常、浏览器人工交互回归（本环境无浏览器工具，仅验证了 HTTP 层与构建产物）、远端 GitHub Actions 与 GHCR 发布。上述项目登记在 [ProdTestList.md](./ProdTestList.md)。
+- **Step 7 核验缺陷修复**：判别性证据见上表（P1 假 SMTP + UI 载荷、P2 `GOMAXPROCS=1` 重启首条心跳为 up 且无伪 WARN、P3 同一事件 20 次渲染逐字节一致），并在同一批次重跑全量门禁通过。
 
 
 ## 九、验收矩阵
@@ -805,4 +846,5 @@ Push URL：空
 | v0.1 | 2026-09-28 | 建立 Build7 研究初稿：记录告警开关、纯文本邮件、测试邮件、运行健康与 Uptime Kuma 两种接法；运行健康和配置协议尚待裁决 |
 | v1.0 | 2026-09-28 | 用户确认完整方向：固定默认全部关闭、运行健康异常、`health_timeout=10m`、failed/partial→503、operational endpoint、Uptime Kuma Push、version 3 且拒绝旧版本；补齐 Schema、配置包、API、页面、健康算法、Push 生命周期、测试矩阵与 Step 0～6 合同 |
 | v1.2 | 2026-09-28 | **Step 1～6 实施完成**：Schema/version 3 配置包与四对象告警 API、测试邮件、触发过滤与邮件内容、唯一运行健康计算源 + 内部监督器 + operational 端点、Uptime Kuma Push；统一门禁、真实二进制与 Docker 容器证据见第八节；真实 SMTP/收件箱、Webhook、Uptime Kuma 与远端 CI 仍未执行 |
+| v1.3 | 2026-09-28 | **Step 7 核验缺陷修复**：①测试邮件 UI 载荷改为显式 8 字段（修复修复前必然 HTTP 400、成功态不可达）；②启动顺序确定性化（`Syncer.Started()` + `run.go` 有界等待）并新增固定 10s 启动宽限与 `SyncStatus.started_at`（修复重启误报 Push DOWN 与运行健康异常）；③Webhook 与邮件共用固定详情渲染器，运行健康异常追加固定「原因」行；④version 2 滞后注释、发布顺序注释、导出/导入敏感清单与 Webhook URL 输入样式收口；`AGENTS.md` §9.1 同步启动宽限与两渠道详情块条款 |
 | v1.1 | 2026-09-28 | Step 0 合同收口（仅文档）：一次性授权取代逐 Step 授权；`AGENTS.md` 同步 Build7 的 version 3 目标合同、默认全部关闭、运行健康、Uptime Kuma Push、新表/新列与 `EventOperationalUnhealthy`，reset 表清单与 HEALTHCHECK 语义同步，Build6 定位改为已完成历史构建记录；Step 4 与 Step 5 的 operational endpoint 分界固定为「Step 4 实现计算源与端点，Step 5 只做 Push」。Step 1～6 尚未实施（该状态已由 v1.2 取代） |

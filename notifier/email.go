@@ -103,10 +103,41 @@ func detailValue(event Event, key string) string {
 	return s
 }
 
-// formatEventDetails 生成固定顺序的事件详情块（Build7 §4.4）：
-// 事件类型 / 时间 / Provider / 域名 / 错误，缺失字段用 "-" 表示。
+// reasonsLine 生成运行健康异常事件的可选固定「原因」行（Build7 Step 7）。
 //
-// 刻意不遍历 map：map 迭代顺序随机，会让同一事件产生不同文本。
+// 事件数据只保证 operational 事件带 reasons（稳定原因数组），因此这里只在存在非空
+// 原因时输出一行；DNS/同步事件不输出该行，邮件正文保持既有逐字节形态。
+// 兼容 []string 与 JSON 解码得到的 []any 两种形态，逐项跳过空值并按 "; " 连接。
+func reasonsLine(event Event) string {
+	var items []string
+	switch v := event.Data["reasons"].(type) {
+	case []string:
+		items = v
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				items = append(items, s)
+			}
+		}
+	}
+	nonEmpty := make([]string, 0, len(items))
+	for _, item := range items {
+		if item != "" {
+			nonEmpty = append(nonEmpty, item)
+		}
+	}
+	if len(nonEmpty) == 0 {
+		return ""
+	}
+	return "原因：" + strings.Join(nonEmpty, "; ")
+}
+
+// formatEventDetails 生成固定顺序的事件详情块（Build7 §4.4）：
+// 事件类型 / 时间 / Provider / 域名 / 错误，缺失字段用 "-" 表示；
+// 运行健康异常事件在末尾追加固定「原因」行（Build7 Step 7）。
+//
+// 邮件与 Webhook 共用本渲染器（Build7 Step 7），因此两个渠道的详情块完全同构，
+// 且顺序稳定。刻意不遍历 map：map 迭代顺序随机，会让同一事件产生不同文本。
 func formatEventDetails(event Event) string {
 	var sb strings.Builder
 	sb.WriteString("事件类型：" + eventDisplayName(event.Type) + "\n")
@@ -114,6 +145,9 @@ func formatEventDetails(event Event) string {
 	sb.WriteString("Provider：" + detailValue(event, "provider") + "\n")
 	sb.WriteString("域名：" + detailValue(event, "domain") + "\n")
 	sb.WriteString("错误：" + detailValue(event, "error"))
+	if line := reasonsLine(event); line != "" {
+		sb.WriteString("\n" + line)
+	}
 	return sb.String()
 }
 
@@ -256,14 +290,4 @@ func BuildTestEmailContent(subject, body string, now time.Time) (string, string)
 func SendTestEmail(cfg EmailConfig, subject, body string) error {
 	n := &EmailNotifier{cfg: cfg}
 	return n.send(subject, body)
-}
-
-func formatEventBody(event Event) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("事件类型: %s\n", event.Type))
-	sb.WriteString(fmt.Sprintf("时间: %s\n", event.Timestamp.Format("2006-01-02 15:04:05")))
-	for k, v := range event.Data {
-		sb.WriteString(fmt.Sprintf("%s: %v\n", k, v))
-	}
-	return sb.String()
 }

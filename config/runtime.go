@@ -13,8 +13,14 @@ var settingsKeysV3 = []string{
 	"log_level", "sync_enabled", "theme",
 }
 
-// BusinessSnapshot 是一个 SQLite 事务内取到的完整业务配置快照，
-// 所有字段都已经过 validate.go 的归一化与校验（Build6 §12.7、§12.10）。
+// BusinessSnapshot 是一个 SQLite 事务内取到的完整业务配置快照。
+//
+// 字段口径（Build7 Step 7 核验修正）：
+//   - Targets / Rules 由各自 load 函数严格解析（rules.targets 四态口径）；
+//   - Settings 经 normalizeSettings 归一化；
+//   - Policy / UptimeKumaPush 在读取时解析并校验时长文本；
+//   - Email / Webhook 按数据库原值读取，其合法性由 PUT /api/alerts 与配置导入
+//     共用的领域校验保证（Build6 §12.7、§12.10）。
 //
 // 同一事务内一次性取出全部业务表，保证导出快照内部一致；构造 RuntimeState
 // 的候选也只依赖本结构，不在 commit 之后再读库。
