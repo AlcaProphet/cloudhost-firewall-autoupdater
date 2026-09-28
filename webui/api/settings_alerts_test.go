@@ -149,17 +149,30 @@ func TestGetAlertsDefaultsOnEmptyDB(t *testing.T) {
 	}
 }
 
-// TestPutAlertsRequiresAllFields 两个对象与全部子字段必需
+// TestPutAlertsRequiresAllFields 四个对象与全部子字段必需（Build7 §4.6）
 func TestPutAlertsRequiresAllFields(t *testing.T) {
-	valid := `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`
+	email := `{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"}`
+	webhook := `{"enabled":false,"url":"","channel":"dingtalk"}`
+	policy := `{"dns_failed_enabled":false,"sync_error_enabled":false,"operational_error_enabled":false,"health_timeout":"10m"}`
+	push := `{"enabled":false,"url":"","interval":"60s"}`
+
+	valid := `{"policy":` + policy + `,"email":` + email + `,"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`
 	cases := map[string]string{
-		"缺 webhook":         `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"}}`,
-		"email 为 null":      `{"email":null,"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
-		"webhook 为 null":    `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":null}`,
-		"缺 email.port":      `{"email":{"enabled":false,"host":"h","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
-		"缺 email.enabled":   `{"email":{"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
-		"缺 webhook.channel": `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":""}}`,
-		"空对象":               `{}`,
+		"缺 policy":                `{"email":` + email + `,"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
+		"缺 email":                 `{"policy":` + policy + `,"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
+		"缺 webhook":               `{"policy":` + policy + `,"email":` + email + `,"uptime_kuma_push":` + push + `}`,
+		"缺 uptime_kuma_push":      `{"policy":` + policy + `,"email":` + email + `,"webhook":` + webhook + `}`,
+		"policy 为 null":           `{"policy":null,"email":` + email + `,"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
+		"email 为 null":            `{"policy":` + policy + `,"email":null,"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
+		"webhook 为 null":          `{"policy":` + policy + `,"email":` + email + `,"webhook":null,"uptime_kuma_push":` + push + `}`,
+		"push 为 null":             `{"policy":` + policy + `,"email":` + email + `,"webhook":` + webhook + `,"uptime_kuma_push":null}`,
+		"缺 email.port":            `{"policy":` + policy + `,"email":{"enabled":false,"host":"h","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"},"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
+		"缺 email.subject":         `{"policy":` + policy + `,"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t","body":"b"},"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
+		"缺 email.body":            `{"policy":` + policy + `,"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s"},"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
+		"缺 webhook.channel":       `{"policy":` + policy + `,"email":` + email + `,"webhook":{"enabled":false,"url":""},"uptime_kuma_push":` + push + `}`,
+		"缺 policy.health_timeout": `{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,"operational_error_enabled":false},"email":` + email + `,"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
+		"缺 push.interval":         `{"policy":` + policy + `,"email":` + email + `,"webhook":` + webhook + `,"uptime_kuma_push":{"enabled":false,"url":""}}`,
+		"空对象":                     `{}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -168,7 +181,8 @@ func TestPutAlertsRequiresAllFields(t *testing.T) {
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("状态码 = %d, want 400; body=%s", w.Code, w.Body.String())
 			}
-			if email, _ := e.store.GetAlertEmail(); email.Host != "" || email.Port != "" {
+			// 新库已存在默认行（port=587/默认主题正文），因此用「未被写入的字段」判定零写入
+			if email, _ := e.store.GetAlertEmail(); email.Host != "" || email.Password != "" || email.Enabled {
 				t.Errorf("非法输入不应写库: %+v", email)
 			}
 			if got := e.applyCount(); got != 0 {
@@ -184,19 +198,57 @@ func TestPutAlertsRequiresAllFields(t *testing.T) {
 	}
 }
 
-// TestPutAlertsValidation 端口/渠道/URL 校验
-func TestPutAlertsValidation(t *testing.T) {
+// TestPutAlertsStrictDecoding 四对象请求体仍走严格解码：未知字段、尾随 JSON、多个顶层值都拒绝
+func TestPutAlertsStrictDecoding(t *testing.T) {
+	valid := alertsBody("h", "p", "", "dingtalk")
 	cases := map[string]string{
-		"端口为 0":      `{"email":{"enabled":false,"host":"h","port":"0","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
-		"端口非整数":      `{"email":{"enabled":false,"host":"h","port":"abc","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
-		"启用但 host 空": `{"email":{"enabled":true,"host":"","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
-		"启用但 from 空": `{"email":{"enabled":true,"host":"h","port":"587","username":"u","password":"p","from_addr":"","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
-		"启用但 to 空":   `{"email":{"enabled":true,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":""},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`,
-		"渠道未知":       `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":"wecom"}}`,
-		"渠道为空":       `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":false,"url":"","channel":""}}`,
-		"启用但 URL 为空": `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":true,"url":"","channel":"dingtalk"}}`,
-		"启用但非 http":  `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":true,"url":"ftp://example.com","channel":"dingtalk"}}`,
-		"启用但无 host":  `{"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t"},"webhook":{"enabled":true,"url":"https://","channel":"dingtalk"}}`,
+		"未知字段":    strings.TrimSuffix(valid, "}") + `,"extra":1}`,
+		"尾随 JSON": valid + `{"x":1}`,
+		"多个顶层值":   valid + ` 1`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := newTestEnv(t)
+			if w := e.do(t, http.MethodPut, "/api/alerts", body); w.Code != http.StatusBadRequest {
+				t.Fatalf("状态码 = %d, want 400; body=%s", w.Code, w.Body.String())
+			}
+			if got := e.applyCount(); got != 0 {
+				t.Errorf("非法输入不应触发运行时更新，实际 %d", got)
+			}
+		})
+	}
+}
+
+// TestPutAlertsValidation 端口/渠道/URL/主题/时长校验（Build7 §4.5）
+func TestPutAlertsValidation(t *testing.T) {
+	email := func(over string) string { return over }
+	webhook := `{"enabled":false,"url":"","channel":"dingtalk"}`
+	policy := `{"dns_failed_enabled":false,"sync_error_enabled":false,"operational_error_enabled":false,"health_timeout":"10m"}`
+	push := `{"enabled":false,"url":"","interval":"60s"}`
+	wrap := func(e, w, p, k string) string {
+		return `{"policy":` + p + `,"email":` + e + `,"webhook":` + w + `,"uptime_kuma_push":` + k + `}`
+	}
+	baseEmail := `{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"}`
+
+	cases := map[string]string{
+		"端口为 0":      wrap(email(`{"enabled":false,"host":"h","port":"0","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"}`), webhook, policy, push),
+		"端口非整数":      wrap(email(`{"enabled":false,"host":"h","port":"abc","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"}`), webhook, policy, push),
+		"启用但 host 空": wrap(email(`{"enabled":true,"host":"","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"}`), webhook, policy, push),
+		"启用但 from 空": wrap(email(`{"enabled":true,"host":"h","port":"587","username":"u","password":"p","from_addr":"","to_addr":"t","subject":"s","body":"b"}`), webhook, policy, push),
+		"启用但 to 空":   wrap(email(`{"enabled":true,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"","subject":"s","body":"b"}`), webhook, policy, push),
+		"主题为空":       wrap(email(`{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"  ","body":"b"}`), webhook, policy, push),
+		"渠道未知":       wrap(baseEmail, `{"enabled":false,"url":"","channel":"wecom"}`, policy, push),
+		"渠道为空":       wrap(baseEmail, `{"enabled":false,"url":"","channel":""}`, policy, push),
+		"启用但 URL 为空": wrap(baseEmail, `{"enabled":true,"url":"","channel":"dingtalk"}`, policy, push),
+		"启用但非 http":  wrap(baseEmail, `{"enabled":true,"url":"ftp://example.com","channel":"dingtalk"}`, policy, push),
+		"启用但无 host":  wrap(baseEmail, `{"enabled":true,"url":"https://","channel":"dingtalk"}`, policy, push),
+		"health_timeout 为 0": wrap(baseEmail, webhook,
+			`{"dns_failed_enabled":false,"sync_error_enabled":false,"operational_error_enabled":false,"health_timeout":"0s"}`, push),
+		"health_timeout 非法": wrap(baseEmail, webhook,
+			`{"dns_failed_enabled":false,"sync_error_enabled":false,"operational_error_enabled":false,"health_timeout":"abc"}`, push),
+		"push 间隔过小":      wrap(baseEmail, webhook, policy, `{"enabled":false,"url":"","interval":"19s"}`),
+		"push 启用但 URL 空": wrap(baseEmail, webhook, policy, `{"enabled":true,"url":"","interval":"60s"}`),
+		"push 启用但非 http": wrap(baseEmail, webhook, policy, `{"enabled":true,"url":"ftp://kuma/x","interval":"60s"}`),
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

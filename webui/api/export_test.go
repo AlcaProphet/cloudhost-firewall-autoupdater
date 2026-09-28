@@ -11,8 +11,8 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
 
-// version2FilenamePattern 固定附件文件名：fwalizer-config-v2-<UTC 20060102T150405Z>.json
-var version2FilenamePattern = regexp.MustCompile(`^attachment; filename="fwalizer-config-v2-\d{8}T\d{6}Z\.json"$`)
+// version3FilenamePattern 固定附件文件名：fwalizer-config-v3-<UTC 20060102T150405Z>.json
+var version3FilenamePattern = regexp.MustCompile(`^attachment; filename="fwalizer-config-v3-\d{8}T\d{6}Z\.json"$`)
 
 // TestConfigExportEmptyDatabaseSchema 空数据库导出仍必须是完整合法 Schema：
 // 数组为 [] 而不是 null、四个凭据字段存在但为空、告警对象与全部字段存在、默认值齐全。
@@ -26,7 +26,7 @@ func TestConfigExportEmptyDatabaseSchema(t *testing.T) {
 
 	// 必须使用缩进格式并以换行结束
 	body := w.Body.String()
-	if !strings.Contains(body, "\n  \"version\": 2") {
+	if !strings.Contains(body, "\n  \"version\": 3") {
 		t.Errorf("导出应为缩进 JSON: %s", body)
 	}
 	if !strings.HasSuffix(body, "}\n") {
@@ -45,12 +45,12 @@ func TestConfigExportEmptyDatabaseSchema(t *testing.T) {
 		t.Errorf("rules 必须是 []，实际 %s", raw["rules"])
 	}
 
-	var got bundleV2
+	var got bundleV3
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatalf(" struct 解码失败: %v", err)
 	}
-	if got.Version != 2 {
-		t.Errorf("version = %d, want 2", got.Version)
+	if got.Version != 3 {
+		t.Errorf("version = %d, want 3", got.Version)
 	}
 	if got.Targets == nil || got.Rules == nil {
 		t.Errorf("targets/rules 不得为 nil: %+v", got)
@@ -63,11 +63,24 @@ func TestConfigExportEmptyDatabaseSchema(t *testing.T) {
 		got.Settings.LogLevel != "info" || !got.Settings.SyncEnabled || got.Settings.Theme != "light" {
 		t.Errorf("空库导出未补齐默认值: %+v", got.Settings)
 	}
-	if got.Alerts.Email.Enabled || got.Alerts.Email.Port != "587" {
+	if got.Alerts.Email.Enabled || got.Alerts.Email.Port != "587" ||
+		got.Alerts.Email.Subject != "[FWAlizer] 告警通知" ||
+		got.Alerts.Email.Body != "FWAlizer 检测到运行异常，请检查同步日志。" {
 		t.Errorf("空库邮件告警字段不完整: %+v", got.Alerts.Email)
 	}
 	if got.Alerts.Webhook.Enabled || got.Alerts.Webhook.Channel != "dingtalk" {
 		t.Errorf("空库 Webhook 告警字段不完整: %+v", got.Alerts.Webhook)
+	}
+	// Build7 §4.3：默认全部关闭、health_timeout=10m、Push 默认关闭且 60s
+	if got.Alerts.Policy.DNSFailedEnabled || got.Alerts.Policy.SyncErrorEnabled || got.Alerts.Policy.OperationalErrorEnabled {
+		t.Errorf("空库触发开关必须全部关闭: %+v", got.Alerts.Policy)
+	}
+	if got.Alerts.Policy.HealthTimeout != "10m" {
+		t.Errorf("空库 health_timeout = %q, want 10m", got.Alerts.Policy.HealthTimeout)
+	}
+	if got.Monitoring.UptimeKumaPush.Enabled || got.Monitoring.UptimeKumaPush.URL != "" ||
+		got.Monitoring.UptimeKumaPush.Interval != "60s" {
+		t.Errorf("空库 Push 配置必须为默认关闭/空/60s: %+v", got.Monitoring.UptimeKumaPush)
 	}
 }
 
@@ -86,7 +99,7 @@ func TestConfigExportHeaders(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want no-store", cc)
 	}
 	cd := w.Header().Get("Content-Disposition")
-	if !version2FilenamePattern.MatchString(cd) {
+	if !version3FilenamePattern.MatchString(cd) {
 		t.Errorf("Content-Disposition = %q, 不符合固定文件名格式", cd)
 	}
 }
@@ -96,7 +109,7 @@ func TestConfigExportMetadataUTC(t *testing.T) {
 	e := newTestEnv(t)
 
 	w := e.do(t, http.MethodPost, "/api/config/export", "")
-	var got bundleV2
+	var got bundleV3
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
@@ -116,7 +129,7 @@ func TestConfigExportMetadataUTC(t *testing.T) {
 
 	// 文件名时间必须来自同一导出时间
 	cd := w.Header().Get("Content-Disposition")
-	if !strings.Contains(cd, parsed.Format(bundleV2FileTimeLayout)) {
+	if !strings.Contains(cd, parsed.Format(bundleV3FileTimeLayout)) {
 		t.Errorf("文件名时间 %q 与 metadata 时间不一致", cd)
 	}
 }
@@ -148,7 +161,7 @@ func TestConfigExportStableOrdering(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d, want 200", w.Code)
 	}
-	var got bundleV2
+	var got bundleV3
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
@@ -405,11 +418,14 @@ func TestConfigImportAlertsRoundTrip(t *testing.T) {
 		t.Fatalf("预置告警失败: %v", err)
 	}
 
-	body := `{"version":2,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` +
+	body := `{"version":3,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` +
 		validBundleSettings() + `,` +
-		`"alerts":{"email":{"enabled":true,"host":"smtp.new","port":"587","username":"u","password":"pw-secret",` +
-		`"from_addr":"f@example.com","to_addr":"t@example.com"},"webhook":{"enabled":true,` +
-		`"url":"https://hook.example.com/abc","channel":"feishu"}}}`
+		`"alerts":{"policy":{"dns_failed_enabled":true,"sync_error_enabled":false,` +
+		`"operational_error_enabled":false,"health_timeout":"25m"},` +
+		`"email":{"enabled":true,"host":"smtp.new","port":"587","username":"u","password":"pw-secret",` +
+		`"from_addr":"f@example.com","to_addr":"t@example.com","subject":"导入主题","body":"导入正文"},` +
+		`"webhook":{"enabled":true,"url":"https://hook.example.com/abc","channel":"feishu"}},` +
+		`"monitoring":{"uptime_kuma_push":{"enabled":true,"url":"https://kuma.example.com/api/push/tok9","interval":"45s"}}}`
 	w := e.do(t, http.MethodPost, "/api/config/import", body)
 	if w.Code != http.StatusOK {
 		t.Fatalf("导入状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
@@ -422,6 +438,18 @@ func TestConfigImportAlertsRoundTrip(t *testing.T) {
 	webhook, _ := e.store.GetAlertWebhook()
 	if !webhook.Enabled || webhook.URL != "https://hook.example.com/abc" || webhook.Channel != "feishu" {
 		t.Errorf("Webhook 告警未完整覆盖: %+v", webhook)
+	}
+	// Build7 §4.3：策略、主题/正文与 Push 必须一并覆盖
+	if email.Subject != "导入主题" || email.Body != "导入正文" {
+		t.Errorf("邮件主题/正文未完整覆盖: %+v", email)
+	}
+	policy, _ := e.store.GetAlertPolicy()
+	if !policy.DNSFailedEnabled || policy.HealthTimeoutText != "25m" || policy.HealthTimeout != 25*time.Minute {
+		t.Errorf("触发策略未完整覆盖: %+v", policy)
+	}
+	push, _ := e.store.GetUptimeKumaPush()
+	if !push.Enabled || push.URL != "https://kuma.example.com/api/push/tok9" || push.IntervalText != "45s" {
+		t.Errorf("Push 配置未完整覆盖: %+v", push)
 	}
 	// 运行时状态必须已经看到新告警集合
 	if current := e.alerts.Current(); current.email == nil || current.webhook == nil {

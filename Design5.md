@@ -1,7 +1,8 @@
-# Design5.md — FWAlizer Build6 设计记录（当前）
+# Design5.md — FWAlizer 设计记录（当前）
 
 > **文档定位：** 本文档是 FWAlizer 的当前设计记录（设计大方向、架构构想与决策记录，非强制，供参考），承接已存档的 [Design1-4](./HistoryDocs/)。
-> 编码约束遵循 [AGENTS.md](./AGENTS.md)（唯一强要求）；详细分步实施和验收见 [Build6.md](./Build6.md)；问题追踪见 [Issue5.md](./Issue5.md)。
+> 编码约束遵循 [AGENTS.md](./AGENTS.md)（唯一强要求）；当前详细分步实施和验收见 [Build7.md](./Build7.md)（告警与运行健康，Step 0～6）；[Build6.md](./Build6.md) 已收束为已完成的历史构建记录。问题追踪见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)。
+> **Build7 实施状态（2026-09-28）：** 本文档第三节描述的 **version 2 配置包设计已由 Build7 的 version 3 取代并实施完成**：version 3 是唯一导入/导出版本（version 1/2 与其他版本直接 400）；`GET/PUT /api/alerts` 为四对象严格契约（触发策略 / 邮件含主题正文 / Webhook / Uptime Kuma Push）；新增 `POST /api/alerts/test-email`、唯一 `OperationalHealth` 计算源（`internal/health`）+ 30 秒内部监督器 + `GET /api/health/operational`（`/api/health` 保持静态存活语义）。逐步证据见 [Build7.md](./Build7.md) 第八节。**未执行的真实外部验收**（真实 SMTP/收件箱、Webhook、Uptime Kuma HTTP/Push、真实云 API、远端 CI）见 [ProdTestList.md](./ProdTestList.md)，不得写成通过。
 > **实施状态：** 2026-09-24 Build6 Step 1、Step 2、Step 3 与 Step 4 已验收通过：运行时已收束为唯一 WebUI + SQLite，CLI、`.env` Headless、业务环境变量入口和 `webui_port` 业务设置已从代码与当前文档移除，监听参数只由三个部署变量提供；HTTP 生命周期已形成最终形态（同步 listener、仅 `EADDRINUSE` 降级、显式 `http.Server`、`Wait`、幂等 `Shutdown`、两类 SSE 服务器级退出、main 统一收尾）；普通 API 最小持久化校验边界已落地（统一严格解码与 1 MiB、领域校验与归一化、`RowsAffected`/引用检查、事务化 settings/alerts、删除被引用目标 409、500 安全文案、日志级别动态更新）。远端 GitHub Actions 结果已由 2026-09-27 tag `v2.0.0` 的真实运行 `36300428681`（成功）确认，详见下段与 Issue5 O5-02。
 >
 > **Step 5（version 2 完整配置包与原子运行时切换）已于 2026-09-27 验收通过：** 工程实现与本地自动门禁完成，代码于 2026-09-24 提交（`c35eb9d`）；2026-09-27 用户确认生产 WebUI、真实云/DNS及同步链路真机验收通过。跨实例不同自增历史的人工交叉导入因当前无该使用场景而免除，底层 ID 映射继续由自动化覆盖。真实 Email/SMTP/收件箱与 Webhook 验收按用户决定移交后续处理，不阻塞 Step 5；远端 GitHub Actions 结果继续由 Issue5 O5-02 跟踪。

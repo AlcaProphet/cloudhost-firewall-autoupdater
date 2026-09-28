@@ -1,12 +1,12 @@
-# FWAlizer 告警与运行健康构建计划（Build7：已定案，待分步实施）
+# FWAlizer 告警与运行健康构建计划（Build7：Step 0～6 已实施完成）
 
 > **文档定位：** 本文档记录 Build6 完成后的下一阶段已定案方案，聚焦告警触发开关、纯文本邮件内容、测试邮件、轻量运行健康检查，以及 Uptime Kuma HTTP/Push 外部监控。Build 文档仍为非强制执行建议，唯一强要求是 [AGENTS.md](./AGENTS.md)。
 >
 > **当前基线：** 2026-09-28 初始只读核验基线为 `main` / `be41fb4ae38ed12fa8f218195123a8cc2cc17726`，工作区在建立本文档前无未提交改动，分支相对 `origin/main` ahead 1；初稿随后提交为 `641c09c`，本次定案在该初稿上继续更新。当前邮件与 Webhook 已订阅 DNS 解析失败和 Provider × 域名同步最终失败事件，但没有测试邮件 API、触发条件开关、可编辑邮件主题/正文或运行健康反向心跳。
 >
-> **授权边界：** 用户已确认本文档的告警、运行健康、Uptime Kuma Push 与破坏性配置协议方向；当前只授权把详细定案写入 `Build7.md`。本文档的更新不授权修改生产代码、测试、Schema、前端、现有 Design/Issue/Build 文档或 `AGENTS.md`，也不授权访问真实 SMTP、真实 Webhook、Uptime Kuma 或云服务。后续代码仍须按 Step 单独授权实施。
+> **授权边界：** 用户已确认本文档的告警、运行健康、Uptime Kuma Push 与破坏性配置协议方向。2026-09-28 用户完成最终审核并**一次性授权**按本文档 Step 0 → Step 6 串行实施全部构建：Step 之间无需重复申请授权，但必须逐 Step 串行、不得跳步或并行。仍须暂停并重新询问的情形：触发本文第十节停止条件、出现与 `AGENTS.md` 其他未覆盖强要求的新冲突、需要扩大范围，或需要真实外部权限/凭据。本文档的更新（含 Step 0 合同收口）不授权访问真实 SMTP、真实 Webhook、Uptime Kuma 或云服务。
 >
-> **与现有强要求的关系：** `AGENTS.md` 当前仍把 Build6 和 version 2 配置包写为现行固定边界。用户已明确本阶段没有兼容性包袱，允许破坏性改动，并确认 Build7 配置包提升为 version 3、旧 version 1/2 直接拒绝。正式编码前必须先执行 Build7 Step 0，把 `AGENTS.md`、Design/Issue 和当前构建文档定位同步到该新合同；本文档本轮不提前修改强要求。
+> **与现有强要求的关系：** `AGENTS.md` 已在 **Build7 Step 0**（2026-09-28，仅文档）同步为本档的 version 3 目标合同：配置包 version 3 且旧 version 1/2 直接拒绝、告警默认全部关闭、唯一 `OperationalHealth` 与运行健康异常、Uptime Kuma HTTP/Push；同时把 Build6 定位为已完成的历史构建记录。用户已明确本阶段没有兼容性包袱，允许破坏性改动。Step 0 只改文档，Schema/API/前端自 Step 1 起才实施。
 
 ---
 
@@ -676,7 +676,7 @@ Push URL：空
 
 ---
 
-## 八、推荐实施步骤（均未获代码授权）
+## 八、实施步骤（Step 0～6 已完成后附统一证据）
 
 ### Step 0：合同收口
 
@@ -685,7 +685,21 @@ Push URL：空
 - 检查所有并行状态文案，避免 Build6“当前方案”与 Build7“待实施”互相矛盾；
 - 本 Step 只改文档，不改代码。
 
+**实施状态：** ✅ 已完成（2026-09-28，仅文档）
+
+**实际证据（2026-09-28）：**
+
+- 实际改动：`AGENTS.md`（文档定位、§9.1「Build7 目标合同 + Build6 既有边界」、§八 HEALTHCHECK 语义、§十一 reset 表清单与事件类型、§十二 文档体系表）、`Build7.md`（本文件：授权边界、§八标题、Step 4/5 分界、变更记录、本节证据）、`Build6.md`（标题与定位横幅改为已完成历史构建记录，正文原有证据原文未改）、`Design5.md`、`Issue5.md`、`Issue6.md`、`README.md`（目录结构与文档定位）、`ProdTestList.md`。
+- 自动检查：`git diff --check` → 通过；`git diff --name-only` 只含 8 个 `.md` 文件，无任何代码、测试、Schema、前端、配置或依赖改动；文档内互相引用的相对链接全部存在。
+- 判别性核对（改动前红 → 改动后绿）：改动前 `grep -n "Build7" AGENTS.md` 无匹配，且 `AGENTS.md` 把 version 2 写成唯一导入导出版本、reset 表清单缺少 `alert_policy`/`uptime_kuma_push`、事件类型缺少 `EventOperationalUnhealthy`；改动后 Build7 合同已写入强要求，reset 清单与事件类型同步，各文档均显式声明「Step 1～6 尚未实施」。
+- 人工检查：未执行浏览器、Docker、真实 SMTP/Webhook/Uptime Kuma、真实云或远端 CI；本 Step 不适用以上外部证据。
+- 未完成项：无（本 Step 范围内）。
+- 与计划偏差：无。按准备报告第 4 节的合并裁决，`.gitignore` 与前端 fallback 文件名属代码/配置，随 Step 1 更新；README 的 version 2 协议细节按用户裁决留到 Step 6。
+- 状态：✅ 完成
+
 ### Step 1：Schema、配置模型与严格 API
+
+**实施状态：** ✅ 已完成（2026-09-28）：`alert_policy`/`uptime_kuma_push` 单行表、`alert_email.subject|body`、一次性显式迁移（重启不重复归零）、version 3 唯一协议并拒绝 v1/2/其他版本、四对象 `GET/PUT /api/alerts`（GET `no-store`）、reset 默认全关、策略/Push 进入 `RuntimeState`、导出改 `fwalizer-config-v3-*`（含 `.gitignore` 与前端 fallback）；判别性证据：`config/store_v3_test.go`、`webui/api/alerts_v3_test.go`、`export_test.go`、`import_test.go`、`settings_alerts_test.go`、`main_test.go` 进程级往返。
 
 - 新增告警策略持久化、邮件主题/正文和可选健康/Push 设置；
 - 更新完整快照、RuntimeState、reset、导入导出和失败回滚；
@@ -694,6 +708,8 @@ Push URL：空
 
 ### Step 2：测试邮件
 
+**实施状态：** ✅ 已完成（2026-09-28）：`notifier.BuildTestEmailContent`/`SendTestEmail`（复用 10s/30s 有界会话）、`POST /api/alerts/test-email`（不写库/不进协调器/不 Apply/不改订阅、无渠道开关要求）、页面测试按钮 + 内存态结果 + 35s 上限；判别性证据：`notifier/email_test.go`（本地假 SMTP：成功/认证失败/RCPT/DATA/静默 deadline）、`webui/api/test_email_test.go`。
+
 - 先用本地假 SMTP 建立成功、认证失败、RCPT/DATA 失败和静默 deadline 用例；
 - 实现 `POST /api/alerts/test-email`；
 - 实现页面内存态结果与实时安全日志；
@@ -701,29 +717,38 @@ Push URL：空
 
 ### Step 3：触发条件过滤与邮件内容
 
+**实施状态：** ✅ 已完成（2026-09-28）：`policySubscriptions` 策略驱动订阅（渠道 + 触发同时开启）、固定主题后缀、固定详情顺序（缺失写 `-`）、多收件人逐项 Trim、自动邮件成功 INFO；判别性证据：`webui/api/alertset_policy_test.go`（矩阵 + 真实总线投递 + 热重载切换）、`notifier/email_test.go`。
+
 - 按三个开关安装订阅；
 - 统一纯文本格式与固定详情顺序；
 - 覆盖默认全关闭、各开关独立、邮件/Webhook 共用策略和热重载边界。
 
-### Step 4：运行健康计算与内部监督器
+### Step 4：运行健康计算、内部监督器与 operational 端点
 
-- 实现唯一 `OperationalHealth` 计算源；
+**实施状态：** ✅ 已完成（2026-09-28）：`internal/health` 唯一计算源（八步判定、SQLite ≤2s、paused 只查 SQLite/Syncer）、Syncer `RoundStartedAt`/`ProcessStartedAt`、30 秒监督器（边沿一次、恢复 INFO、开关补发、Wake、shutdown 静默）、`GET /api/health/operational`（200/503、`no-store`、现场计算、稳定原因）、`/api/health` 静态语义不变；判别性证据：`internal/health/*_test.go`、`syncer/status_time_test.go`、`webui/api/operational_test.go`、`webui/server_test.go`、`main_test.go` 进程级用例。
+
+- 实现唯一 `OperationalHealth` 计算源（`internal/health` 包，供内部监督器、HTTP 端点与 Push 共用）；
 - 增加轮次开始时间/超时观测；
 - 实现健康状态边沿事件，持续异常不重复通知；
 - 保持 shutdown 有界且 race 通过。
+- 实现 `GET /api/health/operational`：健康 200、异常 503、固定 `Content-Type: application/json; charset=utf-8` 与 `Cache-Control: no-store`、现场计算、只返回稳定原因；`/api/health` 静态存活语义保持不变。
 - 判别性覆盖：SQLite 正常/失败/2 秒超时、Syncer 未运行、暂停、启动宽限、在途未超时/超时、success/failed/partial/idle、调度停滞、多原因固定排序、恢复后再次异常重新发送一次；
 - 端点覆盖：健康 200、异常 503、静态 `/api/health` 始终不受同步状态影响、响应不泄露底层错误。
 
-### Step 5：外部监控接入
+### Step 5：外部监控接入（Uptime Kuma Push）
 
-- 实现 operational endpoint；
-- 实现 Uptime Kuma Push 与配置热重载；
+**实施状态：** ✅ 已完成（2026-09-28）：`internal/health/push.go`（默认关闭、启用/URL 变化立即首发、覆盖 status/msg/ping 且保留 token 与未知 query、10 秒上限、单在途跳过、不排队不重试、2xx+`{"ok":true}` 才算成功、失败不改健康不自激、日志不含 URL/token、shutdown 取消在途）、协调器唤醒顺序「告警集合 → 监督器 → Push → RuntimeState」；判别性证据：`internal/health/push_test.go`（本地 `httptest`）、`webui/api/operational_test.go`、`main_test.go`（真实二进制 + 本地 mock 首发心跳）。
+
+- operational endpoint 已在 Step 4 实现，本 Step 只接入 Uptime Kuma Push 与配置热重载；
 - URL 脱敏、超时、无重试和无自激循环；
 - 使用本地 `httptest` 验证协议，不访问真实 Uptime Kuma。
 - 判别性覆盖：默认/关闭时零请求、启用后立即首发、周期 up、异常 down、恢复 up、query 安全覆盖且 token 保留、`ping` 数值、250 字符 msg、非 2xx、`ok=false`、坏 JSON、10 秒有界超时、在途时丢弃新 tick、URL/interval 热重载、关闭后停止、shutdown 取消、全部日志不含完整 URL/token；
 - 文档给出 Uptime Kuma HTTP Monitor 与 Push Monitor 的最小配置步骤，但真实 DOWN/恢复通知仍留给外部人工验收。
 
 ### Step 6：统一验收与文档闭环
+
+**实施状态：** ✅ 已完成（2026-09-28）：统一门禁、真实二进制/Docker 容器验收与本文档闭环均已完成，证据见下节。
+
 
 - targeted tests → 相关包 race → `go test ./... -race -count=1` → vet/build；
 - 前端 `npm ci`、build、生产与完整 audit；
@@ -732,6 +757,16 @@ Push URL：空
 - 最后更新 README、AGENTS、Design、Issue 与生产测试清单。
 
 ---
+
+### Step 0～6 统一证据（2026-09-28，本机）
+
+- **自动门禁**：前端 `npm ci`、`npm run build`、`npm audit --audit-level=high`、`npm audit --omit=dev --audit-level=high`（均 0 漏洞）；`go test ./... -race -count=1`（12 包全绿）、`go vet ./...`、`go build ./...`、`gofmt -l`（本次修改文件无输出）、`docker compose -f docker-compose.yml.example config --quiet`、`docker build -f build/Dockerfile -t fwalizer:build7 .`、`git diff --check`。
+- **真实二进制（进程级）**：静态 `/api/health` 恒为 `{"status":"ok"}`；`/api/health/operational` 返回 200/`reasons:[]`；Push 配置保存后立即向本地 HTTP mock 首发 `status=up&msg=OK&ping=<ms>` 且保留 token 与未知 query；SIGTERM 退出码 0。
+- **Docker 容器运行**：非 root（`uid=1000(appuser)`）；`HEALTHCHECK` 仍指向 `/api/health` 并在 10 秒内 `healthy`；SPA 首页与其 JS 资源 200；`docker stop` 有界返回且退出码 0；关闭日志无伪运行健康异常。
+- **健康/监督器判别性覆盖**：SQLite 失败与探活阻塞、主循环未运行、暂停跳过轮次类检查、轮次超时、failed/partial 与 success/idle 覆盖、启动宽限、调度停滞、多原因固定顺序去重、边沿一次发布/原因变化不重发/恢复 INFO/恢复后再异常再发一次/开关补发一次/Wake 立即检查/Stop 有界静默。
+- **Push 判别性覆盖**：关闭零请求、启用立即首发、周期 up→down→up、query 覆盖与 token 保留、`ping` 数值、250 字符 msg、非 2xx/`ok=false`/坏 JSON、超时有界、在途跳过不排队、URL/interval 热重载、关闭停止、shutdown 取消、日志脱敏、失败不影响健康与不发布事件。
+- **未执行/无真实结论（不得写成通过）**：真实 SMTP 接受与收件箱投递、真实 Webhook、真实 Uptime Kuma HTTP Monitor 与 Push 的 DOWN/恢复通知、真实云 API、真实 WAN/反向代理异常、浏览器人工交互回归（本环境无浏览器工具，仅验证了 HTTP 层与构建产物）、远端 GitHub Actions 与 GHCR 发布。上述项目登记在 [ProdTestList.md](./ProdTestList.md)。
+
 
 ## 九、验收矩阵
 
@@ -769,3 +804,5 @@ Push URL：空
 |------|------|------|
 | v0.1 | 2026-09-28 | 建立 Build7 研究初稿：记录告警开关、纯文本邮件、测试邮件、运行健康与 Uptime Kuma 两种接法；运行健康和配置协议尚待裁决 |
 | v1.0 | 2026-09-28 | 用户确认完整方向：固定默认全部关闭、运行健康异常、`health_timeout=10m`、failed/partial→503、operational endpoint、Uptime Kuma Push、version 3 且拒绝旧版本；补齐 Schema、配置包、API、页面、健康算法、Push 生命周期、测试矩阵与 Step 0～6 合同 |
+| v1.2 | 2026-09-28 | **Step 1～6 实施完成**：Schema/version 3 配置包与四对象告警 API、测试邮件、触发过滤与邮件内容、唯一运行健康计算源 + 内部监督器 + operational 端点、Uptime Kuma Push；统一门禁、真实二进制与 Docker 容器证据见第八节；真实 SMTP/收件箱、Webhook、Uptime Kuma 与远端 CI 仍未执行 |
+| v1.1 | 2026-09-28 | Step 0 合同收口（仅文档）：一次性授权取代逐 Step 授权；`AGENTS.md` 同步 Build7 的 version 3 目标合同、默认全部关闭、运行健康、Uptime Kuma Push、新表/新列与 `EventOperationalUnhealthy`，reset 表清单与 HEALTHCHECK 语义同步，Build6 定位改为已完成历史构建记录；Step 4 与 Step 5 的 operational endpoint 分界固定为「Step 4 实现计算源与端点，Step 5 只做 Push」。Step 1～6 尚未实施（该状态已由 v1.2 取代） |

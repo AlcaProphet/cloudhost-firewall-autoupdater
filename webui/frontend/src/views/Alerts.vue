@@ -1,28 +1,29 @@
 <script setup lang="ts">
-import { NCard, NForm, NFormItem, NInput, NSelect, NSwitch, NButton, useMessage } from 'naive-ui'
+import { NCard, NForm, NFormItem, NInput, NSelect, NSwitch, NButton, NText, NAlert, useMessage } from 'naive-ui'
 import { ref, onMounted } from 'vue'
 import { request } from '../api'
+import type { AlertEmailConfig, AlertPolicyConfig, AlertUptimeKumaPushConfig, AlertWebhookConfig } from '../types'
+
+// 告警配置页（Build7 §4.7）：单页四张卡片，一次提交四个完整对象。
+// 默认值：渠道、三个触发开关与 Push 全部关闭；health_timeout=10m、Push interval=60s。
 
 type AlertsData = {
-  email?: {
-    enabled: boolean
-    host: string
-    port: string
-    username: string
-    password: string
-    from_addr: string
-    to_addr: string
-  }
-  webhook?: {
-    enabled: boolean
-    url: string
-    channel: string
-  }
+  policy: AlertPolicyConfig
+  email: AlertEmailConfig
+  webhook: AlertWebhookConfig
+  uptime_kuma_push: AlertUptimeKumaPushConfig
 }
 
 const message = useMessage()
 
-const email = ref({
+const policy = ref<AlertPolicyConfig>({
+  dns_failed_enabled: false,
+  sync_error_enabled: false,
+  operational_error_enabled: false,
+  health_timeout: '10m',
+})
+
+const email = ref<AlertEmailConfig>({
   enabled: false,
   host: '',
   port: '587',
@@ -30,21 +31,63 @@ const email = ref({
   password: '',
   from_addr: '',
   to_addr: '',
+  subject: '[FWAlizer] 告警通知',
+  body: 'FWAlizer 检测到运行异常，请检查同步日志。',
 })
 
-const webhook = ref({
+const webhook = ref<AlertWebhookConfig>({
   enabled: false,
   url: '',
   channel: 'dingtalk',
 })
 
+const push = ref<AlertUptimeKumaPushConfig>({
+  enabled: false,
+  url: '',
+  interval: '60s',
+})
+
 const saving = ref(false)
+
+// 测试发送状态（Build7 §5.3）：
+// 结果只存在于本组件内存中，刷新页面即消失；不新增查询 API、SSE、轮询或发送历史。
+const testing = ref(false)
+const testResult = ref<{ ok: boolean; text: string } | null>(null)
+
+// 测试发送：使用当前表单值，不触发保存；请求上限固定 35 秒。
+// 成功只表述为「SMTP 服务器已接受测试邮件」，不表示已投递到收件箱。
+async function testSend() {
+  testing.value = true
+  testResult.value = null
+  try {
+    const data = await request<{ success: boolean; message?: string; error?: string }>(
+      '/api/alerts/test-email',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(email.value),
+      },
+      35000,
+    )
+    if (data?.success) {
+      testResult.value = { ok: true, text: data.message || 'SMTP 服务器已接受测试邮件' }
+    } else {
+      testResult.value = { ok: false, text: data?.error || '测试邮件发送失败' }
+    }
+  } catch (e: any) {
+    testResult.value = { ok: false, text: `测试邮件发送失败: ${e.message}` }
+  } finally {
+    testing.value = false
+  }
+}
 
 async function load() {
   try {
     const data = await request<AlertsData>('/api/alerts')
+    if (data.policy) policy.value = data.policy
     if (data.email) email.value = data.email
     if (data.webhook) webhook.value = data.webhook
+    if (data.uptime_kuma_push) push.value = data.uptime_kuma_push
   } catch (e: any) {
     message.error(`加载告警配置失败: ${e.message}`)
   }
@@ -58,7 +101,12 @@ async function save() {
     await request('/api/alerts', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email.value, webhook: webhook.value }),
+      body: JSON.stringify({
+        policy: policy.value,
+        email: email.value,
+        webhook: webhook.value,
+        uptime_kuma_push: push.value,
+      }),
     })
     message.success('保存成功')
   } catch (e: any) {
@@ -73,30 +121,76 @@ async function save() {
   <div>
     <h2>告警配置</h2>
 
+    <NCard title="触发条件" size="small" style="margin-bottom: 16px">
+      <NForm :model="policy" label-placement="left" label-width="180">
+        <NFormItem label="DNS 解析失败">
+          <NSwitch v-model:value="policy.dns_failed_enabled" />
+        </NFormItem>
+        <NFormItem label="Provider × 域名最终失败">
+          <NSwitch v-model:value="policy.sync_error_enabled" />
+        </NFormItem>
+        <NFormItem label="运行健康异常">
+          <NSwitch v-model:value="policy.operational_error_enabled" />
+        </NFormItem>
+        <NFormItem label="健康超时">
+          <NInput v-model:value="policy.health_timeout" placeholder="10m" style="max-width: 220px" />
+        </NFormItem>
+      </NForm>
+      <NText depth="3" style="font-size: 14px">
+        三个触发条件是邮件与 Webhook 共用的全局策略；只有渠道开关与对应触发条件同时开启才会发送通知。
+      </NText>
+    </NCard>
+
     <NCard title="邮件告警" size="small" style="margin-bottom: 16px">
       <template #header-extra>
         <NSwitch v-model:value="email.enabled" />
       </template>
       <NForm :model="email" label-placement="left" label-width="100">
         <NFormItem label="SMTP 主机">
-          <NInput v-model:value="email.host" placeholder="smtp.example.com" :disabled="!email.enabled" />
+          <NInput v-model:value="email.host" placeholder="smtp.example.com" />
         </NFormItem>
         <NFormItem label="端口">
-          <NInput v-model:value="email.port" placeholder="587" :disabled="!email.enabled" />
+          <NInput v-model:value="email.port" placeholder="587" />
         </NFormItem>
         <NFormItem label="用户名">
-          <NInput v-model:value="email.username" placeholder="user@example.com" :disabled="!email.enabled" />
+          <NInput v-model:value="email.username" placeholder="user@example.com" />
         </NFormItem>
         <NFormItem label="密码">
-          <NInput v-model:value="email.password" type="password" placeholder="SMTP 密码" :disabled="!email.enabled" />
+          <NInput v-model:value="email.password" type="password" show-password-on="click" placeholder="SMTP 密码" />
         </NFormItem>
         <NFormItem label="发件人">
-          <NInput v-model:value="email.from_addr" placeholder="noreply@example.com" :disabled="!email.enabled" />
+          <NInput v-model:value="email.from_addr" placeholder="noreply@example.com" />
         </NFormItem>
         <NFormItem label="收件人">
-          <NInput v-model:value="email.to_addr" placeholder="admin@example.com（多人逗号分隔）" :disabled="!email.enabled" />
+          <NInput v-model:value="email.to_addr" placeholder="admin@example.com, ops@example.com（多人逗号分隔）" />
+        </NFormItem>
+        <NFormItem label="主题">
+          <NInput v-model:value="email.subject" placeholder="[FWAlizer] 告警通知" />
+        </NFormItem>
+        <NFormItem label="正文">
+          <NInput
+            v-model:value="email.body"
+            type="textarea"
+            :autosize="{ minRows: 3, maxRows: 8 }"
+            placeholder="FWAlizer 检测到运行异常，请检查同步日志。"
+          />
         </NFormItem>
       </NForm>
+      <NText depth="3" style="font-size: 14px">
+        邮件为纯文本格式，系统会在正文后追加固定事件详情（事件类型/时间/Provider/域名/错误）；
+        上方的邮件开关只控制自动通知，关闭时仍可编辑并测试发送。
+      </NText>
+      <div style="margin-top: 12px">
+        <NButton size="large" :loading="testing" :disabled="testing" @click="testSend">测试发送邮件</NButton>
+      </div>
+      <div v-if="testing" style="margin-top: 12px">
+        <NText depth="3">正在测试发送…</NText>
+      </div>
+      <div v-else-if="testResult" style="margin-top: 12px">
+        <NAlert :type="testResult.ok ? 'success' : 'error'" :title="testResult.ok ? '测试结果' : '测试失败'">
+          {{ testResult.text }}
+        </NAlert>
+      </div>
     </NCard>
 
     <NCard title="Webhook 告警" size="small" style="margin-bottom: 16px">
@@ -105,7 +199,11 @@ async function save() {
       </template>
       <NForm :model="webhook" label-placement="left" label-width="100">
         <NFormItem label="Webhook URL">
-          <NInput v-model:value="webhook.url" placeholder="https://oapi.dingtalk.com/robot/send?access_token=xxx" :disabled="!webhook.enabled" />
+          <NInput
+            v-model:value="webhook.url"
+            placeholder="https://oapi.dingtalk.com/robot/send?access_token=xxx"
+            :disabled="!webhook.enabled"
+          />
         </NFormItem>
         <NFormItem label="通知渠道">
           <NSelect v-model:value="webhook.channel" :options="[
@@ -117,6 +215,30 @@ async function save() {
       </NForm>
     </NCard>
 
-    <NButton type="primary" :loading="saving" @click="save">保存配置</NButton>
+    <NCard title="外部运行监控（Uptime Kuma Push）" size="small" style="margin-bottom: 16px">
+      <template #header-extra>
+        <NSwitch v-model:value="push.enabled" />
+      </template>
+      <NForm :model="push" label-placement="left" label-width="100">
+        <NFormItem label="Push URL">
+          <NInput
+            v-model:value="push.url"
+            type="password"
+            show-password-on="click"
+            placeholder="https://kuma.example.com/api/push/xxxxxxxx"
+            :disabled="!push.enabled"
+          />
+        </NFormItem>
+        <NFormItem label="发送间隔">
+          <NInput v-model:value="push.interval" placeholder="60s" style="max-width: 220px" :disabled="!push.enabled" />
+        </NFormItem>
+      </NForm>
+      <NText depth="3" style="font-size: 14px">
+        FWAlizer 会按该间隔主动上报当前运行状态；Uptime Kuma 侧的 Heartbeat Interval 应大于本值，
+        默认发送 60 秒时建议设置为 120 秒。最小间隔为 20s。
+      </NText>
+    </NCard>
+
+    <NButton type="primary" size="large" :loading="saving" @click="save">保存配置</NButton>
   </div>
 </template>

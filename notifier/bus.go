@@ -16,6 +16,9 @@ const (
 	EventSyncError          EventType = "sync:error"
 	EventRuleChanged        EventType = "rule:changed"
 	EventDNSFailed          EventType = "dns:failed"
+	// EventOperationalUnhealthy 是运行健康异常的**边沿**事件（Build7 §7.3）：
+	// 仅在健康→异常（以及开关开启时补发）时发布一次，持续异常不重复发布。
+	EventOperationalUnhealthy EventType = "operational:unhealthy"
 )
 
 // Event 事件

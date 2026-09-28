@@ -2,12 +2,12 @@ package config
 
 import "time"
 
-// settingsKeysV2 是 version 2 配置包与业务快照的**完整**设置键集合（Build6 §3.1、§12.12）。
+// settingsKeysV3 是 version 3 配置包与业务快照的**完整**设置键集合（Build6 §3.1、§12.12）。
 //
 // 固定顺序即写入顺序；导入时显式逐键写入，绝不遍历请求里的任意 map，
 // 从而不会把旧数据库的未知键带回新快照。sync_enabled 也在集合内：
 // 它是业务配置，只是只能由 pause/resume 端点或配置导入写入。
-var settingsKeysV2 = []string{
+var settingsKeysV3 = []string{
 	"tc_access_id", "tc_access_key", "ali_access_id", "ali_access_key",
 	"tag", "interval", "dns", "dns_timeout", "dns_fail_threshold",
 	"log_level", "sync_enabled", "theme",
@@ -19,11 +19,13 @@ var settingsKeysV2 = []string{
 // 同一事务内一次性取出全部业务表，保证导出快照内部一致；构造 RuntimeState
 // 的候选也只依赖本结构，不在 commit 之后再读库。
 type BusinessSnapshot struct {
-	Targets  []TargetConfig
-	Rules    []DomainRule
-	Settings map[string]string
-	Email    AlertEmailConfig
-	Webhook  AlertWebhookConfig
+	Targets        []TargetConfig
+	Rules          []DomainRule
+	Settings       map[string]string
+	Policy         AlertPolicyConfig
+	Email          AlertEmailConfig
+	Webhook        AlertWebhookConfig
+	UptimeKumaPush UptimeKumaPushConfig
 }
 
 // Credentials 从快照设置中取出四个云凭据。
@@ -66,8 +68,10 @@ type RuntimeConfig struct {
 	LogLevel         string
 	SyncEnabled      bool
 	Theme            string
+	Policy           AlertPolicyConfig
 	Email            AlertEmailConfig
 	Webhook          AlertWebhookConfig
+	UptimeKumaPush   UptimeKumaPushConfig
 }
 
 // DeepCopy 返回 RuntimeConfig 的深拷贝：全部 slice 元素独立可写。
@@ -95,8 +99,10 @@ func (s *BusinessSnapshot) ToRuntimeConfig() RuntimeConfig {
 		LogLevel:         s.Settings["log_level"],
 		SyncEnabled:      s.Settings["sync_enabled"] == "true",
 		Theme:            s.Settings["theme"],
+		Policy:           s.Policy,
 		Email:            s.Email,
 		Webhook:          s.Webhook,
+		UptimeKumaPush:   s.UptimeKumaPush,
 	}
 }
 

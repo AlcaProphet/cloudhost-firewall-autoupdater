@@ -8,7 +8,16 @@ import { request } from '../api'
 import { useSettings } from '../composables/useSettings'
 import type { SyncStatus } from '../types'
 
-const status = ref<SyncStatus>({ running: false, last_sync: null, enabled: true, last_success: null, last_round: null })
+const status = ref<SyncStatus>({
+  running: false,
+  last_sync: null,
+  enabled: true,
+  last_success: null,
+  last_round: null,
+  // Build7 Step 4：内存态时间戳（无在途轮次时为 null）
+  round_started_at: null,
+  process_started_at: '',
+})
 const switching = ref(false) // 开关请求 loading
 const stats = ref({ targets: 0, rules: 0 })
 const showGuide = ref(false) // 首次使用引导条

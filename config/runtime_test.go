@@ -52,8 +52,8 @@ func TestLoadBusinessSnapshotTxDefaultsOnEmptyDB(t *testing.T) {
 			t.Errorf("默认设置 %s = %q, want %q", k, got, v)
 		}
 	}
-	if len(snapshot.Settings) != len(settingsKeysV2) {
-		t.Errorf("设置键数 = %d, want %d: %+v", len(snapshot.Settings), len(settingsKeysV2), snapshot.Settings)
+	if len(snapshot.Settings) != len(settingsKeysV3) {
+		t.Errorf("设置键数 = %d, want %d: %+v", len(snapshot.Settings), len(settingsKeysV3), snapshot.Settings)
 	}
 	if snapshot.Targets == nil || snapshot.Rules == nil {
 		t.Errorf("空库快照的 targets/rules 应为空切片而不是 nil: %+v", snapshot)
@@ -267,8 +267,8 @@ func TestReplaceBusinessSettingsTxRequiresFullKeySet(t *testing.T) {
 		t.Fatalf("缺少键时必须报错")
 	}
 
-	full := make(map[string]string, len(settingsKeysV2))
-	for _, k := range settingsKeysV2 {
+	full := make(map[string]string, len(settingsKeysV3))
+	for _, k := range settingsKeysV3 {
 		full[k] = "v-" + k
 	}
 	if err := store.ReplaceBusinessSettingsTx(ctx, tx, full); err != nil {
@@ -278,7 +278,7 @@ func TestReplaceBusinessSettingsTxRequiresFullKeySet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSettingsTx 失败: %v", err)
 	}
-	if got["tag"] != "v-tag" || len(got) != len(settingsKeysV2) {
+	if got["tag"] != "v-tag" || len(got) != len(settingsKeysV3) {
 		t.Errorf("设置写入不完整: %+v", got)
 	}
 }

@@ -259,58 +259,81 @@ func TestAddSyncLogCountFailureDoesNotFailWrite(t *testing.T) {
 
 // ─── Issue6 A17：非预期迁移失败必须中止启动 ───
 
-// fakeAlterDBTX 是只实现 ExecContext 的最小 DBTX：按注入错误决定 ALTER 结果。
-type fakeAlterDBTX struct {
-	queryErr error // 非 nil 时每次 ALTER 都返回该错误
-	calls    []string
-}
+// ─── Build7 Step 1：Schema 迁移错误路径（原 migrateColumns 断言的新形态） ───
 
-func (f *fakeAlterDBTX) ExecContext(_ context.Context, query string, _ ...any) (sql.Result, error) {
-	f.calls = append(f.calls, query)
-	if f.queryErr != nil {
-		return nil, f.queryErr
+// TestEnsureColumnTxUnexpectedFailureAborts 列探测/ALTER 的非预期失败必须返回错误
+// 并保留底层原因（Issue6 A17 口径：迁移失败中止启动，不得带不完整 Schema 运行）。
+func TestEnsureColumnTxUnexpectedFailureAborts(t *testing.T) {
+	s, err := OpenStore(filepath.Join(t.TempDir(), "ensure.db"))
+	if err != nil {
+		t.Fatalf("打开库失败: %v", err)
 	}
-	return stubResult(0), nil
-}
+	defer func() {
+		if cerr := s.Close(); cerr != nil {
+			t.Errorf("关闭库失败: %v", cerr)
+		}
+	}()
 
-func (f *fakeAlterDBTX) QueryContext(context.Context, string, ...any) (*sql.Rows, error) {
-	return nil, errors.New("not implemented")
-}
-
-func (f *fakeAlterDBTX) QueryRowContext(context.Context, string, ...any) *sql.Row {
-	return &sql.Row{}
-}
-
-type stubResult int64
-
-func (r stubResult) LastInsertId() (int64, error) { return int64(r), nil }
-func (r stubResult) RowsAffected() (int64, error) { return int64(r), nil }
-
-// TestMigrateColumnsDuplicateIsIdempotent duplicate-column 视为幂等成功。
-func TestMigrateColumnsDuplicateIsIdempotent(t *testing.T) {
-	q := &fakeAlterDBTX{queryErr: errors.New("duplicate column name: enable_ipv6")}
-	s := &Store{}
-	if err := s.migrateColumns(q); err != nil {
-		t.Fatalf("duplicate-column 必须视为成功，实际错误: %v", err)
+	ctx := context.Background()
+	tx, err := s.BeginTx(ctx)
+	if err != nil {
+		t.Fatalf("开始事务失败: %v", err)
 	}
-	if len(q.calls) != 2 {
-		t.Errorf("两条 ALTER 都必须执行，实际 %d 次", len(q.calls))
-	}
-}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			t.Errorf("回滚失败: %v", rbErr)
+		}
+	}()
 
-// TestMigrateColumnsUnexpectedFailureAborts 非预期失败必须立即返回错误（中止启动）。
-func TestMigrateColumnsUnexpectedFailureAborts(t *testing.T) {
-	q := &fakeAlterDBTX{queryErr: errors.New("disk I/O error")}
-	s := &Store{}
-	err := s.migrateColumns(q)
+	added, err := ensureColumnTx(ctx, tx, "no_such_table", "x", "ALTER TABLE no_such_table ADD COLUMN x TEXT")
 	if err == nil {
-		t.Fatal("非预期 ALTER 失败必须返回错误（修复前只记 WARN 后继续）")
+		t.Fatal("对不存在的表执行迁移列必须返回错误")
 	}
-	if !strings.Contains(err.Error(), "disk I/O error") {
-		t.Errorf("错误必须保留底层原因: %v", err)
+	if added {
+		t.Error("失败时不得报告已新增列（一次性迁移判定不得被污染）")
 	}
-	if len(q.calls) != 1 {
-		t.Errorf("首个 ALTER 失败后必须立即中止，实际执行 %d 次", len(q.calls))
+	if !strings.Contains(err.Error(), "no_such_table") {
+		t.Errorf("错误必须包含表名以便定位: %v", err)
+	}
+}
+
+// TestOpenStoreMigrationFailureRollsBack 迁移失败必须整体回滚：不得留下新建的
+// alert_policy / uptime_kuma_push 表，也不得把同名对象改成表。
+//
+// 注入方式：用同名 VIEW 占据 alert_email 名称，使目标 Schema 无法建立。
+func TestOpenStoreMigrationFailureRollsBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "broken.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("打开夹具库失败: %v", err)
+	}
+	defer func() {
+		if cerr := raw.Close(); cerr != nil {
+			t.Errorf("关闭夹具库失败: %v", cerr)
+		}
+	}()
+
+	if _, err := raw.Exec("CREATE VIEW alert_email AS SELECT 1 AS id"); err != nil {
+		t.Fatalf("建立同名视图失败: %v", err)
+	}
+
+	if _, err := OpenStore(path); err == nil {
+		t.Fatal("迁移/建表失败时 OpenStore 必须返回错误，不得带不完整 Schema 启动")
+	}
+
+	// 事务必须整体回滚：新表不存在，alert_email 仍是 VIEW
+	if tableExists(t, raw, "alert_policy") {
+		t.Error("失败后不得留下 alert_policy（Schema 迁移必须整体回滚）")
+	}
+	if tableExists(t, raw, "uptime_kuma_push") {
+		t.Error("失败后不得留下 uptime_kuma_push（Schema 迁移必须整体回滚）")
+	}
+	var objType string
+	if err := raw.QueryRow("SELECT type FROM sqlite_master WHERE name='alert_email'").Scan(&objType); err != nil {
+		t.Fatalf("查询 alert_email 对象类型失败: %v", err)
+	}
+	if objType != "view" {
+		t.Errorf("失败后 alert_email 对象类型 = %q, want view（不得被改写成表）", objType)
 	}
 }
 
@@ -330,10 +353,10 @@ func TestOpenStoreWorksForNewAndMigratedDB(t *testing.T) {
 		t.Fatalf("关闭失败: %v", err)
 	}
 
-	// 已迁移库：再次打开时两条 ALTER 都会命中 duplicate-column，必须幂等成功
+	// 已迁移库：再次打开时必须幂等成功（列已存在，PRAGMA 探测直接跳过 ALTER）
 	s2, err := OpenStore(path)
 	if err != nil {
-		t.Fatalf("已迁移库 OpenStore 失败（duplicate-column 必须视为成功）: %v", err)
+		t.Fatalf("已迁移库 OpenStore 失败（重复迁移必须幂等）: %v", err)
 	}
 	defer s2.Close()
 

@@ -79,7 +79,7 @@ func webhookErrorCategory(err error) string {
 
 // OnEvent 实现 Subscriber 接口
 func (n *WebhookNotifier) OnEvent(event Event) error {
-	if event.Type != EventSyncError && event.Type != EventDNSFailed {
+	if event.Type != EventSyncError && event.Type != EventDNSFailed && event.Type != EventOperationalUnhealthy {
 		return nil
 	}
 

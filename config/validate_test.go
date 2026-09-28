@@ -204,17 +204,21 @@ func TestNormalizeDNSAddress(t *testing.T) {
 	}
 }
 
-// TestNormalizeAlertEmail 邮件端口与启用必填项
+// TestNormalizeAlertEmail 邮件端口、启用必填项与 Build7 主题/正文边界
 func TestNormalizeAlertEmail(t *testing.T) {
-	got, err := NormalizeAlertEmail(AlertEmailConfig{Port: " 587 ", Host: " smtp.example.com "})
+	got, err := NormalizeAlertEmail(AlertEmailConfig{
+		Port: " 587 ", Host: " smtp.example.com ", Subject: " [FWAlizer] 告警通知 ",
+	})
 	if err != nil {
 		t.Fatalf("禁用状态应通过: %v", err)
 	}
-	if got.Port != "587" || got.Host != "smtp.example.com" {
+	if got.Port != "587" || got.Host != "smtp.example.com" || got.Subject != "[FWAlizer] 告警通知" {
 		t.Errorf("归一化错误: %+v", got)
 	}
 
-	if _, err := NormalizeAlertEmail(AlertEmailConfig{Enabled: true, Port: "587", Host: "h", FromAddr: "f", ToAddr: "t"}); err != nil {
+	if _, err := NormalizeAlertEmail(AlertEmailConfig{
+		Enabled: true, Port: "587", Host: "h", FromAddr: "f", ToAddr: "t", Subject: "s",
+	}); err != nil {
 		t.Errorf("启用且字段齐全应通过: %v", err)
 	}
 
@@ -224,6 +228,67 @@ func TestNormalizeAlertEmail(t *testing.T) {
 	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Enabled: true, Port: "587"})), "email.host")
 	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Enabled: true, Port: "587", Host: "h"})), "email.from_addr")
 	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Enabled: true, Port: "587", Host: "h", FromAddr: "f"})), "email.to_addr")
+
+	// Build7 §4.5：主题 Trim 后不能为空、禁止换行/控制字符、最多 200 字符
+	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Port: "587", Subject: "   "})), "email.subject")
+	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Port: "587", Subject: "a\nb"})), "email.subject")
+	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Port: "587", Subject: strings.Repeat("a", MaxEmailSubjectRunes+1)})), "email.subject")
+	// 正文允许普通换行，但最大 10 KiB
+	if _, err := NormalizeAlertEmail(AlertEmailConfig{Port: "587", Subject: "s", Body: "第一行\n第二行"}); err != nil {
+		t.Errorf("正文允许普通换行: %v", err)
+	}
+	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{
+		Port: "587", Subject: "s", Body: strings.Repeat("x", MaxEmailBodyBytes+1),
+	})), "email.body")
+}
+
+// TestNormalizeAlertPolicy Build7 §4.1/§4.5：唯一 health_timeout 必须是大于 0 的时长
+func TestNormalizeAlertPolicy(t *testing.T) {
+	got, err := NormalizeAlertPolicy(AlertPolicyConfig{HealthTimeoutText: " 10m "})
+	if err != nil {
+		t.Fatalf("合法 health_timeout 应通过: %v", err)
+	}
+	if got.HealthTimeout != 10*time.Minute || got.HealthTimeoutText != "10m" {
+		t.Errorf("health_timeout 归一化错误: %+v", got)
+	}
+
+	if _, err := NormalizeAlertPolicy(AlertPolicyConfig{
+		DNSFailedEnabled: true, SyncErrorEnabled: true, OperationalErrorEnabled: true, HealthTimeoutText: "25m",
+	}); err != nil {
+		t.Errorf("三个触发开关同时开启应通过: %v", err)
+	}
+
+	requireInvalid(t, mustErr(NormalizeAlertPolicy(AlertPolicyConfig{})), "policy.health_timeout")
+	requireInvalid(t, mustErr(NormalizeAlertPolicy(AlertPolicyConfig{HealthTimeoutText: "0s"})), "policy.health_timeout")
+	requireInvalid(t, mustErr(NormalizeAlertPolicy(AlertPolicyConfig{HealthTimeoutText: "abc"})), "policy.health_timeout")
+}
+
+// TestNormalizeUptimeKumaPush Build7 §4.5：最小 20s、启用时 URL 必须绝对 http/https
+func TestNormalizeUptimeKumaPush(t *testing.T) {
+	got, err := NormalizeUptimeKumaPush(UptimeKumaPushConfig{IntervalText: " 60s "})
+	if err != nil {
+		t.Fatalf("关闭且间隔合法应通过: %v", err)
+	}
+	if got.Interval != time.Minute || got.IntervalText != "60s" {
+		t.Errorf("interval 归一化错误: %+v", got)
+	}
+
+	// 禁用状态允许 URL 为空，也不校验其他文本
+	if _, err := NormalizeUptimeKumaPush(UptimeKumaPushConfig{IntervalText: "60s", URL: "not-a-url"}); err != nil {
+		t.Errorf("禁用状态不应校验 URL: %v", err)
+	}
+	if _, err := NormalizeUptimeKumaPush(UptimeKumaPushConfig{
+		Enabled: true, IntervalText: "120s", URL: " https://kuma.example.com/api/push/tok?status=up ",
+	}); err != nil {
+		t.Errorf("启用且 URL 合法应通过: %v", err)
+	}
+
+	requireInvalid(t, mustErr(NormalizeUptimeKumaPush(UptimeKumaPushConfig{IntervalText: "19s"})), "uptime_kuma_push.interval")
+	requireInvalid(t, mustErr(NormalizeUptimeKumaPush(UptimeKumaPushConfig{IntervalText: "0s"})), "uptime_kuma_push.interval")
+	requireInvalid(t, mustErr(NormalizeUptimeKumaPush(UptimeKumaPushConfig{IntervalText: "abc"})), "uptime_kuma_push.interval")
+	requireInvalid(t, mustErr(NormalizeUptimeKumaPush(UptimeKumaPushConfig{Enabled: true, IntervalText: "60s"})), "uptime_kuma_push.url")
+	requireInvalid(t, mustErr(NormalizeUptimeKumaPush(UptimeKumaPushConfig{Enabled: true, IntervalText: "60s", URL: "ftp://kuma/x"})), "uptime_kuma_push.url")
+	requireInvalid(t, mustErr(NormalizeUptimeKumaPush(UptimeKumaPushConfig{Enabled: true, IntervalText: "60s", URL: "https://"})), "uptime_kuma_push.url")
 }
 
 // TestNormalizeAlertWebhook 渠道枚举与启用时的 URL 校验

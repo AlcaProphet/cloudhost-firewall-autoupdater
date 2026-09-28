@@ -8,10 +8,23 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
 )
 
-// alertSubscriptions 告警订阅的事件类型集合（邮件与 Webhook 共用，保持既有语义）。
-var alertSubscriptions = []notifier.EventType{
-	notifier.EventSyncError,
-	notifier.EventDNSFailed,
+// policySubscriptions 依据全局触发策略计算要订阅的事件类型（Build7 §6.3）。
+//
+// 三个触发开关是邮件与 Webhook **共用**的策略，因此这里只算一份集合；
+// 没有开启任何触发条件时返回空集合，渠道即使启用也不安装订阅。
+func policySubscriptions(policy config.AlertPolicyConfig) []notifier.EventType {
+	events := make([]notifier.EventType, 0, 3)
+	if policy.DNSFailedEnabled {
+		events = append(events, notifier.EventDNSFailed)
+	}
+	if policy.SyncErrorEnabled {
+		events = append(events, notifier.EventSyncError)
+	}
+	if policy.OperationalErrorEnabled {
+		// 运行健康异常是边沿事件：只在健康→异常（及开关补发）时由内部监督器发布一次
+		events = append(events, notifier.EventOperationalUnhealthy)
+	}
+	return events
 }
 
 // alertSet 一次配置快照对应的告警订阅集合（Build6 §12.4 第 5 条、§12.12）。
@@ -22,6 +35,8 @@ var alertSubscriptions = []notifier.EventType{
 type alertSet struct {
 	email   notifier.Subscriber
 	webhook notifier.Subscriber
+	// events 是本集合实际订阅的事件类型（由策略决定，邮件与 Webhook 共用）
+	events []notifier.EventType
 	// emailToAddr / webhookChannel 只用于安全日志：绝不记录密码或 URL
 	emailToAddr    string
 	webhookChannel string
@@ -32,12 +47,22 @@ type alertSet struct {
 // 构造阶段零副作用：NewEmailNotifier / NewWebhookNotifier 只保存配置字段，
 // 不建立连接、不发消息。
 func BuildAlertSet(rc config.RuntimeConfig) alertSet {
+	// 只有「渠道开启 + 对应触发开启」才产生订阅（Build7 §2.1、§6.3）：
+	// 开启触发条件但没有启用任何渠道不发送；启用渠道但没有开启任何触发条件也不发送。
+	events := policySubscriptions(rc.Policy)
+
 	var set alertSet
+	if len(events) == 0 {
+		return set
+	}
+	set.events = events
+
 	if rc.Email.Enabled {
 		set.email = notifier.NewEmailNotifier(notifier.EmailConfig{
 			Host: rc.Email.Host, Port: rc.Email.Port,
 			User: rc.Email.Username, Pass: rc.Email.Password,
 			From: rc.Email.FromAddr, To: rc.Email.ToAddr,
+			Subject: rc.Email.Subject, Body: rc.Email.Body,
 		})
 		set.emailToAddr = rc.Email.ToAddr
 	}
@@ -84,7 +109,9 @@ func (m *AlertManager) Apply(set alertSet) {
 	injectLimiter(set.webhook, m.webhookLimiter)
 
 	if m.bus != nil {
-		for _, et := range alertSubscriptions {
+		// 取消订阅必须使用**旧集合**的事件类型（策略可能已变化），
+		// 安装订阅使用**新集合**的事件类型：两者都来自各自的 policySubscriptions。
+		for _, et := range m.current.events {
 			if m.current.email != nil {
 				m.bus.Unsubscribe(et, m.current.email)
 			}
@@ -92,7 +119,7 @@ func (m *AlertManager) Apply(set alertSet) {
 				m.bus.Unsubscribe(et, m.current.webhook)
 			}
 		}
-		for _, et := range alertSubscriptions {
+		for _, et := range set.events {
 			if set.email != nil {
 				m.bus.Subscribe(et, set.email)
 			}

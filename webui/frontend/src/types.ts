@@ -62,6 +62,10 @@ export interface SyncStatus {
   // 两者都是内存态，后端重启后为 null（不得表述为「从未成功」）
   last_success: string | null
   last_round: RoundSummary | null
+  // Build7 Step 4：唯一运行健康计算源使用的内存态时间戳
+  // round_started_at 无在途轮次时为 null；process_started_at 为 Syncer 构造时间
+  round_started_at: string | null
+  process_started_at: string
 }
 
 // RuleChange 规则变更摘要（Dry Run 明细化）
@@ -116,6 +120,14 @@ export interface SyncEvent {
   data: Record<string, unknown>
 }
 
+// AlertPolicyConfig 告警触发策略（Build7 §4.6）：三个触发开关共用，health_timeout 为时长文本
+export interface AlertPolicyConfig {
+  dns_failed_enabled: boolean
+  sync_error_enabled: boolean
+  operational_error_enabled: boolean
+  health_timeout: string
+}
+
 export interface AlertEmailConfig {
   enabled: boolean
   host: string
@@ -124,10 +136,20 @@ export interface AlertEmailConfig {
   password: string
   from_addr: string
   to_addr: string
+  // Build7：可编辑纯文本主题与正文
+  subject: string
+  body: string
 }
 
 export interface AlertWebhookConfig {
   enabled: boolean
   url: string
   channel?: string
+}
+
+// AlertUptimeKumaPushConfig 外部运行监控（Build7 §4.6）：独立于普通 Webhook 渠道
+export interface AlertUptimeKumaPushConfig {
+  enabled: boolean
+  url: string
+  interval: string
 }

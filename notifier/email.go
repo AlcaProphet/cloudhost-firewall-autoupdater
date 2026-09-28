@@ -3,6 +3,7 @@ package notifier
 import (
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/smtp"
 	"strings"
@@ -26,14 +27,19 @@ var (
 	smtpDeadline    = smtpDefaultDeadline
 )
 
-// EmailConfig SMTP 邮件配置
+// EmailConfig SMTP 邮件配置。
+//
+// Subject / Body 是用户在告警页配置的纯文本主题与正文（Build7 §4.4）：
+// 自动邮件会在主题后追加固定事件后缀、在正文后追加固定详情块。
 type EmailConfig struct {
-	Host string
-	Port string
-	User string
-	Pass string
-	From string
-	To   string
+	Host    string
+	Port    string
+	User    string
+	Pass    string
+	From    string
+	To      string
+	Subject string
+	Body    string
 }
 
 // EmailNotifier 邮件告警
@@ -54,10 +60,68 @@ func (n *EmailNotifier) SetInFlightLimiter(l *InFlightLimiter) { n.limiter = l }
 // ChannelName 返回渠道名（用于安全日志）
 func (n *EmailNotifier) ChannelName() string { return "email" }
 
+// eventSubjectSuffix 返回事件类型对应的固定主题后缀（Build7 §4.4）。
+//
+// 返回 false 表示该事件类型不产生邮件（订阅过滤之外的二次防御）。
+func eventSubjectSuffix(t EventType) (string, bool) {
+	switch t {
+	case EventDNSFailed:
+		return " - DNS 解析失败", true
+	case EventSyncError:
+		return " - 同步失败", true
+	case EventOperationalUnhealthy:
+		return " - 运行健康异常", true
+	default:
+		return "", false
+	}
+}
+
+// eventDisplayName 返回事件类型的中文展示名（用于正文详情块）
+func eventDisplayName(t EventType) string {
+	switch t {
+	case EventDNSFailed:
+		return "DNS 解析失败"
+	case EventSyncError:
+		return "同步失败"
+	case EventOperationalUnhealthy:
+		return "运行健康异常"
+	default:
+		return string(t)
+	}
+}
+
+// detailValue 读取事件数据中的字符串字段；缺失或非字符串时返回占位符 "-"。
+func detailValue(event Event, key string) string {
+	v, ok := event.Data[key]
+	if !ok {
+		return "-"
+	}
+	s, ok := v.(string)
+	if !ok || s == "" {
+		return "-"
+	}
+	return s
+}
+
+// formatEventDetails 生成固定顺序的事件详情块（Build7 §4.4）：
+// 事件类型 / 时间 / Provider / 域名 / 错误，缺失字段用 "-" 表示。
+//
+// 刻意不遍历 map：map 迭代顺序随机，会让同一事件产生不同文本。
+func formatEventDetails(event Event) string {
+	var sb strings.Builder
+	sb.WriteString("事件类型：" + eventDisplayName(event.Type) + "\n")
+	sb.WriteString("时间：" + event.Timestamp.Format("2006-01-02 15:04:05") + "\n")
+	sb.WriteString("Provider：" + detailValue(event, "provider") + "\n")
+	sb.WriteString("域名：" + detailValue(event, "domain") + "\n")
+	sb.WriteString("错误：" + detailValue(event, "error"))
+	return sb.String()
+}
+
 // OnEvent 实现 Subscriber 接口
 func (n *EmailNotifier) OnEvent(event Event) error {
-	// 仅处理错误事件
-	if event.Type != EventSyncError && event.Type != EventDNSFailed {
+	// 仅处理已订阅的错误事件
+	suffix, ok := eventSubjectSuffix(event.Type)
+	if !ok {
 		return nil
 	}
 
@@ -71,10 +135,15 @@ func (n *EmailNotifier) OnEvent(event Event) error {
 		defer release()
 	}
 
-	subject := fmt.Sprintf("[FWAlizer] %s", event.Type)
-	body := formatEventBody(event)
+	subject := n.cfg.Subject + suffix
+	body := n.cfg.Body + "\n\n" + formatEventDetails(event)
 
-	return n.send(subject, body)
+	err := n.send(subject, body)
+	if err == nil {
+		// 成功日志只记录事件类型与收件人：不含密码与正文
+		slog.Info("邮件告警已被 SMTP 服务器接受", "event", string(event.Type), "to", n.cfg.To)
+	}
+	return err
 }
 
 // send 用显式建连 + deadline 发送邮件。
@@ -121,7 +190,13 @@ func (n *EmailNotifier) send(subject, body string) error {
 	if err := c.Mail(n.cfg.From); err != nil {
 		return fmt.Errorf("SMTP MAIL FROM 失败: %w", err)
 	}
+	// 多收件人逐项 Trim（Build7 §4.5）：页面示例 "a@x.com, b@y.com" 的第二个地址
+	// 不得把前导空格传给 SMTP；空项直接跳过。
 	for _, rcpt := range strings.Split(n.cfg.To, ",") {
+		rcpt = strings.TrimSpace(rcpt)
+		if rcpt == "" {
+			continue
+		}
 		if err := c.Rcpt(rcpt); err != nil {
 			return fmt.Errorf("SMTP RCPT TO 失败: %w", err)
 		}
@@ -145,6 +220,42 @@ func (n *EmailNotifier) send(subject, body string) error {
 		return fmt.Errorf("SMTP QUIT 失败: %w", err)
 	}
 	return nil
+}
+
+// ─── Build7 Step 2：测试邮件（复用同一条有界 SMTP 会话实现） ───
+
+const (
+	// EmailTestSubjectSuffix 测试邮件主题的固定后缀（Build7 §5.1）
+	EmailTestSubjectSuffix = " - 测试邮件"
+	// EmailTestNotice 测试邮件正文的固定说明（Build7 §5.1）
+	EmailTestNotice = "这是一次手动测试邮件"
+	// emailTestTimeLayout 测试邮件正文的时间格式
+	emailTestTimeLayout = "2006-01-02 15:04:05"
+)
+
+// BuildTestEmailContent 组装测试邮件的主题与正文（Build7 §5.1）：
+// 主题追加固定后缀；正文在用户文本之后追加固定说明与当前时间。
+//
+// 成功口径只表示「SMTP 服务器已接受」，不表示已投递到收件箱。
+func BuildTestEmailContent(subject, body string, now time.Time) (string, string) {
+	var sb strings.Builder
+	sb.WriteString(body)
+	sb.WriteString("\n\n")
+	sb.WriteString(EmailTestNotice)
+	sb.WriteString("\n时间：")
+	sb.WriteString(now.Format(emailTestTimeLayout))
+	return subject + EmailTestSubjectSuffix, sb.String()
+}
+
+// SendTestEmail 使用与自动告警**完全相同**的 SMTP 会话实现发送一次测试邮件。
+//
+// 因此它复用 10 秒连接上限与 30 秒整会话 deadline（Build7 §5.1），并且：
+//   - 不经过 EventBus、触发开关、每渠道在途限流与 ConfigCoordinator；
+//   - 不读写 SQLite，也不发布任何运行时状态；
+//   - 配置完全来自调用方传入的请求表单值。
+func SendTestEmail(cfg EmailConfig, subject, body string) error {
+	n := &EmailNotifier{cfg: cfg}
+	return n.send(subject, body)
 }
 
 func formatEventBody(event Event) string {

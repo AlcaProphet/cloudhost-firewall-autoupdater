@@ -35,7 +35,7 @@
 - **乐观锁重试**：每次写入前重新拉取最新状态，最多 3 次指数退避重试
 - **跨云并行**：不同云厂商并行同步，同厂商内串行（避免触发频率限制）
 - **单二进制分发**：前端 WebUI 编译进二进制，无运行时依赖
-- **Docker 就绪**：Alpine 基础镜像，非 root 运行，健康检查只认 HTTP `/api/health`
+- **Docker 就绪**：Alpine 基础镜像，非 root 运行，容器健康检查只认 HTTP `/api/health`（静态存活）；应用运行健康由 `/api/health/operational` 表达
 
 ---
 
@@ -161,7 +161,7 @@ make build
 | 全局设置 | 凭据卡片化（腾讯云/阿里云分卡）+ 一键扫描云资源（按厂商聚合展示）、TAG/间隔/DNS/日志级别、配置导入导出、清空所有数据 |
 | 同步日志 | 历史记录（新增/删除计数、failed 点击查看错误详情、清空/刷新记录）+ 实时运行日志（常驻展开） |
 | 模拟测试 | 变更预览（按当前目标与规则计算，不实际写入）；连接测试保留在目标添加/编辑弹窗 |
-| 告警配置 | 邮件（SMTP）+ Webhook（钉钉/飞书/Slack）告警 |
+| 告警配置 | 触发条件（DNS 解析失败 / 同步最终失败 / 运行健康异常）、邮件（SMTP + 可编辑纯文本主题正文 + 测试发送）、Webhook（钉钉/飞书/Slack）、外部运行监控（Uptime Kuma Push） |
 
 ---
 
@@ -173,28 +173,28 @@ make build
 - 云资源目标与域名规则；
 - TAG、同步间隔、DNS 服务器、DNS 超时、DNS 失败阈值；
 - 日志级别、同步开关、明暗主题；
-- 邮件告警、SMTP 凭据与 Webhook 告警。
+- 邮件告警（SMTP 凭据、主题与纯文本正文）、Webhook 告警、告警触发条件与 Uptime Kuma Push 设置。
 
 `sync_enabled`（同步开关）只由仪表盘的暂停/开启操作或配置导入修改；监听端口不属于业务配置。
 
 ### 配置导入导出
 
-「全局设置」页提供配置导入/导出，协议为 **version 2 完整敏感快照**：
+「全局设置」页提供配置导入/导出，协议为 **version 3 完整敏感快照**：
 
-- 导出生成 `fwalizer-config-v2-<UTC时间>.json`（`POST /api/config/export`，`Cache-Control: no-store`）；
-- 导出内容包含：目标、规则、全部设置，以及**腾讯云密钥、阿里云密钥、SMTP 密码、Webhook URL**；
-- 导入为**覆盖式原子替换**：目标、规则、设置、云凭据与告警全部替换；规则通过配置包内的 `export_id → 新数据库 ID` 映射重建目标关联；
+- 导出生成 `fwalizer-config-v3-<UTC时间>.json`（`POST /api/config/export`，`Cache-Control: no-store`）；
+- 导出内容包含：目标、规则、全部设置、告警（触发策略 + 邮件主题/正文 + Webhook + Uptime Kuma Push），以及**腾讯云密钥、阿里云密钥、SMTP 密码、Webhook URL、Uptime Kuma Push URL**；
+- 导入为**覆盖式原子替换**：目标、规则、设置、云凭据、告警与 Push 全部替换；规则通过配置包内的 `export_id → 新数据库 ID` 映射重建目标关联；
 - 导入保留同步日志，清空扫描缓存，不重置 SQLite 自增序列；
 - 导入是整库替换语义，因此会同时**重置 DNS 渐进式熔断的失败计数**（普通设置变更仍保留计数）；
-- 只接受 version 2；version 1 及其他版本配置包会被拒绝（HTTP 400），不提供迁移或兼容；
+- 只接受 version 3；version 1/2 及其他版本配置包会被拒绝（HTTP 400），不提供迁移或兼容；
 - 配置包是**配置迁移方式**（跨实例或重装后恢复业务配置），**不是运行中 SQLite 数据库的在线备份**：它不包含同步日志与扫描缓存，不等同于复制 `config.db`；
 - 监听地址/端口、数据目录、pidfile 等部署状态不进入配置包。
 
 > ⚠️ **安全警告（务必阅读）**
 >
-> version 2 配置包是**明文完整敏感快照**，安全等级等同于生产密钥或 SQLite 数据库备份：
+> version 3 配置包是**明文完整敏感快照**，安全等级等同于生产密钥或 SQLite 数据库备份：
 >
-> - **不要**将其提交到 Git（本仓库 `.gitignore` 已忽略 `fwalizer-config-v2-*.json`）；
+> - **不要**将其提交到 Git（本仓库 `.gitignore` 已忽略 `fwalizer-config-v3-*.json`）；
 > - **不要**上传到公共网盘、对象存储公开桶或聊天工具；
 > - **不要**通过不可信渠道传输，建议使用加密通道或加密归档；
 > - 导入会**覆盖当前全部业务配置**，包括现有云凭据与告警设置；
@@ -204,13 +204,40 @@ make build
 
 ---
 
-## 告警通知
+## 告警通知与运行健康
 
-在 WebUI 的「告警配置」页面中，可配置邮件（SMTP）和 Webhook 两种通知方式。启用后在发生同步错误或 DNS 解析失败时自动推送告警：
+「告警配置」页面按四张卡片组织，保存后即时生效（热重载），无需重启：
 
-- **邮件告警**：支持标准 SMTP（如 QQ 邮箱、163 邮箱、企业邮箱）
-- **Webhook 告警**：支持钉钉、飞书、Slack 三种渠道（在告警配置页选择「通知渠道」），自动适配各平台消息格式
-- 告警配置修改后即时生效（热重载），无需重启
+1. **触发条件**：DNS 解析失败、Provider × 域名最终失败、运行健康异常三个开关（**默认全部关闭**），以及健康超时 `health_timeout`（默认 `10m`）。三个开关是邮件与 Webhook **共用**的全局策略：只有「渠道开启 + 对应触发开启」才会发送通知。
+2. **邮件告警**：标准 SMTP（如 QQ 邮箱、163 邮箱、企业邮箱），可编辑纯文本主题与正文；系统会在正文后追加固定事件详情（事件类型 / 时间 / Provider / 域名 / 错误，缺失字段写 `-`）；多收件人用逗号分隔。「测试发送邮件」按钮使用当前表单值直接测试（不保存、不写库、不改变订阅），结果只显示在页面上、刷新即消失；成功只表示 **SMTP 服务器已接受**，不代表已投递到收件箱。
+3. **Webhook 告警**：钉钉、飞书、Slack 三种渠道，自动适配各平台消息格式。
+4. **外部运行监控（Uptime Kuma Push）**：默认关闭；启用后按发送间隔主动上报当前运行状态。
+
+### 运行健康端点
+
+| 端点 | 语义 | 用途 |
+|------|------|------|
+| `GET /api/health` | **静态存活**：只要 HTTP 服务可达就返回 200 `{"status":"ok"}` | Docker `HEALTHCHECK`；同步失败或运行健康异常都**不会**让它失败 |
+| `GET /api/health/operational` | 应用工作状态：健康 200、异常 503（`Cache-Control: no-store`，响应只含稳定原因） | 外部监控（Uptime Kuma HTTP Monitor） |
+
+运行健康由唯一的内部判定源计算：SQLite 探活（最多 2 秒）、同步引擎是否在运行、最近一轮是否 failed/partial、单轮是否超过 `health_timeout`、同步开启时是否调度停滞；暂停时只检查 SQLite 与主循环；空目标/空规则视为正常。30 秒内部监督器只在**健康→异常边沿**发送一次运行健康异常告警（持续异常不刷屏，恢复只写 INFO，恢复后再次异常会再告警一次）。
+
+### Uptime Kuma 最小配置
+
+**方式一：HTTP Monitor（推荐，Uptime Kuma 能主动访问 FWAlizer）**
+
+1. 在 Uptime Kuma 新建 HTTP(s) Monitor；
+2. URL 填 `http(s)://<FWAlizer地址>/api/health/operational`；
+3. 期望状态码 200（运行异常时 FWAlizer 返回 503）。
+
+**方式二：Push Monitor（FWAlizer 位于不可入站网络时）**
+
+1. 在 Uptime Kuma 新建 Push Monitor，复制它给出的 Push URL（含 token）；
+2. 在 FWAlizer「告警配置 → 外部运行监控」粘贴该 URL，设置发送间隔（默认 `60s`，最小 `20s`）；
+3. 把 Uptime Kuma 的 Heartbeat Interval 设置为**大于**该发送间隔并留出余量（默认发送 60 秒时建议 120 秒）；
+4. 保存后 FWAlizer 立即发送第一条心跳，之后按间隔上报 `up`/`down`；进程死亡或完全卡死时不再有心跳，由 Uptime Kuma 依据缺失心跳判定 DOWN。
+
+> ⚠️ 真实 Uptime Kuma 的 HTTP 拉取与 Push DOWN/恢复通知属于人工验收项（见 [ProdTestList.md](./ProdTestList.md)），本地 mock 测试不等于真实外部验收。
 
 ---
 
@@ -339,13 +366,16 @@ cloudhost-firewall-autoupdater/
 ├── notifier/                # 事件总线 + 告警（邮件、Webhook）
 ├── webui/                   # WebUI 后端（HTTP API + 前端 embed）
 │   └── frontend/            # Vue 3 + Vite + Naive UI 前端源码
-├── internal/                # 内部工具（端口转换、标签解析）
+├── internal/                # 内部工具（端口转换、标签解析、运行健康 internal/health）
 ├── ReadmeAsset/             # README 截图资源
 ├── PlatformAPIDocs/         # 各云平台 API 使用要求 + 地域可用区指南文档
 ├── HistoryDocs/             # 历史工程文档（Design1-4/Build1-5/Issue1-4，共 13 份）
 ├── Design5.md               # 当前设计记录
-├── Build6.md                # 当前构建方案
-├── Issue5.md                # 当前问题追踪
+├── Build7.md                # 当前构建方案（告警与运行健康）
+├── Build6.md                # 已完成的历史构建记录
+├── Issue5.md                # 问题追踪
+├── Issue6.md                # 问题追踪（A1～A20 批次）
+├── ProdTestList.md          # 待用户执行的真实外部人工验收清单
 └── build/                   # Dockerfile
 ```
 
@@ -423,7 +453,7 @@ make build
 
 ### 8. 如何备份和恢复配置？
 
-使用「全局设置」页的「导出配置」与「导入配置」完成业务配置迁移。配置包是 version 2 明文完整敏感快照，**包含云凭据、SMTP 密码与 Webhook URL**，请按上文「配置导入导出」的安全警告妥善保管；导入会覆盖当前全部业务配置。
+使用「全局设置」页的「导出配置」与「导入配置」完成业务配置迁移。配置包是 version 3 明文完整敏感快照，**包含云凭据、SMTP 密码、Webhook URL 与 Uptime Kuma Push URL**，请按上文「配置导入导出」的安全警告妥善保管；导入会覆盖当前全部业务配置。version 1/2 配置包不再被接受（需重新在新版本导出后使用）。
 
 需要注意：配置包是配置迁移方式，**不是 SQLite 数据库的在线备份**，不含同步日志与扫描缓存。若需要完整数据库备份，请停止 FWAlizer 后复制 `<数据目录>/config.db`。
 
@@ -437,7 +467,7 @@ make build
 # 方式一：直接把损坏值改写为合法的空数组（= 适用于全部目标）
 sqlite3 <数据目录>/config.db "UPDATE rules SET targets='[]' WHERE targets IS NULL OR targets='null';"
 
-# 方式二：先手工核对 rules 表的目标引用，再重新导入 version 2 配置包
+# 方式二：先手工核对 rules 表的目标引用，再重新导入 version 3 配置包
 # （导入会先清空 rules 再写入，可顺带修复损坏库）
 ```
 
@@ -445,7 +475,7 @@ sqlite3 <数据目录>/config.db "UPDATE rules SET targets='[]' WHERE targets IS
 
 ### 9. 如何配置告警通知？
 
-在左侧菜单进入「告警配置」页面，填写 SMTP 或 Webhook 信息并启用即可。Webhook 支持在配置页选择「通知渠道」（钉钉/飞书/Slack），程序会自动适配各平台的消息格式。配置保存后即时生效。
+在左侧菜单进入「告警配置」页面：先按需打开「触发条件」中的开关（默认全部关闭），再启用邮件或 Webhook 渠道并填写信息；邮件可编辑主题与正文，并可用「测试发送邮件」验证 SMTP 是否接受。也可在同一页启用「外部运行监控（Uptime Kuma Push）」。配置保存后即时生效；运行健康状态可访问 `GET /api/health/operational` 查看。
 
 ### 10. 如何通过局域网或反向代理访问 WebUI？
 
@@ -482,6 +512,8 @@ Docker 需在容器内设置 `WEBUI_HOST=0.0.0.0`。宿主机的暴露范围由�
 ### 16. Docker 健康检查为什么是 unhealthy？
 
 镜像与 Compose 的健康检查只请求 HTTP `/api/health`，不做进程存活检查。容器显示 `unhealthy` 说明 WebUI 没有正确提供服务（例如端口被占用、启动失败或 `WEBUI_PORT` 与 `healthcheck` 端口不一致），请查看 `docker logs` 排查。
+
+补充：`/api/health` 是**静态存活**端点，因此一次同步失败或运行健康异常**不会**让容器变成 `unhealthy`（避免编排误重启）。应用工作状态请改用 `GET /api/health/operational`（异常返回 503）配合 Uptime Kuma 等外部监控观察。
 
 ---
 

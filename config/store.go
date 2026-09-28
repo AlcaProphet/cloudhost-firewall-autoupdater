@@ -132,8 +132,12 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-func (s *Store) initTables() error {
-	schema := `
+// schemaSQL 是 Build7 目标 Schema（Build7 §4.2）。
+//
+// 四张单行表（alert_email / alert_webhook / alert_policy / uptime_kuma_push）的业务
+// ID 固定为 1，默认行由 migrateSchemaTx 用 INSERT OR IGNORE 保证存在；新建库的
+// 告警启用状态因此天然为「全部关闭」。
+const schemaSQL = `
 CREATE TABLE IF NOT EXISTS targets (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	cloud_type TEXT NOT NULL,
@@ -166,19 +170,34 @@ CREATE TABLE IF NOT EXISTS sync_logs (
 );
 CREATE TABLE IF NOT EXISTS alert_email (
 	id INTEGER PRIMARY KEY DEFAULT 1,
-	enabled INTEGER DEFAULT 0,
-	host TEXT DEFAULT '',
-	port TEXT DEFAULT '587',
-	username TEXT DEFAULT '',
-	password TEXT DEFAULT '',
-	from_addr TEXT DEFAULT '',
-	to_addr TEXT DEFAULT ''
+	enabled INTEGER NOT NULL DEFAULT 0,
+	host TEXT NOT NULL DEFAULT '',
+	port TEXT NOT NULL DEFAULT '587',
+	username TEXT NOT NULL DEFAULT '',
+	password TEXT NOT NULL DEFAULT '',
+	from_addr TEXT NOT NULL DEFAULT '',
+	to_addr TEXT NOT NULL DEFAULT '',
+	subject TEXT NOT NULL DEFAULT '` + DefaultEmailSubject + `',
+	body TEXT NOT NULL DEFAULT '` + DefaultEmailBody + `'
 );
 CREATE TABLE IF NOT EXISTS alert_webhook (
 	id INTEGER PRIMARY KEY DEFAULT 1,
-	enabled INTEGER DEFAULT 0,
-	url TEXT DEFAULT '',
-	channel TEXT DEFAULT 'dingtalk'
+	enabled INTEGER NOT NULL DEFAULT 0,
+	url TEXT NOT NULL DEFAULT '',
+	channel TEXT NOT NULL DEFAULT 'dingtalk'
+);
+CREATE TABLE IF NOT EXISTS alert_policy (
+	id INTEGER PRIMARY KEY DEFAULT 1,
+	dns_failed_enabled INTEGER NOT NULL DEFAULT 0,
+	sync_error_enabled INTEGER NOT NULL DEFAULT 0,
+	operational_error_enabled INTEGER NOT NULL DEFAULT 0,
+	health_timeout TEXT NOT NULL DEFAULT '10m'
+);
+CREATE TABLE IF NOT EXISTS uptime_kuma_push (
+	id INTEGER PRIMARY KEY DEFAULT 1,
+	enabled INTEGER NOT NULL DEFAULT 0,
+	url TEXT NOT NULL DEFAULT '',
+	interval TEXT NOT NULL DEFAULT '60s'
 );
 CREATE TABLE IF NOT EXISTS scanned_resources (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -189,34 +208,148 @@ CREATE TABLE IF NOT EXISTS scanned_resources (
 	scanned_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 `
-	_, err := s.db.Exec(schema)
+
+// singleRowTables 是四张单行表：业务 ID 固定为 1，至多一行。
+var singleRowTables = []string{"alert_email", "alert_webhook", "alert_policy", "uptime_kuma_push"}
+
+// initTables 在**单个事务**内建立/迁移 Schema（Build7 §4.2）。
+//
+// 事务性很关键：`ALTER TABLE` 中途失败不能留下「补了一半列」的库，否则
+// 「新增 subject/body 列」这个一次性迁移信号会在重启时失效。
+func (s *Store) initTables() error {
+	ctx := context.Background()
+	tx, err := s.db.Begin()
 	if err != nil {
+		return fmt.Errorf("开始 Schema 迁移事务失败: %w", err)
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.Error("回滚 Schema 迁移事务失败", "error", rbErr)
+		}
+	}()
+
+	if _, err := tx.ExecContext(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("初始化表结构失败: %w", err)
 	}
-	return s.migrateColumns(s.db)
+	if err := migrateSchemaTx(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交 Schema 迁移事务失败: %w", err)
+	}
+	committed = true
+	return nil
 }
 
-// migrateColumns 为已有表补充列（Build1 时期的旧库形态：`CREATE TABLE IF NOT EXISTS`
-// 不会给已存在表补列，因此这两条 ALTER 仍然必要）。
+// migrateSchemaTx 执行显式 Schema 迁移（Build7 §4.2），不依赖
+// `CREATE TABLE IF NOT EXISTS` 自动补列：
 //
-// duplicate-column 表示列已存在，属幂等成功；**其他任何错误立即返回并中止启动**
-// （Issue6 A17）：修复前只记 WARN 后继续，会让列缺失的库带着不完整 schema 启动，
-// 后续读写以难以定位的方式失败。
-func (s *Store) migrateColumns(q DBTX) error {
-	alters := []struct {
-		desc string
-		sql  string
-	}{
-		{"rules.enable_ipv6", "ALTER TABLE rules ADD COLUMN enable_ipv6 INTEGER DEFAULT 0"},
-		{"alert_webhook.channel", "ALTER TABLE alert_webhook ADD COLUMN channel TEXT DEFAULT 'dingtalk'"},
+//  1. 为老库补列（rules.enable_ipv6、alert_webhook.channel、alert_email.subject/body）；
+//  2. **只有** alert_email 的主题/正文列是本次新增时，才把邮件与 Webhook 的启用状态
+//     统一归零。这是「一次性」语义：列已存在说明该库已经迁移过（或本来就是新库），
+//     绝不能在每次启动重复重置用户配置；
+//  3. 单行表归一化为「至多一行且业务 ID=1」，并保证默认行存在；
+//     alert_policy / uptime_kuma_push 是新表，默认行即全部关闭 + 10m/60s。
+//
+// 任何一步失败都返回错误并中止启动（Issue6 A17 口径），绝不带着不完整 Schema 运行。
+func migrateSchemaTx(ctx context.Context, tx *sql.Tx) error {
+	if _, err := ensureColumnTx(ctx, tx, "rules", "enable_ipv6",
+		"ALTER TABLE rules ADD COLUMN enable_ipv6 INTEGER DEFAULT 0"); err != nil {
+		return err
 	}
-	for _, a := range alters {
-		if _, err := q.ExecContext(context.Background(), a.sql); err != nil {
-			if strings.Contains(err.Error(), "duplicate column") {
-				continue // 已迁移：幂等成功
-			}
-			return fmt.Errorf("迁移列 %s 失败: %w", a.desc, err)
+	if _, err := ensureColumnTx(ctx, tx, "alert_webhook", "channel",
+		"ALTER TABLE alert_webhook ADD COLUMN channel TEXT DEFAULT '"+DefaultWebhookChannel+"'"); err != nil {
+		return err
+	}
+
+	subjectAdded, err := ensureColumnTx(ctx, tx, "alert_email", "subject",
+		"ALTER TABLE alert_email ADD COLUMN subject TEXT NOT NULL DEFAULT '"+DefaultEmailSubject+"'")
+	if err != nil {
+		return err
+	}
+	bodyAdded, err := ensureColumnTx(ctx, tx, "alert_email", "body",
+		"ALTER TABLE alert_email ADD COLUMN body TEXT NOT NULL DEFAULT '"+DefaultEmailBody+"'")
+	if err != nil {
+		return err
+	}
+
+	if subjectAdded || bodyAdded {
+		if _, err := tx.ExecContext(ctx, "UPDATE alert_email SET enabled = 0"); err != nil {
+			return fmt.Errorf("迁移归零 alert_email 失败: %w", err)
 		}
+		if _, err := tx.ExecContext(ctx, "UPDATE alert_webhook SET enabled = 0"); err != nil {
+			return fmt.Errorf("迁移归零 alert_webhook 失败: %w", err)
+		}
+	}
+
+	for _, table := range singleRowTables {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE id <> 1"); err != nil {
+			return fmt.Errorf("归一化单行表 %s 失败: %w", table, err)
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO "+table+" (id) VALUES (1)"); err != nil {
+			return fmt.Errorf("写入 %s 默认行失败: %w", table, err)
+		}
+	}
+	return nil
+}
+
+// ensureColumnTx 在事务内检查列是否存在，缺失时执行给定的 ALTER TABLE。
+//
+// 返回 true 表示本次真的新增了该列，供「一次性迁移」判定使用；用 PRAGMA 探测而不是
+// 匹配 "duplicate column" 文本，避免把其他错误误判为已迁移。
+func ensureColumnTx(ctx context.Context, tx *sql.Tx, table, column, alter string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return false, fmt.Errorf("读取 %s 列信息失败: %w", table, err)
+	}
+	found := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			if cerr := rows.Close(); cerr != nil {
+				slog.Warn("关闭列信息游标失败", "table", table, "error", cerr)
+			}
+			return false, fmt.Errorf("扫描 %s 列信息失败: %w", table, err)
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		if cerr := rows.Close(); cerr != nil {
+			slog.Warn("关闭列信息游标失败", "table", table, "error", cerr)
+		}
+		return false, fmt.Errorf("遍历 %s 列信息失败: %w", table, err)
+	}
+	if err := rows.Close(); err != nil {
+		return false, fmt.Errorf("关闭 %s 列信息失败: %w", table, err)
+	}
+	if found {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, alter); err != nil {
+		return false, fmt.Errorf("迁移列 %s.%s 失败: %w", table, column, err)
+	}
+	return true, nil
+}
+
+// PingContext 执行一次有界的 SQLite 探活（Build7 §7.2 的运行健康检查入口）。
+//
+// 使用 SELECT 1 而不是 database/sql 的 Ping：后者在某些驱动下只验证连接对象，
+// 不会真正打到数据库。调用方负责用 context 限制总时长（健康检查固定 2 秒）。
+func (s *Store) PingContext(ctx context.Context) error {
+	var one int
+	if err := s.db.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
+		return fmt.Errorf("SQLite 探活失败: %w", err)
+	}
+	if one != 1 {
+		return fmt.Errorf("SQLite 探活返回异常结果")
 	}
 	return nil
 }
@@ -349,8 +482,16 @@ func ruleColumns(r DomainRule) (targetsJSON string, enableIPv6 int, err error) {
 }
 
 // resetAllSQL 清空全部业务表的语句（ResetAllTx 使用）
+// resetAllSQL 清空全部业务表，并重新写入四张单行表的默认行：
+// 邮件、Webhook、三个触发开关与 Push 全部回到关闭，health_timeout 回 10m、
+// Push interval 回 60s（Build7 §2.1、§4.2）。
 const resetAllSQL = "DELETE FROM targets; DELETE FROM rules; DELETE FROM settings; DELETE FROM sync_logs;" +
-	"DELETE FROM alert_email; DELETE FROM alert_webhook; DELETE FROM scanned_resources;"
+	"DELETE FROM alert_email; DELETE FROM alert_webhook; DELETE FROM alert_policy; DELETE FROM uptime_kuma_push;" +
+	"DELETE FROM scanned_resources;" +
+	"INSERT OR IGNORE INTO alert_email (id) VALUES (1);" +
+	"INSERT OR IGNORE INTO alert_webhook (id) VALUES (1);" +
+	"INSERT OR IGNORE INTO alert_policy (id) VALUES (1);" +
+	"INSERT OR IGNORE INTO uptime_kuma_push (id) VALUES (1);"
 
 // ResetAllTx 在事务中清空全部业务数据（「清空所有数据」经协调器调用）
 func (s *Store) ResetAllTx(ctx context.Context, tx *sql.Tx) error {
@@ -606,8 +747,9 @@ func loadAlertEmail(ctx context.Context, q DBTX) (AlertEmailConfig, error) {
 	var cfg AlertEmailConfig
 	var enabled int
 	err := q.QueryRowContext(ctx,
-		"SELECT enabled, host, port, username, password, from_addr, to_addr FROM alert_email WHERE id = 1").
-		Scan(&enabled, &cfg.Host, &cfg.Port, &cfg.Username, &cfg.Password, &cfg.FromAddr, &cfg.ToAddr)
+		"SELECT enabled, host, port, username, password, from_addr, to_addr, subject, body FROM alert_email WHERE id = 1").
+		Scan(&enabled, &cfg.Host, &cfg.Port, &cfg.Username, &cfg.Password, &cfg.FromAddr, &cfg.ToAddr,
+			&cfg.Subject, &cfg.Body)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AlertEmailConfig{}, nil
 	}
@@ -619,8 +761,8 @@ func loadAlertEmail(ctx context.Context, q DBTX) (AlertEmailConfig, error) {
 }
 
 // saveAlertEmailSQL 保存邮件告警配置的语句（单条写入与事务内写入共用）
-const saveAlertEmailSQL = `INSERT OR REPLACE INTO alert_email (id, enabled, host, port, username, password, from_addr, to_addr)
-		 VALUES (1, ?, ?, ?, ?, ?, ?, ?)`
+const saveAlertEmailSQL = `INSERT OR REPLACE INTO alert_email (id, enabled, host, port, username, password, from_addr, to_addr, subject, body)
+		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // alertEmailArgs 把邮件告警配置转换为 SQL 参数
 func alertEmailArgs(cfg *AlertEmailConfig) []any {
@@ -628,7 +770,7 @@ func alertEmailArgs(cfg *AlertEmailConfig) []any {
 	if cfg.Enabled {
 		enabled = 1
 	}
-	return []any{enabled, cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.FromAddr, cfg.ToAddr}
+	return []any{enabled, cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.FromAddr, cfg.ToAddr, cfg.Subject, cfg.Body}
 }
 
 // SaveAlertEmail 保存邮件告警配置
@@ -692,9 +834,133 @@ func (s *Store) SaveAlertWebhookTx(ctx context.Context, tx *sql.Tx, cfg *AlertWe
 	return err
 }
 
+// boolToInt 把布尔值转换为 SQLite 的 0/1。
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+// GetAlertPolicy 获取告警触发策略（GET /api/alerts 与测试使用）。
+func (s *Store) GetAlertPolicy() (*AlertPolicyConfig, error) {
+	cfg, err := loadAlertPolicy(context.Background(), s.db)
+	if err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// loadAlertPolicy 读取告警触发策略（事务内可复用；无行或空时长使用固定默认值，
+// 非空但非法的存量值返回错误而不静默回退，与设置键的既有口径一致）。
+func loadAlertPolicy(ctx context.Context, q DBTX) (AlertPolicyConfig, error) {
+	var dnsFailed, syncError, operationalError int
+	var healthTimeout string
+	err := q.QueryRowContext(ctx,
+		"SELECT dns_failed_enabled, sync_error_enabled, operational_error_enabled, health_timeout FROM alert_policy WHERE id = 1").
+		Scan(&dnsFailed, &syncError, &operationalError, &healthTimeout)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DefaultAlertPolicy(), nil
+	}
+	if err != nil {
+		return AlertPolicyConfig{}, err
+	}
+
+	cfg := AlertPolicyConfig{
+		DNSFailedEnabled:        dnsFailed != 0,
+		SyncErrorEnabled:        syncError != 0,
+		OperationalErrorEnabled: operationalError != 0,
+	}
+	if strings.TrimSpace(healthTimeout) == "" {
+		cfg.HealthTimeoutText = "10m"
+		cfg.HealthTimeout = DefaultHealthTimeout
+		return cfg, nil
+	}
+	text, d, err := ParsePositiveDuration("policy.health_timeout", healthTimeout)
+	if err != nil {
+		return AlertPolicyConfig{}, err
+	}
+	cfg.HealthTimeoutText = text
+	cfg.HealthTimeout = d
+	return cfg, nil
+}
+
+// saveAlertPolicySQL 保存告警策略的语句（单条写入与事务内写入共用）
+const saveAlertPolicySQL = `INSERT OR REPLACE INTO alert_policy
+	(id, dns_failed_enabled, sync_error_enabled, operational_error_enabled, health_timeout)
+	VALUES (1, ?, ?, ?, ?)`
+
+// alertPolicyArgs 把告警策略转换为 SQL 参数（时长按已校验文本持久化）
+func alertPolicyArgs(cfg *AlertPolicyConfig) []any {
+	return []any{
+		boolToInt(cfg.DNSFailedEnabled),
+		boolToInt(cfg.SyncErrorEnabled),
+		boolToInt(cfg.OperationalErrorEnabled),
+		cfg.HealthTimeoutText,
+	}
+}
+
+// SaveAlertPolicyTx 在事务中保存告警触发策略（PUT /api/alerts 与配置导入共用）
+func (s *Store) SaveAlertPolicyTx(ctx context.Context, tx *sql.Tx, cfg *AlertPolicyConfig) error {
+	_, err := tx.ExecContext(ctx, saveAlertPolicySQL, alertPolicyArgs(cfg)...)
+	return err
+}
+
+// GetUptimeKumaPush 获取 Uptime Kuma Push 配置（GET /api/alerts 与测试使用）。
+func (s *Store) GetUptimeKumaPush() (*UptimeKumaPushConfig, error) {
+	cfg, err := loadUptimeKumaPush(context.Background(), s.db)
+	if err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// loadUptimeKumaPush 读取 Push 配置（事务内可复用；无行或空间隔使用固定默认值）。
+func loadUptimeKumaPush(ctx context.Context, q DBTX) (UptimeKumaPushConfig, error) {
+	var enabled int
+	var url, interval string
+	err := q.QueryRowContext(ctx,
+		"SELECT enabled, url, interval FROM uptime_kuma_push WHERE id = 1").
+		Scan(&enabled, &url, &interval)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DefaultUptimeKumaPush(), nil
+	}
+	if err != nil {
+		return UptimeKumaPushConfig{}, err
+	}
+
+	cfg := UptimeKumaPushConfig{Enabled: enabled != 0, URL: url}
+	if strings.TrimSpace(interval) == "" {
+		cfg.IntervalText = "60s"
+		cfg.Interval = DefaultPushInterval
+		return cfg, nil
+	}
+	text, d, err := ParsePositiveDuration("uptime_kuma_push.interval", interval)
+	if err != nil {
+		return UptimeKumaPushConfig{}, err
+	}
+	cfg.IntervalText = text
+	cfg.Interval = d
+	return cfg, nil
+}
+
+// saveUptimeKumaPushSQL 保存 Push 配置的语句（单条写入与事务内写入共用）
+const saveUptimeKumaPushSQL = `INSERT OR REPLACE INTO uptime_kuma_push (id, enabled, url, interval) VALUES (1, ?, ?, ?)`
+
+// uptimeKumaPushArgs 把 Push 配置转换为 SQL 参数（间隔按已校验文本持久化）
+func uptimeKumaPushArgs(cfg *UptimeKumaPushConfig) []any {
+	return []any{boolToInt(cfg.Enabled), cfg.URL, cfg.IntervalText}
+}
+
+// SaveUptimeKumaPushTx 在事务中保存 Push 配置（PUT /api/alerts 与配置导入共用）
+func (s *Store) SaveUptimeKumaPushTx(ctx context.Context, tx *sql.Tx, cfg *UptimeKumaPushConfig) error {
+	_, err := tx.ExecContext(ctx, saveUptimeKumaPushSQL, uptimeKumaPushArgs(cfg)...)
+	return err
+}
+
 // GetSettingsTx 在事务内按固定键集合读取设置（不返回数据库中的未知键）。
 func (s *Store) GetSettingsTx(ctx context.Context, q DBTX) (map[string]string, error) {
-	return loadSettingsByKeys(ctx, q, settingsKeysV2)
+	return loadSettingsByKeys(ctx, q, settingsKeysV3)
 }
 
 // AddSyncLog 添加同步日志
@@ -829,6 +1095,14 @@ func (s *Store) LoadBusinessSnapshotTx(ctx context.Context, q DBTX) (*BusinessSn
 	if err != nil {
 		return nil, err
 	}
+	policy, err := loadAlertPolicy(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	push, err := loadUptimeKumaPush(ctx, q)
+	if err != nil {
+		return nil, err
+	}
 
 	normalized, err := normalizeSettings(settings)
 	if err != nil {
@@ -836,11 +1110,13 @@ func (s *Store) LoadBusinessSnapshotTx(ctx context.Context, q DBTX) (*BusinessSn
 	}
 
 	return &BusinessSnapshot{
-		Targets:  targets,
-		Rules:    rules,
-		Settings: normalized,
-		Email:    email,
-		Webhook:  webhook,
+		Targets:        targets,
+		Rules:          rules,
+		Settings:       normalized,
+		Policy:         policy,
+		Email:          email,
+		Webhook:        webhook,
+		UptimeKumaPush: push,
 	}, nil
 }
 
@@ -899,7 +1175,7 @@ func loadSettingsByKeys(ctx context.Context, q DBTX, keys []string) (map[string]
 //   - webui_port 等已不是业务设置的残留键一律忽略，不做迁移或清理；
 //   - 返回的 map 只包含 version 2 的完整设置键集合，未知键被丢弃。
 func normalizeSettings(raw map[string]string) (map[string]string, error) {
-	out := make(map[string]string, len(settingsKeysV2))
+	out := make(map[string]string, len(settingsKeysV3))
 	// 默认值（Build6 §3.1）
 	out["tag"] = "auto-dns"
 	out["interval"] = "5m"
@@ -982,7 +1258,7 @@ func normalizeSettings(raw map[string]string) (map[string]string, error) {
 //
 // 只写入调用方提供的键，不遍历数据库或请求中的任意 map。
 func (s *Store) writeSettingsTx(ctx context.Context, tx *sql.Tx, settings map[string]string) error {
-	for _, key := range settingsKeysV2 {
+	for _, key := range settingsKeysV3 {
 		value, ok := settings[key]
 		if !ok {
 			continue
@@ -997,7 +1273,7 @@ func (s *Store) writeSettingsTx(ctx context.Context, tx *sql.Tx, settings map[st
 // ReplaceBusinessSettingsTx 在事务内显式写入 version 2 的完整设置键集合
 // （导入使用：调用方必须提供全部 12 个键，缺失键视为调用方错误）。
 func (s *Store) ReplaceBusinessSettingsTx(ctx context.Context, tx *sql.Tx, settings map[string]string) error {
-	for _, key := range settingsKeysV2 {
+	for _, key := range settingsKeysV3 {
 		if _, ok := settings[key]; !ok {
 			return fmt.Errorf("缺少设置键 %s", key)
 		}
@@ -1005,12 +1281,26 @@ func (s *Store) ReplaceBusinessSettingsTx(ctx context.Context, tx *sql.Tx, setti
 	return s.writeSettingsTx(ctx, tx, settings)
 }
 
-// ReplaceBusinessAlertsTx 在事务内覆盖保存完整邮件与 Webhook 告警配置。
-func (s *Store) ReplaceBusinessAlertsTx(ctx context.Context, tx *sql.Tx, email AlertEmailConfig, webhook AlertWebhookConfig) error {
+// ReplaceBusinessAlertsTx 在事务内覆盖保存完整的告警配置：
+// 触发策略、邮件（含主题/正文）、Webhook 与 Uptime Kuma Push（Build7 §4.3）。
+func (s *Store) ReplaceBusinessAlertsTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	policy AlertPolicyConfig,
+	email AlertEmailConfig,
+	webhook AlertWebhookConfig,
+	push UptimeKumaPushConfig,
+) error {
+	if err := s.SaveAlertPolicyTx(ctx, tx, &policy); err != nil {
+		return err
+	}
 	if err := s.SaveAlertEmailTx(ctx, tx, &email); err != nil {
 		return err
 	}
-	return s.SaveAlertWebhookTx(ctx, tx, &webhook)
+	if err := s.SaveAlertWebhookTx(ctx, tx, &webhook); err != nil {
+		return err
+	}
+	return s.SaveUptimeKumaPushTx(ctx, tx, &push)
 }
 
 // ClearScannedResourcesTx 在事务内清空扫描缓存（配置导入的保留/清空边界）。
@@ -1030,6 +1320,8 @@ func (s *Store) DeleteImportOwnedTablesTx(ctx context.Context, tx *sql.Tx) error
 		"DELETE FROM settings",
 		"DELETE FROM alert_email",
 		"DELETE FROM alert_webhook",
+		"DELETE FROM alert_policy",
+		"DELETE FROM uptime_kuma_push",
 	}
 	for _, stmt := range stmts {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {

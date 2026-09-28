@@ -108,6 +108,18 @@ func (s *Server) SetRuntimeWiring(runtime *syncer.RuntimeManager, alerts *api.Al
 	s.deps.SetRuntimeWiring(runtime, alerts)
 }
 
+// SetHealth 注入运行健康来源（唯一 OperationalHealth 计算源 + 唤醒入口）。
+//
+// `/api/health` 的静态存活语义不受影响：它继续只表示 HTTP 服务可达。
+func (s *Server) SetHealth(source api.OperationalHealthSource) {
+	s.deps.Health = source
+}
+
+// SetPush 注入 Uptime Kuma Push 心跳循环的唤醒入口（配置保存后由协调器唤醒）。
+func (s *Server) SetPush(push api.PushWaker) {
+	s.deps.Push = push
+}
+
 // SetLogBroadcaster 设置日志广播器（实时日志流 SSE）
 func (s *Server) SetLogBroadcaster(b *api.LogBroadcaster) {
 	s.deps.LogBroadcaster = b

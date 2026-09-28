@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -675,6 +677,17 @@ func TestProcessSecretsNotLogged(t *testing.T) {
 		_ = store.Close()
 		t.Fatalf("预置 Webhook 失败: %v", err)
 	}
+	// Build7 §2.1：只有「渠道开启 + 触发开启」才安装订阅，因此这里显式开启 DNS 触发，
+	// 使渠道启用/更新日志（本用例的同步点）真实产生。
+	if err := store.WithTransaction(func(tx *sql.Tx) error {
+		ctx := context.Background()
+		return store.SaveAlertPolicyTx(ctx, tx, &config.AlertPolicyConfig{
+			DNSFailedEnabled: true, HealthTimeout: 10 * time.Minute, HealthTimeoutText: "10m",
+		})
+	}); err != nil {
+		_ = store.Close()
+		t.Fatalf("预置告警策略失败: %v", err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatalf("关闭预置数据库失败: %v", err)
 	}
@@ -771,6 +784,22 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 		_ = srcStore.Close()
 		t.Fatalf("预置 Webhook 失败: %v", err)
 	}
+	// Build7：版本 3 必须端到端携带策略、邮件主题/正文与 Push（真实进程边界）
+	if err := srcStore.WithTransaction(func(tx *sql.Tx) error {
+		ctx := context.Background()
+		if err := srcStore.SaveAlertPolicyTx(ctx, tx, &config.AlertPolicyConfig{
+			DNSFailedEnabled: true, OperationalErrorEnabled: true,
+			HealthTimeout: 25 * time.Minute, HealthTimeoutText: "25m",
+		}); err != nil {
+			return err
+		}
+		return srcStore.SaveUptimeKumaPushTx(ctx, tx, &config.UptimeKumaPushConfig{
+			Enabled: true, URL: "https://kuma.example.invalid/api/push/tokE2E", Interval: 45 * time.Second, IntervalText: "45s",
+		})
+	}); err != nil {
+		_ = srcStore.Close()
+		t.Fatalf("预置策略/Push 失败: %v", err)
+	}
 	if err := srcStore.Close(); err != nil {
 		t.Fatalf("关闭预置数据库失败: %v", err)
 	}
@@ -799,7 +828,7 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 	if headers.Get("Cache-Control") != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", headers.Get("Cache-Control"))
 	}
-	if !strings.HasPrefix(headers.Get("Content-Disposition"), `attachment; filename="fwalizer-config-v2-`) {
+	if !strings.HasPrefix(headers.Get("Content-Disposition"), `attachment; filename="fwalizer-config-v3-`) {
 		t.Errorf("Content-Disposition = %q", headers.Get("Content-Disposition"))
 	}
 	if !strings.HasSuffix(exportBody, "}\n") {
@@ -808,7 +837,13 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 	// 导出是唯一允许包含敏感值的响应
 	for _, secret := range []string{tcSecretKey, smtpPass, webhookURL} {
 		if !strings.Contains(exportBody, secret) {
-			t.Errorf("v2 导出应包含敏感值 %q", secret)
+			t.Errorf("v3 导出应包含敏感值 %q", secret)
+		}
+	}
+	// Build7 §4.3：version 3 固定结构必须包含 policy 与 monitoring
+	for _, fragment := range []string{`"version": 3`, `"policy"`, `"uptime_kuma_push"`, `"health_timeout": "25m"`, `"interval": "45s"`} {
+		if !strings.Contains(exportBody, fragment) {
+			t.Errorf("v3 导出缺少 %s；body=%s", fragment, exportBody)
 		}
 	}
 
@@ -858,14 +893,22 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 	if !strings.Contains(settingsBody, tcSecretID) || !strings.Contains(settingsBody, "dark") {
 		t.Errorf("导入后凭据/主题缺失: %s", settingsBody)
 	}
-	alertsBody := getBody(t, dstBase+"/api/alerts")
-	if !strings.Contains(alertsBody, smtpPass) || !strings.Contains(alertsBody, webhookURL) {
-		t.Errorf("导入后告警缺失: %s", alertsBody)
+	alertCfgBody := getBody(t, dstBase+"/api/alerts")
+	if !strings.Contains(alertCfgBody, smtpPass) || !strings.Contains(alertCfgBody, webhookURL) {
+		t.Errorf("导入后告警缺失: %s", alertCfgBody)
+	}
+	for _, fragment := range []string{`"policy"`, `"uptime_kuma_push"`, `"health_timeout":"25m"`, `"interval":"45s"`} {
+		if !strings.Contains(alertCfgBody, fragment) {
+			t.Errorf("导入后四对象告警缺少 %s: %s", fragment, alertCfgBody)
+		}
 	}
 
-	// 4) 版本策略：version 1 必须 400
+	// 4) 版本策略：version 1 与 version 2 都必须 400（version 3 是唯一协议）
 	if code := postJSON(t, dstBase+"/api/config/import", `{"version":1,"targets":[],"rules":[],"settings":{}}`); code != http.StatusBadRequest {
 		t.Errorf("version 1 导入状态码 = %d, want 400", code)
+	}
+	if code := postJSON(t, dstBase+"/api/config/import", `{"version":2,"targets":[],"rules":[],"settings":{}}`); code != http.StatusBadRequest {
+		t.Errorf("version 2 导入状态码 = %d, want 400", code)
 	}
 
 	// 5) 进程日志不得泄露任何敏感值（导出响应是唯一允许包含它们的 HTTP 响应）
@@ -1012,4 +1055,122 @@ func TestProcessSecondInstanceRejectedByPidFile(t *testing.T) {
 		t.Errorf("第一个实例退出码 = %d, want 0\n输出:\n%s", code, firstOut.String())
 	}
 	assertPidFileCleanup(t, dataDir, 3*time.Second)
+}
+
+// ─── Build7 Step 4：真实二进制的 operational 端点与静态存活端点 ───
+
+// TestProcessOperationalHealthEndpoint 真实进程：
+//   - /api/health/operational 在同步引擎进入运行后必须返回 200 且 status=ok；
+//   - /api/health 必须始终保持静态 {"status":"ok"}。
+func TestProcessOperationalHealthEndpoint(t *testing.T) {
+	dataDir := t.TempDir()
+	port := freePort(t)
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	cmd, out := startProcess(t, dataDir, map[string]string{"WEBUI_PORT": fmt.Sprintf("%d", port)})
+	waitForHTTP(t, base+"/api/health")
+
+	// 空库同步开启：Run 会先进入 running=true，再以 idle 轮次刷新 last_sync。
+	// 轮询等待 operational 变为 200（不使用固定 sleep 猜测时序）。
+	deadline := time.Now().Add(20 * time.Second)
+	code := 0
+	body := ""
+	for time.Now().Before(deadline) {
+		body = getBody(t, base+"/api/health/operational")
+		code = getStatus(t, http.MethodGet, base+"/api/health/operational", "")
+		if code == http.StatusOK {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if code != http.StatusOK {
+		t.Fatalf("/api/health/operational 状态码 = %d, want 200; body=%s; 进程日志:\n%s", code, body, out.String())
+	}
+	if !strings.Contains(body, `"status":"ok"`) || !strings.Contains(body, `"reasons":[]`) {
+		t.Errorf("operational 健康响应不符合契约: %s", body)
+	}
+
+	// 静态存活端点不受影响
+	staticBody := getBody(t, base+"/api/health")
+	if staticBody != `{"status":"ok"}` {
+		t.Errorf("/api/health = %q, want exactly {\"status\":\"ok\"}", staticBody)
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("发送 SIGTERM 失败: %v", err)
+	}
+	if exitCode, err := waitForProcessExit(t, cmd, 20*time.Second); err != nil || exitCode != 0 {
+		t.Fatalf("进程退出失败: code=%d err=%v; 日志:\n%s", exitCode, err, out.String())
+	}
+}
+
+// ─── Build7 Step 5：真实二进制 + 本地 HTTP mock 的 Push 心跳链路 ───
+
+// TestProcessUptimeKumaPushHeartbeat 真实进程：保存 Push 配置后必须立即首发心跳，
+// 且请求携带 status/msg/ping 与用户 token。
+//
+// 证据边界：这是**本地 HTTP mock**，不代表真实 Uptime Kuma 可达或 DOWN/恢复通知。
+func TestProcessUptimeKumaPushHeartbeat(t *testing.T) {
+	type pushHit struct {
+		path  string
+		query string
+	}
+	hits := make(chan pushHit, 8)
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case hits <- pushHit{path: r.URL.Path, query: r.URL.RawQuery}:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer mock.Close()
+
+	dataDir := t.TempDir()
+	port := freePort(t)
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	cmd, out := startProcess(t, dataDir, map[string]string{"WEBUI_PORT": fmt.Sprintf("%d", port)})
+	waitForHTTP(t, base+"/api/health")
+
+	const token = "e2e-push-token-abc123"
+	body := `{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,` +
+		`"operational_error_enabled":false,"health_timeout":"10m"},` +
+		`"email":{"enabled":false,"host":"","port":"587","username":"","password":"",` +
+		`"from_addr":"","to_addr":"","subject":"[FWAlizer] 告警通知",` +
+		`"body":"FWAlizer 检测到运行异常，请检查同步日志。"},` +
+		`"webhook":{"enabled":false,"url":"","channel":"dingtalk"},` +
+		`"uptime_kuma_push":{"enabled":true,"url":"` + mock.URL + `/api/push/` + token + `?foo=bar","interval":"20s"}}`
+	if code := putJSON(t, base+"/api/alerts", body); code != http.StatusOK {
+		t.Fatalf("PUT /api/alerts 状态码 = %d, want 200", code)
+	}
+
+	// 启用后必须立即首发，不等待 20s 间隔
+	var hit pushHit
+	select {
+	case hit = <-hits:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("未在限期内收到 Push 心跳；进程日志:\n%s", out.String())
+	}
+	if !strings.Contains(hit.path, token) {
+		t.Errorf("Push 路径必须保留 token: %q", hit.path)
+	}
+	values, err := url.ParseQuery(hit.query)
+	if err != nil {
+		t.Fatalf("解析 Push query 失败: %v", err)
+	}
+	if values.Get("status") != "up" || values.Get("msg") != "OK" {
+		t.Errorf("Push query 不符合契约: %q", hit.query)
+	}
+	if _, err := strconv.ParseInt(values.Get("ping"), 10, 64); err != nil {
+		t.Errorf("ping 必须是毫秒整数: %q", values.Get("ping"))
+	}
+	if values.Get("foo") != "bar" {
+		t.Errorf("未知 query 必须保留: %q", hit.query)
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("发送 SIGTERM 失败: %v", err)
+	}
+	if exitCode, err := waitForProcessExit(t, cmd, 20*time.Second); err != nil || exitCode != 0 {
+		t.Fatalf("进程退出失败: code=%d err=%v; 日志:\n%s", exitCode, err, out.String())
+	}
 }

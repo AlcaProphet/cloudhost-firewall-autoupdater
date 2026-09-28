@@ -1,6 +1,8 @@
-# FWAlizer 功能构建计划（Build6：当前构建方案）
+# FWAlizer 功能构建计划（Build6：已完成的历史构建记录）
 
-> **文档定位：** 本文档是 FWAlizer 当前已固定口径的分步实施方案（Build 文档仍为非强制执行建议，唯一强要求是 AGENTS.md），整合完整配置导入导出、CLI 与 `.env` Headless 业务模式移除，以及 [Issue5.md](./Issue5.md) 中 R5-01～R5-03、O5-01～O5-06、A5-01 的处理计划。
+> **定位更新（2026-09-28，Build7 Step 0）：** 本文档已收束为**已完成的历史构建记录**（Step 0～7 全部验收通过），其原始证据与结论按原文保留，不再用于新的构建决策；当前构建方案见 [Build7.md](./Build7.md)（告警与运行健康，Step 0～6）。本文档的 **version 2 配置包边界已由 Build7 的 version 3 取代**；其余未被 Build7 明确替代的边界（HTTP 生命周期、严格解码、协调器、运行时快照等）继续作为既有实现基线。
+>
+> **文档定位：** 本文档是 FWAlizer 当时已固定口径的分步实施方案（Build 文档仍为非强制执行建议，唯一强要求是 AGENTS.md），整合完整配置导入导出、CLI 与 `.env` Headless 业务模式移除，以及 [Issue5.md](./Issue5.md) 中 R5-01～R5-03、O5-01～O5-06、A5-01 的处理计划。
 >
 > - 编码指令：[AGENTS.md](./AGENTS.md)（当前唯一强要求）
 > - 当前设计记录：[Design5.md](./Design5.md)

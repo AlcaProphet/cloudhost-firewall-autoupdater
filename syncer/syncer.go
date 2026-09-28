@@ -44,11 +44,13 @@ type Syncer struct {
 	beforeRoundHook func()
 
 	// 状态追踪（保护以下字段）
-	mu          sync.RWMutex
-	running     bool
-	lastSync    time.Time
-	lastSuccess *time.Time    // 最近一次「整轮成功」完成时间（内存态，重启归 null）
-	lastRound   *RoundSummary // 最近一轮的整轮汇总（内存态，重启归 null）
+	mu             sync.RWMutex
+	running        bool
+	lastSync       time.Time
+	lastSuccess    *time.Time    // 最近一次「整轮成功」完成时间（内存态，重启归 null）
+	lastRound      *RoundSummary // 最近一轮的整轮汇总（内存态，重启归 null）
+	processStarted time.Time     // 本次进程内 Syncer 构造时间（健康判定的启动宽限基准）
+	roundStarted   *time.Time    // 当前轮次开始时间；无轮次时为 nil（Build7 §7.2）
 
 	// applied 是「Run 已消费并已通知观察者」的状态指针（Issue6 A13）。
 	//
@@ -84,6 +86,7 @@ func New(runtime *RuntimeManager) *Syncer {
 		stopCh:    make(chan struct{}),
 		doneCh:    make(chan struct{}),
 	}
+	s.processStarted = time.Now()
 	if st := runtime.Snapshot(); st != nil {
 		s.enabled = st.Config.SyncEnabled
 		s.applied = st
@@ -421,6 +424,11 @@ func (s *Syncer) beginRound() bool {
 	if s.isStopped() {
 		return false
 	}
+	// 轮次开始时间：与 running/lastRound 共用同一把锁，Status() 取得一致快照
+	started := time.Now()
+	s.mu.Lock()
+	s.roundStarted = &started
+	s.mu.Unlock()
 	// 测试专用 hook：位于门控通过之后、syncAll 之前，可构造
 	// 「门控已判定 → 此刻 Stop() → 下一处门控必须拦截」的确定性交错。
 	s.mu.RLock()
@@ -465,6 +473,10 @@ type SyncStatus struct {
 	LastSync    *time.Time    `json:"last_sync"`
 	LastSuccess *time.Time    `json:"last_success"`
 	LastRound   *RoundSummary `json:"last_round"`
+	// RoundStartedAt 是当前轮次开始时间；没有在途轮次时为 null（Build7 §7.2）。
+	RoundStartedAt *time.Time `json:"round_started_at"`
+	// ProcessStartedAt 是 Syncer 构造时间，作为「启动后尚无完成轮次」的基准。
+	ProcessStartedAt time.Time `json:"process_started_at"`
 }
 
 // Status 返回当前同步状态
@@ -485,6 +497,11 @@ func (s *Syncer) Status() SyncStatus {
 		r := *s.lastRound
 		status.LastRound = &r
 	}
+	if s.roundStarted != nil {
+		t := *s.roundStarted
+		status.RoundStartedAt = &t
+	}
+	status.ProcessStartedAt = s.processStarted
 	return status
 }
 
@@ -650,6 +667,14 @@ const (
 )
 
 func (s *Syncer) syncAll() {
+	// 无论轮次如何结束（正常、空状态提前返回、panic 展开）都必须清空轮次开始时间，
+	// 否则会留下“陈旧在途轮次”并让健康判定长期误报同步轮次超时。
+	defer func() {
+		s.mu.Lock()
+		s.roundStarted = nil
+		s.mu.Unlock()
+	}()
+
 	state := s.runtime.Snapshot()
 	if state == nil {
 		return

@@ -56,6 +56,14 @@ type Deps struct {
 	// createRuntime 标记惰性协调器是否应构造并发布运行时状态。
 	createRuntime bool
 
+	// Health 运行健康来源（Build7 Step 4）：唯一 OperationalHealth 计算源，
+	// 同时提供配置保存后的唤醒入口。可为 nil（未接线时 operational 端点返回 503）。
+	Health OperationalHealthSource
+
+	// Push 是 Uptime Kuma Push 心跳循环的唤醒入口（Build7 Step 5）；可为 nil（未接线）。
+	// 配置保存在 commit 后唤醒它一次，使其立即按新配置首发或停止。
+	Push PushWaker
+
 	// ShutdownCh 服务器级 shutdown 信号：由 webui.Server 拥有并关闭，
 	// 两类 SSE handler（/api/sync/events、/api/logs/stream）据此主动退出；
 	// 只读、永不写入，handler 退出后由既有 defer unsubscribe() 取消订阅。
@@ -136,7 +144,18 @@ func (d *Deps) applyCandidate(candidate Candidate) {
 		d.Alerts.Apply(candidate.Alerts)
 	}
 
-	// 3) 最后发布 RuntimeState
+	// 3) 运行健康监督配置：唤醒一次检查，使新策略（health_timeout 与第三开关）
+	//    立即生效，而不必等待最长 30 秒的周期（Build7 §7.3）。
+	if d.Health != nil {
+		d.Health.Wake()
+	}
+
+	// 4) Uptime Kuma Push 配置：唤醒心跳循环，使其按新 URL/interval 立即首发或停止。
+	if d.Push != nil {
+		d.Push.Wake()
+	}
+
+	// 5) 最后发布 RuntimeState
 	if d.Syncer != nil {
 		// Syncer 在收到新状态后按固定顺序重新读取生效中的告警集合并输出安全日志
 		d.Syncer.ApplyState(candidate.State)
@@ -189,6 +208,8 @@ func (d *Deps) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sync/events", d.handleSyncEvents)
 	mux.HandleFunc("GET /api/sync/logs", d.handleGetSyncLogs)
 	mux.HandleFunc("DELETE /api/sync/logs", d.handleClearSyncLogs)
+	// 运行健康（Build7 Step 4）：/api/health 仍由服务器注册且保持静态存活语义
+	mux.HandleFunc("GET /api/health/operational", d.handleOperationalHealth)
 	// 实时日志流
 	mux.HandleFunc("GET /api/logs/stream", d.handleLogStream)
 	// 设置 + 配置导入导出
@@ -201,6 +222,8 @@ func (d *Deps) Register(mux *http.ServeMux) {
 	// 告警配置
 	mux.HandleFunc("GET /api/alerts", d.handleGetAlerts)
 	mux.HandleFunc("PUT /api/alerts", d.handlePutAlerts)
+	// 测试邮件（Build7 Step 2）：使用请求表单值，不写库、不 Apply、不改变订阅
+	mux.HandleFunc("POST /api/alerts/test-email", d.handleTestEmail)
 }
 
 // writeJSON 写入 JSON 响应。

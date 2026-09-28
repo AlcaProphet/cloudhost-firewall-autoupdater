@@ -14,6 +14,7 @@ import (
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/app"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/health"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/webui"
@@ -102,10 +103,47 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 	alertManager.LogStatus("已启用")
 	s.SetStateAppliedHook(func(*syncer.RuntimeState) { alertManager.LogStatus("已更新") })
 
+	// 运行健康（Build7 Step 4）：唯一计算源 + 30 秒内部监督器。
+	// 判定只读取已发布的运行时快照与同步状态，不做任何网络访问；
+	// SQLite 探活由 Store.PingContext 在 2 秒上限内完成。
+	healthChecker := health.New(health.Deps{
+		Pinger: store,
+		Status: s.Status,
+		Policy: func() config.AlertPolicyConfig {
+			if st := runtimeManager.Snapshot(); st != nil {
+				return st.Config.Policy
+			}
+			return config.DefaultAlertPolicy()
+		},
+		Interval: func() time.Duration {
+			if st := runtimeManager.Snapshot(); st != nil {
+				return st.Config.Interval
+			}
+			return 0
+		},
+	})
+	supervisor := health.NewSupervisor(health.SupervisorDeps{Checker: healthChecker, Bus: s.EventBus()})
+
+	// Uptime Kuma Push 心跳循环（Build7 Step 5）：默认关闭（策略默认 enabled=false 且 URL 为空），
+	// 配置保存在 commit 后唤醒；失败只写安全 WARN，不影响应用健康。
+	pusher := health.NewPusher(health.PusherDeps{
+		Checker: healthChecker,
+		Config: func() health.PushConfig {
+			st := runtimeManager.Snapshot()
+			if st == nil {
+				return health.PushConfig{}
+			}
+			cfg := st.Config.UptimeKumaPush
+			return health.PushConfig{Enabled: cfg.Enabled, URL: cfg.URL, Interval: cfg.Interval}
+		},
+	})
+
 	// 将 Syncer、EventBus 与运行时接线传入 WebUI
 	// （status/trigger/dryrun/SSE + 连接测试/资源扫描的只读快照来源）
 	srv.SetSyncer(s, s.EventBus())
 	srv.SetRuntimeWiring(runtimeManager, alertManager)
+	srv.SetHealth(supervisor)
+	srv.SetPush(pusher)
 
 	// 同步日志写入：订阅 sync:complete 和 sync:error 事件
 	logWriter := &webapi.StoreLogWriter{Store: store}
@@ -128,6 +166,8 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 		slog.Info("WebUI 已启动，请通过浏览器配置云资源凭据和目标", "访问地址", srv.Addr())
 	}
 
+	go supervisor.Run()
+	go pusher.Run()
 	go s.Run()
 
 	// Serve 结果通道：非正常退出必须能被 main 感知（关闭流程内的收尾会被归一化为 nil）
@@ -169,6 +209,10 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 		httpDone <- shutdownErr
 	}()
 	<-shutdownStarted
+	// 先停 Push（取消在途 HTTP）与运行健康监督器（有界：最多等待一次 SQLite 探活），
+	// 再停止 Syncer：顺序反过来会让监督器在 shutdown 期间看到「主循环已停止」并制造伪异常告警。
+	pusher.Stop()
+	supervisor.Stop()
 	s.Stop()
 
 	// HTTP 收尾最多等待同一时限；超时后强制关闭已在 Shutdown 内完成，这里不再无限等待

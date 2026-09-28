@@ -196,11 +196,15 @@ func (e *testEnv) seedRule(t *testing.T, r config.DomainRule) int {
 	return rules[len(rules)-1].ID
 }
 
-// alertsBody 构造合法的告警 PUT 请求体
+// alertsBody 构造合法的告警 PUT 请求体（Build7 §4.6：四个完整对象）
 func alertsBody(emailHost, emailPassword, webhookURL, channel string) string {
-	return `{"email":{"enabled":false,"host":"` + emailHost + `","port":"587","username":"u",` +
-		`"password":"` + emailPassword + `","from_addr":"f@example.com","to_addr":"t@example.com"},` +
-		`"webhook":{"enabled":false,"url":"` + webhookURL + `","channel":"` + channel + `"}}`
+	return `{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,` +
+		`"operational_error_enabled":false,"health_timeout":"10m"},` +
+		`"email":{"enabled":false,"host":"` + emailHost + `","port":"587","username":"u",` +
+		`"password":"` + emailPassword + `","from_addr":"f@example.com","to_addr":"t@example.com",` +
+		`"subject":"[FWAlizer] 告警通知","body":"FWAlizer 检测到运行异常，请检查同步日志。"},` +
+		`"webhook":{"enabled":false,"url":"` + webhookURL + `","channel":"` + channel + `"},` +
+		`"uptime_kuma_push":{"enabled":false,"url":"","interval":"60s"}}`
 }
 
 // settingsWithSentinels 构造含唯一 sentinel 的设置 PUT 请求体
@@ -217,45 +221,56 @@ func validBundleSettings() string {
 		`"dns_fail_threshold":5,"log_level":"info","sync_enabled":true,"theme":"light"}`
 }
 
-// validBundleAlerts 构造一份合法的 version 2 alerts JSON 片段
+// validBundleAlerts 构造一份合法的 version 3 alerts JSON 片段（policy + email + webhook）
 func validBundleAlerts() string {
-	return `"alerts":{"email":{"enabled":false,"host":"","port":"587","username":"","password":"",` +
-		`"from_addr":"","to_addr":""},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`
+	return `"alerts":{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,` +
+		`"operational_error_enabled":false,"health_timeout":"10m"},` +
+		`"email":{"enabled":false,"host":"","port":"587","username":"","password":"",` +
+		`"from_addr":"","to_addr":"","subject":"[FWAlizer] 告警通知",` +
+		`"body":"FWAlizer 检测到运行异常，请检查同步日志。"},` +
+		`"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`
 }
 
-// validBundle 构造一份可导入的最小合法 version 2 配置包
+// validBundleMonitoring 构造一份合法的 version 3 monitoring JSON 片段
+func validBundleMonitoring() string {
+	return `"monitoring":{"uptime_kuma_push":{"enabled":false,"url":"","interval":"60s"}}`
+}
+
+// validBundle 构造一份可导入的最小合法 version 3 配置包
 func validBundle() string {
-	return `{"version":2,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},` +
-		`"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`
+	return `{"version":3,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},` +
+		`"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `,` +
+		validBundleMonitoring() + `}`
 }
 
-// bundleWith 用给定的 targets/rules 片段构造完整合法 version 2 配置包
-// （settings/alerts 使用合法默认值，便于聚焦被替换的部分）。
+// bundleWith 用给定的 targets/rules 片段构造完整合法 version 3 配置包
+// （settings/alerts/monitoring 使用合法默认值，便于聚焦被替换的部分）。
 func bundleWith(targets, rules string) string {
-	return `{"version":2,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},` +
+	return `{"version":3,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},` +
 		`"targets":` + targets + `,"rules":` + rules + `,` +
-		validBundleSettings() + `,` + validBundleAlerts() + `}`
+		validBundleSettings() + `,` + validBundleAlerts() + `,` + validBundleMonitoring() + `}`
 }
 
-// bundleWithSettings 用给定的 targets/rules/settings 片段构造完整配置包。
+// bundleWithSettings 用给定的 targets/rules/settings 片段构造完整 version 3 配置包。
 func bundleWithSettings(targets, rules, settings string) string {
-	return `{"version":2,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},` +
+	return `{"version":3,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},` +
 		`"targets":` + targets + `,"rules":` + rules + `,"settings":` + settings + `,` +
-		validBundleAlerts() + `}`
+		validBundleAlerts() + `,` + validBundleMonitoring() + `}`
 }
 
 // bundleWithout 在合法配置包基础上删除指定顶层字段（用于 presence 断言）。
 func bundleWithout(field string) string {
 	full := map[string]string{
-		"version":  `"version":2`,
-		"metadata": `"metadata":{"exported_at":"2026-09-22T08:00:00Z"}`,
-		"targets":  `"targets":[]`,
-		"rules":    `"rules":[]`,
-		"settings": validBundleSettings(),
-		"alerts":   validBundleAlerts(),
+		"version":    `"version":3`,
+		"metadata":   `"metadata":{"exported_at":"2026-09-22T08:00:00Z"}`,
+		"targets":    `"targets":[]`,
+		"rules":      `"rules":[]`,
+		"settings":   validBundleSettings(),
+		"alerts":     validBundleAlerts(),
+		"monitoring": validBundleMonitoring(),
 	}
 	parts := make([]string, 0, len(full))
-	for _, key := range []string{"version", "metadata", "targets", "rules", "settings", "alerts"} {
+	for _, key := range []string{"version", "metadata", "targets", "rules", "settings", "alerts", "monitoring"} {
 		if key == field {
 			continue
 		}

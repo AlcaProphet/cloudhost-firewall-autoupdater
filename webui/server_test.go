@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/health"
 )
 
 // ─── 测试辅助 ───
@@ -1153,5 +1154,56 @@ func TestHealthEndpointUnaffectedBySyncState(t *testing.T) {
 	body, code = httpGet(t, base+"/api/health")
 	if code != http.StatusOK || body != `{"status":"ok"}` {
 		t.Errorf("查询 status 后 /api/health = (%d, %q), want (200, {\"status\":\"ok\"})", code, body)
+	}
+}
+
+// ─── Build7 Step 4：operational 端点与静态 /api/health 的语义分离 ───
+
+// unhealthyHealthSource 是固定返回异常的健康来源（测试替身）
+type unhealthyHealthSource struct{}
+
+func (unhealthyHealthSource) Evaluate(context.Context) health.Result {
+	return health.Result{
+		Healthy:   false,
+		CheckedAt: time.Now(),
+		Reasons:   []string{health.ReasonSyncerStopped, health.ReasonRoundTimeout},
+	}
+}
+
+func (unhealthyHealthSource) Wake() {}
+
+// TestOperationalEndpoint503WhileStaticHealthStaysOK 运行健康异常时：
+// /api/health/operational 必须 503，而 /api/health 必须仍精确返回 200 {"status":"ok"}。
+//
+// 判别性：Build7 §7.4 明确 Docker HEALTHCHECK 继续使用 /api/health，
+// 一次同步失败或运行健康异常都不得让容器被标记为 unhealthy。
+func TestOperationalEndpoint503WhileStaticHealthStaysOK(t *testing.T) {
+	s := newTestServerWithStore(t, freeTCPPort(t))
+	s.SetHealth(unhealthyHealthSource{})
+	if _, err := s.Start(); err != nil {
+		t.Fatalf("Start 失败: %v", err)
+	}
+	mustServeStarted(t, s)
+	t.Cleanup(func() {
+		if err := s.Shutdown(context.Background()); err != nil {
+			t.Errorf("Shutdown 失败: %v", err)
+		}
+	})
+
+	base := "http://" + s.Addr()
+
+	body, code := httpGet(t, base+"/api/health/operational")
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("/api/health/operational 状态码 = %d, want 503; body=%s", code, body)
+	}
+	for _, reason := range []string{health.ReasonSyncerStopped, health.ReasonRoundTimeout} {
+		if !strings.Contains(body, reason) {
+			t.Errorf("operational 响应缺少稳定原因 %q: %s", reason, body)
+		}
+	}
+
+	body, code = httpGet(t, base+"/api/health")
+	if code != http.StatusOK || body != `{"status":"ok"}` {
+		t.Errorf("静态 /api/health = (%d, %q), want (200, {\"status\":\"ok\"})", code, body)
 	}
 }

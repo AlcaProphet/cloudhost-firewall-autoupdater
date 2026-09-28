@@ -274,11 +274,13 @@ func NormalizeDNSAddress(v string) (string, error) {
 	return s, nil
 }
 
-// NormalizeAlertEmail 归一化并校验邮件告警配置（Build6 §4.5）：
+// NormalizeAlertEmail 归一化并校验邮件告警配置（Build6 §4.5、Build7 §4.5）：
 //
 //   - 端口必须是 1～65535 的整数（禁用时也要求类型正确）；
 //   - 启用时 host / from_addr / to_addr 必须非空；
-//   - username / password 允许为空，作为不透明凭据按原值保存。
+//   - username / password 允许为空，作为不透明凭据按原值保存；
+//   - subject Trim 后必须非空、禁止换行与控制字符、最多 200 个 Unicode 字符；
+//   - body 允许普通换行，最大 10 KiB。
 func NormalizeAlertEmail(c AlertEmailConfig) (AlertEmailConfig, error) {
 	port, err := normalizePort(c.Port)
 	if err != nil {
@@ -299,6 +301,21 @@ func NormalizeAlertEmail(c AlertEmailConfig) (AlertEmailConfig, error) {
 		if c.ToAddr == "" {
 			return AlertEmailConfig{}, invalidField("email.to_addr", "启用邮件告警时不能为空")
 		}
+	}
+
+	// 主题/正文校验放在既有 host/port/from/to 之后：保留既有错误优先级不变
+	c.Subject = strings.TrimSpace(c.Subject)
+	if c.Subject == "" {
+		return AlertEmailConfig{}, invalidField("email.subject", "不能为空")
+	}
+	if utf8.RuneCountInString(c.Subject) > MaxEmailSubjectRunes {
+		return AlertEmailConfig{}, invalidField("email.subject", "最多 200 个字符")
+	}
+	if hasControlChar(c.Subject) {
+		return AlertEmailConfig{}, invalidField("email.subject", "不能包含换行或控制字符")
+	}
+	if len(c.Body) > MaxEmailBodyBytes {
+		return AlertEmailConfig{}, invalidField("email.body", "最大 10 KiB")
 	}
 	return c, nil
 }
@@ -325,6 +342,48 @@ func NormalizeAlertWebhook(c AlertWebhookConfig) (AlertWebhookConfig, error) {
 		}
 	}
 	return c, nil
+}
+
+// NormalizeAlertPolicy 归一化并校验告警触发策略（Build7 §4.1、§4.5）：
+//
+//   - 三个触发开关是布尔值，直接采用；
+//   - health_timeout 必须是大于 0 的 Go duration，默认值由调用方以 "10m" 给出；
+//   - 同时写回 HealthTimeoutText（持久化/导出文本）与 HealthTimeout（运行时值）。
+func NormalizeAlertPolicy(p AlertPolicyConfig) (AlertPolicyConfig, error) {
+	text, d, err := ParsePositiveDuration("policy.health_timeout", p.HealthTimeoutText)
+	if err != nil {
+		return AlertPolicyConfig{}, err
+	}
+	p.HealthTimeoutText = text
+	p.HealthTimeout = d
+	return p, nil
+}
+
+// NormalizeUptimeKumaPush 归一化并校验 Uptime Kuma Push 配置（Build7 §4.5）：
+//
+//   - interval 必须可解析且不少于 20s（默认 60s 由调用方给出）；
+//   - 启用时 URL 必须是 host 非空的绝对 http/https URL；禁用时允许为空，
+//     且不主动发起任何请求。
+func NormalizeUptimeKumaPush(p UptimeKumaPushConfig) (UptimeKumaPushConfig, error) {
+	text, d, err := ParsePositiveDuration("uptime_kuma_push.interval", p.IntervalText)
+	if err != nil {
+		return UptimeKumaPushConfig{}, err
+	}
+	if d < MinPushInterval {
+		return UptimeKumaPushConfig{}, invalidField("uptime_kuma_push.interval", "不能小于 20s")
+	}
+	p.IntervalText = text
+	p.Interval = d
+
+	p.URL = strings.TrimSpace(p.URL)
+	if p.Enabled {
+		u, err := url.Parse(p.URL)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return UptimeKumaPushConfig{}, invalidField("uptime_kuma_push.url",
+				"启用时必须是以 http/https 开头且包含主机的绝对 URL")
+		}
+	}
+	return p, nil
 }
 
 // normalizePort 校验端口字符串并归一化为规范十进制（1～65535）。

@@ -70,10 +70,18 @@ func waitSignal(t *testing.T, ch <-chan struct{}, msg string) {
 }
 
 // alertConfig 构造带启用告警的运行时配置（SMTP/Webhook 指向必然不可达的地址）。
+//
+// Build7 §2.1 起：只有「渠道开启 + 对应触发开启」才产生订阅，因此本夹具默认
+// 开启前两个触发条件，用于验证渠道构造与构造阶段零副作用；纯策略矩阵由
+// alertset_policy_test.go 覆盖。
 func alertConfig(emailEnabled, webhookEnabled bool) config.RuntimeConfig {
 	rc := config.RuntimeConfig{
 		Tag: "auto-dns", Interval: 5 * time.Minute, DNS: "223.5.5.5", DNSTimeout: 10 * time.Second,
 		DNSFailThreshold: 5, LogLevel: "info", SyncEnabled: true, Theme: "light",
+		Policy: config.AlertPolicyConfig{
+			DNSFailedEnabled: true, SyncErrorEnabled: true,
+			HealthTimeout: 10 * time.Minute, HealthTimeoutText: "10m",
+		},
 	}
 	if emailEnabled {
 		rc.Email = config.AlertEmailConfig{
@@ -323,7 +331,9 @@ func TestAlertManagerApplyBoundaryInFlightAndNewSubscriptions(t *testing.T) {
 
 	old := newAlertReloadSubscriber(4)
 	old.block = make(chan struct{})
-	manager.Apply(alertSet{email: old, emailToAddr: "old@example.com"})
+	// Build7 §6.3：只有策略开启的事件类型才会被订阅，因此手工构造的集合必须显式带上 events
+	reloadEvents := []notifier.EventType{notifier.EventSyncError}
+	manager.Apply(alertSet{email: old, events: reloadEvents, emailToAddr: "old@example.com"})
 
 	// 旧订阅已安装：第一次发布进入旧订阅者回调并阻塞在那里，形成真正的「在途通知」
 	bus.Publish(notifier.Event{Type: notifier.EventSyncError, Timestamp: time.Now()})
@@ -331,7 +341,7 @@ func TestAlertManagerApplyBoundaryInFlightAndNewSubscriptions(t *testing.T) {
 
 	// 热重载：取消旧订阅、安装新订阅（在途通知仍阻塞中）
 	fresh := newAlertReloadSubscriber(4)
-	manager.Apply(alertSet{email: fresh, emailToAddr: "new@example.com"})
+	manager.Apply(alertSet{email: fresh, events: reloadEvents, emailToAddr: "new@example.com"})
 
 	// Apply 之后的新发布只能投递给新订阅者
 	bus.Publish(notifier.Event{Type: notifier.EventSyncError, Timestamp: time.Now()})

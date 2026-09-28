@@ -108,13 +108,14 @@ func TestConfigImportInvalidInputNoWriteNoReload(t *testing.T) {
 	cases := map[string]string{
 		"version 缺失":             bundleWithout("version"),
 		"version 1":              `{"version":1,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`,
-		"version 3":              `{"version":3,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`,
+		"version 2":              `{"version":3,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`,
+		"version 4":              `{"version":4,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `,` + validBundleMonitoring() + `}`,
 		"version null":           `{"version":null,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`,
 		"metadata 缺失":            bundleWithout("metadata"),
-		"exported_at 缺失":         `{"version":2,"metadata":{},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`,
-		"exported_at 非法":         `{"version":2,"metadata":{"exported_at":"2026/09/22"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`,
+		"exported_at 缺失":         `{"version":3,"metadata":{},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`,
+		"exported_at 非法":         `{"version":3,"metadata":{"exported_at":"2026/09/22"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`,
 		"targets 缺失":             bundleWithout("targets"),
-		"targets 为 null":         `{"version":2,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":null,"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`,
+		"targets 为 null":         `{"version":3,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":null,"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`,
 		"rules 缺失":               bundleWithout("rules"),
 		"settings 缺失":            bundleWithout("settings"),
 		"alerts 缺失":              bundleWithout("alerts"),
@@ -142,9 +143,9 @@ func TestConfigImportInvalidInputNoWriteNoReload(t *testing.T) {
 		"log_level 非法":           bundleWithSettings(`[]`, `[]`, `{"credentials":{"tencent":{"secret_id":"","secret_key":""},"aliyun":{"access_key_id":"","access_key_secret":""}},"tag":"t","interval":"5m","dns":"1.1.1.1","dns_timeout":"10s","dns_fail_threshold":5,"log_level":"trace","sync_enabled":true,"theme":"light"}`),
 		"theme 非法":               bundleWithSettings(`[]`, `[]`, `{"credentials":{"tencent":{"secret_id":"","secret_key":""},"aliyun":{"access_key_id":"","access_key_secret":""}},"tag":"t","interval":"5m","dns":"1.1.1.1","dns_timeout":"10s","dns_fail_threshold":5,"log_level":"info","sync_enabled":true,"theme":"blue"}`),
 		"webui_port 未知字段":        bundleWithSettings(`[]`, `[]`, `{"credentials":{"tencent":{"secret_id":"","secret_key":""},"aliyun":{"access_key_id":"","access_key_secret":""}},"tag":"t","interval":"5m","dns":"1.1.1.1","dns_timeout":"10s","dns_fail_threshold":5,"log_level":"info","sync_enabled":true,"theme":"light","webui_port":"1"}`),
-		"启用邮件但 host 空":           `{"version":2,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + `"alerts":{"email":{"enabled":true,"host":"","port":"587","username":"","password":"","from_addr":"f@x.com","to_addr":"t@x.com"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}}`,
-		"启用 webhook 但 URL 非法":    `{"version":2,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + `"alerts":{"email":{"enabled":false,"host":"","port":"587","username":"","password":"","from_addr":"","to_addr":""},"webhook":{"enabled":true,"url":"ftp://x","channel":"dingtalk"}}}`,
-		"webhook 渠道非法":           `{"version":2,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + `"alerts":{"email":{"enabled":false,"host":"","port":"587","username":"","password":"","from_addr":"","to_addr":""},"webhook":{"enabled":false,"url":"","channel":"telegram"}}}`,
+		"启用邮件但 host 空":           `{"version":3,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + `"alerts":{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,"operational_error_enabled":false,"health_timeout":"10m"},"email":{"enabled":true,"host":"","port":"587","username":"","password":"","from_addr":"f@x.com","to_addr":"t@x.com","subject":"s","body":"b"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}},` + validBundleMonitoring() + `}`,
+		"启用 webhook 但 URL 非法":    `{"version":3,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + `"alerts":{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,"operational_error_enabled":false,"health_timeout":"10m"},"email":{"enabled":false,"host":"","port":"587","username":"","password":"","from_addr":"","to_addr":"","subject":"s","body":"b"},"webhook":{"enabled":true,"url":"ftp://x","channel":"dingtalk"}},` + validBundleMonitoring() + `}`,
+		"webhook 渠道非法":           `{"version":3,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + `"alerts":{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,"operational_error_enabled":false,"health_timeout":"10m"},"email":{"enabled":false,"host":"","port":"587","username":"","password":"","from_addr":"","to_addr":"","subject":"s","body":"b"},"webhook":{"enabled":false,"url":"","channel":"telegram"}},` + validBundleMonitoring() + `}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -237,9 +238,9 @@ func TestConfigImportStrictDecoding(t *testing.T) {
 		"尾随 JSON":  {validBundle() + `{"x":1}`, http.StatusBadRequest},
 		"多个顶层值":    {validBundle() + ` 1`, http.StatusBadRequest},
 		"尾随垃圾":     {validBundle() + ` xxx`, http.StatusBadRequest},
-		"未知顶层字段":   {`{"version":2,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `,"extra":1}`, http.StatusBadRequest},
+		"未知顶层字段":   {`{"version":3,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `,"extra":1}`, http.StatusBadRequest},
 		"任意层级未知字段": {bundleWith(`[{"export_id":1,"cloud_type":"tc_cvm","region":"gz","resource_id":"x","extra":"y"}]`, `[]`), http.StatusBadRequest},
-		"类型错误":     {`{"version":"2","metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`, http.StatusBadRequest},
+		"类型错误":     {`{"version":"3","metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`, http.StatusBadRequest},
 		"空 body":   {``, http.StatusBadRequest},
 		"超限 10MiB": {bundleWithSettings(`[]`, `[]`, `{"credentials":{"tencent":{"secret_id":"","secret_key":""},"aliyun":{"access_key_id":"","access_key_secret":""}},"tag":"t","interval":"5m","dns":"1.1.1.1","dns_timeout":"10s","dns_fail_threshold":5,"log_level":"info","sync_enabled":true,"theme":"light","extra":"`+strings.Repeat("a", maxImportBodyBytes)+`"}`), http.StatusRequestEntityTooLarge},
 	}

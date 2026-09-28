@@ -165,7 +165,7 @@ async function save() {
 // 不在 console 输出响应体；文件名从 Content-Disposition 解析，不可用时用固定安全名。
 
 // 导出响应不可用时的固定安全文件名
-const EXPORT_FALLBACK_FILENAME = 'fwalizer-config-v2.json'
+const EXPORT_FALLBACK_FILENAME = 'fwalizer-config-v3.json'
 
 // parseAttachmentFilename 从 Content-Disposition 中提取安全文件名。
 //

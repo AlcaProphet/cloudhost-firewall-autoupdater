@@ -2,6 +2,28 @@ package config
 
 import "time"
 
+// Build7 告警与运行健康的固定默认值与边界（Build7 §4.1、§4.2、§4.5）。
+const (
+	// DefaultEmailSubject 默认邮件主题
+	DefaultEmailSubject = "[FWAlizer] 告警通知"
+	// DefaultEmailBody 默认邮件正文
+	DefaultEmailBody = "FWAlizer 检测到运行异常，请检查同步日志。"
+	// MaxEmailSubjectRunes 邮件主题最大 Unicode 字符数
+	MaxEmailSubjectRunes = 200
+	// MaxEmailBodyBytes 邮件正文最大字节数（10 KiB）
+	MaxEmailBodyBytes = 10 << 10
+	// DefaultHealthTimeout 唯一健康超时的默认值
+	DefaultHealthTimeout = 10 * time.Minute
+	// DefaultPushInterval Uptime Kuma Push 默认发送间隔
+	DefaultPushInterval = 60 * time.Second
+	// MinPushInterval Uptime Kuma Push 允许的最小发送间隔
+	MinPushInterval = 20 * time.Second
+	// DefaultAlertPort 默认 SMTP 端口
+	DefaultAlertPort = "587"
+	// DefaultWebhookChannel 默认 Webhook 渠道
+	DefaultWebhookChannel = "dingtalk"
+)
+
 // CloudType 云产品类型
 type CloudType string
 
@@ -54,7 +76,7 @@ type DomainRule struct {
 	EnableIPv6 bool   `json:"enable_ipv6"` // 是否解析 AAAA 记录，默认 false
 }
 
-// AlertEmailConfig SMTP 邮件告警配置
+// AlertEmailConfig SMTP 邮件告警配置（Build7 起含可编辑纯文本主题与正文）。
 type AlertEmailConfig struct {
 	Enabled  bool   `json:"enabled"`
 	Host     string `json:"host"`
@@ -63,6 +85,42 @@ type AlertEmailConfig struct {
 	Password string `json:"password"`
 	FromAddr string `json:"from_addr"`
 	ToAddr   string `json:"to_addr"`
+	Subject  string `json:"subject"`
+	Body     string `json:"body"`
+}
+
+// AlertPolicyConfig 告警触发策略：三个触发开关是邮件与 Webhook 共用的全局策略
+// （Build7 §4.1），HealthTimeout 是唯一的运行健康超时。
+//
+// HealthTimeoutText 是已校验的时长文本，用于 SQLite 与 version 3 配置包
+// （保留 "10m" 这类可读形态）；HealthTimeout 是它解析后的运行时值，
+// 两者始终由 NormalizeAlertPolicy 一并写入，不得单独修改。
+type AlertPolicyConfig struct {
+	DNSFailedEnabled        bool          `json:"dns_failed_enabled"`
+	SyncErrorEnabled        bool          `json:"sync_error_enabled"`
+	OperationalErrorEnabled bool          `json:"operational_error_enabled"`
+	HealthTimeout           time.Duration `json:"-"`
+	HealthTimeoutText       string        `json:"-"`
+}
+
+// UptimeKumaPushConfig Uptime Kuma Push 反向心跳配置（独立于普通 Webhook 渠道）。
+//
+// IntervalText 与 Interval 的约定同 AlertPolicyConfig.HealthTimeoutText。
+type UptimeKumaPushConfig struct {
+	Enabled      bool          `json:"enabled"`
+	URL          string        `json:"url"`
+	Interval     time.Duration `json:"-"`
+	IntervalText string        `json:"-"`
+}
+
+// DefaultAlertPolicy 返回固定的默认告警策略：三个触发开关全部关闭 + health_timeout=10m。
+func DefaultAlertPolicy() AlertPolicyConfig {
+	return AlertPolicyConfig{HealthTimeout: DefaultHealthTimeout, HealthTimeoutText: "10m"}
+}
+
+// DefaultUptimeKumaPush 返回固定的默认 Push 配置：关闭、URL 为空、间隔 60s。
+func DefaultUptimeKumaPush() UptimeKumaPushConfig {
+	return UptimeKumaPushConfig{Interval: DefaultPushInterval, IntervalText: "60s"}
 }
 
 // AlertWebhookConfig Webhook 告警配置
