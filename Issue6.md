@@ -201,7 +201,7 @@
 - **口径澄清落实：** 「停滞」仅由 `last_success` 缺失/落后 + `outcome` 表达；两个时间戳均为内存态，重启后为 `null`，前端文案使用「尚无成功记录（进程重启后该记录会重置）」而**不写「从未成功」**。
 - **判别性测试（`webui/server_test.go` 新增 `TestHealthEndpointUnaffectedBySyncState`）：** 在「未接入 Syncer」（等价暂停/无目标/从未成功）状态下断言 `/api/health` 精确返回 `{"status":"ok"}` 与 200，且查询 `/api/sync/status` 前后该响应体不变；同时断言 `/api/sync/status` 含 `running`/`enabled`/`last_sync`/`last_success`/`last_round` 五个字段。`TestServerTimeoutContract` 继续断言全局 `ReadTimeout`/`WriteTimeout` 为零。
 - **门禁：** `go test ./provider/ ./syncer/ ./webui/ ./webui/api/ -race -count=1` 通过；全仓 11 包 race 通过；`go vet ./...`、`go build ./...`、`git diff --check` 通过；前端 `npm ci && npm run build`（`vite`，产物已重建 `webui/frontend/dist`（该目录未被 Git 跟踪，`go:embed` 依赖它））与两条阻断式 audit（`--audit-level=high` 与 `--omit=dev`）均为 **0 漏洞**。
-- **未执行（如实保留）：** Dashboard 新提示的**浏览器人工验收**（本批未执行，需真机复核）。
+- **浏览器验收（2026-09-28，临时本地 HTTP mock + 当前前端 dist）：** 已逐状态检查初始 null、success、failed、partial、idle 与 paused。failed/partial 提示分别显示失败或跳过数量；idle 在 `last_success` 落后于 `last_sync` 时显示停滞提示；paused 显示“已暂停”、立即同步置灰且不显示健康告警。成功状态的统计概览显示整轮 `新增 2 / 删除 1`。连续轮询日志显示状态请求按 5 秒间隔发起，mock 未收到 `/api/sync/events` 请求。该验收只证明当前 Dashboard 的展示与轮询合同，不代表真实云、Docker 或外部服务通过。
 
 #### A18｜中｜缺少 `last_success` 与整轮成功/失败汇总
 
@@ -219,7 +219,7 @@
 - **不变量与兼容合同落实：** `total == ok + changed + failed + skipped` 由 `unitOutcome()` 的单值分类保证（每个单元恰好落入一类）；`last_sync` 语义不变（仍为最近一轮完成时间）；暂停期不制造轮次；`SyncStatus` 既有三字段类型与语义不变；**本批未增加任何 SQLite 列**。
 - **判别性测试（`syncer/round_summary_test.go` 新增）：** `TestRoundSummary_Idle`（无适用规则 → idle，且不调用云 API）；`TestRoundSummary_SuccessNoChange`（规则已一致 → `ok=1 changed=0` 且不调用 `CreateRules`）；`TestRoundSummary_ChangedCountsAsChanged`（成功且有新增 → `ok=0 changed=1`，**判别 F4「ok 只计无变更」**）；`TestRoundSummary_ProviderErrorIsFailed`；`TestRoundSummary_OnlySkippedIsPartial`（Provider 报 `{Written:0,Skipped:1}` → `partial`、`added=0`、`skipped=1`，**判别 A11+A18 端到端**）；`TestRoundSummary_InvariantAcrossMixedUnits`（两 Provider 一成功一失败时 `total=2`、不变量成立、`outcome=failed`）。所有断言都从**真实 `EventSyncComplete` 事件负载**还原汇总，因此同时证明事件字段口径正确。
 - **门禁：** 同批次 4（受影响包 race、全仓 race、`vet`/`build`/`git diff --check`、前端构建与两条 audit 全通过）。
-- **未执行（如实保留）：** Dashboard 端到端浏览器验收。
+- **浏览器验收（2026-09-28，临时本地 HTTP mock + 当前前端 dist）：** 已逐状态检查初始 null、success、failed、partial、idle 与 paused，并核对 `last_success` 保留、整轮新增/删除数与暂停期无提示。连续轮询日志显示状态请求按 5 秒间隔发起，且未建立 `/api/sync/events`。该验收只覆盖前端展示和状态 API 消费，不代表真实云或外部链路通过。
 
 
 #### A13｜低｜普通轮次重复记录“告警已更新”
@@ -309,9 +309,10 @@
 - **判别性测试（`config/store_corrupt_test.go` 新增）：**
   1. `TestLoadRulesTargetsFourStateContract`——直插 `''`/`'[]'`/`'null'`/`'{}'`/`'1'`/`'[1,"a"]'`/`'[1,'`/`NULL`/`'[1]'` 九种形态，逐一断言成功或内部错误；每条错误都断言**含规则 ID**、且**不含该用例的原始值回显**（`{}`、`[1,"a"]`、`[1,` 等）。
   2. `TestCorruptTargetsBlocksAllFourPaths`——一条 `'null'` 损坏规则必须同时阻断四条链。
+  3. `webui/api/rules_test.go:TestRuleReadCorruptTargetsUsesSafe500`——通过真实 `GET /api/rules` 路由加载损坏的非整数 `targets`，断言 500、精确 JSON Content-Type、仅含安全 `error` 字段，响应无损坏原值/规则 ID/内部诊断/部分合法规则，服务日志含动作、规则 ID 与损坏类别但不含原值，且失败只读路径 `applyCount=0`。
 - **错误文本实测（安全文案示例）：** `规则 #1 的 targets 为 JSON null（数据已损坏，不得视为全部目标）`、`规则 #1 的 targets 不是合法的整数数组（数据已损坏）`、`规则 #1 的 targets 为 SQL NULL，数据已损坏`。
 - **发布说明（F1 裁决要求，已落地）：** `README.md` 新增「从旧版本升级：`rules.targets` 数据损坏的修复提示」，明确 fail-closed 属**预期行为**，并给出两种修复方式：`UPDATE rules SET targets='[]' WHERE targets IS NULL OR targets='null';`，或重新导入 version 2 配置包（导入先清空 rules 再写入，可顺带修复）。
-- **门禁：** 同批次 5。
+- **门禁：** 2026-09-28 独立测试代理执行：`go test ./webui/api -run '^TestRuleReadCorruptTargetsUsesSafe500$' -count=1`、`go test ./config -run '^(TestLoadRulesTargetsFourStateContract|TestCorruptTargetsBlocksAllFourPaths)$' -count=1`、`go test ./webui/api ./config -race -count=1`、`go test ./... -race -count=1`（11 个包）均通过；`go vet ./...`、`go build ./...`、`git diff --check` 均通过。本项无需前端构建、浏览器、Docker 或外部服务，均未执行且不适用。
 - **未执行（如实保留）：** 未以真实生产旧库验证损坏 targets 的升级行为。
 
 
@@ -330,8 +331,8 @@
   2. `config/store.go` 的 `AddSyncLog` 处理 COUNT 错误：查询失败时记 `Warn` 并**跳过本次裁剪**（保持「查询失败就不裁剪」的保守语义），不再静默吞掉；裁剪阈值 1000 与 `DELETE` 语句未变。
   3. `webui/api/deps.go` 的 `writeJSON` 检查 `Encode` 返回值：响应头与状态码已发出，因此**只记安全日志**（`Warn`，含 status 与 error），**不伪造第二个 HTTP 错误响应**（参照 `export.go` 的既有先例）。
 - **明确未做（按条文）：** 未引入新框架或 errcheck 门禁；未新增连接池上限；未改裁剪阈值与语义。
-- **判别性测试（`config/store_error_test.go` 新增）：** `TestWithTransactionPanicRollsBack`（panic 被重新抛出、旧值未被写入、**panic 后后续写入不 BUSY**）；`TestWithTransactionFinishedTxIsIgnored`（事务被提前回滚后再 Commit 的错误被正确处理，Store 仍可用且无 panic）；`TestAddSyncLogTrimsOverLimit`（1001 条 → 恰 1000 条）；`TestAddSyncLogCountFailureDoesNotFailWrite`（正常路径写入不因统计逻辑丢失）。
-- **门禁：** 同批次 5。
+- **判别性测试（`config/store_error_test.go` 与 `webui/api/deps_test.go`）：** `TestWithTransactionPanicRollsBack`（panic 被重新抛出、旧值未被写入、**panic 后后续写入不 BUSY**）；`TestWithTransactionFinishedTxIsIgnored`（事务被提前回滚后再 Commit 的错误被正确处理，Store 仍可用且无 panic）；`TestAddSyncLogTrimsOverLimit`（1001 条 → 恰 1000 条）。本轮补充的 `TestAddSyncLogCountFailureDoesNotFailWrite` 使用 `sql.OpenDB` + 标准库 `driver.Connector`：INSERT 返回成功，COUNT 返回非 `driver.ErrBadConn` 的哨兵错误；加锁调用记录断言严格为一次 INSERT 后一次 COUNT、无 database/sql 重试或 DELETE，并校验参数、`AddSyncLog` 成功返回及安全日志脱敏。`TestWriteJSONEncodeFailureLogsWithoutSecondHeader` 使用先写出非零短前缀、再返回 `io.ErrClosedPipe` 的 `ResponseWriter`，断言 Content-Type、单次状态头、`header → write` 顺序、单次 Write、部分响应体及不含业务 payload 的安全错误日志，能判别错误二次响应。本轮仅补充失败分支测试，未修改生产代码；既有实现已在测试前存在，**无先红证据**。
+- **独立门禁（2026-09-28）：** `go test ./config -run '^TestAddSyncLogCountFailureDoesNotFailWrite$' -count=1`、`go test ./webui/api -run '^TestWriteJSONEncodeFailureLogsWithoutSecondHeader$' -count=1`、`go test ./config -run '^TestAddSyncLogTrimsOverLimit$' -count=1`、`go test ./config ./webui/api -race -count=1`、`go test ./... -race -count=1`（11 个包）、`go vet ./...`、`go build ./...` 与 `git diff --check` 均通过。该项不涉及前端、浏览器、Docker、真实 SQLite 故障环境或外部服务，均未执行且不适用。
 
 
 #### A17｜低｜非预期迁移失败只告警后继续
@@ -646,9 +647,9 @@ git diff --check
 
 这些缺口不等同于已经复现的生产故障，但不应被“通用门禁通过”替代：
 
-1. **A3/A18 状态 API 值级回归不足：** `round_summary_test.go` 已从真实 `EventSyncComplete` 验证 success/failed/partial/idle 汇总；`webui/server_test.go` 只验证 `/api/sync/status` 含五个字段，没有通过 HTTP 端点验证各轮次后的 `last_success/last_round` 具体值。Dashboard 新提示的浏览器人工验收仍未执行，Issue6 原记录对此已如实保留。
-2. **A9 HTTP 安全文案回归缺失：** config 层已覆盖九种损坏 `rules.targets` 与四条加载链，但 §3 A9 要求的 `GET /api/rules` 安全 500 端点级判别用例未找到；当前结论主要依赖错误传播源码复核。
-3. **A14 故障注入不完整：** `TestAddSyncLogCountFailureDoesNotFailWrite` 的注释明确说明无法直接注入 COUNT 失败，实际只覆盖正常写入；未找到 `writeJSON` 的 Encode 失败专用回归。实现已经检查并记录这两类错误，但对应失败分支尚无判别性测试。
+1. **A3/A18 状态 API 值级回归不足：已收口（2026-09-28）：** 新增未跟踪判别性用例 `webui/sync_status_test.go:TestSyncStatusEndpointRoundValues`，通过真实 `Syncer`、`RuntimeManager`、`Server` 与 HTTP GET 端点验证初始 null、success、failed、partial、idle、paused 的 `last_success`、`last_round`、`last_sync`、不变量与暂停不制造新轮次；使用 `EventSyncComplete` 作为确定性屏障，无固定 sleep。独立专项与相关包 race、全仓 race、vet、build、前端 `npm ci`/build、两条 audit 及 `git diff --check` 均通过。另以临时本地 HTTP mock 完成 Dashboard 六状态浏览器人工验收：提示、整轮新增/删除、5 秒 `/api/sync/status` 轮询和不建立 `/api/sync/events` 均符合合同。该证据仅覆盖本地自动化与浏览器展示，不代表真实云、Docker、SMTP、Webhook 或远端 CI/GHCR 已通过。
+2. **A9 HTTP 安全文案回归缺失：已收口（2026-09-28）：** 新增 `webui/api/rules_test.go:TestRuleReadCorruptTargetsUsesSafe500`，通过真实 `GET /api/rules` 路由和损坏 SQLite `rules.targets` 验证 HTTP 500、精确 JSON Content-Type、仅安全 `error` 字段、无原值/规则 ID/内部诊断/部分合法规则，服务端日志保留动作/规则 ID/损坏类别但不回显原值，且 `applyCount=0`。A9 九种损坏值/四条加载链专项、问题 2 端点专项、`webui/api` + `config` race、全仓 `go test ./... -race -count=1`、`go vet ./...`、`go build ./...` 与 `git diff --check` 均通过。本项无需前端构建、浏览器、Docker 或外部服务，均未执行且不适用；未以真实生产旧库验证损坏 targets 的升级行为仍保持原边界。
+3. **A14 故障注入不完整：已收口（2026-09-28）：** `config/store_error_test.go:TestAddSyncLogCountFailureDoesNotFailWrite` 通过 `sql.OpenDB` + 标准库 `driver.Connector` 精确注入非 `driver.ErrBadConn` 的 COUNT 哨兵错误，确认 INSERT 已成功、COUNT 失败后 `AddSyncLog` 仍返回 nil、严格只有一次 INSERT 与一次 COUNT、无重试/DELETE，且日志包含错误类别但不泄露 target/domain/error 业务值。`webui/api/deps_test.go:TestWriteJSONEncodeFailureLogsWithoutSecondHeader` 通过非零短写后返回 `io.ErrClosedPipe` 的 ResponseWriter 触发 Encode 失败，确认只写一次状态头、只发生一次 Write、响应体为非零短前缀且日志不泄露 payload，不会伪造第二个错误响应。两项均为对既有生产处理的判别性补测试，未修改生产代码，**无先红证据**。专项、trim 回归、`config + webui/api` race、全仓 `go test ./... -race -count=1`、`go vet ./...`、`go build ./...` 与 `git diff --check` 均通过；前端、浏览器、Docker、真实 SQLite 故障环境和外部服务不适用且未执行。
 4. **外部层仍未验证：** Issue6 修复后的真实云弱网/超时、真实 SWAS DROP、A11/A18 新前端展示、真实 SMTP/收件箱、Webhook、真实半开 TCP 与当前 HEAD 的远端 CI/GHCR 均无新增证据。既有 `v2.0.0` Actions/镜像结果属于更早 revision，不能证明当前 `b38678a`；SMTP/Webhook 则是用户明确免除人工验收，不得改写为通过。
 
 ### 7.4 文档状态与当前代码互相矛盾

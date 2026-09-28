@@ -1,12 +1,17 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // ─── Issue6 A14：Rollback / COUNT / Encode 错误必须处理 ───
@@ -106,27 +111,149 @@ func TestAddSyncLogTrimsOverLimit(t *testing.T) {
 	}
 }
 
-// TestAddSyncLogCountFailureDoesNotFailWrite COUNT 查询失败时写入仍成功（保守语义不变）。
-func TestAddSyncLogCountFailureDoesNotFailWrite(t *testing.T) {
-	s, err := OpenStore(filepath.Join(t.TempDir(), "countfail.db"))
-	if err != nil {
-		t.Fatalf("OpenStore 失败: %v", err)
-	}
-	defer s.Close()
+const insertSyncLogSQL = "INSERT INTO sync_logs (timestamp, target, domain, result, added, deleted, error) VALUES (?, ?, ?, ?, ?, ?, ?)"
 
-	// 用只读连接池无法直接注入 COUNT 失败，这里验证正常路径与「不因 COUNT 失败而丢失写入」
-	// 的语义：写入 3 条后条数正确。
-	for i := 0; i < 3; i++ {
-		if err := s.AddSyncLog(SyncLog{Target: "t", Domain: "d", Result: "failed"}); err != nil {
-			t.Fatalf("AddSyncLog 失败: %v", err)
+var errFixtureCountFailure = errors.New("fixture count failure")
+
+type syncLogDriverCall struct {
+	kind  string
+	query string
+	args  []driver.NamedValue
+}
+
+// syncLogDriverState 记录 database/sql 发给测试驱动的调用；锁使夹具在 race 下安全。
+type syncLogDriverState struct {
+	mu    sync.Mutex
+	calls []syncLogDriverCall
+}
+
+func (s *syncLogDriverState) record(kind, query string, args []driver.NamedValue) {
+	copiedArgs := append([]driver.NamedValue(nil), args...)
+	s.mu.Lock()
+	s.calls = append(s.calls, syncLogDriverCall{kind: kind, query: query, args: copiedArgs})
+	s.mu.Unlock()
+}
+
+func (s *syncLogDriverState) snapshot() []syncLogDriverCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	calls := make([]syncLogDriverCall, len(s.calls))
+	for i, call := range s.calls {
+		calls[i] = syncLogDriverCall{
+			kind:  call.kind,
+			query: call.query,
+			args:  append([]driver.NamedValue(nil), call.args...),
 		}
 	}
-	logs, err := s.GetSyncLogs(10)
-	if err != nil {
-		t.Fatalf("GetSyncLogs 失败: %v", err)
+	return calls
+}
+
+type syncLogFailureConnector struct {
+	state *syncLogDriverState
+}
+
+func (c *syncLogFailureConnector) Connect(context.Context) (driver.Conn, error) {
+	return &syncLogFailureConn{state: c.state}, nil
+}
+
+func (c *syncLogFailureConnector) Driver() driver.Driver {
+	return &syncLogFailureDriver{state: c.state}
+}
+
+type syncLogFailureDriver struct {
+	state *syncLogDriverState
+}
+
+func (d *syncLogFailureDriver) Open(string) (driver.Conn, error) {
+	return &syncLogFailureConn{state: d.state}, nil
+}
+
+type syncLogFailureConn struct {
+	state *syncLogDriverState
+}
+
+func (c *syncLogFailureConn) Prepare(string) (driver.Stmt, error) {
+	return nil, errors.New("fixture does not support prepared statements")
+}
+
+func (c *syncLogFailureConn) Close() error { return nil }
+
+func (c *syncLogFailureConn) Begin() (driver.Tx, error) {
+	return nil, errors.New("fixture does not support transactions")
+}
+
+func (c *syncLogFailureConn) ExecContext(_ context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	c.state.record("exec", query, args)
+	if query != insertSyncLogSQL {
+		return nil, errors.New("fixture only accepts the sync log INSERT")
 	}
-	if len(logs) != 3 {
-		t.Errorf("条数 = %d, want 3", len(logs))
+	return driver.RowsAffected(1), nil
+}
+
+func (c *syncLogFailureConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	c.state.record("query", query, args)
+	if query != "SELECT COUNT(*) FROM sync_logs" {
+		return nil, errors.New("fixture only accepts the sync log COUNT query")
+	}
+	return nil, errFixtureCountFailure
+}
+
+// TestAddSyncLogCountFailureDoesNotFailWrite COUNT 查询失败时写入仍成功、跳过裁剪并记录安全日志。
+func TestAddSyncLogCountFailureDoesNotFailWrite(t *testing.T) {
+	state := &syncLogDriverState{}
+	db := sql.OpenDB(&syncLogFailureConnector{state: state})
+	defer db.Close()
+	s := &Store{db: db}
+
+	var logBuf bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	defer slog.SetDefault(previousLogger)
+
+	entry := SyncLog{
+		Timestamp: time.Date(2026, time.September, 28, 12, 34, 56, 0, time.UTC),
+		Target:    "fixture-target-business-sentinel",
+		Domain:    "fixture-domain-business-sentinel.example",
+		Result:    "failed",
+		Added:     3,
+		Deleted:   2,
+		Error:     "fixture-error-business-sentinel",
+	}
+	if err := s.AddSyncLog(entry); err != nil {
+		t.Fatalf("COUNT 失败不得让已成功的 AddSyncLog 报错: %v", err)
+	}
+
+	calls := state.snapshot()
+	if len(calls) != 2 {
+		t.Fatalf("驱动调用次数 = %d, want 2（一次 INSERT 后一次 COUNT）: %+v", len(calls), calls)
+	}
+	if calls[0].kind != "exec" || calls[0].query != insertSyncLogSQL {
+		t.Errorf("第一个调用 = %s %q, want sync log INSERT", calls[0].kind, calls[0].query)
+	}
+	if calls[1].kind != "query" || calls[1].query != "SELECT COUNT(*) FROM sync_logs" {
+		t.Errorf("第二个调用 = %s %q, want COUNT", calls[1].kind, calls[1].query)
+	}
+	if len(calls[0].args) != 7 {
+		t.Fatalf("INSERT 参数数 = %d, want 7", len(calls[0].args))
+	}
+	wantArgs := []any{entry.Timestamp, entry.Target, entry.Domain, entry.Result, int64(entry.Added), int64(entry.Deleted), entry.Error}
+	for i, want := range wantArgs {
+		if calls[0].args[i].Value != want {
+			t.Errorf("INSERT 参数[%d] = %#v, want %#v", i, calls[0].args[i].Value, want)
+		}
+	}
+
+	logs := logBuf.String()
+	for _, required := range []string{"统计同步日志条数失败，跳过本次裁剪", errFixtureCountFailure.Error()} {
+		if !strings.Contains(logs, required) {
+			t.Errorf("错误日志缺少 %q: %s", required, logs)
+		}
+	}
+	for _, forbidden := range []string{entry.Target, entry.Domain, entry.Error} {
+		if strings.Contains(logs, forbidden) {
+			t.Errorf("错误日志不得包含业务值 %q: %s", forbidden, logs)
+		}
 	}
 }
 

@@ -1,6 +1,9 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -231,5 +234,81 @@ func TestRuleInternalErrorUsesSafeText(t *testing.T) {
 	}
 	if strings.Contains(w.Body.String(), "fixture-secret-value") {
 		t.Errorf("500 不得回显底层错误: %s", w.Body.String())
+	}
+}
+
+// TestRuleReadCorruptTargetsUsesSafe500 损坏的 targets 必须阻断整个规则列表，
+// HTTP 响应只返回安全通用文案；可诊断细节仅进入服务端日志且不得回显原值。
+func TestRuleReadCorruptTargetsUsesSafe500(t *testing.T) {
+	e := newTestEnv(t)
+	const (
+		partialResultSentinel = "a9-partial-result-sentinel.example"
+		corruptSentinel       = "a9-corrupt-targets-sentinel"
+	)
+	e.seedRule(t, config.DomainRule{
+		Host: partialResultSentinel, Protocol: "TCP", Ports: "443", Action: "ACCEPT",
+	})
+	corruptID := e.seedRule(t, config.DomainRule{
+		Host: "corrupt.example.com", Protocol: "TCP", Ports: "443", Action: "ACCEPT",
+	})
+	e.execRaw(t, `UPDATE rules SET targets = '["`+corruptSentinel+`"]' WHERE id = `+strconv.Itoa(corruptID))
+
+	var logBuf bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	defer slog.SetDefault(previousLogger)
+
+	w := e.do(t, http.MethodGet, "/api/rules", "")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("状态码 = %d, want 500; body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want application/json; charset=utf-8", got)
+	}
+
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("响应不是 JSON object: %s", w.Body.String())
+	}
+	if len(resp) != 1 {
+		t.Fatalf("响应字段 = %v, want 只有 error", resp)
+	}
+	var message string
+	if err := json.Unmarshal(resp["error"], &message); err != nil {
+		t.Fatalf("error 字段不是字符串: %s", w.Body.String())
+	}
+	if message != "读取规则失败" {
+		t.Errorf("error = %q, want 读取规则失败", message)
+	}
+
+	body := w.Body.String()
+	for _, forbidden := range []string{
+		corruptSentinel,
+		strconv.Itoa(corruptID),
+		"targets",
+		"不是合法的整数数组",
+		"数据已损坏",
+		partialResultSentinel,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("500 响应不得包含 %q: %s", forbidden, body)
+		}
+	}
+
+	logs := logBuf.String()
+	for _, required := range []string{
+		"读取规则失败",
+		"#" + strconv.Itoa(corruptID),
+		"不是合法的整数数组",
+	} {
+		if !strings.Contains(logs, required) {
+			t.Errorf("服务端日志缺少 %q: %s", required, logs)
+		}
+	}
+	if strings.Contains(logs, corruptSentinel) {
+		t.Errorf("服务端日志不得回显损坏原值: %s", logs)
+	}
+	if got := e.applyCount(); got != 0 {
+		t.Errorf("只读失败不应触发运行时更新，实际 %d", got)
 	}
 }
