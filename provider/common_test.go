@@ -408,30 +408,49 @@ func TestDiff_ICMPCVM(t *testing.T) {
 	}
 }
 
-// TestDiff_NonICMPUnchanged 回归：非 ICMP 规则端口比较行为不变；TCP ALL（SWAS -1/-1）与 ALL 等价
-func TestDiff_NonICMPUnchanged(t *testing.T) {
-	p := &mockProvider{cloudType: config.CloudAliSWAS}
+// TestDiff_AliyunPortRoundTripConverges 回归：阿里云创建侧的斜杠端口格式经
+// GetRules 归一化后，下一轮 Diff 必须收敛，不能把同一条规则再次删除并重建。
+func TestDiff_AliyunPortRoundTripConverges(t *testing.T) {
 	resolved := []dns.ResolvedIP{
 		{IP: net.ParseIP("1.2.3.4"), IsIPv6: false},
 	}
-
-	// TCP 规则：desired 443（ConvertPorts 后为 443/443）对 existing 443 → 空 Diff
-	rule := config.DomainRule{
-		Host:     "api.example.com",
-		Protocol: "TCP",
-		Ports:    "443",
-		Action:   "ACCEPT",
-	}
 	desc := "[auto-dns] 生产API"
-	existing := []config.RuleInfo{
-		{Protocol: "TCP", Port: "443", CidrBlock: "1.2.3.4/32", Action: "ACCEPT", Description: desc, RuleID: "r-1"},
-	}
-	diff := Diff(resolved, rule, desc, existing, p)
-	if len(diff.ToAdd) != 0 || len(diff.ToDelete) != 0 {
-		t.Errorf("TCP 443 应无变更, ToAdd=%d ToDelete=%d", len(diff.ToAdd), len(diff.ToDelete))
+	tests := []struct {
+		name         string
+		provider     Provider
+		protocol     string
+		ports        string
+		existingPort string
+	}{
+		{name: "SWAS 单端口", provider: &AliSWAS{}, protocol: "TCP", ports: "443", existingPort: normalizeSWASPort("443/443")},
+		{name: "SWAS 范围端口", provider: &AliSWAS{}, protocol: "UDP", ports: "8000-8010", existingPort: normalizeSWASPort("8000/8010")},
+		{name: "ECS 单端口", provider: &AliECS{}, protocol: "TCP", ports: "443", existingPort: normalizeECSPort("443/443")},
+		{name: "ECS 范围端口", provider: &AliECS{}, protocol: "UDP", ports: "8000-8010", existingPort: normalizeECSPort("8000/8010")},
 	}
 
-	// TCP ALL 规则：desired -1/-1（SWAS 云格式）对 existing ALL → 空 Diff（非 ICMP 的 -1/-1 归一化）
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rule := config.DomainRule{
+				Host:     "api.example.com",
+				Protocol: tt.protocol,
+				Ports:    tt.ports,
+				Action:   "ACCEPT",
+			}
+			existing := []config.RuleInfo{{
+				Protocol: tt.protocol, Port: tt.existingPort, CidrBlock: "1.2.3.4/32",
+				Action: "ACCEPT", Description: desc, RuleID: "r-1",
+			}}
+
+			diff := Diff(resolved, rule, desc, existing, tt.provider)
+			if len(diff.ToAdd) != 0 || len(diff.ToDelete) != 0 {
+				t.Fatalf("阿里云端口往返后应无变更, ToAdd=%d ToDelete=%d", len(diff.ToAdd), len(diff.ToDelete))
+			}
+		})
+	}
+
+	// TCP ALL 规则：desired -1/-1（SWAS 云格式）对 existing ALL 继续等价。
+	p := &AliSWAS{}
+
 	ruleAll := config.DomainRule{
 		Host:     "any.example.com",
 		Protocol: "TCP",

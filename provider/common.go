@@ -80,7 +80,7 @@ func OwnedRules(allRules []config.RuleInfo, tagStr string) []config.RuleInfo {
 }
 
 // ruleKey 用于比较规则是否相同
-// port 字段经 normalizePortForCompare 归一化，保证 ICMP 规则两端（desired 云格式 / existing 归一化格式）可正确比较
+// port 字段经 normalizePortForCompare 归一化，保证 desired 云格式与 existing 内部格式可正确比较
 type ruleKey struct {
 	protocol      string
 	port          string
@@ -90,7 +90,8 @@ type ruleKey struct {
 }
 
 // normalizePortForCompare 端口比较归一化：
-// 协议为 ICMP/ICMPv6 时，-1/-1、ALL、空串三者等价（desired 侧为云厂商格式、existing 侧为归一化格式，避免 ICMP 规则永不收敛）
+// 协议为 ICMP/ICMPv6 时，-1/-1、ALL、空串三者等价；阿里云 desired 侧的
+// 斜杠格式与 existing 侧的内部格式等价，避免正确规则在每轮同步中被删除并重建。
 // 归一化仅用于比较，不影响 CreateRules/GetRules 的请求/返回格式
 func normalizePortForCompare(protocol, port string) string {
 	proto := strings.ToUpper(protocol)
@@ -99,6 +100,12 @@ func normalizePortForCompare(protocol, port string) string {
 	}
 	if strings.EqualFold(port, "-1/-1") {
 		return "ALL"
+	}
+	if start, end, ok := strings.Cut(port, "/"); ok {
+		if start == end {
+			return strings.ToUpper(start)
+		}
+		return strings.ToUpper(start + "-" + end)
 	}
 	return strings.ToUpper(port)
 }
