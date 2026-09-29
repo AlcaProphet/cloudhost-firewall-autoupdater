@@ -70,6 +70,11 @@ func (p *AliSWAS) GetSnapshot() (RuleSnapshot, error) {
 	// （与 P3-25 同类的无界循环风险）。100 页 × 100 条远超单实例合理规则数。
 	const maxPages = 100
 
+	// proven 表示「已用权威判据证明读完整」：只有主动 break 才算证明，循环因页数
+	// 上限自然结束不算。否则读满 100 页的截断快照会被当成完整快照进入规划，
+	// 违反 Issue7 §4.1/§6.3「不能证明完整即必须失败」。
+	proven := false
+
 	for page := 0; page < maxPages; page++ {
 		req := &swas.ListFirewallRulesRequest{
 			InstanceId: tea.String(p.instanceID),
@@ -106,6 +111,7 @@ func (p *AliSWAS) GetSnapshot() (RuleSnapshot, error) {
 		// 不可用时退回「本页不足一页即最后一页」的既有判据。
 		if totalCount != nil {
 			if int32(len(allRules)) >= *totalCount {
+				proven = true
 				break
 			}
 			if len(body.FirewallRules) == 0 {
@@ -116,14 +122,15 @@ func (p *AliSWAS) GetSnapshot() (RuleSnapshot, error) {
 			continue
 		}
 		if int32(len(body.FirewallRules)) < pageSize {
+			proven = true
 			break
 		}
 		pageNumber++
 	}
 
-	if totalCount != nil && int32(len(allRules)) < *totalCount {
-		return RuleSnapshot{}, fmt.Errorf("%w: SWAS 仅读取 %d 条，云端声明共 %d 条",
-			ErrSnapshotIncomplete, len(allRules), *totalCount)
+	if !proven {
+		return RuleSnapshot{}, fmt.Errorf("%w: SWAS 分页超过 %d 页仍无法证明完整（已读 %d 条）",
+			ErrSnapshotIncomplete, maxPages, len(allRules))
 	}
 
 	// 阿里云无规则版本号，Revision 合法为空；删除必须依赖同一快照回读的稳定 RuleId。

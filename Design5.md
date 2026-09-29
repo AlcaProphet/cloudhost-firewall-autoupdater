@@ -1,7 +1,7 @@
 # Design5.md — FWAlizer 设计记录（当前）
 
 > **文档定位：** 本文档是 FWAlizer 的当前设计记录（设计大方向、架构构想与决策记录，非强制，供参考），承接已存档的 [Design1-4](./HistoryDocs/)。
-> 编码约束遵循 [AGENTS.md](./AGENTS.md)（唯一强要求）；[Build6.md](./Build6.md) 与 [Build7.md](./Build7.md) 均为已完成的构建记录（Build7 Step 0～7 已完成）；当前 P1-01 TAG 所有权与目标级同步实施合同见 [Issue7.md](./Issue7.md)（Step 0 文档合同已完成，Step 1～5 待实施）。问题历史见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)。
+> 编码约束遵循 [AGENTS.md](./AGENTS.md)（唯一强要求）；[Build6.md](./Build6.md) 与 [Build7.md](./Build7.md) 均为已完成的构建记录（Build7 Step 0～7 已完成）；当前 P1-01 TAG 所有权与目标级同步实施合同见 [Issue7.md](./Issue7.md)（**Step 0～5 已本地实施完成**，本地提交 `28559ed`；独立核验补强见 Issue7 §12.4，真实云/浏览器/远端 CI 仍未执行）。问题历史见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)。
 > **Build7 实施状态（2026-09-28）：** 本文档第三节描述的 **version 2 配置包设计已由 Build7 的 version 3 取代并实施完成**：version 3 是唯一导入/导出版本（version 1/2 与其他版本直接 400）；`GET/PUT /api/alerts` 为四对象严格契约（触发策略 / 邮件含主题正文 / Webhook / Uptime Kuma Push）；新增 `POST /api/alerts/test-email`、唯一 `OperationalHealth` 计算源（`internal/health`）+ 30 秒内部监督器 + `GET /api/health/operational`（`/api/health` 保持静态存活语义）。逐步证据见 [Build7.md](./Build7.md) 第八节。**未执行的真实外部验收**（真实 SMTP/收件箱、Webhook、Uptime Kuma HTTP/Push、真实云 API、远端 CI）见 [ProdTestList.md](./ProdTestList.md)，不得写成通过。
 > **实施状态：** 2026-09-24 Build6 Step 1、Step 2、Step 3 与 Step 4 已验收通过：运行时已收束为唯一 WebUI + SQLite，CLI、`.env` Headless、业务环境变量入口和 `webui_port` 业务设置已从代码与当前文档移除，监听参数只由三个部署变量提供；HTTP 生命周期已形成最终形态（同步 listener、仅 `EADDRINUSE` 降级、显式 `http.Server`、`Wait`、幂等 `Shutdown`、两类 SSE 服务器级退出、main 统一收尾）；普通 API 最小持久化校验边界已落地（统一严格解码与 1 MiB、领域校验与归一化、`RowsAffected`/引用检查、事务化 settings/alerts、删除被引用目标 409、500 安全文案、日志级别动态更新）。远端 GitHub Actions 结果已由 2026-09-27 tag `v2.0.0` 的真实运行 `36300428681`（成功）确认，详见下段与 Issue5 O5-02。
 >
@@ -192,5 +192,6 @@ TAG 是唯一操作授权；comment 只是可读备注，不参与身份、Diff�
 | v1.2 | 2026-09-27 | Step 7 ✅ 验收通过：远端 Actions 运行 `36300428681` 成功并真实推送 `ghcr.io/alcaprophet/fwalizer:2.0.0`，O5-02 关闭；真实 SMTP/收件箱与 Webhook 经用户决定免除人工验收、由用户自行处理（不写成已通过） |
 | v1.3 | 2026-09-27 | 独立核验后的文档一致性修正：实施状态段中"远端 GitHub Actions 仍待确认"改为已确认（运行 `36300428681`）；覆盖率复测值、非法输入用例计数、audit 阻断边界与 GHCR `latest` 标签按实测事实回写到 Build6/Issue5 对应记录 |
 | v1.4 | 2026-09-27 | 核验修正批次落地（不涉及 Issue6 条目）：规则 `targets` 显式必填（省略 400）、更新/删除按 `RowsAffected=0` 判定 404、扫描结果查询参数 `cloud_type` 加枚举校验、协调器 commit 后发布收紧为不可失败；同步 AGENTS §9.1 与 Build6 §4.2/§4.3/§12.9 |
+| v1.7 | 2026-09-29 | 独立核验补强：订正文档定位行由「Step 1～5 待实施」为「Step 0～5 已本地实施完成（提交 `28559ed`）」，并指向 Issue7 §12.4 的核验补强记录（Lighthouse 多端口展开粒度与 SWAS 分页上限修复、flaky 门禁与清理失败语义如实登记） |
 | v1.6 | 2026-09-29 | P1-01 按 Issue7 Step 1～5 本地实施完成：更新实施顺序（含真实云/浏览器/CI 仍未执行的分层说明）与第八节实施状态标记 |
 | v1.5 | 2026-09-29 | P1-01 正式定案为“TAG 唯一操作授权 + comment 纯可读 + 目标级功能期望集 + 先增后验 + 平台化条件清理 + 可接受残留”；实施合同转入 Issue7 Step 1～5；当前配置包正文由漂移的 version 2 修正为已实施 version 3 |

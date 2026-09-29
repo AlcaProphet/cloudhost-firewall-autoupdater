@@ -221,6 +221,36 @@ func TestSnapshot_SWASIncompletePaginationFails(t *testing.T) {
 	}
 }
 
+// TestSnapshot_SWASPageCapFailsIncomplete 分页硬上限用尽且无法用 TotalCount 证明完整时，
+// 必须按快照不完整失败，绝不把「读满 100 页」当成完整快照（Issue7 §4.1/§6.3）。
+func TestSnapshot_SWASPageCapFailsIncomplete(t *testing.T) {
+	mock, host := newMockCloudAPI(t)
+	// 每页都返回满页（100 条）且不带 TotalCount → 只能靠页数上限终止
+	full := make([]string, 0, 100)
+	for i := 0; i < 100; i++ {
+		full = append(full, swasRuleJSON(fmt.Sprintf("r%d", i), fmt.Sprintf("10.0.%d.%d/32", i/256, i%256)))
+	}
+	body := `{"PageSize":100,"FirewallRules":[` + strings.Join(full, ",") + `],"RequestId":"mock"}`
+	mock.reply = func(_ int, _ recordedRequest) (int, string) {
+		return http.StatusOK, body
+	}
+	p := mockSWAS(t, host)
+
+	snap, err := p.GetSnapshot()
+	if err == nil {
+		t.Fatalf("页数上限用尽仍未证明完整时必须失败，实际返回 %d 条规则", len(snap.Rules))
+	}
+	if !errors.Is(err, ErrSnapshotIncomplete) {
+		t.Fatalf("错误必须可识别为 ErrSnapshotIncomplete，实际: %v", err)
+	}
+	if len(snap.Rules) != 0 {
+		t.Fatalf("快照失败时不得返回半截规则: %d 条", len(snap.Rules))
+	}
+	if got := len(requestsWithAction(t, mock.recorded(), "ListFirewallRules")); got != 100 {
+		t.Errorf("ListFirewallRules 请求数 = %d, want 100（页数硬上限）", got)
+	}
+}
+
 // ecsRulePage 构造一页 DescribeSecurityGroupAttribute 响应（阿里云 RPC 扁平 JSON）。
 func ecsRulePage(ruleID, cidr, nextToken string) string {
 	token := ""

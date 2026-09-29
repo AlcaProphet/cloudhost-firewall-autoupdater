@@ -10,7 +10,9 @@
 >
 > **本次一次性授权的准确边界：** 只含本地源码/测试/前端/文档实施、本地只读门禁与 `docker build`（含隔离 `FWALIZER_DATA_DIR` 的本地二进制/容器验收）。**不含**提交、推送、tag、远端 CI/GHCR、发布、真实云写入、真实 SMTP/Webhook/Uptime Kuma 与浏览器验证；这些层次在本次实施中一律记为「未执行」。
 >
-> **实施状态（2026-09-29）：** Step 0～5 **已全部本地实施完成**：Step 1 纯规划器/快照模型、Step 2 目标级先增后验、Step 3 四平台条件清理、Step 4 Dry Run/事件/日志/仪表盘口径、Step 5 完整门禁 + 真实二进制/Docker 验收 + 文档闭环。逐 Step 证据见 §12.3。**未提交、未推送、未打 tag、未触发远端 CI/GHCR、未调用真实云、未执行浏览器验证**；这些层次在 §12.3「未执行边界」中如实登记。
+> **实施状态（2026-09-29）：** Step 0～5 **已全部本地实施完成**（本地提交 `28559ed`）：Step 1 纯规划器/快照模型、Step 2 目标级先增后验、Step 3 四平台条件清理、Step 4 Dry Run/事件/日志/仪表盘口径、Step 5 完整门禁 + 真实二进制/Docker 验收 + 文档闭环。逐 Step 证据见 §12.3。
+>
+> **独立核验补强（2026-09-29，工作树改动，未提交）：** 对 `28559ed` 做独立只读核验后，按用户裁决修复两项缺陷——F1 Lighthouse 期望侧多端口展开粒度回归（`provider/plan.go` + 新增判别性用例）、F5 SWAS 分页硬上限用尽未按 `snapshot_incomplete` 失败（`provider/ali_swas.go` + 新增判别性用例）；并如实登记 F2（`go test ./... -race -count=1` 受既有 flaky 用例 `TestIsRetryable_RealWorldShapes` 影响，按裁决不改测试代码）与 F4（可重试清理失败语义分歧，仅登记）。完整记录见 §12.4。**补强改动未提交、未推送、未打 tag、未触发远端 CI/GHCR、未调用真实云、未执行浏览器验证**。
 
 ---
 
@@ -834,9 +836,9 @@ git diff --check
 
 ### 12.1 当前证据边界
 
-- 当前只有 Step 0 文档一致性证据与 Step 1 开工前的**基线门禁**证据（`go test ./... -race -count=1`、`go vet ./...`、`go build ./...`、前端 `npm ci`/`npm run build`/两条 `npm audit`、`docker compose config --quiet` 在 HEAD `3ce40fe` 全部通过），基线门禁只证明「改动前仓库是绿的」，不是 P1-01 已修复的功能证据；
-- 原审计 overlay 探针证明 P0-01/P1-01/P2-01 在审计基线存在；P0-01 后续由 `108e528` + 回归证明已修，P1-01/P2-01 仍未修；
-- 本文引用的当前源码形态只是待替换基线，不表示目标结构已存在；
+- Step 1 开工前的**基线门禁**证据（`go test ./... -race -count=1`、`go vet ./...`、`go build ./...`、前端 `npm ci`/`npm run build`/两条 `npm audit`、`docker compose config --quiet` 在 HEAD `3ce40fe` 全部通过）只证明「改动前仓库是绿的」，不是 P1-01 已修复的功能证据；
+- 原审计 overlay 探针证明 P0-01/P1-01/P2-01 在审计基线存在；三者均已在 Issue7 Step 1～4 实施后由 canonical key/能力矩阵消除，并由新增判别性用例与 `TestDiff_AliyunPortRoundTripConverges` 回归覆盖；
+- 本文 §三「当前源码基线」表格是 Step 1 开工前的待替换基线地图，已被 §12.3 的实际实施结果取代；
 - 真实 SMTP/Webhook/Uptime Kuma、真实云、浏览器与远端 CI/GHCR 的既有未执行状态保持不变。
 
 ### 12.2 文档变更记录
@@ -845,6 +847,7 @@ git diff --check
 |---|---|---|
 | v1.0 | 2026-09-29 | Step 0：固定目标级完整期望集、TAG 所有权、comment 纯可读、先增后验、四平台条件清理、状态口径与 Step 1～5 |
 | v1.1 | 2026-09-29 | 详细补强：增加历史/当前基线区分、不可破坏不变量、严格 TAG 语法、canonical key 表、当前源码替换地图、Provider snapshot/revision 参考、纯 planner DTO、冲突/原因码、S0/S1/S2 状态机、重试与计数、四平台 API 合同、Dry Run JSON/事件/日志/UI 样式、逐 Step 红绿测试/命令/完成与停止条件、统一验收矩阵；仍仅为文档，Step 1～5 未实施 |
+| v1.4 | 2026-09-29 | 独立核验补强（工作树改动，未提交）：① 修复 Lighthouse 期望侧多端口展开粒度回归（§12.4 F1）；② SWAS 分页上限用尽改为 `snapshot_incomplete`（§12.4 F5）；③ 如实登记 `go test ./... -race -count=1` 受既有 flaky 用例影响（§12.4 F2，按用户裁决不改测试代码）；④ 登记可重试清理失败的语义分歧待后续处理（§12.4 F4）；⑤ 订正 §12.3 的提交状态/文件计数与 §12.1 的过时基线表述 |
 | v1.3 | 2026-09-29 | Step 1～5 本地实施完成：回写实施状态、逐 Step 完成标记、§12.3 实施证据（HEAD、实际修改文件、逐条命令与结果、判别性用例、与原方案偏差、未执行边界）与 ProdTestList 人工核验项（PT-I7-01～07）|
 | v1.2 | 2026-09-29 | Step 1 开工前裁决回写：登记 Step 1 开工基线（HEAD `3ce40fe`、ahead 2、工作树干净、基线门禁全绿）与本次一次性授权边界（含 `docker build`，不含提交/推送/tag/远端 CI/GHCR/真实云/浏览器）；Lighthouse 逗号端口固定为「展开项即 Desired 与 ToAdd 最小单元」；§5.2 固定 Resolve 粒度（每 attempt 按 host 去重重新解析，红灯 5 只针对单 attempt 轮）；§7.3 `domain` 固定写稳定排序后的来源域名；§8.3 明确 P2-04（AGENTS §9.1 发布顺序与源码差异）等正交问题全部越界，仅 P3-16 Dry Run 子项并入 Step 4；Step 5 登记「本次不执行浏览器验证」与「人工核验项统一更新到 ProdTestList」两条边界 |
 
@@ -855,8 +858,8 @@ git diff --check
 **基线与范围**
 
 - 实施前 HEAD：`3ce40fe47bcb9e75abd7d72dcfea4265ea8e4da3`（`main`，相对 `origin/main` ahead 2，工作树干净）。
-- 实施后：**同一 HEAD，改动全部留在工作树，未提交**；`git status` 显示 30 个修改文件 + 7 个新增文件（`provider/plan.go`、`provider/plan_test.go`、`provider/snapshot_test.go`、`syncer/target.go`、`syncer/target_test.go`、`syncer/cleanup_test.go`、`syncer/dryrun_test.go`）。
-- 规模：测试函数 446 → **502**，测试文件 62 → **67**，Go 包仍为 12。
+- 实施后：Step 1～5 的改动先留在工作树（30 个代码/测试文件 + 7 个新增文件），随后连同 §12.3 的文档回写一并提交为 `28559ed1e12eb9078a8d6ac039b89b61cf3ec3ab`（`git show --name-status`：**34 个修改 + 7 个新增**，含本文件、`AGENTS.md`、`Design5.md`、`ProdTestList.md`、`README.md`、`fwalizer-audit-final1.md` 6 份文档）；提交后工作树干净，`main` 相对 `origin/main` ahead 3，**未推送**。
+- 规模：测试函数 446 → **502**，测试文件 62 → **67**，Go 包仍为 12（`git ls-tree 3ce40fe` / `git grep '^func Test'` 与 HEAD 实测一致）。
 
 **实际执行的命令与结果（全部在本机实测）**
 
@@ -921,4 +924,47 @@ git diff --check
 - **真实 SMTP / 收件箱 / Webhook / Uptime Kuma**：沿用既有「未执行」状态（PT-B7-01～06）。
 - **远端 CI / GHCR**：未推送、未触发；既有 `v2.0.0` 结果属更早 revision，不能证明当前改动（PT-B7-08）。
 - **SWAS `Remark` 长度上限**：仍无仓内文档依据（PT-B7-09）。
-- 本次**未提交、未推送、未创建 tag、未修改任何远端状态**。
+- 本次实施**未推送、未创建 tag、未修改任何远端状态**（改动随后提交为本地提交 `28559ed`，见本节「基线与范围」）。
+
+---
+
+### 12.4 独立核验补强记录（2026-09-29，工作树改动，未提交）
+
+> **范围：** 对已提交的 `28559ed`（Step 1～5）做独立只读核验后，按用户 2026-09-29 裁决执行的补强：修 F1、修 F5、登记 F2/F4、订正文档。**仍然不含**提交、推送、tag、远端 CI/GHCR、真实云、真实 SMTP/Webhook/Uptime Kuma 与浏览器验证。
+
+**已核验通过（复核，不重复外推）**
+
+- `gofmt -l`（改动 Go 文件）、`go vet ./...`、`go build ./...`、`git diff --check`：无输出/退出码 0。
+- 源码级复核：严格 TAG 命名空间（`IsOwned` 为唯一判定，`Parse`/`OwnedRules` 共用）；唯一 canonical `FunctionalKey`（`SnapshotRuleKeys` 与 `PlannedActionKeys` 共用 `buildKeys`）；`PlanTarget` 无网络/时钟/日志依赖；四平台快照 revision/完整性（Lighthouse 版本重读、CVM `Version`+`PolicyIndex`、SWAS `TotalCount`、ECS token 不推进）；`syncer/target.go` 的 `S0 → Add(S0) → S1 → 同一 planner 复验 → 安全门 → Delete(S1) → S2` 顺序与「Add/覆盖验证失败时删除恒为 0」；目标级 Dry Run/事件/日志/Dashboard；`internal/health` 零改动、无 Schema/迁移改动（仅 `config.RuleInfo` 补 JSON 标签）。
+- PlatformAPIDocs 依据复核：Lighthouse `FirewallVersion`（创建/删除/`UnsupportedOperation.FirewallVersionMismatch`）与 `FirewallRuleDescription ≤ 64`；CVM `SecurityGroupPolicySet.Version`（添加/删除/`UnsupportedOperation.VersionMismatch`）与 `PolicyIndex`；ECS `RevokeSecurityGroup.SecurityGroupRuleId` 数组 0~100 与 `InvalidParam.SecurityGroupRuleId`；SWAS `RuleIds` 与 `TotalCount`。Issue7 的版本/删除策略有仓内文档支撑。
+- 真实二进制（本轮重新构建，隔离 `FWALIZER_DATA_DIR`）：`/api/health` 200 静态存活、`/api/health/operational` 200 且 `Content-Type: application/json; charset=utf-8` + `Cache-Control: no-store`、SPA 首页与 `assets/index-*.js` 200、`POST /api/sync/dryrun {}` 返回 `results: []`（非 null）、`SIGTERM` 退出码 0；启动轮日志为目标级计数（`outcome=idle total=0 … cleanup_candidates/cleanup_deleted/cleanup_deferred`）。
+- Docker（`fwalizer:issue7`，镜像创建时间 13:20:39Z 早于提交 13:25:33Z，内容对应成为 `28559ed` 的工作树）：`User=appuser`、`Entrypoint=[fwalizer]`、`HEALTHCHECK` 仍为 `wget … /api/health`（未改成 operational）；容器内 `uid=1000(appuser)`、`Health=healthy`（FailingStreak=0）、容器内外 `/api/health` 与 `/api/health/operational` 200、`docker stop` 141ms 且 `ExitCode=0`；`docker compose -f docker-compose.yml.example config --quiet` 退出码 0。
+- 规模核对：测试函数 446 → 502、测试文件 62 → 67、Go 包 12，与 §12.3 记载一致。
+
+**F1｜Lighthouse 期望侧多端口展开粒度回归（已修复）**
+
+- 现象（修复前实测，`go test -overlay` 零写入探针）：本地规则 `Ports="80,443"` 时 `PlanTarget` 只产出合并 key `ipv4|1.1.1.1/32|TCP|80,443|ACCEPT` 且 `ToAdd` 下发一条 `Port="80,443"`；而云端回读把同一条规则展开为 `…|TCP|80|…` 与 `…|TCP|443|…` 两个 key → 第二轮仍 `ToAdd=1`、`SatisfiedByOwned=0`、该规则反成 `CleanupCandidates=1`、`CoverageReady=false`。对照探针证明旧逐规则路径（`Diff` + `ConvertPorts`）在同形态下 `toAdd=0/toDelete=0`，即这是 Step 1 引入的回归，且与 §2.5 的 2026-09-29 用户裁决（展开项即 Desired/ToAdd 最小单元）及 §12.3 偏差 1 相反。
+- 修复：`provider/plan.go` 新增 `expandPlannedPorts`（先按 `portconv.Parse` 拆分端口项，再对每项取线格式），`PlanTarget` 改用它；`ExpandPorts` 的合并语义只保留给旧逐规则写入路径，并在注释中写明粒度差异。
+- 判别性证据：新增 `provider/plan_test.go:TestPlan_LighthouseDesiredMultiPortExpandsPerPort`（修复前红灯：`Desired 数量 = 1, want 2`；修复后绿灯：`Desired=2`、`ToAdd` 为 80 与 443 两条单端口、已存在合并规则时零新增零候选且 `CoverageReady=true`、两个单端口稳定形态同样收敛）；同一探针复跑显示第二轮 `toAdd=0 satisfiedOwned=2 candidates=0 coverage=true`。
+
+**F2｜全量 race 门禁受既有 flaky 用例影响（如实登记，按用户裁决不改测试代码）**
+
+- 现象：本次核验共执行 **3 次完整套件运行**（`go test ./... -race -count=1`）：修复前 2 次均为 `syncer` 包 FAIL（其中 1 次捕获到断言文本），修复后 1 次 **12/12 包 ok**。捕获到的失败点为既有用例 `TestIsRetryable_RealWorldShapes`（`syncer/retry_test.go:72`，其助手 `realHTTPTimeoutError` **未被 `28559ed` 改动**）：期望 `Client.Timeout exceeded while awaiting headers`，实际拿到 `read: connection reset by peer`。此外 `go test ./provider ./syncer -race` 合并运行 2 次（1 次失败、1 次通过，失败未捕获用例名）；单包隔离下 8 个 `-count=20` 批次中 2 个失败（约 2/160 次迭代），`./syncer -race -count=1` 单独运行多次通过。
+- 处理（用户裁决）：**不修改测试代码、不放宽断言**，只在本文件与 `AGENTS.md` 如实登记。因此 Step 5 的完成标准应理解为「门禁可复现为绿，但存在一个与本项改动无关、环境相关的既有 flaky 用例」；不得把任意单次绿色运行外推为稳定绿色。
+
+**F4｜可重试的清理失败语义分歧（已登记，未改实现与契约）**
+
+- §5.3/§5.5 规定「删除失败且未确认删除」记 `success + cleanup_deferred`（healthy）；§5.2 又要求可重试错误进入下一整个目标 attempt。当前实现（`syncer/target.go` 的 `runTargetCleanup`）对**可重试**清理失败（限流/网络超时等）走整目标重试，3 次后目标 `failed` → unhealthy；只有**不可重试**失败才按 §5.5 记 `success + cleanup_deferred`（已有用例覆盖）。
+- 处理：按用户 2026-09-29 裁决**只登记不改动**，留待后续独立处理；本条不构成本次的实施前置。
+
+**F5｜SWAS 分页硬上限用尽未证明完整（已修复）**
+
+- 现象（修复前红灯：`页数上限用尽仍未证明完整时必须失败，实际返回 10000 条规则`）：`provider/ali_swas.go` 的 100 页上限用尽且云端未返回 `TotalCount` 时，函数直接返回截断快照，违反 §4.1/§6.3「不能证明完整即必须失败」。
+- 修复：新增 `proven` 判据，只有主动 `break`（`len(allRules) >= TotalCount` 或本页不足一页）才算证明完整；因页数上限自然结束即返回 `ErrSnapshotIncomplete`。
+- 判别性证据：新增 `provider/snapshot_test.go:TestSnapshot_SWASPageCapFailsIncomplete`（修复前红灯；修复后绿灯：100 次请求后返回 `ErrSnapshotIncomplete` 且不返回半截规则）；既有 `TestSnapshot_SWASPaginatesAllPages`、`TestSnapshot_SWASIncompletePaginationFails` 继续通过。
+
+**补强后的门禁与未执行边界**
+
+- 定向门禁：`go test ./internal/tag ./provider ./syncer -race -count=1` → 3 包全 ok；`go test ./... -race -count=1` → 12/12 包 ok（F2 前提下不承诺稳定复现）。
+- **未执行（不得写成通过）**：真实腾讯云/阿里云（含 Lighthouse 多端口收敛、四平台删除安全、版本竞争、ECS 分批）、浏览器回归、真实 SMTP/收件箱/Webhook/Uptime Kuma、远端 CI/GHCR；SWAS `Remark` 上限仍无仓内依据。
+- 本次补强**只改工作树**（`provider/plan.go`、`provider/plan_test.go`、`provider/snapshot_test.go`、`provider/ali_swas.go` 与本次文档回写），**未提交、未推送、未打 tag、未修改任何远端状态**。

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
@@ -512,6 +513,62 @@ func TestPlan_CoreFilesNeverUseCommentForIdentity(t *testing.T) {
 	}
 	if keys[0] != ka[0] {
 		t.Fatalf("期望 key %v 与回读 key %v 必须同一 canonical 形态", ka[0], keys[0])
+	}
+}
+
+// TestPlan_LighthouseDesiredMultiPortExpandsPerPort 核验补强（2026-09-29）：
+// Issue7 §2.5 的用户裁决要求「展开项同时是 Desired 与 ToAdd 的最小单元」，
+// 因此 Lighthouse 期望侧的多端口必须落成**多个单端口功能**，新建时下发多条单端口规则。
+//
+// 修复前的缺陷形态：Desired 只产出合并 key（TCP 80,443），而云端回读会把同一条
+// 合并规则展开为 80 与 443 两个 key → 每轮重复 Add、已存在规则反成清理候选、
+// coverage_ready 恒 false（Lighthouse 多端口目标不收敛）。
+func TestPlan_LighthouseDesiredMultiPortExpandsPerPort(t *testing.T) {
+	rules := []config.DomainRule{rule(1, "api.example.com", "TCP", "80,443", "ACCEPT", "")}
+	resolved := map[int][]dns.ResolvedIP{1: {v4("1.1.1.1")}}
+
+	// 云端为空：必须产出两个独立功能，且下发的是单端口线格式（不得再出现逗号规则）。
+	empty := planFor(t, config.CloudTCLighthouse, rules, resolved, nil)
+	if len(empty.Desired) != 2 {
+		t.Fatalf("Desired 数量 = %d, want 2（多端口必须逐项展开）: %+v", len(empty.Desired), empty.Desired)
+	}
+	if len(empty.ToAdd) != 2 {
+		t.Fatalf("ToAdd 数量 = %d, want 2（展开项即 ToAdd 最小单元）: %+v", len(empty.ToAdd), empty.ToAdd)
+	}
+	seen := make(map[string]bool, 2)
+	for _, a := range empty.ToAdd {
+		if strings.Contains(a.Port, ",") {
+			t.Fatalf("新建不得下发合并的逗号端口规则: %+v", a)
+		}
+		seen[a.Port] = true
+	}
+	if !seen["80"] || !seen["443"] {
+		t.Fatalf("ToAdd 端口 = %v, want 80 与 443 各一条单端口规则", seen)
+	}
+
+	// 已存在的合并规则覆盖展开后的全部 key：零新增、零候选（§12.3 偏差 1 的前提）。
+	merged := []config.RuleInfo{{
+		Protocol: "TCP", Port: "80,443", CidrBlock: "1.1.1.1/32", Action: "ACCEPT", Description: "[auto-dns]",
+	}}
+	converged := planFor(t, config.CloudTCLighthouse, rules, resolved, merged)
+	if len(converged.ToAdd) != 0 || len(converged.CleanupCandidates) != 0 {
+		t.Fatalf("已存在合并规则时不得重建或清理: ToAdd=%d CleanupCandidates=%d",
+			len(converged.ToAdd), len(converged.CleanupCandidates))
+	}
+	if len(converged.SatisfiedByOwned) != 2 || !converged.CoverageReady {
+		t.Fatalf("合并规则必须精确覆盖两个展开 key: owned=%d coverage=%v",
+			len(converged.SatisfiedByOwned), converged.CoverageReady)
+	}
+
+	// 两个单端口规则同样必须收敛（新建后的稳定形态）。
+	twoRules := []config.RuleInfo{
+		{Protocol: "TCP", Port: "80", CidrBlock: "1.1.1.1/32", Action: "ACCEPT", Description: "[auto-dns]"},
+		{Protocol: "TCP", Port: "443", CidrBlock: "1.1.1.1/32", Action: "ACCEPT", Description: "[auto-dns]"},
+	}
+	steady := planFor(t, config.CloudTCLighthouse, rules, resolved, twoRules)
+	if len(steady.ToAdd) != 0 || len(steady.CleanupCandidates) != 0 {
+		t.Fatalf("单端口稳定形态必须收敛: ToAdd=%d CleanupCandidates=%d",
+			len(steady.ToAdd), len(steady.CleanupCandidates))
 	}
 }
 
