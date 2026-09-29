@@ -96,7 +96,7 @@ TAG、comment、description、本地规则 ID、域名、RuleID 和 PolicyIndex 
 
 | 审计项 | 关系 | 固定处理 |
 |---|---|---|
-| P0-01 Aliyun 端口 key 不对称 | 目标级功能 key 的正确性前置 | Step 1 在唯一 canonical key 层覆盖 `443`↔`443/443`、`8000-8010`↔`8000/8010`；不再另做一套临时 Diff 补丁 |
+| P0-01 Aliyun 端口 key 不对称 | **已于 Step 0 之前的 `108e528` 修复**，是新功能 key 的必保留回归 | Step 1 必须保持 `TestDiff_AliyunPortRoundTripConverges` 继续通过，并在唯一 canonical key 层继续覆盖 `443`↔`443/443`、`8000-8010`↔`8000/8010`；不得因替换旧 Diff 而回归 |
 | P1-01 comment 碰撞互删 | 本项根因 | 移除 description/comment 个体身份职责，改为目标级完整期望集 |
 | P2-01 IPv6+ICMP key 不对称 | 功能 key 正确性前置 | Step 1 按 address family 统一 `ICMP`/`ICMPv6`/`ICMPV6` |
 | P2-02 ECS 删除超过 100 不分批 | ECS 平台清理的硬限制 | Step 3 按 S1 RuleID 每批最多 100 个；部分成功必须如实计数，未删部分进 `cleanup_deferred` |
@@ -143,10 +143,10 @@ TAG、comment、description、本地规则 ID、域名、RuleID 和 PolicyIndex 
 
 ### Step 1｜纯规划器与失败先行用例（待实施）
 
-先加入在当前代码上必须失败的判别性测试，再实现：
+对尚未实施的合同先加入在当前代码上必须失败的判别性测试；P0-01 已有绿色回归，必须在重构中保持通过。然后实现：
 
 - 严格 TAG 所有权语法；
-- 功能 key 及 P0-01/P2-01 所需全部归一化；
+- 功能 key 及 P0-01/P2-01 所需全部归一化；其中 P0-01 是已修复防回归，P2-01 仍是修复前红灯；
 - 目标级期望集、域名解析去重、本地功能去重；
 - 人工规则精确满足、宽泛/冲突规则警告；
 - `unsupported`、`cleanup_candidates`、`cleanup_deferred` 和 `coverage_ready` 的纯数据模型；
@@ -183,7 +183,7 @@ TAG、comment、description、本地规则 ID、域名、RuleID 和 PolicyIndex 
 ### Step 5｜完整门禁与真实云验收（待实施）
 
 1. 执行有关包失败先行用例、race、vet、build、前端构建/audit、Docker 和 `git diff --check`。
-2. 覆盖两个空 comment/不同域名不互删；同域名多协议/端口不互删；comment 修改零增删；非 TAG 精确等价满足期望且永不被修改；B 的创建确认早于任何 A 删除；B 添加失败时 A 保留；清理延后仍 success/healthy；`[TAG]foo` 不归属；空期望集不自动清空；四平台删除安全条件；Dry Run 与正式规划一致。
+2. 保持 P0-01 的 Aliyun 单端口/范围端口往返收敛回归；覆盖两个空 comment/不同域名不互删；同域名多协议/端口不互删；comment 修改零增删；非 TAG 精确等价满足期望且永不被修改；B 的创建确认早于任何 A 删除；B 添加失败时 A 保留；清理延后仍 success/healthy；`[TAG]foo` 不归属；空期望集不自动清空；四平台删除安全条件；Dry Run 与正式规划一致。
 3. 按 `ProdTestList.md` 的 PT-I7 项分四平台真实验收。任一平台未执行都必须保留“未执行”，不得用 mock/单测替代。
 
 ---
@@ -195,5 +195,5 @@ TAG、comment、description、本地规则 ID、域名、RuleID 和 PolicyIndex 
 ## 五、证据分层
 
 - 当前 Step 0 只有文档一致性证据，不是代码通过证据。
-- 原审计 overlay 探针证明 P0-01/P1-01/P2-01 存在，不证明新设计已修复。
+- 原审计 overlay 探针证明 P0-01/P1-01/P2-01 在审计基线存在；P0-01 后续由 `108e528` + 回归证明已修，P1-01/P2-01 仍不能被这些历史探针当作新设计已修复的证据。
 - 本地 mock/自动测试、真实二进制、Docker、浏览器、真实腾讯/阿里云、远端 CI/GHCR 必须分层记录，不得互相代替。

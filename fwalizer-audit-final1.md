@@ -4,11 +4,78 @@
 |---|---|
 | 仓库 | `/Users/kylechen/Desktop/Repo/cloudhost-firewall-autoupdater` |
 | 分支 / HEAD | `main` / `11918fb945fe9dfe2a86ead5bc833b14dd156a68` |
-| 工作树 | 审核期间**干净**（0 tracked 改动、0 非忽略未跟踪文件）；本报告文件是审核后新增的**未跟踪**文件 |
+| 审计开始前工作树 | **干净**（0 tracked 改动、0 非忽略未跟踪文件）；这是历史审计快照，不表示当前工作树状态 |
 | 审核性质 | 代码审核为**只读**：未修改、未创建、未删除任何**受版本控制**的仓库文件 |
 | 审核方式 | 8 路并行子代理分模块审核 + 主代理亲自覆盖超时范围 + 判别性探针独立复现 + 交叉复核裁决 |
 | 审核范围 | 233 个 tracked 文件；**53/53 生产 Go 文件**（10,890 行）；62 个测试文件（20,457 行）；18 个前端源文件（2,212 行）；6 个构建/部署/CI 文件；8 份合同文档 |
 | 报告版本 | final1（已剔除全部被驳回/误报项，并纳入用户 7 项决策） |
+
+> **阅读规则（2026-09-29）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与串行实施入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。源码行号属于审计快照，后续定位应同时使用 finding ID、符号名和测试名。
+
+---
+
+## 0. 当前状态、执行索引与 TODOLIST
+
+### 0.1 状态图例
+
+| 标记 | 含义 |
+|---|---|
+| ✅ | 已修复且有回归证据；保留原 finding 作为正向控制，不再列入待修复项 |
+| 🟠 | 产品语义或方案已定案，但代码尚未实施 |
+| 🔵 | 已确认的独立问题或已有用户决策，尚无完成证据 |
+| ⏳ | 必须由真实环境或人工验收确认，自动化证据不可替代 |
+| 📚 | 历史审计材料或旧排序，仅用于追溯，不得作为当前执行入口 |
+| 🚫 | 已驳回候选，不得据此实施 |
+
+> finding ID 表示审计严重级别，不表示施工顺序；施工顺序只以本节 TODO 阶段和 Issue7 Step 编号表达。
+
+### 0.2 当前问题状态索引
+
+| 范围 | 当前状态 | 当前入口 |
+|---|---|---|
+| P0-01 | ✅ 已由 `108e528` 修复；原证据与回归必须保留 | Issue7 Step 1 重构 functional key 时保持绿色回归 |
+| P1-01 | 🟠 Step 0 文档合同已完成，代码未修复 | Issue7 Step 1～5 串行主线 |
+| P1-02 | 🔵 已决定采用 flock，尚未实施 | 独立高优先级队列；同时收口 P3-08 |
+| P2-01、P2-03 | 🟠 未修复 | Issue7 Step 1 |
+| P2-02 | 🟠 未修复 | Issue7 Step 3 |
+| P2-08、P2-09 | 🟠 未修复 | Issue7 Step 4 |
+| P2-04～P2-07 | 🔵 未修复，且不构成 P1-01 前置 | 独立问题队列 |
+| P3-25 | 🟠 自动清理安全硬前置 | Issue7 Step 1；不完整快照必须失败且零删除 |
+| P3-11、P3-22 与 Dry Run 相关 P3-16 | 🟠 未修复 | Issue7 Step 4 |
+| 其余 P3 | 🔵/⏳ 未修复、文档清理或待真实验证 | 按 0.4 的独立队列处理 |
+
+### 0.3 当前唯一串行主线：Issue7
+
+- [x] **Step 0｜文档合同**：已完成；只代表定性与实施合同完成，不代表代码修复。
+- [ ] **Step 1｜纯规划器与失败先行用例**：吸收 P1-01、P2-01、P2-03、P3-25，并保留 P0-01 回归。
+- [ ] **Step 2｜目标级先增后验**：Add → 重读 → coverage verification；覆盖确认前零自动删除。
+- [ ] **Step 3｜四平台条件清理**：吸收 P2-02；无法证明安全时保留残留并记录 `cleanup_deferred`。
+- [ ] **Step 4｜Dry Run、事件、日志、Dashboard 与健康口径**：吸收 P2-08、P2-09、P3-11、P3-22 和相关 P3-16。
+- [ ] **Step 5｜完整门禁与真实云验收**：自动门禁与 PT-I7 分层记录；任一真实平台未执行都不得写成通过。
+
+**主线停止条件**：必须逐 Step 实施和验收；任一 Step 未满足 [Issue7.md](./Issue7.md) 的停止条件时，不进入下一 Step。不得把 mock、单测、本地进程或 Docker 结果外推为真实云验收。
+
+### 0.4 独立问题队列（不与 Issue7 主线编号混用）
+
+以下顺序是整理后的 backlog，不表示已授权实施；每次仍应只处理一个问题并保留判别性测试。
+
+- [ ] **I-01｜P1-02 + P3-08**：以 flock 替换 PID 判活，覆盖残留 pidfile、PID 复用与并发启动。
+- [ ] **I-02｜P2-04 + P3-03**：先发布 `RuntimeState`，再唤醒 Health/Push；同时收口首次 Push 失败后的重试/唤醒语义。AGENTS 目标顺序已在 Step 0 修订，当前剩余是代码与测试。
+- [ ] **I-03｜P2-06**：告警页增加 loaded 守卫，防止加载失败后用默认值覆盖真实敏感配置。
+- [ ] **I-04｜P2-07**：目标与规则删除增加卡片式二次确认，满足 AGENTS 强要求。
+- [ ] **I-05｜P2-05**：Webhook 按渠道解析业务错误码；真实 Webhook 仍需单独验收。
+- [ ] **I-06｜P3-23、P3-24**：串行修复 ticker Reset 与 pause/resume 通知合并，不和 Issue7 状态机重构混做。
+- [ ] **I-07｜P3-12、P3-05、P3-14、P3-10、P3-13**：文件权限与 HTTP/error 一致性；P3-11 已纳入 Issue7 Step 4。
+- [ ] **I-08｜P3-01、P3-21、P3-15**：资源与连接健壮性；P3-02 保留为已知弱语义，不在 Issue7 中扩张为隔离/降频重构。
+- [ ] **I-09｜P3-07**：Issue7 Step 1～4 完成后重新证明生产零引用，再清理旧同步包装与关联测试。
+- [ ] **I-10｜其余独立 P3**：P3-04、P3-06、P3-09、P3-16 非 Dry Run 子项、P3-19、P3-20，按各 finding 的前置与真实环境边界逐项处理。
+- [ ] **I-11｜P3-17、P3-18**：仅做文档/注释闭环；不得与业务语义修改混在同一批次。
+
+### 0.5 真实外部与人工验收
+
+- [ ] **PT-B7-01～09**：仍未执行；真实 SMTP、收件箱、Webhook、Uptime Kuma、浏览器、当前 revision 的远端 CI/GHCR、SWAS Remark 上限均不得写成已通过。
+- [ ] **PT-I7-01～06**：仅在 Issue7 Step 1～4 完成后执行；四云写入/删除安全、异常分页零删除与目标级 Dry Run 均需真实或清单指定证据。
+- [ ] P3-06 的 CVM 配额方向、P3-19/P3-20 的真实 SMTP/MTA 表现继续保留为外部不确定性。
 
 ---
 
@@ -20,6 +87,7 @@
 | **P1** | **2** |
 | **P2** | **9** |
 | **P3** | **25** |
+| **当前状态补记（2026-09-29）** | P0-01 已于 `108e528` 修复并加回归；上述 P0/P1/P2/P3 数量仍是审计当时的发现统计，不等于当前未修复数 |
 | 会实际破坏云端防火墙规则的问题 | **有，已实测复现**（P0-01、P1-01、P2-01） |
 | ✅ **P1-01 设计已定案** | 2026-09-29 定为“目标级完整期望集 + TAG 所有权 + comment 纯可读 + 先增后验 + 平台化条件删除 + 可接受残留”；Step 0 文档合同已完成，代码 Step 1～5 未实施（详见 [Issue7.md](./Issue7.md) 与第 8 节） |
 | ⏳ **待真机验收** | **1 项：SWAS `Remark` 实际长度上限**（登记为 `ProdTestList.md` **PT-B7-09**） |
@@ -31,10 +99,10 @@
 
 ### 一句话结论
 
-这不是一个"需要清理的小项目"，而是**存在两条会每轮重复删改生产防火墙规则的路径**，其中 P1-01 会让同一目标上除最后一条规则外的所有域名放行被**持续拆除**。这两点必须优先于所有其它整改项；其余为可靠性与可维护性收口。
+审计当时确认两条会每轮重复删改生产防火墙规则的路径：P0-01 已于 `108e528` 修复；P1-01 仍会让同一目标上除最后一条规则外的放行被持续拆除，其设计已定案但代码未实施。当前最高优先级是 Issue7 Step 1～5。
 
 > ⚠️ **可立即执行与待决的区分**：
-> - **P0-01（阿里云端口 key 不对称）可立即修复**，方案唯一且不涉及强要求变更。
+> - **P0-01（阿里云端口 key 不对称）已修复**：提交 `108e528`，回归 `TestDiff_AliyunPortRoundTripConverges`；Issue7 Step 1 只需在新规划器中保持该绿色回归。
 > - **P1-01 设计已定案但代码未修复**。实施必须按 [Issue7.md](./Issue7.md) Step 1～5 串行进行；在修复完成前，仍建议避免同一目标上出现 comment 相同的规则（尤其都留空）。
 > - **P1-02（容器 pidfile 崩溃循环）可立即修复**，方案已定（flock）。
 
@@ -43,7 +111,7 @@
 | 候选 | 裁决与依据 |
 |---|---|
 | "`slog.TextHandler.Handle` 按 level 二次过滤 → WebUI 日志丢行" | **驳回**。Go 源码 `log/slog/handler.go` 中 `TextHandler.Handle` **不含任何 level 判断**（过滤只在 `commonHandler.enabled`）；且 `MultiHandler.Handle`（`app/logutil.go:30`）已按 `h.Enabled(ctx, r.Level)` 逐子 handler 正确门控。不存在双重过滤 |
-| "发布顺序与 AGENTS.md 相反" | **驳回（但引出真实缺陷）**。AGENTS.md:199 原文为"…监督器唤醒 → Uptime Kuma Push 唤醒 → `RuntimeState`"，与代码**顺序一致**；该分派误读了文档。真正的缺陷不是"不一致"，而是这个（文档与代码共同认可的）顺序本身会引发 P2-04 |
+| "发布顺序与 AGENTS.md 相反" | **驳回（但引出真实缺陷）**。这是审计快照中的历史结论：当时 AGENTS.md:199 原文为"…监督器唤醒 → Uptime Kuma Push 唤醒 → `RuntimeState`"，与当时代码**顺序一致**；该分派误读了文档。真正的缺陷不是"不一致"，而是该顺序本身会引发 P2-04。2026-09-29 Step 0 已把当前强合同修订为先发布 `RuntimeState` 再唤醒，代码仍待独立实施 |
 | `SaveAlertEmailTx` / `SaveAlertWebhookTx` / `NormalizeResourceID` / `syncer/ratelimit.go` 无引用（"死代码"） | **驳回**。分别在 `config/store.go:1297`、`:1300`、`config/validate.go:84`、`syncer/syncer.go:813` 有**生产调用**。纯标识符 grep 对"仅包内自用"与"经 HTTP 路由驱动"的符号会产生假阳性 |
 | "SPA 深链 404（缺少 history fallback）" | **驳回**。`webui/frontend/src/main.ts:6` 使用 `createWebHashHistory()`，深链与刷新经 URL hash 正常工作 |
 
@@ -56,9 +124,9 @@
 
 ## 2. 确认发现
 
-### P0-01｜阿里云 SWAS/ECS 端口比较 key 不对称 → 每轮"删除并重建全部 TCP/UDP 规则"
+### P0-01｜阿里云 SWAS/ECS 端口比较 key 不对称 → 每轮"删除并重建全部 TCP/UDP 规则"（✅ 已修复）
 
-**本次审核最严重的缺陷。已由主代理独立复现。**
+**审计当时最严重的缺陷，已由主代理独立复现；2026-09-29 已于 `108e528` 修复。**
 
 #### 机制（三段确定性推导，与云端回传形态无关）
 
@@ -128,6 +196,13 @@ if strings.Contains(port, "/") {
 - **是否与 AGENTS.md 冲突**：**是**。实际行为违反 §三「只用**增量**添加 + 精确删除」的意图（实为每轮全量删+建）；不违反"不得使用全量覆盖 API"的字面要求
 - **需用户决策**：无
 
+#### 实施补记（2026-09-29）
+
+- 提交：`108e5285fd88cd5a0bbc2dbecee81042091f19fa`。
+- 实现：`normalizePortForCompare` 补齐斜杠形态归一化，`443/443 → 443`、`8000/8010 → 8000-8010`，线上 Create 格式不变。
+- 回归：`TestDiff_AliyunPortRoundTripConverges` 覆盖 SWAS/ECS 单端口和范围端口往返收敛。
+- Issue7 Step 1 会替换更大范围的 functional key/规划路径，因此该回归是必保留的正向控制，不是待重做的红灯修复。
+
 ---
 
 ### P1-01｜规则身份仅由 `desc` 决定，comment 可为空 → 同目标两条规则**互相删除**并逐轮震荡
@@ -182,7 +257,7 @@ FAIL
 | **旧规则迁移** | ✅ **仍然有效** | 用户已确认**无历史兼容负担**，因此任何最终方案都**不需要** orphan 清理入口 / 迁移脚本 / 旧格式 WARN。此结论与身份形态无关，独立成立 |
 | **TAG 上限收紧（48→32）** | 🔶 **已撤回** | 该收紧**仅为配合方案 A** 而提出。`AGENTS.md:162` 未修改，`maxTagRunes` 仍为 **48**（`config/validate.go:34`） |
 
-**当前禁止在未授权时跳过 Issue7 Step 0 直接实施代码。** TAG 上限 48 与 Lighthouse/SWAS 描述容量仍会挤压 comment 的可读长度，但不再影响功能身份或是否能实施 P1-01。
+**Issue7 Step 0 已完成；未获用户后续授权时不得进入 Step 1 代码实施。** TAG 上限 48 与 Lighthouse/SWAS 描述容量仍会挤压 comment 的可读长度，但不再影响功能身份或是否能实施 P1-01。
 
 **跨方案共通的前提**（无论最终选哪个方案都成立）：
 
@@ -379,7 +454,7 @@ logs: FWAlizer 已在运行 (PID: 1)，请先停止现有实例
 | P3-15 | 被丢弃的告警事件**每条约一条 WARN**，故障期日志洪水 | `notifier/inflight.go:62-67` `logDropped` 对每个被丢弃事件都记 WARN；`notifier/bus.go:113` 每事件每订阅者一个 goroutine | 500 个 DNS 失败事件 → 约 496 条 WARN。量级不大且信息有用，属可聚合项 |
 | P3-16 | 前端 UI/状态偏离（AGENTS §11） | `RunTest.vue:32` 缺 `size="large"`（唯一漏网，**属明确漏改**）；`App.vue:10/66-69` 侧边栏高亮不随路由（刷新/深链后停在"仪表盘"）；`Targets.vue:209-212`/`Rules.vue:165` 保存按钮无 in-flight 守卫（双击产生重复行）；`Settings.vue:127-141` 把不可见的 `theme` 当隐藏字段回传（与侧边栏主题开关**双写**，导致主题静默回退）；`useScannedResources.ts:36-41`+`Settings.vue:98-105` 清空扫描失败仍提示"已清空"；`Settings.vue:14` 前端正则比后端更严（合法 `1h30m` 被拦） | 均为可静态判定；`theme` 双写与"清空误报成功"影响用户可观察状态 |
 | P3-17 | 陈旧 "version 2" 表述残留约 12 处 | `config/runtime_test.go:27,66`、`webui/api/testenv_test.go:216`、`import_runtime_test.go:82`、`import_test.go:11,20,111`、`export_test.go:461`、`redact_test.go:111,116`、`main_test.go:732,735` | Build7 Step 7 声称已收口 version 2 滞后注释，**测试文件未被覆盖**；`import_test.go:111` 甚至用 map key `"version 2"` 承载 `{"version":3,...}` |
-| P3-18 | 文档漂移（非强制文档） | `Design5.md:63-99` §三正文仍为"version 2 完整配置包"；`Design5.md:4`/`Build6.md:3`/`Issue5.md:5` 仍写 "Step 0～6"（实为 0～7）；`Issue6.md:5,7,597` 基线 commit 与状态未回写（其 §7.4 **自己**承认存在未对账冲突）；`ProdTestList.md:4` "没有待执行项"与 `:13-20` 的 8 项"未执行"**自相矛盾** | Design/Build/Issue 均非强要求（AGENTS §12.1），但会误导读者 |
+| P3-18 | 文档漂移（非强制文档） | **Step 0 部分收口：** `Design5.md` 当前配置包已改为 version 3，Build7 已完成状态与 `ProdTestList.md` 范围矛盾已收口；`Build6.md`/`Issue5.md` 历史措辞、`Issue6.md` 基线对账与测试内 version 2 注释等仍是剩余文档清理 | 与 P1-01 直接冲突的部分已修；其余不是 Issue7 Step 1 前置 |
 | P3-19 | 邮件 AUTH 失败保留 SMTP 诊断文本（含 535 回显） | `notifier/email.go:219-221` `%w` 包装；`webui/api/test_email.go:78-82` 回给浏览器；`notifier/email_test.go:293-295` **显式断言**保留诊断 | 理论风险：若服务器回显 AUTH 载荷可间接泄露 base64 凭据（**未验证**；标准 SMTP 不会这样做）。属可调试性取舍 |
 | P3-20 | 邮件头/正文直发原始 UTF-8（无 RFC 2047 头部编码、无 CTE 声明） | `notifier/email.go:243-244`；`config/validate.go:307-316` 已排除头部注入 | 默认配置即中文主题/正文。多数现代 MTA 可正常投递；**真实表现必须由真实收件箱验证**（未执行） |
 | P3-21 | Webhook 响应体未 drain（连接不可复用）；Push 响应体解析无字节上限 | `notifier/webhook.go:120-124` 只 Close 未 drain；`internal/health/push.go:247` `json.Decoder` 无 `io.LimitReader`（仅 10s `client.Timeout` 兜底） | 每次告警多一次 TCP/TLS 握手；Push 内存峰值不受字节数约束 |
@@ -465,7 +540,7 @@ logs: FWAlizer 已在运行 (PID: 1)，请先停止现有实例
 
 ### 📝 只需文档清理
 
-`Design5.md:63-99` §三正文（version 2）、`Design5.md:4`/`Build6.md:3`/`Issue5.md:5`（Step 0～6）、`Issue6.md:5,7,597`（基线 commit 与状态未回写）、`ProdTestList.md:4/24`（自相矛盾的"没有待执行项"）、约 12 处测试内 "version 2" 注释、`webui/frontend/src/constants.ts:1`（引用了**不存在**的 `Advanced.vue`）、`constants.ts:21`（称 `RunTest.vue` 共用 `resourceIdHint`，实际只用 `Targets.vue`）、`notifier/email.go:57`/`webhook.go:41`（注释写 `limitedNotifier`，实际导出名为 `LimitedNotifier`）、`internal/health/push.go:103-104`（"interval 热重载立即生效"不准确）
+Step 0 已修正 `Design5.md` 当前 version 3 口径、Build7 状态与 `ProdTestList.md` 范围冲突。剩余仅文档清理仍包括：`Build6.md:3`/`Issue5.md:5` 历史措辞、`Issue6.md:5,7,597` 基线对账、约 12 处测试内 "version 2" 注释、`webui/frontend/src/constants.ts:1/21`、`notifier/email.go:57`/`webhook.go:41` 与 `internal/health/push.go:103-104`。
 
 ---
 
@@ -476,7 +551,7 @@ logs: FWAlizer 已在运行 (PID: 1)，请先停止现有实例
 | **startup/shutdown** | 启动顺序确定性化（`go s.Run()` → 有界等 `Started()` → 再启 `supervisor`/`pusher`）；信号在 HTTP 绑定**之前**注册；收尾顺序 `HTTP shutdown ‖ pusher→supervisor→syncer` 正确；`store.Close()` 在 `s.Wait()` 之后 | **P1-02 容器崩溃循环**；`Server.Start` 失败后 `started` 保持 true 且 `waitDone` 永不关闭（重试被拒、`Wait()` 永久阻塞，**当前接线不可达**）；`supervisor.Stop`/`pusher.Stop` 在 `Run` 从未启动时永久阻塞（Syncer 有 `runGuard`，这两个没有） | — | 按 P1-02 换 flock；与 Syncer 对齐给 supervisor/pusher 加 `started` 守卫 |
 | **配置事务与运行时发布** | **本项目最强的一环**：协调器 `锁 → 单事务 → 事务内快照 → 事务内构造候选 → commit → 无失败发布`；commit 后不读库不访问网络；`commit` 失败不 apply；`RuntimeState` 深拷贝 + 单锁替换；已证明**事务内无任何网络 I/O**（四个 SDK 工厂只做本地构造，无 IMDS/元数据/token 获取） | **P2-04 发布顺序**（Wake 早于 ApplyState） | — | 按 P2-04 决策调整顺序 + 同步修订 AGENTS.md:199 |
 | **同步调度** | 单一控制通道 + 4 处 `beginRound()` 硬门控（stop 门控与 enabled 门控**并列不合并**）；`Stop` 为吸收态且 `doneCh` 单所有者；`idle/failed/partial/success` 判定清晰 | P3-23 ticker Reset 语义；P3-24 通知合并 | — | 仅 interval 变化时 Reset；恢复路径一并清空 `ticker.C` |
-| **DNS/Provider** | 只使用**增量** API（已逐调用点验证，零全量覆盖 API）；TAG 精确匹配 + `Description` 匹配；熔断阈值随状态原子发布（普通变更 `Clone` 保留计数、导入重置）；`retrySyncDetailed` 每次 attempt 重新 `Describe → Diff → Create/Delete`；部分成功用 `PartialDeleteError` 如实累计 | **P0-01 / P1-01 / P2-01 / P2-02 / P2-03**；`isRetryable` 依赖**字符串关键字兜底**（腾讯 SDK 错误类型无 `Unwrap`，属有据可查的妥协） | `retrySync` 死包装；`_txlock` 注释理由与驱动实现矛盾 | 按批次 1/2 修复；删 `retrySync` |
+| **DNS/Provider** | 只使用**增量** API（已逐调用点验证，零全量覆盖 API）；TAG 精确匹配 + `Description` 匹配；熔断阈值随状态原子发布（普通变更 `Clone` 保留计数、导入重置）；`retrySyncDetailed` 每次 attempt 重新 `Describe → Diff → Create/Delete`；部分成功用 `PartialDeleteError` 如实累计 | **P0-01（已于 `108e528` 修复）/ P1-01 / P2-01 / P2-02 / P2-03**；`isRetryable` 依赖**字符串关键字兜底**（腾讯 SDK 错误类型无 `Unwrap`，属有据可查的妥协） | `retrySync` 死包装；`_txlock` 注释理由与驱动实现矛盾 | P0-01 保留回归；其余按 Issue7 Step 1～4 与独立批次修复；重构后重新证明再删 `retrySync` |
 | **告警** | 默认全关；`渠道开关 + 触发开关`同时开启才订阅；邮件与 Webhook **共用同一固定渲染器**（顺序稳定、不遍历 map）；4 在途 + 满载丢弃最新 + 安全 WARN；限流器跨热重载连续；`test-email` 8 字段契约两侧严格一致且不写库 | **P2-05 Webhook 只看状态码**；P3-11 吞错；P3-15 丢弃日志逐条 WARN；P3-19/P3-20/P3-21 邮件与响应体细节 | — | 解析业务错误码；聚合丢弃日志 |
 | **OperationalHealth** | **唯一计算源被三个消费者真实共用**（`supervisor` / `operational` 端点 / `pusher` 都走同一个 `*health.Checker`）；2s 非阻塞探活（`Store` 结构体**无互斥量**，不持应用锁）；`StartupGrace=10s` 三分支正确；`failed/partial` 直到被 `success/idle` 覆盖；原因稳定去重排序；30s 边沿监督器 | 判定输入来自三次独立 `Snapshot()`（`run.go:127-142`），注释自述"一致快照"但可能混用新旧 policy/interval → 30s 内一次瞬时误判，自愈 | `slices.Compact` 冗余 | 一次取 `*RuntimeState` 后派生 policy/interval |
 | **HTTP/SSE** | 严格解码齐全（未知字段/尾随/多顶层值/10 MiB/1 MiB/413）；路径 ID `strconv.Atoi` 且 >0；请求 DTO 不含 DB `id`；导出 GET 已删（实测 405）；两类 SSE 监听服务器级 `ShutdownCh` 且每次写出有 5s deadline | P3-05 缺 `no-store`；P3-14 400/503 语义；`GET /api/alerts` 4 次非事务读存在撕裂窗口（PUT 单事务写，读侧可能"新 policy + 旧 email"，前端整体回传即把旧值写回） | `fs.Sub` 静默降级 | 补 `no-store`；GET alerts 改只读事务取快照 |
@@ -526,7 +601,7 @@ logs: FWAlizer 已在运行 (PID: 1)，请先停止现有实例
 
 **推荐新增的最小测试**（**不引入任何测试框架**）：
 
-1. P0-01：Aliyun `GetRules→Diff` 往返收敛断言（**最高优先**）
+1. P0-01：Aliyun `GetRules→Diff` 往返收敛断言（已由 `TestDiff_AliyunPortRoundTripConverges` 补齐，Issue7 重构时必保留）
 2. P1-01：同目标两条空 comment 规则的双轮断言（第二轮不得出现 delete）
 3. P2-01：IPv6+ICMP key 断言（Lighthouse/CVM）
 4. P2-02：ECS 150 条删除产生 2 个请求
@@ -592,7 +667,7 @@ logs: FWAlizer 已在运行 (PID: 1)，请先停止现有实例
 
 **冻结理由**：讨论中发现本缺陷与一个更根本的设计问题耦合——云端描述字段**同时承担三重职责**（见 8.3），且存在多个各有权衡的候选修复方案（见 8.4）。需要一次性想清身份模型，而不是打补丁。
 
-#### 🔧 冻结期间的操作规避建议（临时措施，非修复）
+#### 🔧 代码修复上线前的操作规避建议（历史运行阶段建议，非最终设计要求）
 
 本缺陷在修复前**仍在生效**。规避方法很简单：
 
@@ -710,7 +785,7 @@ FAIL
 
 ---
 
-### 8.4 已评估的候选方案
+### 8.4 历史候选方案（当前方案已由 8.0 裁决）
 
 #### 8.4.1 四云可用字段核对结果
 
@@ -744,13 +819,13 @@ FAIL
 - **方案 ④/⑤** 彻底解耦长度，但牺牲云端可读性——而可读性恰是 TAG 存在的价值之一，需用户判断其重要性。
 - **方案 A** 已被撤回，不应作为默认选项。
 
-### 8.5 与 AGENTS.md 的关系
+### 8.5 与旧版 AGENTS.md 状态的关系（历史，不得据此实施）
 
 - **无冲突的部分**：`[TAG]` 前缀识别归属（§三）在任何方案下都必须保留，这是固定成本。
 - **潜在冲突的部分**：
   - 若最终采用**方案 A** 并收紧 TAG 上限 → 需修订 **AGENTS.md:162**「TAG … 最多 48 个 Unicode 字符」（属**强要求变更**，必须用户明确授权）。
   - 若最终采用**方案 ③**（强制 comment 唯一）→ 需确认是否与 §十一「普通 API 最小校验边界」的宽松取向冲突。
-- **当前状态**：因方案未定，**`AGENTS.md` 未做任何修改**；`maxTagRunes` 仍为 48（`config/validate.go:34`）。
+- **当时状态（2026-09-28，历史）**：方案尚未定，`AGENTS.md` 未修改；2026-09-29 Step 0 已用 8.0 的最终方案取代该状态，`maxTagRunes` 仍为 48。
 
 ### 8.6 待消除的外部不确定性
 
@@ -786,7 +861,9 @@ FAIL
 
 ---
 
-## 9. 用户决策记录与实施计划
+## 9. 用户决策记录（决策不等于已实施）
+
+> 本表保留作出决策时的原始记录。当前实施状态统一看第 0 节：P2-04 的 AGENTS 目标顺序已在 Issue7 Step 0 修订，剩余为代码与测试；P2-03 原“只补 WARN/Dry Run、不计 skipped”的记录已被当前 AGENTS/Issue7 的 `unsupported → partial` 与清理冻结合同取代。保留旧记录是为了追溯，不得据此覆盖当前强要求。
 
 | # | 议题 | 你的决策 | 实施要点 |
 |---|---|---|---|
@@ -800,39 +877,49 @@ FAIL
 
 ---
 
-## 10. 建议整改顺序
+## 10. 当前实施顺序与历史批次
+
+### 10.1 当前有效主线：Issue7 Step 0～5
 
 **当前最高优先串行主线 — Issue7 P1-01（Step 0 已完成，Step 1～5 待实施）**
 
-1. Step 1 纯规划器同时吸收 P0-01、P2-01、P2-03 与 P3-25 安全前置。
+1. Step 1 纯规划器保留已修复 P0-01 的绿色回归，并吸收尚未修复的 P2-01、P2-03 与 P3-25 安全前置。
 2. Step 2 实现目标级 Add → Describe → coverage verification，仍零自动删除。
 3. Step 3 按 Lighthouse/CVM/SWAS/ECS 逐平台开启条件清理，同时吸收 P2-02。
 4. Step 4 收口 Dry Run/事件/日志/Dashboard/健康，同时吸收 P2-08、P2-09、P3-22 和相关 P3-16。
 5. Step 5 执行完整自动门禁与 PT-I7 四云/浏览器真实验收。
 
-> P0-01/P2-01 不再只做保留旧 Diff 模型的临时补丁，而是作为唯一 functional key 的判别性用例。P1-02/flock 仍是可独立实施的高优先级项，但不是 P1-01 的前置。
+> P0-01 已是必保留的绿色回归；P2-01 仍需在唯一 functional key 中失败先行修复。P1-02/flock 仍是可独立实施的高优先级项，但不是 P1-01 的前置。
 
-**批次 2 — 其余云端规则正确性**
+### 10.2 当前独立问题入口
+
+与 Issue7 正交的 P1-02、P2-04～P2-07 及其余 P3 统一按第 0.4 节的 I-01～I-11 排队。该编号只表示 backlog 顺序，不改变 finding 严重级别，也不构成代码实施授权。
+
+### 10.3 历史批次计划（与 Issue7 重叠部分已被取代）
+
+> 下列批次是上一版报告形成时的排序记录，完整保留用于追溯。凡与 Issue7 Step 1～5 重叠的 P2/P3，均以 10.1 和 Issue7 为准；不得按本节另建第二套并行施工顺序。
+
+**历史批次 2 — 其余云端规则正确性**
 
 P2-01（IPv6+ICMP key）、P2-02（ECS 删除分批）、P2-03（补 WARN + Dry Run）、P2-04（唤醒顺序 + 文档）、P2-05（Webhook errcode）、P2-06（告警页守卫）、P2-07（删除确认）
 
 > 验收：每项一个判别性用例；P2-02 需 150 条删除分批断言
 
-**批次 3 — 生命周期、并发与内存**
+**历史批次 3 — 生命周期、并发与内存**
 
 P3-01（熔断器淘汰）、P3-23（ticker Reset）、P3-24（通知合并）、P3-25（ECS 分页守卫）、P3-22（DryRun 限速）、P3-09（`_txlock`）、P3-12（权限）
 
 > 验收：配置保存 N 次后熔断器 map 不增长；`-race` 全绿
 
-**批次 4 — 状态一致性与错误处理**
+**历史批次 4 — 状态一致性与错误处理**
 
 P3-05（`no-store`）、P3-10（忽略的 error）、P3-11（`StoreLogWriter` 返回错误）、P3-13（MultiHandler 收集全部错误）、P3-14（400→503）、P3-21（drain + 字节上限）
 
-**批次 5 — 死代码与重复实现**
+**历史批次 5 — 死代码与重复实现**
 
 §4 全部"确认可删除"与"高可信删除候选"；`bundle_v3.go` 默认值改用常量、presence 改有序切片
 
-**批次 6 — 构建、测试与文档闭环**
+**历史批次 6 — 构建、测试与文档闭环**
 
 Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7 个永不失败的测试；补字面量锚点；补构建契约测试；补 `pidfile` 单测；清理约 12 处 "version 2" 与 §4 文档漂移
 
@@ -909,9 +996,9 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 
 ---
 
-## 13. 未验证边界（**不得写成通过**）
+## 13. 证据边界与未验证项（**不得外推为通过**）
 
-以下项目**本次一律未执行**，与 `ProdTestList.md` 记录一致：
+下表同时包含“未执行”“历史证据不可外推”“已执行但范围有限”和“不适用”。每行状态必须按原文理解；只有明确写为当前 revision、当前环境已完成的证据，才能支持相应范围内的结论。
 
 | 边界 | 状态 |
 |---|---|
@@ -934,7 +1021,7 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 
 ---
 
-## 14. Git 完整性
+## 14. 审计快照的 Git 完整性（历史记录）
 
 | 项 | 审核前 | 审核后 |
 |---|---|---|
@@ -964,12 +1051,12 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 | 更正表述 | P0-01 影响由"每轮全量替换/净规则丢失"更正为"同一条规则被删+建，**非净丢失**；净丢失需与 IP 变更叠加" |
 | 方法学更正 | P1-02 首次测试（`--volumes-from`）未能复现，改用持久命名卷后确认；已在正文如实记录 |
 | 纳入决策 | 用户 7 项决策写入第 9 节与相应 finding |
-| 附录 B 改为**待决策记录** | P1-01 经方案 A → 方案 ② 的讨论后，用户决定**冻结为待决策**并撤回相关决策；附录 B 重写为"缺陷机理 + 结构性洞察 + 6 个候选方案对比 + 待决策清单"。`AGENTS.md` 与 `maxTagRunes` 均**未被修改**（仍为 48）。SWAS `Remark` 上限仍登记为 ProdTestList.md **PT-B7-09** |
+| P1-01 状态继续更新 | 2026-09-28 的“待决策/已冻结”已于 2026-09-29 被第 8 节最终方案取代；当前以 Issue7 Step 0 已完成、Step 1～5 待实施为准，`maxTagRunes` 仍为 48，SWAS `Remark` 上限仍登记为 PT-B7-09 |
 
 ## 附录 B：规则身份专题（已移至正文第 8 节）
 
-> 🔶 本附录的内容已**整体移入 [第 8 节「专题：规则身份模型」](#8-专题规则身份模型-待决策已冻结)**，以避免同一议题在文档内出现两处。
+> 本附录的内容已**整体移入第 8 节「规则身份与 TAG 所有权」**，以避免同一议题在文档内出现两处。
 >
-> **摘要**：云端描述字段同时承担"归属识别 / 个体识别 / 人类可读"三重职责，而个体识别要求唯一、域名长度无界、字段容量定长 → 与 `[TAG]` 争夺空间，导致同 `desc` 的规则互相删除（P1-01，已探针复现）。用户决定**冻结为待决策**，此前关于 identity 形态、TAG 上限收紧、超限拒绝保存的决策**已全部撤回**；`AGENTS.md` 与 `maxTagRunes`（仍为 48）**均未修改**。
+> **当前摘要**：P1-01 已探针复现，并已定案将“个体识别”从 description/comment 上移除，改为目标级完整期望集与 canonical functional key；TAG 仍为唯一操作授权，`maxTagRunes` 仍为 48。实施状态见 Issue7。
 >
-> 完整内容请看 **第 8 节**：8.1 决策状态与冻结说明（含冻结期间规避建议）、8.2 缺陷机理、8.3 三重职责洞察、8.4 六个候选方案对比、8.5 与 AGENTS.md 的关系、8.6 待消除的外部不确定性、8.7 待决策清单、8.8 决策状态记录。
+> 完整内容请看 **第 8 节**：8.0 为最终方案；8.1～8.7 保留定案前的机理、候选与不确定性历史；8.8 记录当前决策状态。
