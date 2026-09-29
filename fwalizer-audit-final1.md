@@ -34,24 +34,24 @@
 | 范围 | 当前状态 | 当前入口 |
 |---|---|---|
 | P0-01 | ✅ 已由 `108e528` 修复；原证据与回归必须保留 | Issue7 Step 1 重构 functional key 时保持绿色回归 |
-| P1-01 | 🟠 Step 0 文档合同已完成，代码未修复 | Issue7 Step 1～5 串行主线 |
+| P1-01 | ✅ 已实施（`2026-09-29` 本地完成 Step 1～5；真实云/浏览器/远端 CI 仍未执行） | [Issue7.md](./Issue7.md) §12.3 实施证据 |
 | P1-02 | 🔵 已决定采用 flock，尚未实施 | 独立高优先级队列；同时收口 P3-08 |
-| P2-01、P2-03 | 🟠 未修复 | Issue7 Step 1 |
-| P2-02 | 🟠 未修复 | Issue7 Step 3 |
-| P2-08、P2-09 | 🟠 未修复 | Issue7 Step 4 |
+| P2-01、P2-03 | ✅ 已实施（canonical family/协议归一化 + 能力矩阵 `unsupported_*`） | Issue7 Step 1 |
+| P2-02 | ✅ 已实施（ECS 删除每批 ≤100，150 → 100+50，部分成功如实计数） | Issue7 Step 3 |
+| P2-08、P2-09 | ✅ 已实施（Dashboard 只消费后端 outcome；Dry Run 以 `target_id` 为 key） | Issue7 Step 4 |
 | P2-04～P2-07 | 🔵 未修复，且不构成 P1-01 前置 | 独立问题队列 |
-| P3-25 | 🟠 自动清理安全硬前置 | Issue7 Step 1；不完整快照必须失败且零删除 |
-| P3-11、P3-22 与 Dry Run 相关 P3-16 | 🟠 未修复 | Issue7 Step 4 |
+| P3-25 | ✅ 已实施（重复/未推进 token 立即 `snapshot_incomplete`，本 attempt 零删除） | Issue7 Step 1 |
+| P3-11、P3-22 与 Dry Run 相关 P3-16 | ✅ 已实施（目标级日志并上抛写库错误；Dry Run 每目标一次快照；`RunTest.vue` 44px） | Issue7 Step 4 |
 | 其余 P3 | 🔵/⏳ 未修复、文档清理或待真实验证 | 按 0.4 的独立队列处理 |
 
 ### 0.3 当前唯一串行主线：Issue7
 
 - [x] **Step 0｜文档合同**：已完成；只代表定性与实施合同完成，不代表代码修复。
-- [ ] **Step 1｜纯规划器与失败先行用例**：吸收 P1-01、P2-01、P2-03、P3-25，并保留 P0-01 回归。
-- [ ] **Step 2｜目标级先增后验**：Add → 重读 → coverage verification；覆盖确认前零自动删除。
-- [ ] **Step 3｜四平台条件清理**：吸收 P2-02；无法证明安全时保留残留并记录 `cleanup_deferred`。
-- [ ] **Step 4｜Dry Run、事件、日志、Dashboard 与健康口径**：吸收 P2-08、P2-09、P3-11、P3-22 和相关 P3-16。
-- [ ] **Step 5｜完整门禁与真实云验收**：自动门禁与 PT-I7 分层记录；任一真实平台未执行都不得写成通过。
+- [x] **Step 1｜纯规划器与失败先行用例**：已完成（严格 TAG 所有权、唯一 `FunctionalKey`、能力矩阵、目标级纯 planner、快照 revision、ECS token 保护）。
+- [x] **Step 2｜目标级先增后验**：已完成（`S0 → Add(S0 版本) → S1 → 覆盖验证`；Add/验证失败时删除调用恒为 0）。
+- [x] **Step 3｜四平台条件清理**：已完成（Lighthouse→CVM→SWAS→ECS 串行；安全门 + S1 定位 + S2 强制 + 残留计数）。
+- [x] **Step 4｜Dry Run、事件、日志、Dashboard 与健康口径**：已完成（同一 planner、`EventTargetSyncComplete`、目标级 sync_logs、Dashboard 修 idle）。
+- [x] **Step 5｜完整门禁与真实云验收**：本地部分已完成（`go test -race`/vet/build/gofmt/前端/compose/docker build/真实二进制/容器验收与文档闭环）；**真实云与浏览器仍待人工执行**（PT-I7-01～07）。
 
 **主线停止条件**：必须逐 Step 实施和验收；任一 Step 未满足 [Issue7.md](./Issue7.md) 的停止条件时，不进入下一 Step。不得把 mock、单测、本地进程或 Docker 结果外推为真实云验收。
 
@@ -74,7 +74,7 @@
 ### 0.5 真实外部与人工验收
 
 - [ ] **PT-B7-01～09**：仍未执行；真实 SMTP、收件箱、Webhook、Uptime Kuma、浏览器、当前 revision 的远端 CI/GHCR、SWAS Remark 上限均不得写成已通过。
-- [ ] **PT-I7-01～06**：仅在 Issue7 Step 1～4 完成后执行；四云写入/删除安全、异常分页零删除与目标级 Dry Run 均需真实或清单指定证据。
+- [ ] **PT-I7-01～07**：Issue7 Step 1～4 已本地完成，清单已具备可执行条件但仍**未执行**；四云写入/删除安全、异常分页零删除、目标级 Dry Run 与浏览器回归均需真实或人工证据（PT-I7-07 为本轮新增的残留/收敛观察项）。
 - [ ] P3-06 的 CVM 配额方向、P3-19/P3-20 的真实 SMTP/MTA 表现继续保留为外部不确定性。
 
 ---

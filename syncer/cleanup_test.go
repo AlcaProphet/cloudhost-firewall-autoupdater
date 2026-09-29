@@ -1,0 +1,330 @@
+package syncer
+
+import (
+	"errors"
+	"fmt"
+	"testing"
+
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
+)
+
+// 本文件是 Issue7 Step 3「四平台条件清理」的 syncer 级判别性用例：
+// 清理安全门、删除定位、S2 强制验证、残留计数与失败语义。
+//
+// 平台请求细节（FirewallVersion / 单请求批量 PolicyIndex+Version / RuleId / 100 分批）
+// 由 provider/request_mock_test.go 覆盖；这里只证明调度层是否真的按安全门调用删除。
+
+func staleRule(protocol, port, cidr, ruleID, policyIndex string) config.RuleInfo {
+	return config.RuleInfo{
+		Protocol: protocol, Port: port, CidrBlock: cidr, Action: "ACCEPT",
+		Description: "[auto-dns]", RuleID: ruleID, PolicyIndex: policyIndex,
+	}
+}
+
+// TestCleanup_LighthouseDeletesStaleOwnedAndVerifiesS2 清理门满足时删除陈旧 Owned 规则，
+// 并且删除必须使用 S1 版本、删除后强制 S2 验证。
+func TestCleanup_LighthouseDeletesStaleOwnedAndVerifiesS2(t *testing.T) {
+	p := newProbeProvider(config.CloudTCLighthouse, 1, staleRule("TCP", "9999", "10.9.9.9/32", "", ""))
+	rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+
+	s.syncAll()
+
+	snapshots, creates, deletes := p.counts()
+	if creates != 1 || deletes != 1 {
+		t.Fatalf("create=%d delete=%d, want 1/1（新增先于删除且清理门满足）", creates, deletes)
+	}
+	// S0 + S1 + S2
+	if snapshots != 3 {
+		t.Fatalf("快照调用 = %d, want 3（发生删除后必须强制 S2）", snapshots)
+	}
+	// 删除必须携带 S1 版本：create 让版本自增到 2，因此 S1/S2 版本为 2
+	revisions := p.deleteRevisionLog()
+	if len(revisions) != 1 || revisions[0] != "2" {
+		t.Fatalf("删除携带版本 = %v, want [\"2\"]（必须是 S1 版本）", revisions)
+	}
+	if p.hasRule("10.9.9.9/32", "9999") {
+		t.Fatal("陈旧规则必须已被删除")
+	}
+	if !p.hasRule("1.1.1.1/32", "443") {
+		t.Fatal("期望规则必须保留")
+	}
+
+	sum := s.Status().LastRound
+	if sum == nil || sum.Outcome != RoundSuccess {
+		t.Fatalf("清理成功必须 success: %+v", sum)
+	}
+	if sum.CleanupCandidates != 1 || sum.CleanupDeleted != 1 || sum.CleanupDeferred != 0 {
+		t.Fatalf("清理计数 = candidates:%d deleted:%d deferred:%d, want 1/1/0",
+			sum.CleanupCandidates, sum.CleanupDeleted, sum.CleanupDeferred)
+	}
+	if sum.Deleted != 1 {
+		t.Fatalf("deleted = %d, want 1（只统计云端确认的实际删除）", sum.Deleted)
+	}
+}
+
+// TestCleanup_GateClosedKeepsCandidates 任一安全门未满足时删除调用必须为 0。
+func TestCleanup_GateClosedKeepsCandidates(t *testing.T) {
+	stale := staleRule("TCP", "9999", "10.9.9.9/32", "r-stale", "")
+
+	cases := []struct {
+		name       string
+		ct         config.CloudType
+		rules      []config.DomainRule
+		resolve    map[string]string
+		snapshot   []config.RuleInfo
+		wantReason string
+	}{
+		{
+			// 适用规则存在但解析结果为空 → Desired 为空 → 不授权清空 TAG
+			name: "空期望集", ct: config.CloudAliSWAS,
+			rules:    []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")},
+			resolve:  map[string]string{"a.example.com": ""},
+			snapshot: []config.RuleInfo{stale},
+		},
+		{
+			name: "DNS 解析失败", ct: config.CloudAliSWAS,
+			rules:   []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")},
+			resolve: map[string]string{}, snapshot: []config.RuleInfo{stale},
+			wantReason: provider.IssueDNSFailed,
+		},
+		{
+			name: "平台能力不可实施", ct: config.CloudAliSWAS,
+			rules:   []config.DomainRule{{ID: 1, Host: "a.example.com", Protocol: "TCP", Ports: "443", Action: "DROP"}},
+			resolve: map[string]string{"a.example.com": "1.1.1.1/32"}, snapshot: []config.RuleInfo{stale},
+			wantReason: provider.IssueUnsupportedAction,
+		},
+		{
+			name: "快照字段冲突", ct: config.CloudAliSWAS,
+			rules:   []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")},
+			resolve: map[string]string{"a.example.com": "1.1.1.1/32"},
+			snapshot: []config.RuleInfo{
+				stale,
+				{Protocol: "TCP", Port: "1", CidrBlock: "9.9.9.9/32", Ipv6CidrBlock: "2001:db8::/128", Action: "ACCEPT", Description: "[auto-dns]"},
+			},
+			wantReason: provider.IssueSnapshotRuleInvalid,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newProbeProvider(tc.ct, 1, tc.snapshot...)
+			s := newTargetSyncer(t, []provider.Provider{p}, tc.rules, tc.resolve)
+			s.syncAll()
+
+			if _, _, deletes := p.counts(); deletes != 0 {
+				t.Fatalf("安全门未满足时删除调用必须为 0，实际 %d（序列 %v）", deletes, p.callSeq())
+			}
+			if !p.hasRule("10.9.9.9/32", "9999") {
+				t.Fatal("安全门未满足时陈旧规则必须保留")
+			}
+			sum := s.Status().LastRound
+			if sum == nil || sum.CleanupDeferred != 1 {
+				t.Fatalf("残留候选必须计入 cleanup_deferred: %+v", sum)
+			}
+		})
+	}
+}
+
+// TestCleanup_NonTAGRulesNeverDeleted 非当前 TAG 与 [TAG]foo 规则永不进入删除。
+func TestCleanup_NonTAGRulesNeverDeleted(t *testing.T) {
+	fakeTwin := staleRule("TCP", "9998", "10.9.9.8/32", "r-fake", "")
+	fakeTwin.Description = "[auto-dns]foo" // 紧贴后缀：不属于当前命名空间
+	other := staleRule("TCP", "9997", "10.9.9.7/32", "r-other", "")
+	other.Description = "[other] 手工规则"
+	p := newProbeProvider(config.CloudTCLighthouse, 1, fakeTwin, other)
+	rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+
+	s.syncAll()
+
+	if _, _, deletes := p.counts(); deletes != 0 {
+		t.Fatalf("非当前 TAG 规则绝不能被删除，实际删除调用 %d", deletes)
+	}
+	if !p.hasRule("10.9.9.8/32", "9998") || !p.hasRule("10.9.9.7/32", "9997") {
+		t.Fatal("非当前 TAG 规则必须原样保留")
+	}
+	if sum := s.Status().LastRound; sum == nil || sum.CleanupCandidates != 0 {
+		t.Fatalf("非当前 TAG 规则不得成为清理候选: %+v", sum)
+	}
+}
+
+// TestCleanup_LighthouseAmbiguousCandidateDeferred 同 key 不唯一时绝不删除。
+func TestCleanup_LighthouseAmbiguousCandidateDeferred(t *testing.T) {
+	p := newProbeProvider(config.CloudTCLighthouse, 1,
+		staleRule("TCP", "9999", "10.9.9.9/32", "", ""),
+		staleRule("TCP", "9999", "10.9.9.9/32", "", ""),
+	)
+	rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+
+	s.syncAll()
+
+	if _, _, deletes := p.counts(); deletes != 0 {
+		t.Fatalf("Lighthouse 同 key 歧义时不得删除，实际 %d", deletes)
+	}
+	if p.ruleCount() != 3 { // 2 条歧义 + 1 条新增
+		t.Fatalf("歧义规则必须保留，云端规则数 = %d, want 3", p.ruleCount())
+	}
+	sum := s.Status().LastRound
+	if sum == nil || sum.CleanupCandidates != 2 || sum.CleanupDeferred != 2 {
+		t.Fatalf("歧义候选必须全部 deferred: %+v", sum)
+	}
+}
+
+// TestCleanup_FailureKeepsSuccessAndDefers 清理请求失败不得把已确认权限改成 partial/failed。
+func TestCleanup_FailureKeepsSuccessAndDefers(t *testing.T) {
+	p := newProbeProvider(config.CloudTCLighthouse, 1, staleRule("TCP", "9999", "10.9.9.9/32", "", ""))
+	p.deleteErr = errors.New("permission denied")
+	rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+
+	s.syncAll()
+
+	sum := s.Status().LastRound
+	if sum == nil || sum.Outcome != RoundSuccess {
+		t.Fatalf("清理失败后目标仍必须 success: %+v", sum)
+	}
+	if sum.CleanupDeleted != 0 || sum.CleanupDeferred != 1 {
+		t.Fatalf("清理失败计数 = deleted:%d deferred:%d, want 0/1", sum.CleanupDeleted, sum.CleanupDeferred)
+	}
+	if !p.hasRule("10.9.9.9/32", "9999") {
+		t.Fatal("清理失败时残留必须保留")
+	}
+	if !p.hasRule("1.1.1.1/32", "443") {
+		t.Fatal("新增的期望规则不得受影响")
+	}
+}
+
+// TestCleanup_S2MissingCoverageFails S2 不再覆盖所需功能时必须 failed 并记录高优先级错误。
+func TestCleanup_S2MissingCoverageFails(t *testing.T) {
+	p := newProbeProvider(config.CloudTCLighthouse, 1, staleRule("TCP", "9999", "10.9.9.9/32", "", ""))
+	// 模拟清理把期望规则一并抹掉：删除调用后云端只剩陈旧规则被移除、新增规则也被移除
+	p.afterDelete = func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		kept := make([]config.RuleInfo, 0, len(p.rules))
+		for _, r := range p.rules {
+			if r.Port == "9999" {
+				continue
+			}
+			kept = append(kept, r) // 期望规则也被移除
+		}
+		p.rules = nil
+		_ = kept
+	}
+	rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+
+	s.syncAll()
+
+	sum := s.Status().LastRound
+	if sum == nil || sum.Outcome != RoundFailed {
+		t.Fatalf("S2 覆盖验证失败必须 failed: %+v", sum)
+	}
+}
+
+// TestCleanup_CSMUsesS1PolicyIndexAndRevision CVM 删除必须使用同一 S1 的 PolicyIndex 与 Version。
+func TestCleanup_CSMUsesS1PolicyIndexAndRevision(t *testing.T) {
+	p := newProbeProvider(config.CloudTCCVM, 1, staleRule("TCP", "9999", "10.9.9.9/32", "", "7"))
+	rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+
+	s.syncAll()
+
+	_, _, deletes := p.counts()
+	if deletes != 1 {
+		t.Fatalf("CVM 删除调用 = %d, want 1", deletes)
+	}
+	revisions := p.deleteRevisionLog()
+	if len(revisions) != 1 || revisions[0] != "2" {
+		t.Fatalf("CVM 删除版本 = %v, want [\"2\"]（同一 S1 版本）", revisions)
+	}
+	if p.hasRule("10.9.9.9/32", "9999") {
+		t.Fatal("陈旧规则必须已删除")
+	}
+}
+
+// TestCleanup_SWASUsesRuleIDPath SWAS 删除必须携带 S1 回读的 RuleId 并完成 S2。
+func TestCleanup_SWASUsesRuleIDPath(t *testing.T) {
+	p := newProbeProvider(config.CloudAliSWAS, 1, staleRule("TCP", "9999", "10.9.9.9/32", "r-stale", ""))
+	rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+
+	s.syncAll()
+
+	snapshots, _, deletes := p.counts()
+	if deletes != 1 || snapshots != 3 {
+		t.Fatalf("SWAS 删除调用 = %d, 快照 = %d, want 1/3（删除后强制 S2）", deletes, snapshots)
+	}
+	if p.hasRule("10.9.9.9/32", "9999") {
+		t.Fatal("陈旧规则必须已删除")
+	}
+}
+
+// TestCleanup_ECSCandidatesHandedOverForBatching ECS 的 150 个候选必须整体交给 Provider
+// （分批 100 + 50 由 Provider 内部完成，见 provider/request_mock_test.go
+// TestRequest_ECSDeleteBatches100），并完成 S2 与残留计数。
+func TestCleanup_ECSDeletesInBatchesOf100(t *testing.T) {
+	stale := make([]config.RuleInfo, 0, 150)
+	for i := 0; i < 150; i++ {
+		stale = append(stale, staleRule("TCP", fmt.Sprintf("%d", 20000+i), fmt.Sprintf("10.%d.%d.%d/32", i/65536, (i/256)%256, i%256), fmt.Sprintf("r-%03d", i), ""))
+	}
+	p := newProbeProvider(config.CloudAliECS, 1, stale...)
+	rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+
+	s.syncAll()
+
+	deletes := p.deleteSizes()
+	if len(deletes) != 1 || deletes[0] != 150 {
+		t.Fatalf("调度层应把全部候选一次交给 Provider，实际 %v", deletes)
+	}
+	if snapshots, _, _ := p.counts(); snapshots != 3 {
+		t.Fatalf("快照调用 = %d, want 3（删除后强制 S2）", snapshots)
+	}
+	if got := p.ruleCount(); got != 1 {
+		t.Fatalf("清理后云端规则数 = %d, want 1（只留期望规则）", got)
+	}
+	sum := s.Status().LastRound
+	if sum == nil || sum.CleanupDeleted != 150 || sum.CleanupDeferred != 0 {
+		t.Fatalf("ECS 清理计数 = %+v, want deleted=150 deferred=0", sum)
+	}
+}
+
+// TestCleanup_PartialDeleteKeepsConfirmedAndDefersRest 部分删除（后续批次失败）时：
+// 已确认批次必须保留计数，剩余候选进入 cleanup_deferred，且仍强制 S2；
+// 所需权限已由 S1 证明，目标结论保持 success。
+func TestCleanup_PartialDeleteKeepsConfirmedAndDefersRest(t *testing.T) {
+	stale := make([]config.RuleInfo, 0, 150)
+	for i := 0; i < 150; i++ {
+		stale = append(stale, staleRule("TCP", fmt.Sprintf("%d", 20000+i),
+			fmt.Sprintf("10.%d.%d.%d/32", i/65536, (i/256)%256, i%256), fmt.Sprintf("r-%03d", i), ""))
+	}
+	p := newProbeProvider(config.CloudAliECS, 1, stale...)
+	p.partialDelete = &provider.DeleteResult{Deleted: 100, Resolved: 100}
+	rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+
+	s.syncAll()
+
+	snapshots, _, deletes := p.counts()
+	if deletes != 1 {
+		t.Fatalf("删除调用 = %d, want 1", deletes)
+	}
+	if snapshots != 3 {
+		t.Fatalf("快照调用 = %d, want 3（部分删除后仍必须 S2）", snapshots)
+	}
+	sum := s.Status().LastRound
+	if sum == nil || sum.Outcome != RoundSuccess {
+		t.Fatalf("部分删除后所需权限仍已确认，目标必须 success: %+v", sum)
+	}
+	if sum.CleanupDeleted != 100 || sum.CleanupDeferred != 50 {
+		t.Fatalf("清理计数 = deleted:%d deferred:%d, want 100/50（保留已确认批次，剩余残留）",
+			sum.CleanupDeleted, sum.CleanupDeferred)
+	}
+	if sum.Deleted != 100 {
+		t.Fatalf("deleted = %d, want 100（只统计云端确认的实际删除）", sum.Deleted)
+	}
+}

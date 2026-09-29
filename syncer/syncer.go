@@ -1,7 +1,6 @@
 package syncer
 
 import (
-	"context"
 	"errors"
 	"log/slog"
 	"sync"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/tag"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
@@ -49,6 +47,14 @@ type Syncer struct {
 	// beforeRoundHook 仅用于测试构造确定性交错（默认 nil，生产零行为变化）。
 	// 在「stop 门控通过之后、syncAll 之前」调用，与 SetStateAppliedHook 同风格。
 	beforeRoundHook func()
+
+	// 目标级 attempt 的三个测试接缝（默认 nil → 生产实现，零行为变化）：
+	//   - resolveHostFn 注入确定性 DNS 结果（避免单测依赖真实解析）；
+	//   - backoffFn 覆盖重试退避时长（默认 1s、2s）；
+	//   - sleepFn 覆盖等待实现（默认 time.Sleep），使单测不真实等待。
+	resolveHostFn func(host string) ([]dns.ResolvedIP, error)
+	backoffFn     func(attempt int) time.Duration
+	sleepFn       func(time.Duration)
 
 	// 状态追踪（保护以下字段）
 	mu             sync.RWMutex
@@ -560,22 +566,54 @@ func (s *Syncer) markRunning() {
 // ErrDryRunInProgress 防重入冲突错误（多个 Dry Run 并发执行时返回）
 var ErrDryRunInProgress = errors.New("Dry Run 正在执行中")
 
-// DryRunResponse 试运行响应（包装对象：空状态语义化）
+// DryRunResponse 试运行响应（包装对象：空状态语义化）。
+//
+// Issue7 §7.1：results 每目标一项，且必须是非 null 数组（空态序列化为 []）。
 type DryRunResponse struct {
 	Results  []DryRunResult `json:"results"`
 	Warnings []string       `json:"warnings"`
 }
 
-// DryRunResult 试运行结果（明细化：to_add/to_delete 为规则数组）
+// DryRunResult 目标级试运行结果（Issue7 §7.1）。
+//
+// 每目标一项，`target_id` 是前端列表与 v-for 的稳定 key；所有数组固定输出 []，
+// 绝不输出 null。Dry Run 只基于 S0，因此 CoverageReady 表示「当前快照是否已覆盖
+// 全部可实施期望」，而不是对未来 Add 的预测。
 type DryRunResult struct {
-	Provider string                `json:"provider"`
-	Domain   string                `json:"domain"`
-	ToAdd    []provider.RuleChange `json:"to_add"`
-	ToDelete []provider.RuleChange `json:"to_delete"`
-	Error    string                `json:"error,omitempty"`
-	// Skipped 无法实施的期望规则（如 SWAS DROP）：只追加字段，
-	// to_add/to_delete 的既有名称与结构不变（Issue6 A11 / AGENTS §十一）
-	Skipped []provider.RuleChange `json:"skipped,omitempty"`
+	TargetID            int                    `json:"target_id"`
+	Provider            string                 `json:"provider"`
+	Domains             []string               `json:"domains"`
+	Desired             []provider.PlannedRule `json:"desired"`
+	SatisfiedByOwned    []provider.PlanMatch   `json:"satisfied_by_owned"`
+	SatisfiedByExternal []provider.PlanMatch   `json:"satisfied_by_external"`
+	ToAdd               []provider.RuleChange  `json:"to_add"`
+	// CleanupCandidates 只是预览：若此刻进入正式流程且之后 S1 仍满足全部安全门，
+	// 才**可能**删除；不得表述为「将删除」。
+	CleanupCandidates []provider.RuleChange `json:"cleanup_candidates"`
+	CleanupDeferred   []provider.PlanIssue  `json:"cleanup_deferred"`
+	DNSErrors         []provider.PlanIssue  `json:"dns_errors"`
+	Unsupported       []provider.PlanIssue  `json:"unsupported"`
+	Conflicts         []provider.PlanIssue  `json:"conflicts"`
+	CoverageReady     bool                  `json:"coverage_ready"`
+	Error             string                `json:"error"`
+}
+
+// emptyDryRunResult 构造数组字段全部非 nil 的结果骨架。
+func emptyDryRunResult(targetID int, name string, domains []string) DryRunResult {
+	return DryRunResult{
+		TargetID:            targetID,
+		Provider:            name,
+		Domains:             domains,
+		Desired:             []provider.PlannedRule{},
+		SatisfiedByOwned:    []provider.PlanMatch{},
+		SatisfiedByExternal: []provider.PlanMatch{},
+		ToAdd:               []provider.RuleChange{},
+		CleanupCandidates:   []provider.RuleChange{},
+		CleanupDeferred:     []provider.PlanIssue{},
+		DNSErrors:           []provider.PlanIssue{},
+		Unsupported:         []provider.PlanIssue{},
+		Conflicts:           []provider.PlanIssue{},
+	}
 }
 
 // DryRun 试运行：DNS 解析 + Diff，不写入不触发事件。
@@ -589,7 +627,7 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 	defer s.dryRunMu.Unlock()
 
 	state := s.runtime.Snapshot()
-	resp := DryRunResponse{Results: []DryRunResult{}}
+	resp := DryRunResponse{Results: []DryRunResult{}, Warnings: []string{}}
 	if state == nil {
 		resp.Warnings = append(resp.Warnings, "运行时状态尚未就绪")
 		return resp, nil
@@ -601,43 +639,53 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 	if len(state.Config.DomainRules) == 0 {
 		resp.Warnings = append(resp.Warnings, "暂无域名规则，请先在域名规则页配置")
 	}
+
+	// 与正式同步共用同一纯规划器（provider.PlanTarget）；这里的差异只有：
+	// 不写入、不发布事件、不修改熔断器、只取 S0。
 	for _, p := range state.Providers {
 		rules := filterRulesForTarget(state.Config.DomainRules, p.TargetIndex())
-		for _, rule := range rules {
-			result := DryRunResult{Provider: p.Name(), Domain: rule.Host}
-			resolved, err := state.Resolver.Resolve(context.Background(), rule.Host)
-			if err != nil {
-				result.Error = err.Error()
-				resp.Results = append(resp.Results, result)
-				continue
-			}
-			if !rule.EnableIPv6 {
-				resolved = filterIPv4(resolved)
-			}
-			allRules, err := p.GetRules()
-			if err != nil {
-				result.Error = err.Error()
-				resp.Results = append(resp.Results, result)
-				continue
-			}
-			owned := provider.OwnedRules(allRules, state.Config.Tag)
-			desc := truncateDesc(tag.Format(state.Config.Tag, rule.Comment), p.CloudType())
-			diff := provider.Diff(resolved, rule, desc, owned, p)
-			for _, a := range diff.ToAdd {
-				result.ToAdd = append(result.ToAdd, provider.RuleChangeFromAction(a))
-			}
-			for _, r := range diff.ToDelete {
-				result.ToDelete = append(result.ToDelete, provider.RuleChangeFromInfo(r))
-			}
-			// 云端能力限制导致无法实施的期望规则：如实列为 skipped，不再伪装成 to_add
-			for _, sk := range diff.Skipped {
-				change := provider.RuleChangeFromAction(sk.Action)
-				change.SkipReason = sk.Reason
-				result.Skipped = append(result.Skipped, change)
-			}
-			resp.Results = append(resp.Results, result)
-			time.Sleep(rateLimitInterval(p.CloudType())) // 限速：与 syncAll 一致（AGENTS.md §七）
+		if len(rules) == 0 {
+			continue
 		}
+		result := emptyDryRunResult(p.TargetIndex(), p.Name(), ruleHosts(rules))
+
+		// 每目标按 host 去重解析一次（report=false：不写熔断器、不发 DNS 事件）
+		resolved, dnsErrors, _ := s.resolveTargetRules(state, rules, nil, false)
+
+		snapshot, err := p.GetSnapshot()
+		if err != nil {
+			result.Error = err.Error()
+			resp.Results = append(resp.Results, result)
+			s.sleep(rateLimitInterval(p.CloudType()))
+			continue
+		}
+
+		plan := provider.PlanTarget(provider.TargetPlanInput{
+			CloudType: p.CloudType(),
+			Tag:       state.Config.Tag,
+			Rules:     rules,
+			Resolved:  resolved,
+			DNSErrors: dnsErrors,
+			Snapshot:  snapshot,
+		})
+		result.Desired = plan.Desired
+		result.SatisfiedByOwned = plan.SatisfiedByOwned
+		result.SatisfiedByExternal = plan.SatisfiedByExternal
+		result.CleanupDeferred = plan.CleanupDeferred
+		result.DNSErrors = plan.DNSErrors
+		result.Unsupported = plan.Unsupported
+		result.Conflicts = plan.Conflicts
+		result.CoverageReady = plan.CoverageReady
+		for _, a := range plan.ToAdd {
+			result.ToAdd = append(result.ToAdd, provider.RuleChangeFromAction(a))
+		}
+		// 清理候选只是预览：正式流程还要在 S1 上重新过一遍全部安全门
+		for _, c := range plan.CleanupCandidates {
+			result.CleanupCandidates = append(result.CleanupCandidates, provider.RuleChangeFromInfo(c))
+		}
+		resp.Results = append(resp.Results, result)
+		// 限速发生在目标之间，同一目标内部不再 sleep（Issue7 §7.1）
+		s.sleep(rateLimitInterval(p.CloudType()))
 	}
 	return resp, nil
 }
@@ -660,58 +708,62 @@ const (
 	RoundIdle RoundOutcome = "idle"
 )
 
-// RoundSummary 一轮同步的整轮汇总（Issue6 A18）。
+// RoundSummary 一轮同步的整轮汇总（Issue7 §5.4 目标级口径）。
 //
-// 统计单元口径：**一个 Provider × 一条适用规则**，
-// total = Σ_p len(filterRulesForTarget(rules, p.TargetIndex()))。
+// 统计单元口径：**有至少一条适用规则的目标**，
+// total = Σ_p [len(filterRulesForTarget(rules, p.TargetIndex())) > 0]。
 //
 // 不变量：total == ok + changed + failed + skipped
 //
-//   - ok      成功且**无变更**的单元；
-//   - changed 成功且**发生了增删**的单元（added/deleted 任一非零）；
-//   - failed  DNS 解析失败或云调用最终失败的单元；
-//   - skipped Provider 明确未实施操作的单元（Issue6 A11 的 SWAS DROP 等）。
+//   - ok      目标 success 且 added==0 && deleted==0（允许存在 cleanup_deferred）；
+//   - changed 目标 success 且至少确认新增或删除一条（允许存在 cleanup_deferred）；
+//   - failed  目标最终 failed；
+//   - skipped 目标未失败但存在 unsupported（即 partial，字段名保留以兼容既有 API，
+//     语义为「部分实施目标数」）。
 //
-// 只有 total>0 且 failed==0 且 skipped==0 才是 success 并刷新 last_success。
+// 只有 total>0 且 failed==0 且 skipped==0 才是 success 并刷新 last_success；
+// 带 cleanup_deferred 的 success 仍刷新。
 type RoundSummary struct {
-	FinishedAt time.Time    `json:"finished_at"`
-	Total      int          `json:"total"`
-	OK         int          `json:"ok"`
-	Changed    int          `json:"changed"`
-	Failed     int          `json:"failed"`
-	Skipped    int          `json:"skipped"`
-	Added      int          `json:"added"`
-	Deleted    int          `json:"deleted"`
-	DurationMS int64        `json:"duration_ms"`
-	Outcome    RoundOutcome `json:"outcome"`
+	FinishedAt time.Time `json:"finished_at"`
+	Total      int       `json:"total"`
+	OK         int       `json:"ok"`
+	Changed    int       `json:"changed"`
+	Failed     int       `json:"failed"`
+	Skipped    int       `json:"skipped"`
+	Added      int       `json:"added"`
+	Deleted    int       `json:"deleted"`
+	// 清理可观测性（Issue7 §5.4）：S1 候选数 / 实际确认清理数 / 最终残留候选数。
+	// 本 Issue 内 deleted 与 cleanup_deleted 数值相同，但保留两者以区分「总写入」与「清理」语义。
+	CleanupCandidates int          `json:"cleanup_candidates"`
+	CleanupDeleted    int          `json:"cleanup_deleted"`
+	CleanupDeferred   int          `json:"cleanup_deferred"`
+	DurationMS        int64        `json:"duration_ms"`
+	Outcome           RoundOutcome `json:"outcome"`
 }
 
 // Data 返回事件负载形态的汇总（EventSyncComplete.Data 增加同一汇总）。
 func (r RoundSummary) Data() map[string]any {
 	return map[string]any{
-		"finished_at": r.FinishedAt,
-		"total":       r.Total,
-		"ok":          r.OK,
-		"changed":     r.Changed,
-		"failed":      r.Failed,
-		"skipped":     r.Skipped,
-		"added":       r.Added,
-		"deleted":     r.Deleted,
-		"duration_ms": r.DurationMS,
-		"outcome":     string(r.Outcome),
+		"finished_at":        r.FinishedAt,
+		"total":              r.Total,
+		"ok":                 r.OK,
+		"changed":            r.Changed,
+		"failed":             r.Failed,
+		"skipped":            r.Skipped,
+		"added":              r.Added,
+		"deleted":            r.Deleted,
+		"cleanup_candidates": r.CleanupCandidates,
+		"cleanup_deleted":    r.CleanupDeleted,
+		"cleanup_deferred":   r.CleanupDeferred,
+		"duration_ms":        r.DurationMS,
+		"outcome":            string(r.Outcome),
 	}
 }
 
-// unitOutcome 单个统计单元的结论。
-type unitOutcome int
-
-const (
-	unitOK unitOutcome = iota
-	unitChanged
-	unitFailed
-	unitSkipped
-)
-
+// syncAll 执行一轮完整同步。
+//
+// 本轮开始时只取一次运行时快照：TAG、规则、Provider、Resolver 与熔断器全部
+// 来自该快照，下游函数一律显式接收参数，不再回读运行时状态。
 func (s *Syncer) syncAll() {
 	// 无论轮次如何结束（正常、空状态提前返回、panic 展开）都必须清空轮次开始时间，
 	// 否则会留下“陈旧在途轮次”并让健康判定长期误报同步轮次超时。
@@ -726,10 +778,12 @@ func (s *Syncer) syncAll() {
 		return
 	}
 
-	// 先算清本轮统计单元总数（一个 Provider × 一条适用规则）
+	// 先算清本轮统计单元总数（有至少一条适用规则的目标）
 	total := 0
 	for _, p := range state.Providers {
-		total += len(filterRulesForTarget(state.Config.DomainRules, p.TargetIndex()))
+		if len(filterRulesForTarget(state.Config.DomainRules, p.TargetIndex())) > 0 {
+			total++
+		}
 	}
 
 	slog.Info("开始同步", "targets", len(state.Providers), "rules", len(state.Config.DomainRules), "units", total)
@@ -770,10 +824,13 @@ func (s *Syncer) syncAll() {
 		"outcome", string(summary.Outcome),
 		"total", summary.Total, "ok", summary.OK, "changed", summary.Changed,
 		"failed", summary.Failed, "skipped", summary.Skipped,
-		"added", summary.Added, "deleted", summary.Deleted)
+		"added", summary.Added, "deleted", summary.Deleted,
+		"cleanup_candidates", summary.CleanupCandidates,
+		"cleanup_deleted", summary.CleanupDeleted,
+		"cleanup_deferred", summary.CleanupDeferred)
 }
 
-// outcomeOf 依据 F4 裁决计算整轮结论。
+// outcomeOf 依据目标级口径计算整轮结论。
 func outcomeOf(s RoundSummary) RoundOutcome {
 	switch {
 	case s.Total == 0:
@@ -787,15 +844,17 @@ func outcomeOf(s RoundSummary) RoundOutcome {
 	}
 }
 
-// runRound 执行一轮完整同步并按单元归类结果。
+// runRound 执行一轮完整同步并按**目标**归类结果（Issue7 §5.4）。
 //
 // 本轮开始时只取一次运行时快照：TAG、规则、Provider、Resolver 与熔断器全部
 // 来自该快照，下游函数一律显式接收参数，不再回读运行时状态。
 func (s *Syncer) runRound(state *RuntimeState, total int) RoundSummary {
-	counts := make([]atomic.Int32, 4) // 下标 = unitOutcome
-	var added, deleted, skipped atomic.Int32
+	var (
+		ok, changed, failed, skipped                                       atomic.Int32
+		added, deleted, cleanupCandidates, cleanupDeleted, cleanupDeferred atomic.Int32
+	)
 
-	// 按云厂商分组，跨云并行
+	// 按云厂商分组，跨云并行；同一云厂商内目标串行（共享配额）
 	groups := s.groupByCloud(state.Providers)
 	var wg sync.WaitGroup
 	for ct, ps := range groups {
@@ -804,132 +863,49 @@ func (s *Syncer) runRound(state *RuntimeState, total int) RoundSummary {
 			defer wg.Done()
 			for _, p := range ps {
 				rules := filterRulesForTarget(state.Config.DomainRules, p.TargetIndex())
-				for _, rule := range rules {
-					w := &unitResult{}
-					s.syncDomain(state, p, rule, w)
-					counts[w.outcome()].Add(1)
-					added.Add(int32(w.added))
-					deleted.Add(int32(w.deleted))
-					skipped.Add(int32(w.skipped))
+				if len(rules) == 0 {
+					// 无适用规则的目标不构成统计单元，也不访问云 API
+					continue
 				}
-				// 同一云厂商内串行处理（共享配额）；按 Provider 限速一次
-				time.Sleep(rateLimitInterval(ct))
+				res := s.syncTarget(state, p, rules)
+				switch res.outcome {
+				case TargetFailed:
+					failed.Add(1)
+				case TargetPartial:
+					// 字段名保留 skipped 以兼容既有 API/前端，语义为「部分实施目标数」
+					skipped.Add(1)
+				default:
+					if res.added > 0 || res.deleted > 0 {
+						changed.Add(1)
+					} else {
+						ok.Add(1)
+					}
+				}
+				added.Add(int32(res.added))
+				deleted.Add(int32(res.deleted))
+				cleanupCandidates.Add(int32(res.cleanupCandidates))
+				cleanupDeleted.Add(int32(res.cleanupDeleted))
+				cleanupDeferred.Add(int32(res.cleanupDeferred))
+
+				// 同一云厂商内目标之间限速（AGENTS §七）
+				s.sleep(rateLimitInterval(ct))
 			}
 		}(ct, ps)
 	}
 	wg.Wait()
 
 	return RoundSummary{
-		Total:   total,
-		OK:      int(counts[unitOK].Load()),
-		Changed: int(counts[unitChanged].Load()),
-		Failed:  int(counts[unitFailed].Load()),
-		Skipped: int(counts[unitSkipped].Load()),
-		Added:   int(added.Load()),
-		Deleted: int(deleted.Load()),
+		Total:             total,
+		OK:                int(ok.Load()),
+		Changed:           int(changed.Load()),
+		Failed:            int(failed.Load()),
+		Skipped:           int(skipped.Load()),
+		Added:             int(added.Load()),
+		Deleted:           int(deleted.Load()),
+		CleanupCandidates: int(cleanupCandidates.Load()),
+		CleanupDeleted:    int(cleanupDeleted.Load()),
+		CleanupDeferred:   int(cleanupDeferred.Load()),
 	}
-}
-
-// unitResult 单个统计单元的结果（一个 goroutine 独占，无需加锁）。
-type unitResult struct {
-	failed  bool
-	added   int
-	deleted int
-	skipped int
-}
-
-// outcome 按 F4 口径归类：失败优先，其次「明确跳过」，最后按是否发生增删区分。
-func (w *unitResult) outcome() unitOutcome {
-	switch {
-	case w.failed:
-		return unitFailed
-	case w.skipped > 0:
-		return unitSkipped
-	case w.added > 0 || w.deleted > 0:
-		return unitChanged
-	default:
-		return unitOK
-	}
-}
-
-// syncDomain 同步单个域名到单个 Provider。
-//
-// state 是本轮开始的完整快照：TAG、Resolver 与熔断器都只从它读取，
-// 因此热重载产生的下一份状态不会影响正在执行的本轮；
-// w 收集本单元的结果（失败/增删/跳过），不再由 syncDomainInternal 直接返回。
-func (s *Syncer) syncDomain(state *RuntimeState, p provider.Provider, rule config.DomainRule, w *unitResult) {
-	// 0. DNS 解析（无论是否熔断都执行，熔断时作为半开探测）
-	resolved, err := state.Resolver.Resolve(context.Background(), rule.Host)
-	if err != nil {
-		w.failed = true
-		if state.Breaker.IsOpen(rule.Host) {
-			// 半开探测失败：维持熔断（不调用 RecordFailure，熔断中已停止计数）
-			slog.Debug("域名半开探测失败，维持熔断", "domain", rule.Host, "error", err)
-		} else {
-			state.Breaker.RecordFailure(rule.Host)
-			slog.Warn("DNS 解析失败，保留现有规则", "domain", rule.Host, "error", err)
-		}
-		s.bus.Publish(notifier.Event{
-			Type:      notifier.EventDNSFailed,
-			Timestamp: time.Now(),
-			Data:      map[string]any{"domain": rule.Host, "error": err.Error()},
-		})
-		return
-	}
-
-	// 解析成功：解除熔断（RecordSuccess 内部处理计数并输出解除日志）
-	state.Breaker.RecordSuccess(rule.Host)
-
-	// 1. 按规则配置过滤 IPv6 地址
-	if !rule.EnableIPv6 {
-		resolved = filterIPv4(resolved)
-	}
-
-	// 2. 委托给内部方法执行同步
-	s.syncDomainInternal(p, rule, resolved, state.Config.Tag, w)
-}
-
-// syncDomainInternal 执行 DNS 已解析后的同步流程（Describe → Diff → Create/Delete）
-// tagStr 为本轮快照 TAG，继续显式向下传递；结果写入 w。
-func (s *Syncer) syncDomainInternal(p provider.Provider, rule config.DomainRule, resolved []dns.ResolvedIP, tagStr string, w *unitResult) {
-	// ECS ICMPv6 警告（仅当实际有 IPv6 地址时输出一次）
-	if rule.Protocol == "ICMP" && p.CloudType() == config.CloudAliECS {
-		for _, ip := range resolved {
-			if ip.IsIPv6 {
-				slog.Warn("ECS 不支持 ICMPv6 入站规则，IPv6 地址将被跳过", "domain", rule.Host)
-				break
-			}
-		}
-	}
-
-	added, deleted, skipped, skippedDetails, err := s.retrySyncDetailed(p, rule, resolved, tagStr)
-	// failed 与已确认增删计数正交：错误发生前已经由云端确认的独立请求仍须进入
-	// 单元/整轮汇总；当前失败且提交状态未知的请求由 Provider 保持为 0。
-	w.added, w.deleted, w.skipped = added, deleted, skipped
-	if err != nil {
-		w.failed = true
-		slog.Error("同步失败", "provider", p.Name(), "domain", rule.Host, "added", added, "deleted", deleted, "error", err)
-		s.bus.Publish(notifier.Event{
-			Type:      notifier.EventSyncError,
-			Timestamp: time.Now(),
-			Data: map[string]any{
-				"provider": p.Name(), "domain": rule.Host, "error": err.Error(),
-				"added": added, "deleted": deleted,
-			},
-		})
-		return
-	}
-
-	slog.Info("同步完成", "provider", p.Name(), "domain", rule.Host, "added", added, "deleted", deleted, "skipped", skipped, "skipped_details", skippedDetails)
-	s.bus.Publish(notifier.Event{
-		Type:      notifier.EventDomainSyncComplete,
-		Timestamp: time.Now(),
-		Data: map[string]any{
-			"provider": p.Name(), "domain": rule.Host,
-			"added": added, "deleted": deleted, "skipped": skipped,
-			"skipped_details": skippedDetails,
-		},
-	})
 }
 
 func (s *Syncer) groupByCloud(providers []provider.Provider) map[config.CloudType][]provider.Provider {

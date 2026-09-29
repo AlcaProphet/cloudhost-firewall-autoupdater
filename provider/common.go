@@ -346,8 +346,8 @@ type RuleChange struct {
 	Action   string `json:"action"`
 	Cidr     string `json:"cidr"` // IPv4 或 IPv6 的 CIDR（如 1.2.3.4/32）
 	Desc     string `json:"desc"` // 规则描述（含 [TAG]）
-	// SkipReason 只用于 skipped 列表：说明为何该规则无法实施
-	// （只追加字段，不改名/不移除既有字段，Issue6 A11 / AGENTS §十一）
+	// SkipReason 说明该规则为何无法实施（Issue7 起由 planner 的 PlanIssue 承载稳定原因码；
+	// 本字段保留给 skipped_details 等既有消费方）。
 	SkipReason string `json:"skip_reason,omitempty"`
 }
 

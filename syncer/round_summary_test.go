@@ -41,16 +41,34 @@ func (p *roundFakeProvider) GetRules() ([]config.RuleInfo, error) {
 	}
 	return p.rules, nil
 }
-func (p *roundFakeProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
+
+// GetSnapshot 测试 mock：复用 GetRules 的既有行为，Revision 固定为非空值。
+func (p *roundFakeProvider) GetSnapshot() (provider.RuleSnapshot, error) {
+	rules, err := p.GetRules()
+	return provider.RuleSnapshot{Rules: rules, Revision: "1"}, err
+}
+func (p *roundFakeProvider) CreateRules(_ provider.RuleSnapshot, rules []config.RuleAction) (provider.CreateResult, error) {
 	p.createNum.Add(1)
 	if p.createErr != nil {
 		return p.createResult, p.createErr
 	}
-	// 默认：全部写入成功
+	// 默认：全部写入成功，并模拟云端生效（后续 S1 快照可见），
+	// 否则新增后覆盖验证必然失败（Issue7 §4.5）。
 	if p.createResult == (provider.CreateResult{}) {
+		p.materialize(rules)
 		return provider.CreateResult{Written: len(rules)}, nil
 	}
 	return p.createResult, nil
+}
+
+// materialize 把已写入的期望规则变成后续快照可见的云端规则。
+func (p *roundFakeProvider) materialize(rules []config.RuleAction) {
+	for _, r := range rules {
+		p.rules = append(p.rules, config.RuleInfo{
+			Protocol: r.Protocol, Port: r.Port, CidrBlock: r.CidrBlock, Ipv6CidrBlock: r.Ipv6CidrBlock,
+			Action: r.Action, Description: r.Description, RuleID: "created",
+		})
+	}
 }
 
 // TestRoundSummary_FailedUnitKeepsConfirmedCounts failed 与 added/deleted 正交：
@@ -71,24 +89,21 @@ func TestRoundSummary_FailedUnitKeepsConfirmedCounts(t *testing.T) {
 	}
 }
 
-// TestSyncErrorCarriesConfirmedCounts 错误事件必须携带与 unitResult 相同的已确认计数。
+// TestSyncErrorCarriesConfirmedCounts 错误事件必须携带与目标结果相同的已确认计数。
 func TestSyncErrorCarriesConfirmedCounts(t *testing.T) {
 	p := &roundFakeProvider{
 		cloudType:    config.CloudTCCVM,
 		createResult: provider.CreateResult{Written: 1},
 		createErr:    errors.New("permission denied"),
 	}
-	s := &Syncer{bus: notifier.NewEventBus()}
+	rules := []config.DomainRule{{ID: 1, Host: "example.com", Protocol: "TCP", Ports: "443", Action: "ACCEPT"}}
+	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"example.com": "1.2.3.4/32"})
 	events := make(chan notifier.Event, 1)
 	s.bus.Subscribe(notifier.EventSyncError, roundEventSink{ch: events})
-	w := &unitResult{}
 
-	s.syncDomainInternal(p, config.DomainRule{
-		Host: "example.com", Protocol: "TCP", Ports: "443", Action: "ACCEPT",
-	}, []dns.ResolvedIP{{IP: net.ParseIP("1.2.3.4")}}, "auto-dns", w)
-
-	if !w.failed || w.added != 1 || w.deleted != 0 {
-		t.Fatalf("unitResult = %+v, want failed=true added=1 deleted=0", w)
+	res := s.syncTarget(s.runtime.Snapshot(), p, rules)
+	if res.outcome != TargetFailed || res.added != 1 || res.deleted != 0 {
+		t.Fatalf("targetResult = %+v, want outcome=failed added=1 deleted=0", res)
 	}
 	select {
 	case ev := <-events:
@@ -99,8 +114,11 @@ func TestSyncErrorCarriesConfirmedCounts(t *testing.T) {
 		t.Fatal("未收到 sync:error 事件")
 	}
 }
-func (p *roundFakeProvider) DeleteRules([]config.RuleInfo) error { return nil }
-func (p *roundFakeProvider) ConvertPorts(port string) []string   { return []string{port} }
+
+func (p *roundFakeProvider) DeleteRules(provider.RuleSnapshot, []config.RuleInfo) (provider.DeleteResult, error) {
+	return provider.DeleteResult{}, nil
+}
+func (p *roundFakeProvider) ConvertPorts(port string) []string { return []string{port} }
 
 // runOneRound 在真实 Run goroutine 中执行恰好一轮并返回汇总。
 //
@@ -285,16 +303,15 @@ func TestRoundSummary_ProviderErrorIsFailed(t *testing.T) {
 	}
 }
 
-// TestRoundSummary_OnlySkippedIsPartial 只有 skipped 无失败 → partial。
+// TestRoundSummary_OnlySkippedIsPartial 平台能力限制（planner 级 unsupported）→ partial。
 //
-// 判别 A11 + A18：Provider 报告 {Written:0, Skipped:1} 时必须
-// out=partial、added=0、skipped=1，不得记为 success/newly added。
+// 判别 A11 + A18 的目标级口径：SWAS 无法表达 DROP，规划阶段即列为 unsupported，
+// 既不计入 to_add 也不计作成功；目标结果为 partial、added=0、failed=0。
 func TestRoundSummary_OnlySkippedIsPartial(t *testing.T) {
-	p := &roundFakeProvider{
-		cloudType:    config.CloudTCCVM,
-		createResult: provider.CreateResult{Written: 0, Skipped: 1},
-	}
-	sum := runOneRound(t, p, []config.DomainRule{tcpRule()}, true)
+	p := &roundFakeProvider{cloudType: config.CloudAliSWAS}
+	rule := tcpRule()
+	rule.Action = "DROP"
+	sum := runOneRound(t, p, []config.DomainRule{rule}, true)
 
 	if sum.Outcome != RoundPartial {
 		t.Errorf("outcome = %q, want partial", sum.Outcome)
@@ -307,18 +324,19 @@ func TestRoundSummary_OnlySkippedIsPartial(t *testing.T) {
 	}
 }
 
-// TestDomainSyncCompleteCarriesSkippedDetails R6-01 判别：正式同步逐域事件必须携带
-// 可结构化消费的规则与原因，而不只是 skipped 整数。
-func TestDomainSyncCompleteCarriesSkippedDetails(t *testing.T) {
+// TestTargetSyncCompleteCarriesSkippedDetails 目标级完成事件必须携带
+// 可结构化消费的规则与原因，而不只是 skipped 整数（Issue7 §7.2）。
+func TestTargetSyncCompleteCarriesSkippedDetails(t *testing.T) {
 	p := &roundFakeProvider{cloudType: config.CloudAliSWAS}
-	s := &Syncer{bus: notifier.NewEventBus()}
+	rules := []config.DomainRule{{ID: 1, Host: "example.com", Protocol: "TCP", Ports: "443", Action: "DROP"}}
+	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"example.com": "1.2.3.4/32"})
 	events := make(chan notifier.Event, 1)
-	s.bus.Subscribe(notifier.EventDomainSyncComplete, roundEventSink{ch: events})
+	s.bus.Subscribe(notifier.EventTargetSyncComplete, roundEventSink{ch: events})
 
-	w := &unitResult{}
-	s.syncDomainInternal(p, config.DomainRule{
-		Host: "example.com", Protocol: "TCP", Ports: "443", Action: "DROP",
-	}, []dns.ResolvedIP{{IP: net.ParseIP("1.2.3.4")}}, "auto-dns", w)
+	res := s.syncTarget(s.runtime.Snapshot(), p, rules)
+	if res.outcome != TargetPartial {
+		t.Fatalf("SWAS + DROP 必须为 partial，实际 %q", res.outcome)
+	}
 
 	select {
 	case ev := <-events:
@@ -334,7 +352,7 @@ func TestDomainSyncCompleteCarriesSkippedDetails(t *testing.T) {
 			t.Errorf("详情 = %+v, want 完整规则与非空原因", detail)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("未收到 domain:sync_complete 事件")
+		t.Fatal("未收到 target:sync_complete 事件")
 	}
 }
 
@@ -420,7 +438,6 @@ func TestRetrySync_AddedCountsOnlyWritten(t *testing.T) {
 
 	// 真正触发写入：假 Provider 返回空规则集 + 期望 1 条 → to_add=1
 	// 此时 added 必须等于 Provider 报告的 Written（0），而不是 diff.ToAdd 长度（1）
-	w := &unitResult{}
 	s = &Syncer{}
 	p2 := &roundFakeProvider{
 		cloudType:    config.CloudTCCVM,
@@ -432,7 +449,6 @@ func TestRetrySync_AddedCountsOnlyWritten(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retrySync 失败: %v", err)
 	}
-	_ = w
 	if p2.createNum.Load() == 0 {
 		t.Fatal("用例前提：必须真正调用过 CreateRules")
 	}
@@ -508,19 +524,16 @@ func TestDryRunDoesNotListSWASDropAsToAdd(t *testing.T) {
 	if len(r.ToAdd) != 0 {
 		t.Errorf("SWAS DROP 不得出现在 to_add（修复前会伪装成普通待添加）: %+v", r.ToAdd)
 	}
-	if len(r.Skipped) != 1 {
-		t.Fatalf("skipped 数量 = %d, want 1", len(r.Skipped))
+	if len(r.Unsupported) != 1 {
+		t.Fatalf("unsupported 数量 = %d, want 1", len(r.Unsupported))
 	}
-	if r.Skipped[0].Action != "DROP" {
-		t.Errorf("skipped[0].Action = %q, want DROP", r.Skipped[0].Action)
+	if r.Unsupported[0].Code != provider.IssueUnsupportedAction {
+		t.Errorf("unsupported[0].Code = %q, want %q", r.Unsupported[0].Code, provider.IssueUnsupportedAction)
 	}
-	if r.Skipped[0].SkipReason == "" {
-		t.Error("skipped 必须携带跳过原因")
+	if !strings.Contains(r.Unsupported[0].Message, "DROP") {
+		t.Errorf("跳过原因应说明 DROP 限制，实际 %q", r.Unsupported[0].Message)
 	}
-	if !strings.Contains(r.Skipped[0].SkipReason, "DROP") {
-		t.Errorf("跳过原因应说明 DROP 限制，实际 %q", r.Skipped[0].SkipReason)
-	}
-	if len(r.ToDelete) != 0 {
-		t.Errorf("ToDelete 数量 = %d, want 0", len(r.ToDelete))
+	if len(r.CleanupCandidates) != 0 {
+		t.Errorf("CleanupCandidates 数量 = %d, want 0", len(r.CleanupCandidates))
 	}
 }

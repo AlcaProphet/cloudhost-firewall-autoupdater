@@ -36,14 +36,14 @@ const (
 
 // RuleInfo 云端查询回来的规则
 type RuleInfo struct {
-	Protocol      string // TCP / UDP / TCP+UDP / ICMP / ICMPv6 / ALL
-	Port          string // 归一化为 "port" 或 "start-end" 或 "ALL"
-	CidrBlock     string // IPv4 CIDR，如 "1.2.3.4/32"
-	Ipv6CidrBlock string // IPv6 CIDR，如 "2001:db8::1/128"
-	Action        string // ACCEPT / DROP
-	Description   string // 规则描述/备注
-	PolicyIndex   string // CVM 安全组删除时需要
-	RuleID        string // 阿里云 SWAS/ECS 删除时需要
+	Protocol      string `json:"protocol"`                  // TCP / UDP / TCP+UDP / ICMP / ICMPv6 / ALL
+	Port          string `json:"port"`                      // 归一化为 "port" 或 "start-end" 或 "ALL"
+	CidrBlock     string `json:"cidr_block,omitempty"`      // IPv4 CIDR，如 "1.2.3.4/32"
+	Ipv6CidrBlock string `json:"ipv6_cidr_block,omitempty"` // IPv6 CIDR，如 "2001:db8::1/128"
+	Action        string `json:"action"`                    // ACCEPT / DROP
+	Description   string `json:"description"`               // 规则描述/备注
+	PolicyIndex   string `json:"policy_index,omitempty"`    // CVM 安全组删除时需要
+	RuleID        string `json:"rule_id,omitempty"`         // 阿里云 SWAS/ECS 删除时需要
 }
 
 // RuleAction 要写入云端的规则

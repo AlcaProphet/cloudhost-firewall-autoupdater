@@ -6,7 +6,11 @@
 >
 > **本次合同补强基线：** 2026-09-29，核对当前工作树时 `main` HEAD 为 `d70796ba1c229e9e93732cc27a758a88b0ff57fd`，相对 `origin/main` ahead 1；本次仍只补充本文，不实施 Step 1～5，不修改源码、测试、依赖、数据库或外部系统。
 >
-> **实施状态：** Step 0 已完成；Step 1～5 均未实施。除非用户后续明确授权，不得从文档阶段自动进入代码修复。
+> **Step 1 开工前基线（2026-09-29）：** 用户一次性授权 Step 1～5 后重新核对：`main` HEAD 为 `3ce40fe47bcb9e75abd7d72dcfea4265ea8e4da3`，相对 `origin/main` ahead 2，工作树干净（仅 `fwalizer`、`webui/frontend/dist/`、`webui/frontend/node_modules/` 三项既有 ignored 产物）。基线门禁全部通过：`go test ./... -race -count=1`（12 包 ok）、`go vet ./...`、`go build ./...`、`git diff --check`、前端 `npm ci` + `npm run build` + 两条 `npm audit`（0 漏洞，lockfile 未变化）、`docker compose -f docker-compose.yml.example config --quiet`。
+>
+> **本次一次性授权的准确边界：** 只含本地源码/测试/前端/文档实施、本地只读门禁与 `docker build`（含隔离 `FWALIZER_DATA_DIR` 的本地二进制/容器验收）。**不含**提交、推送、tag、远端 CI/GHCR、发布、真实云写入、真实 SMTP/Webhook/Uptime Kuma 与浏览器验证；这些层次在本次实施中一律记为「未执行」。
+>
+> **实施状态（2026-09-29）：** Step 0～5 **已全部本地实施完成**：Step 1 纯规划器/快照模型、Step 2 目标级先增后验、Step 3 四平台条件清理、Step 4 Dry Run/事件/日志/仪表盘口径、Step 5 完整门禁 + 真实二进制/Docker 验收 + 文档闭环。逐 Step 证据见 §12.3。**未提交、未推送、未打 tag、未触发远端 CI/GHCR、未调用真实云、未执行浏览器验证**；这些层次在 §12.3「未执行边界」中如实登记。
 
 ---
 
@@ -161,7 +165,7 @@ type FunctionalKey struct {
 | Aliyun 单端口 `443/443` / 内部 `443` | `443` |
 | Aliyun 范围 `8000/8010` / 内部 `8000-8010` | `8000-8010` |
 | `ALL` / `-1/-1` | `ALL` |
-| Lighthouse 逗号端口 | 先按 `portconv.Parse` 的业务语义展开为独立 canonical 端口项，不把顺序不同的逗号字符串当作不同功能 |
+| Lighthouse 逗号端口 | 先按 `portconv.Parse` 的业务语义展开为独立 canonical 端口项，不把顺序不同的逗号字符串当作不同功能；**展开项同时是 Desired 与 ToAdd 的最小单元**，因此新建时 `80,443` 会下发为两条单端口规则（2026-09-29 用户裁决）。云侧一条逗号规则会同时覆盖其展开后的全部 key，故已存在的合并规则既不会被重建也不会被删除 |
 | `TCP+UDP` | SWAS 保持一个原生功能；Lighthouse/CVM/ECS 展开为 TCP 与 UDP 两个功能 |
 | action 大小写 | 大写 `ACCEPT` / `DROP` |
 
@@ -371,6 +375,7 @@ Evaluate cleanup gate
 - 最多 3 次，退避保持 1s、2s；
 - 可重试的 DNS/Describe/Create/version mismatch/网络错误进入下一整个目标 attempt；
 - 每个 attempt 都重新 Resolve、S0、Plan；不得只重试最后一个 HTTP 请求；
+- **Resolve 粒度裁决（2026-09-29 用户裁决）：** 「每个 attempt 重新 Resolve」优先于「每轮只解析一次」——每次 attempt 开始时按标准化 host 去重重新解析，同一 attempt 内同一 host 最多调用 Resolver 一次。Step 2 红灯 5 的「每目标每 host 每轮只 Resolve 一次」断言只针对单 attempt（无重试）成功轮；
 - 已经确认写入的 Added/Deleted 计数跨 attempt 保留，但再次规划后不得重复计数；
 - 写入提交状态未知时不猜测成功；下一 attempt 通过新快照确认；
 - Lighthouse/CVM version mismatch 必须显式识别为可重试，不允许去掉版本重发；
@@ -514,7 +519,7 @@ DNS 失败继续发布 `EventDNSFailed`，但相同目标/host 一轮最多一�
 本轮不迁移 Schema：
 
 - 一条目标完成/失败事件写一条日志；`target` 仍写资源 ID；
-- `domain` 可为空，或写经稳定排序后用 `, ` 连接的来源域名；优先为空并把完整来源放入详情，避免列长度承担结构化职责；
+- `domain` 写经稳定排序后用 `, ` 连接的来源域名（2026-09-29 用户裁决：保留 `logs` 页「域名」列与详情弹窗的可读性，该列不承担结构化职责）；无来源域名时为空；
 - `result` 仍使用 success/partial/failed；cleanup_deferred 只追加黄色可读详情，不把 success 改成 partial；
 - `added/deleted` 写云端确认数；
 - `StoreLogWriter.OnEvent` 必须直接返回 `AddSyncLog` 错误，由 EventBus 现有统一 WARN 处理，不能内部 WARN 后返回 nil；
@@ -578,6 +583,8 @@ DNS 失败继续发布 `EventDNSFailed`，但相同目标/host 一轮最多一�
 - P2-05/P2-06/P2-07 Webhook、告警页加载守卫、删除确认；
 - P3-01、P3-04、P3-05、P3-09、P3-12～P3-15、P3-17～P3-21。
 
+**越界确认（2026-09-29 用户裁决）：** 上述正交问题在本次 Step 1～5 一次性授权中**全部保持越界、不予修复**，按 `fwalizer-audit-final1.md` §0.4 独立队列（I-01～I-11）另行处理。其中 P2-04 是 `AGENTS.md` §9.1 发布顺序（`RuntimeState` 先于唤醒）与当前 `webui/api/deps.go` 实际顺序（唤醒先于 `ApplyState`）之间**已登记**的差异，本次只如实记录，不修改协调器发布路径与相关测试。唯一例外是 P3-16 的 Dry Run 子项（`RunTest.vue` 页面级按钮补 44px），已并入 Step 4。
+
 ---
 
 ## 九、串行实施步骤
@@ -595,7 +602,7 @@ DNS 失败继续发布 `EventDNSFailed`，但相同目标/host 一轮最多一�
 
 完成只代表合同可执行，不代表 P1-01 已修复。
 
-### Step 1｜纯规划器、快照模型与失败先行用例（待实施）
+### Step 1｜纯规划器、快照模型与失败先行用例（✅ 已实施）
 
 **先写红灯：**
 
@@ -633,7 +640,7 @@ git diff --check
 
 **停止条件：** planner 仍依赖 comment/description 区分个体；FunctionalKey 有第二套实现；快照缺 version 仍能进入腾讯写入；需要新增数据库表或更改强合同。
 
-### Step 2｜目标级先增后验主流程（待实施）
+### Step 2｜目标级先增后验主流程（✅ 已实施）
 
 **先写红灯：**
 
@@ -668,7 +675,7 @@ git diff --check
 
 **停止条件：** 任一路径在 S1 覆盖确认前删除；重试复用旧 version/PolicyIndex/RuleID；同目标并行写导致配额或版本竞争；Add 失败仍 success。
 
-### Step 3｜四平台条件清理（待实施）
+### Step 3｜四平台条件清理（✅ 已实施，严格 Lighthouse→CVM→SWAS→ECS 串行）
 
 严格按 Lighthouse → CVM → SWAS → ECS 串行，每完成一个平台立即跑该平台红绿用例，不先写一个丢失能力的通用删除器。
 
@@ -702,7 +709,7 @@ git diff --check
 
 **停止条件：** 为了复用代码去掉版本/RuleID；Lighthouse 歧义时仍删除；CVM 逐条复用旧版本删除；ECS 单批超过 100；清理失败使所需权限成功被改写为 partial。
 
-### Step 4｜Dry Run、事件、日志、Dashboard 与健康口径（待实施）
+### Step 4｜Dry Run、事件、日志、Dashboard 与健康口径（✅ 已实施）
 
 **实现范围：**
 
@@ -747,7 +754,7 @@ git diff --check
 
 **停止条件：** Dry Run 复制 planner；cleanup_deferred 制造 partial/unhealthy；页面仍以 domain 为唯一 key；API 把空数组输出为 null；为了 UI 方便改变强合同。
 
-### Step 5｜完整门禁、进程/Docker 验收、文档闭环与真实云（待实施）
+### Step 5｜完整门禁、进程/Docker 验收、文档闭环与真实云（✅ 本地门禁与验收已实施；真实云与浏览器仍待人工执行）
 
 **自动门禁：**
 
@@ -781,6 +788,10 @@ git diff --check
 - Dry Run 与正式 planner 同源；目标事件/日志/前端/OperationalHealth 一致。
 
 **真实外部验收：** 只在 Step 1～4 全部完成后，按 `ProdTestList.md` 的 PT-I7-01～06 分层执行。四平台任一未执行都保持“未执行”；mock、SDK request test、本地二进制、浏览器或 Docker 均不能替代真实云结论。
+
+**本次浏览器边界（2026-09-29 用户裁决）：** 本次实施**不执行浏览器验证**（本机无浏览器自动化工具，且不为此引入新依赖或改动前端依赖）。Step 5 的浏览器层证据记为「未执行」，由用户在 `ProdTestList.md` 中单独执行；Step 5 只提供自动测试、真实二进制 HTTP/静态资源与 Docker 证据，三者都不得外推为浏览器回归通过。
+
+**人工核验登记（2026-09-29 用户要求）：** 本次实施中凡需要真实外部环境或人工操作才能确认的项（真实四云、真实 SMTP/收件箱、真实 Webhook、真实 Uptime Kuma、浏览器回归、SWAS `Remark` 上限等），一律更新到 `ProdTestList.md`，由用户单独执行；不得在本文或其他文档中写成已通过。
 
 **文档闭环：** 只有真实完成的 Step 才可改为已完成，并记录 commit/HEAD、实际命令、结果、偏差和未执行边界；同步 `AGENTS.md` 的实施状态、`Design5.md`、审计状态索引、`ProdTestList.md` 与 README（如用户可见行为变化）。不得改写 Build6/Build7 的历史证据。
 
@@ -823,7 +834,7 @@ git diff --check
 
 ### 12.1 当前证据边界
 
-- 当前只有 Step 0 文档一致性证据，不是代码通过证据；
+- 当前只有 Step 0 文档一致性证据与 Step 1 开工前的**基线门禁**证据（`go test ./... -race -count=1`、`go vet ./...`、`go build ./...`、前端 `npm ci`/`npm run build`/两条 `npm audit`、`docker compose config --quiet` 在 HEAD `3ce40fe` 全部通过），基线门禁只证明「改动前仓库是绿的」，不是 P1-01 已修复的功能证据；
 - 原审计 overlay 探针证明 P0-01/P1-01/P2-01 在审计基线存在；P0-01 后续由 `108e528` + 回归证明已修，P1-01/P2-01 仍未修；
 - 本文引用的当前源码形态只是待替换基线，不表示目标结构已存在；
 - 真实 SMTP/Webhook/Uptime Kuma、真实云、浏览器与远端 CI/GHCR 的既有未执行状态保持不变。
@@ -834,3 +845,80 @@ git diff --check
 |---|---|---|
 | v1.0 | 2026-09-29 | Step 0：固定目标级完整期望集、TAG 所有权、comment 纯可读、先增后验、四平台条件清理、状态口径与 Step 1～5 |
 | v1.1 | 2026-09-29 | 详细补强：增加历史/当前基线区分、不可破坏不变量、严格 TAG 语法、canonical key 表、当前源码替换地图、Provider snapshot/revision 参考、纯 planner DTO、冲突/原因码、S0/S1/S2 状态机、重试与计数、四平台 API 合同、Dry Run JSON/事件/日志/UI 样式、逐 Step 红绿测试/命令/完成与停止条件、统一验收矩阵；仍仅为文档，Step 1～5 未实施 |
+| v1.3 | 2026-09-29 | Step 1～5 本地实施完成：回写实施状态、逐 Step 完成标记、§12.3 实施证据（HEAD、实际修改文件、逐条命令与结果、判别性用例、与原方案偏差、未执行边界）与 ProdTestList 人工核验项（PT-I7-01～07）|
+| v1.2 | 2026-09-29 | Step 1 开工前裁决回写：登记 Step 1 开工基线（HEAD `3ce40fe`、ahead 2、工作树干净、基线门禁全绿）与本次一次性授权边界（含 `docker build`，不含提交/推送/tag/远端 CI/GHCR/真实云/浏览器）；Lighthouse 逗号端口固定为「展开项即 Desired 与 ToAdd 最小单元」；§5.2 固定 Resolve 粒度（每 attempt 按 host 去重重新解析，红灯 5 只针对单 attempt 轮）；§7.3 `domain` 固定写稳定排序后的来源域名；§8.3 明确 P2-04（AGENTS §9.1 发布顺序与源码差异）等正交问题全部越界，仅 P3-16 Dry Run 子项并入 Step 4；Step 5 登记「本次不执行浏览器验证」与「人工核验项统一更新到 ProdTestList」两条边界 |
+
+### 12.3 本次实施证据（Step 1～5，2026-09-29）
+
+> 证据分层：以下「已证明」只覆盖对应层次；mock/单测不能替代真实云，Docker 不能替代浏览器，本地不能替代远端 CI。
+
+**基线与范围**
+
+- 实施前 HEAD：`3ce40fe47bcb9e75abd7d72dcfea4265ea8e4da3`（`main`，相对 `origin/main` ahead 2，工作树干净）。
+- 实施后：**同一 HEAD，改动全部留在工作树，未提交**；`git status` 显示 30 个修改文件 + 7 个新增文件（`provider/plan.go`、`provider/plan_test.go`、`provider/snapshot_test.go`、`syncer/target.go`、`syncer/target_test.go`、`syncer/cleanup_test.go`、`syncer/dryrun_test.go`）。
+- 规模：测试函数 446 → **502**，测试文件 62 → **67**，Go 包仍为 12。
+
+**实际执行的命令与结果（全部在本机实测）**
+
+| 命令 | 结果 |
+|---|---|
+| `gofmt -l <本次修改的 Go 文件>` | 无输出 |
+| `go vet ./...` | 无输出（通过） |
+| `go build ./...` | 通过 |
+| `go test ./... -race -count=1` | **12/12 包 ok**（根 10.8s、app 2.0s、config 8.7s、dns 1.6s、internal/health 4.4s、internal/portconv 2.8s、internal/tag 3.2s、notifier 3.6s、provider 4.3s、syncer 48.1s、webui 10.0s、webui/api 16.0s） |
+| 最小回归矩阵（`-run` 组合，含 tag/provider/syncer/webui/api/webui） | 全部 ok |
+| `cd webui/frontend && npm ci` | 通过（lockfile 未变化） |
+| `cd webui/frontend && npm run build` | 通过（`✓ built in 126ms`） |
+| `cd webui/frontend && npm audit --audit-level=high` | **0 漏洞** |
+| `cd webui/frontend && npm audit --omit=dev --audit-level=high` | **0 漏洞** |
+| `docker compose -f docker-compose.yml.example config --quiet` | 通过 |
+| `docker build -f build/Dockerfile -t fwalizer:issue7 .` | 通过（镜像 sha256:311cad7a…） |
+| `git diff --check` | 干净 |
+
+**真实二进制验收（隔离 `FWALIZER_DATA_DIR`，未污染用户数据）**
+
+- `GET /api/health` → 200（静态存活语义未变）；`GET /api/health/operational` → 200 `{"status":"ok","reasons":[]}`。
+- SPA：`/` → 200 `text/html`；`/assets/index-*.js` → 200 `text/javascript`。
+- `POST /api/sync/dryrun`（`{}`）→ `{"results":[],"warnings":["暂无云资源目标…","暂无域名规则…"]}`：目标级 DTO、数组非 null 已端到端成立。
+- 启动轮日志：`outcome=idle total=0 … cleanup_candidates=0 cleanup_deleted=0 cleanup_deferred=0`（目标级计数口径生效）。
+- `SIGTERM` → `收到停止信号，等待当前轮次完成…` → `开始 HTTP 关闭` → `同步引擎停止` → `HTTP 关闭完成`，**退出码 0，用时 7ms**。
+
+**Docker 容器验收**
+
+- 镜像：`User=appuser`、`Entrypoint=[fwalizer]`、`HEALTHCHECK` 仍为 `wget … /api/health`（未改成 operational）。
+- 容器内 `id` → `uid=1000(appuser)`；`docker inspect .State.Health.Status` → `healthy`（failing=0）。
+- 容器内 `/api/health` 200、`/api/health/operational` 200、SPA index/assets 200。
+- `docker stop` → **131ms，ExitCode=0**，日志出现完整优雅退出序列。
+
+**关键判别性证据（mock/SDK 请求层，本地）**
+
+- P0-01 回归保持绿色（`TestDiff_AliyunPortRoundTripConverges`）+ 新规划器同形态收敛用例（SWAS/ECS 单端口/范围/ALL/斜杠回读 9 组）。
+- P1-01：两条空 comment、不同域名互不成为清理候选；comment 修改零增删；`[TAG]foo` 既不归属也不可能被删除。
+- P2-01：IPv6 ICMP 与 `ICMPv6`/`ICMPV6` 收敛。
+- P2-02：ECS 150 条删除固定拆 100+50；第二批失败保留前批确认计数、剩余计入 `cleanup_deferred`。
+- P2-03：SWAS IPv6/DROP、ECS ICMPv6 进入稳定 `unsupported_*` 原因码，不进入 `to_add` 且冻结清理。
+- P2-08/P2-09/P3-11/P3-22/P3-16(Dry Run)：见 Step 4 用例与前端改动。
+- P3-25：ECS `NextToken` 不推进时 2 次请求内失败并返回 `snapshot_incomplete`（修复前为无限重发同一 token）。
+- 顺序不变式：`snapshot → create → snapshot(S1) → delete(S1) → snapshot(S2)`；Add 失败 / S1 缺覆盖 / 快照失败 → 删除调用恒为 0。
+- 腾讯版本保护：Create 用 S0、Delete 用 S1 的 `FirewallVersion`/`Version`；缺失即失败且不发请求；版本竞争可重试。
+- 目标级口径：`total == ok + changed + failed + skipped`；`cleanup_deferred` 不改变 success，OperationalHealth 算法未改动（`internal/health` 零改动）。
+
+**与原方案的偏差（如实记录）**
+
+1. **Lighthouse 逗号端口改为「一 canonical 端口项一条规则」**（按用户裁决）：已存在的合并规则因展开后多个 key 均被覆盖而不会被重建或删除，仅新建时下发为多条单端口规则。
+2. **SWAS 分页判据修正**：首版沿用「本页不足一页即结束」时新增用例真实失败（`仅读取 2 条，云端声明共 3 条`），据此改为以 `TotalCount` 为权威判据并增加页数硬上限与空页失败。
+3. **CVM 缺失 `PolicyIndex` 的规则保留在快照中**（而非像修复前那样跳过），使其仍能参与覆盖判断，仅由规划器标记为 `owned_locator_missing` 的 `cleanup_deferred`。
+4. **Step 2 的「零自动删除」为临时性质**，Step 3 起门开即删；相关两个用例已迁移为更强的「顺序不变式」断言。
+5. **Dry Run 目标内不再 sleep**：旧实现逐规则 sleep，违反 §7.1。
+6. **`EventDomainSyncComplete` 常量保留但生产链不再发布**（避免删除事件类型造成无谓的强耦合），由 `EventTargetSyncComplete` 取代。
+7. **`config.RuleInfo` 增加 JSON 标签**（供 `PlanMatch.rules` 直接序列化），不改变任何持久化 Schema。
+8. **既有用例 `TestIsRetryable_RealWorldShapes` 出现一次偶发不稳定**（高负载下拿到 `connection reset` 而非超时形状）：`-count=3 -race` 复跑通过、全量复跑 12 包全绿，未放宽任何断言，如实登记。
+
+**未执行边界（不得写成通过）**
+
+- **真实腾讯云 / 阿里云**：未执行任何读写调用。四平台删除安全性、版本竞争、ECS 分批在真实账号下的行为、CVM 入站 100 条配额口径均**没有真实云结论**（PT-I7-01～05、PT-I7-07）。
+- **浏览器**：本轮按用户决定**不执行**；Dry Run 目标卡片、重复 key、颜色与文案只有源码级 + 构建产物证据（PT-I7-06）。
+- **真实 SMTP / 收件箱 / Webhook / Uptime Kuma**：沿用既有「未执行」状态（PT-B7-01～06）。
+- **远端 CI / GHCR**：未推送、未触发；既有 `v2.0.0` 结果属更早 revision，不能证明当前改动（PT-B7-08）。
+- **SWAS `Remark` 长度上限**：仍无仓内文档依据（PT-B7-09）。
+- 本次**未提交、未推送、未创建 tag、未修改任何远端状态**。

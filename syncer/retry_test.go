@@ -178,11 +178,19 @@ func (p *retryProbeProvider) GetRules() ([]config.RuleInfo, error) {
 	}
 	return nil, nil
 }
-func (p *retryProbeProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
+
+// GetSnapshot 测试 mock：复用 GetRules 的既有行为，Revision 固定为非空值。
+func (p *retryProbeProvider) GetSnapshot() (provider.RuleSnapshot, error) {
+	rules, err := p.GetRules()
+	return provider.RuleSnapshot{Rules: rules, Revision: "1"}, err
+}
+func (p *retryProbeProvider) CreateRules(_ provider.RuleSnapshot, rules []config.RuleAction) (provider.CreateResult, error) {
 	p.createNum.Add(1)
 	return provider.CreateResult{Written: len(rules)}, nil
 }
-func (p *retryProbeProvider) DeleteRules(rules []config.RuleInfo) error { return nil }
+func (p *retryProbeProvider) DeleteRules(provider.RuleSnapshot, []config.RuleInfo) (provider.DeleteResult, error) {
+	return provider.DeleteResult{}, nil
+}
 func (p *retryProbeProvider) ConvertPorts(port string) []string {
 	return []string{port}
 }
@@ -310,13 +318,18 @@ type writtenProbeProvider struct {
 	createdCount atomic.Int32
 }
 
-func (p *writtenProbeProvider) Name() string                         { return "written-probe" }
-func (p *writtenProbeProvider) CloudType() config.CloudType          { return p.cloudType }
-func (p *writtenProbeProvider) TargetIndex() int                     { return 0 }
-func (p *writtenProbeProvider) ConvertPorts(port string) []string    { return []string{port} }
-func (p *writtenProbeProvider) DeleteRules([]config.RuleInfo) error  { return nil }
+func (p *writtenProbeProvider) Name() string                      { return "written-probe" }
+func (p *writtenProbeProvider) CloudType() config.CloudType       { return p.cloudType }
+func (p *writtenProbeProvider) TargetIndex() int                  { return 0 }
+func (p *writtenProbeProvider) ConvertPorts(port string) []string { return []string{port} }
+func (p *writtenProbeProvider) DeleteRules(provider.RuleSnapshot, []config.RuleInfo) (provider.DeleteResult, error) {
+	return provider.DeleteResult{}, nil
+}
 func (p *writtenProbeProvider) GetRules() ([]config.RuleInfo, error) { return p.existingRule, nil }
-func (p *writtenProbeProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
+func (p *writtenProbeProvider) GetSnapshot() (provider.RuleSnapshot, error) {
+	return provider.RuleSnapshot{Rules: p.existingRule, Revision: "1"}, nil
+}
+func (p *writtenProbeProvider) CreateRules(_ provider.RuleSnapshot, rules []config.RuleAction) (provider.CreateResult, error) {
 	p.createCalls.Add(1)
 	p.createdCount.Add(int32(len(rules)))
 	return p.result, nil
@@ -348,7 +361,7 @@ func (p *detailRetryProvider) Name() string                      { return "detai
 func (p *detailRetryProvider) CloudType() config.CloudType       { return config.CloudAliSWAS }
 func (p *detailRetryProvider) TargetIndex() int                  { return 0 }
 func (p *detailRetryProvider) ConvertPorts(port string) []string { return []string{port} }
-func (p *detailRetryProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
+func (p *detailRetryProvider) CreateRules(_ provider.RuleSnapshot, rules []config.RuleAction) (provider.CreateResult, error) {
 	return provider.CreateResult{Written: len(rules)}, nil
 }
 func (p *detailRetryProvider) GetRules() ([]config.RuleInfo, error) {
@@ -357,11 +370,17 @@ func (p *detailRetryProvider) GetRules() ([]config.RuleInfo, error) {
 		Description: "[auto-dns]", RuleID: "old",
 	}}, nil
 }
-func (p *detailRetryProvider) DeleteRules([]config.RuleInfo) error {
+
+// GetSnapshot 测试 mock：复用 GetRules 的既有行为，Revision 固定为非空值。
+func (p *detailRetryProvider) GetSnapshot() (provider.RuleSnapshot, error) {
+	rules, err := p.GetRules()
+	return provider.RuleSnapshot{Rules: rules, Revision: "1"}, err
+}
+func (p *detailRetryProvider) DeleteRules(provider.RuleSnapshot, []config.RuleInfo) (provider.DeleteResult, error) {
 	if p.deleteCalls.Add(1) == 1 {
-		return errors.New("RequestLimitExceeded")
+		return provider.DeleteResult{}, errors.New("RequestLimitExceeded")
 	}
-	return nil
+	return provider.DeleteResult{}, nil
 }
 
 // progressErrorProvider 用于验证错误返回路径仍累计云端已确认的独立请求进度。
@@ -391,16 +410,23 @@ func (p *progressErrorProvider) GetRules() ([]config.RuleInfo, error) {
 	}
 	return nil, nil
 }
-func (p *progressErrorProvider) CreateRules([]config.RuleAction) (provider.CreateResult, error) {
+
+// GetSnapshot 测试 mock：复用 GetRules 的既有行为，Revision 固定为非空值。
+func (p *progressErrorProvider) GetSnapshot() (provider.RuleSnapshot, error) {
+	rules, err := p.GetRules()
+	return provider.RuleSnapshot{Rules: rules, Revision: "1"}, err
+}
+func (p *progressErrorProvider) CreateRules(_ provider.RuleSnapshot, _ []config.RuleAction) (provider.CreateResult, error) {
 	p.createCalls.Add(1)
 	return p.createResult, p.createErr
 }
-func (p *progressErrorProvider) DeleteRules([]config.RuleInfo) error {
+func (p *progressErrorProvider) DeleteRules(provider.RuleSnapshot, []config.RuleInfo) (provider.DeleteResult, error) {
 	i := int(p.deleteCalls.Add(1)) - 1
 	if i < len(p.deleteErrs) && p.deleteErrs[i] != nil {
-		return &provider.PartialDeleteError{Deleted: p.deleteProgress[i], Err: p.deleteErrs[i]}
+		return provider.DeleteResult{Deleted: p.deleteProgress[i], Resolved: p.deleteProgress[i]},
+			&provider.PartialDeleteError{Deleted: p.deleteProgress[i], Err: p.deleteErrs[i]}
 	}
-	return nil
+	return provider.DeleteResult{}, nil
 }
 
 func ownedOldRule(id string) config.RuleInfo {

@@ -34,10 +34,18 @@ func (m *stubProvider) GetRules() ([]config.RuleInfo, error) {
 	}
 	return nil, nil
 }
-func (m *stubProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
+
+// GetSnapshot 测试 mock：复用 GetRules 的既有行为，Revision 固定为非空值。
+func (m *stubProvider) GetSnapshot() (provider.RuleSnapshot, error) {
+	rules, err := m.GetRules()
+	return provider.RuleSnapshot{Rules: rules, Revision: "1"}, err
+}
+func (m *stubProvider) CreateRules(_ provider.RuleSnapshot, rules []config.RuleAction) (provider.CreateResult, error) {
 	return provider.CreateResult{Written: len(rules)}, nil
 }
-func (m *stubProvider) DeleteRules(rules []config.RuleInfo) error { return nil }
+func (m *stubProvider) DeleteRules(provider.RuleSnapshot, []config.RuleInfo) (provider.DeleteResult, error) {
+	return provider.DeleteResult{}, nil
+}
 func (m *stubProvider) ConvertPorts(port string) []string {
 	return portconv.Parse(port)
 }
@@ -65,7 +73,7 @@ func TestDryRun_EmptyConfig(t *testing.T) {
 	}
 }
 
-// TestDryRun_Detail 单域名规则 → ToAdd/ToDelete 明细数组与字段
+// TestDryRun_Detail 单域名规则 → 目标级结果的目标字段与 to_add 明细
 // 使用 CVM 云类型（限速 200ms），避免 Lighthouse/SWAS 的 5s 间隔拖慢测试
 func TestDryRun_Detail(t *testing.T) {
 	p := &stubProvider{cloudType: config.CloudTCCVM, targetIndex: 0}
@@ -85,8 +93,11 @@ func TestDryRun_Detail(t *testing.T) {
 		t.Fatalf("Results 数量 = %d, want 1", len(resp.Results))
 	}
 	r := resp.Results[0]
-	if r.Domain != "localhost" {
-		t.Errorf("Domain = %s, want localhost", r.Domain)
+	if len(r.Domains) != 1 || r.Domains[0] != "localhost" {
+		t.Errorf("Domains = %v, want [localhost]", r.Domains)
+	}
+	if r.TargetID != 0 {
+		t.Errorf("TargetID = %d, want 0（稳定 key）", r.TargetID)
 	}
 	if r.Error != "" {
 		t.Fatalf("不应有错误: %s", r.Error)
@@ -105,8 +116,11 @@ func TestDryRun_Detail(t *testing.T) {
 	if ca.Desc != "[auto-dns] 测试" {
 		t.Errorf("ToAdd[0].Desc = %s, want [auto-dns] 测试", ca.Desc)
 	}
-	if len(r.ToDelete) != 0 {
-		t.Errorf("ToDelete 数量 = %d, want 0", len(r.ToDelete))
+	if len(r.CleanupCandidates) != 0 {
+		t.Errorf("CleanupCandidates 数量 = %d, want 0", len(r.CleanupCandidates))
+	}
+	if len(r.Desired) != 1 {
+		t.Errorf("Desired 数量 = %d, want 1", len(r.Desired))
 	}
 }
 
@@ -299,14 +313,14 @@ type countingProvider struct {
 	deleted atomic.Int32
 }
 
-func (m *countingProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
+func (m *countingProvider) CreateRules(_ provider.RuleSnapshot, rules []config.RuleAction) (provider.CreateResult, error) {
 	m.created.Add(int32(len(rules)))
 	return provider.CreateResult{Written: len(rules)}, nil
 }
 
-func (m *countingProvider) DeleteRules(rules []config.RuleInfo) error {
+func (m *countingProvider) DeleteRules(_ provider.RuleSnapshot, rules []config.RuleInfo) (provider.DeleteResult, error) {
 	m.deleted.Add(int32(len(rules)))
-	return nil
+	return provider.DeleteResult{Deleted: len(rules), Resolved: len(rules)}, nil
 }
 
 // TestRetrySync_Counts 空云端规则 + 单域名规则 → 全部新增，added=1 deleted=0
@@ -378,7 +392,13 @@ func (m *fakeTagProvider) GetRules() ([]config.RuleInfo, error) {
 	return append([]config.RuleInfo(nil), m.rules...), nil
 }
 
-func (m *fakeTagProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
+// GetSnapshot 测试 mock：复用 GetRules 的既有行为，Revision 固定为非空值。
+func (m *fakeTagProvider) GetSnapshot() (provider.RuleSnapshot, error) {
+	rules, err := m.GetRules()
+	return provider.RuleSnapshot{Rules: rules, Revision: "1"}, err
+}
+
+func (m *fakeTagProvider) CreateRules(_ provider.RuleSnapshot, rules []config.RuleAction) (provider.CreateResult, error) {
 	n := m.createCalls.Add(1)
 	if m.idempotentCreateErr != nil {
 		return provider.CreateResult{}, m.idempotentCreateErr
@@ -394,12 +414,12 @@ func (m *fakeTagProvider) CreateRules(rules []config.RuleAction) (provider.Creat
 	return provider.CreateResult{Written: len(rules)}, nil
 }
 
-func (m *fakeTagProvider) DeleteRules(rules []config.RuleInfo) error {
+func (m *fakeTagProvider) DeleteRules(_ provider.RuleSnapshot, rules []config.RuleInfo) (provider.DeleteResult, error) {
 	m.deleteCalls.Add(1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.idempotentDeleteErr != nil {
-		return m.idempotentDeleteErr
+		return provider.DeleteResult{}, m.idempotentDeleteErr
 	}
 	for _, r := range rules {
 		m.deleted = append(m.deleted, r.Description)
@@ -411,7 +431,7 @@ func (m *fakeTagProvider) DeleteRules(rules []config.RuleInfo) error {
 			}
 		}
 	}
-	return nil
+	return provider.DeleteResult{Deleted: len(rules), Resolved: len(rules)}, nil
 }
 
 func (m *fakeTagProvider) setRules(rules []config.RuleInfo) {
@@ -568,8 +588,10 @@ func TestSyncRound_TagSnapshotDuringReload(t *testing.T) {
 	close(p.release)
 	waitSignal(t, roundDone, "同步轮次未结束")
 
-	if got := p.deletedDescs(); len(got) != 1 || got[0] != "[auto-dns] 测试" {
-		t.Errorf("本轮删除描述 = %v, want [[auto-dns] 测试]（OwnedRules 必须使用本轮旧 TAG）", got)
+	// Step 2 起正式同步不再自动删除：TAG 归属改由「该规则是否成为清理候选」观察。
+	// 若本轮误用新 TAG，这条 [auto-dns] 规则会被判为 External，候选数将变为 0。
+	if sum := s.Status().LastRound; sum == nil || sum.CleanupCandidates != 1 {
+		t.Errorf("本轮清理候选 = %+v, want 1（OwnedRules 必须使用本轮旧 TAG）", sum)
 	}
 	if got := p.createdDescs(); len(got) != 1 || got[0] != "[auto-dns] 测试" {
 		t.Errorf("本轮新增描述 = %v, want [[auto-dns] 测试]（描述生成必须使用本轮旧 TAG）", got)
@@ -616,8 +638,9 @@ func TestRetrySync_TagSnapshotAcrossRetry(t *testing.T) {
 			t.Errorf("第 %d 次新增描述 = %q, want %q（重试必须使用本轮旧 TAG）", i+1, desc, "[auto-dns] 测试")
 		}
 	}
-	if got := p.deletedDescs(); len(got) != 1 || got[0] != "[auto-dns] 测试" {
-		t.Errorf("重试轮删除描述 = %v, want [[auto-dns] 测试]", got)
+	// Step 2 起不再自动删除：以清理候选数证明重试轮仍使用本轮旧 TAG。
+	if sum := s.Status().LastRound; sum == nil || sum.CleanupCandidates != 1 {
+		t.Errorf("重试轮清理候选 = %+v, want 1（重试必须使用本轮旧 TAG）", sum)
 	}
 }
 
@@ -832,8 +855,8 @@ func TestSyncRoundUsesSingleProviderSnapshot(t *testing.T) {
 	close(pA.release)
 	waitSignal(t, roundDone, "同步轮次未结束")
 
-	if got := pA.getCalls.Load(); got != 1 {
-		t.Errorf("Provider A GetRules 调用 = %d, want 1", got)
+	if got := pA.getCalls.Load(); got != 2 {
+		t.Errorf("Provider A 快照调用 = %d, want 2（一轮 = S0 + S1）", got)
 	}
 	if got := pA.createCalls.Load(); got != 1 {
 		t.Errorf("本轮必须继续使用快照中的 Provider A 完成写入，CreateRules 调用 = %d, want 1", got)
@@ -850,8 +873,8 @@ func TestSyncRoundUsesSingleProviderSnapshot(t *testing.T) {
 	if got := pB.getCalls.Load(); got == 0 {
 		t.Errorf("下一轮必须使用新 Provider B")
 	}
-	if got := pA.getCalls.Load(); got != 1 {
-		t.Errorf("Provider A 不得再被新轮次使用：GetRules 调用 = %d, want 1", got)
+	if got := pA.getCalls.Load(); got != 2 {
+		t.Errorf("Provider A 不得再被新轮次使用：快照调用 = %d, want 2", got)
 	}
 }
 

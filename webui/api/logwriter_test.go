@@ -11,8 +11,9 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
 
-// TestStoreLogWriter_Counts 成功事件携带计数 → 落库 added/deleted 正确
-func TestStoreLogWriter_Counts(t *testing.T) {
+// TestStoreLogWriter_TargetLevelCounts 目标级完成事件 → 一条日志，target 写资源 ID，
+// domain 写稳定排序后的来源域名，added/deleted 写云端确认数（Issue7 §7.3）。
+func TestStoreLogWriter_TargetLevelCounts(t *testing.T) {
 	store, err := config.OpenStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("打开数据库失败: %v", err)
@@ -21,9 +22,14 @@ func TestStoreLogWriter_Counts(t *testing.T) {
 
 	w := &StoreLogWriter{Store: store}
 	if err := w.OnEvent(notifier.Event{
-		Type:      notifier.EventDomainSyncComplete,
+		Type:      notifier.EventTargetSyncComplete,
 		Timestamp: time.Now(),
-		Data:      map[string]any{"provider": "tc_lighthouse(lhins-abc)", "domain": "api.example.com", "added": 2, "deleted": 1},
+		Data: map[string]any{
+			"provider": "tc_lighthouse(lhins-abc)", "target_id": 7,
+			"domains": []string{"a.example.com", "b.example.com"},
+			"domain":  "a.example.com, b.example.com",
+			"outcome": "success", "added": 2, "deleted": 1,
+		},
 	}); err != nil {
 		t.Fatalf("OnEvent 失败: %v", err)
 	}
@@ -36,19 +42,31 @@ func TestStoreLogWriter_Counts(t *testing.T) {
 	if l.Result != "success" || l.Added != 2 || l.Deleted != 1 {
 		t.Errorf("日志 = result:%s added:%d deleted:%d, want success/2/1", l.Result, l.Added, l.Deleted)
 	}
+	if l.Target != "lhins-abc" {
+		t.Errorf("target = %q, want lhins-abc（资源 ID）", l.Target)
+	}
+	if l.Domain != "a.example.com, b.example.com" {
+		t.Errorf("domain = %q, want 稳定排序后的来源域名", l.Domain)
+	}
 }
 
-// TestStoreLogWriter_SkippedAndPartial R6-01 判别：历史日志不扩表，仍须通过
-// result + 既有 error 文本表达跳过数量、规则和原因。
-func TestStoreLogWriter_SkippedAndPartial(t *testing.T) {
+// TestStoreLogWriter_PartialAndCleanupDeferred 目标级口径：
+// 平台能力限制 → result=partial 且详情写明无法实施；清理延后 → 仍是 success，
+// 只在详情追加可读说明（Issue7 §7.3、§5.3）。
+func TestStoreLogWriter_PartialAndCleanupDeferred(t *testing.T) {
 	tests := []struct {
-		name    string
-		added   int
-		deleted int
-		result  string
+		name       string
+		outcome    string
+		added      int
+		deleted    int
+		skipped    int
+		candidates int
+		resolved   int
+		deferred   int
+		result     string
 	}{
-		{name: "仅跳过", result: "skipped"},
-		{name: "有成功增删且有跳过", added: 1, result: "partial"},
+		{name: "平台能力限制", outcome: "partial", skipped: 1, result: "partial"},
+		{name: "清理延后仍为成功", outcome: "success", added: 1, candidates: 2, resolved: 1, deferred: 1, result: "success"},
 	}
 
 	for _, tt := range tests {
@@ -65,12 +83,17 @@ func TestStoreLogWriter_SkippedAndPartial(t *testing.T) {
 				SkipReason: "云产品不支持 DROP",
 			}}
 			if err := w.OnEvent(notifier.Event{
-				Type:      notifier.EventDomainSyncComplete,
+				Type:      notifier.EventTargetSyncComplete,
 				Timestamp: time.Now(),
 				Data: map[string]any{
-					"provider": "ali_swas(i-abc)", "domain": "api.example.com",
-					"added": tt.added, "deleted": tt.deleted, "skipped": 1,
-					"skipped_details": details,
+					"provider": "ali_swas(i-abc)", "target_id": 3,
+					"domains": []string{"api.example.com"}, "domain": "api.example.com",
+					"outcome": tt.outcome,
+					"added":   tt.added, "deleted": tt.deleted, "skipped": tt.skipped,
+					"skipped_details":    details,
+					"cleanup_candidates": tt.candidates,
+					"cleanup_deleted":    tt.resolved,
+					"cleanup_deferred":   tt.deferred,
 				},
 			}); err != nil {
 				t.Fatalf("OnEvent 失败: %v", err)
@@ -82,14 +105,43 @@ func TestStoreLogWriter_SkippedAndPartial(t *testing.T) {
 			}
 			got := logs[0]
 			if got.Result != tt.result {
-				t.Errorf("result = %q, want %q", got.Result, tt.result)
+				t.Errorf("result = %q, want %q（cleanup_deferred 不得把 success 改成 partial）", got.Result, tt.result)
 			}
-			for _, want := range []string{"跳过 1 条规则", "TCP", "443", "DROP", "1.2.3.4/32", "云产品不支持 DROP"} {
-				if !strings.Contains(got.Error, want) {
-					t.Errorf("error = %q, want 包含 %q", got.Error, want)
+			if tt.skipped > 0 {
+				for _, want := range []string{"无法实施 1 条期望规则", "TCP", "443", "DROP", "1.2.3.4/32", "云产品不支持 DROP"} {
+					if !strings.Contains(got.Error, want) {
+						t.Errorf("error = %q, want 包含 %q", got.Error, want)
+					}
 				}
 			}
+			if tt.deferred > 0 && !strings.Contains(got.Error, "延后") {
+				t.Errorf("清理延后必须写可读详情，实际 %q", got.Error)
+			}
 		})
+	}
+}
+
+// TestStoreLogWriter_ReturnsStoreError 写库失败必须直接返回给 EventBus，不得内部吞掉。
+func TestStoreLogWriter_ReturnsStoreError(t *testing.T) {
+	store, err := config.OpenStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("打开数据库失败: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("关闭数据库失败: %v", err)
+	}
+
+	w := &StoreLogWriter{Store: store}
+	err = w.OnEvent(notifier.Event{
+		Type:      notifier.EventTargetSyncComplete,
+		Timestamp: time.Now(),
+		Data: map[string]any{
+			"provider": "tc_lighthouse(lhins-abc)", "target_id": 1,
+			"domains": []string{"a.example.com"}, "domain": "a.example.com", "outcome": "success",
+		},
+	})
+	if err == nil {
+		t.Fatal("写库失败必须返回错误，由 EventBus 统一 WARN（不得内部 WARN 后返回 nil）")
 	}
 }
 

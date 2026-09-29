@@ -2,7 +2,6 @@ package api
 
 import (
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
@@ -10,7 +9,15 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
 
-// StoreLogWriter 将同步事件写入 SQLite 同步日志
+// StoreLogWriter 将目标级同步事件写入 SQLite 同步日志（Issue7 §7.3）。
+//
+// 固定语义：
+//   - 一目标完成/失败只写**一条**日志；
+//   - target 写资源 ID，domain 写稳定排序后用 ", " 连接的来源域名；
+//   - result 使用 success/partial/failed；cleanup_deferred 只追加可读详情，
+//     绝不把 success 改成 partial；
+//   - added/deleted 只写云端确认数；
+//   - AddSyncLog 失败必须**直接返回**给 EventBus 统一 WARN，不能内部吞掉。
 type StoreLogWriter struct {
 	Store *config.Store
 }
@@ -42,52 +49,78 @@ func (w *StoreLogWriter) OnEvent(event notifier.Event) error {
 			log.Target = v
 		}
 	}
+	// 目标级来源域名：发布方已按稳定顺序连接；无来源时留空
 	if v, ok := event.Data["domain"].(string); ok {
 		log.Domain = v
 	}
+	if v, ok := event.Data["added"]; ok {
+		log.Added = toInt(v)
+	}
+	if v, ok := event.Data["deleted"]; ok {
+		log.Deleted = toInt(v)
+	}
+
 	switch event.Type {
 	case notifier.EventSyncError:
 		log.Result = "failed"
-		if v, ok := event.Data["added"]; ok {
-			log.Added = toInt(v)
-		}
-		if v, ok := event.Data["deleted"]; ok {
-			log.Deleted = toInt(v)
-		}
 		if v, ok := event.Data["error"].(string); ok {
 			log.Error = v
 		}
-	case notifier.EventDomainSyncComplete:
-		// 读取实际写入计数（Build4 Step 1：计数链路打通，修复历史记录新增/删除恒为 0）
-		if v, ok := event.Data["added"]; ok {
-			log.Added = toInt(v)
-		}
-		if v, ok := event.Data["deleted"]; ok {
-			log.Deleted = toInt(v)
-		}
-		skipped := toInt(event.Data["skipped"])
-		switch {
-		case skipped > 0 && log.Added == 0 && log.Deleted == 0:
-			log.Result = "skipped"
-		case skipped > 0:
+		log.Error = joinDetails(log.Error, targetDetailLines(event))
+	case notifier.EventTargetSyncComplete:
+		// 目标级结论：partial 只来自「平台能力限制」，其余成功路径一律 success
+		switch outcome, _ := event.Data["outcome"].(string); outcome {
+		case "partial":
 			log.Result = "partial"
 		default:
 			log.Result = "success"
 		}
-		if skipped > 0 {
-			log.Error = formatSkippedDetails(skipped, event.Data["skipped_details"])
-		}
+		log.Error = joinDetails("", targetDetailLines(event))
 	default:
 		return nil
 	}
+
 	if err := w.Store.AddSyncLog(log); err != nil {
-		slog.Warn("写入同步日志失败", "error", err)
+		// 由 EventBus 的统一「事件处理失败」WARN 处理，这里不吞错
+		return err
 	}
 	return nil
 }
 
-func formatSkippedDetails(count int, raw any) string {
-	lines := []string{fmt.Sprintf("跳过 %d 条规则", count)}
+// targetDetailLines 生成目标级可读详情：无法实施项与清理延后都只追加详情，
+// 不改变 result 口径。
+func targetDetailLines(event notifier.Event) []string {
+	var lines []string
+
+	if skipped := toInt(event.Data["skipped"]); skipped > 0 {
+		lines = append(lines, formatSkippedDetails(skipped, event.Data["skipped_details"])...)
+	}
+
+	candidates := toInt(event.Data["cleanup_candidates"])
+	resolved := toInt(event.Data["cleanup_deleted"])
+	deferred := toInt(event.Data["cleanup_deferred"])
+	if candidates > 0 {
+		lines = append(lines, fmt.Sprintf("清理候选 %d 条：已确认清理 %d 条，延后 %d 条", candidates, resolved, deferred))
+	}
+
+	return lines
+}
+
+// joinDetails 把多行详情合并为持久化列可容纳的文本（保留已有错误作为首行）。
+func joinDetails(head string, lines []string) string {
+	body := strings.Join(lines, "\n")
+	switch {
+	case head == "":
+		return body
+	case body == "":
+		return head
+	default:
+		return head + "\n" + body
+	}
+}
+
+func formatSkippedDetails(count int, raw any) []string {
+	lines := []string{fmt.Sprintf("无法实施 %d 条期望规则", count)}
 	details, _ := raw.([]provider.RuleChange)
 	for _, detail := range details {
 		cidr := detail.Cidr
@@ -99,5 +132,5 @@ func formatSkippedDetails(count int, raw any) string {
 	if len(details) == 0 {
 		lines = append(lines, "- 未提供具体规则或原因")
 	}
-	return strings.Join(lines, "\n")
+	return lines
 }

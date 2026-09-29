@@ -22,18 +22,20 @@ type syncCountProvider struct {
 	cloudType   config.CloudType
 	targetIndex int
 
-	calls    atomic.Int32
-	started  chan struct{} // 每次进入 GetRules 发送一次（带缓冲，不阻塞生产路径）
-	release  chan struct{} // 每次 GetRules 等待一次放行
-	blockAll bool          // 为 false 时不阻塞（用于只关心触发次数的用例）
+	calls   atomic.Int32
+	started chan struct{} // 每次进入 GetRules 发送一次（带缓冲，不阻塞生产路径）
+	release chan struct{} // 每次 GetRules 等待一次放行
+	// blockFirst 为 true 时只阻塞本轮**首次** Describe（S0）：一轮同步 = S0 + S1 两次快照，
+	// 因此放行一次即可让整轮正常结束。
+	blockFirst bool
 }
 
 func newCountingProvider(ct config.CloudType, blockAll bool) *syncCountProvider {
 	return &syncCountProvider{
-		cloudType: ct,
-		started:   make(chan struct{}, 64),
-		release:   make(chan struct{}, 64),
-		blockAll:  blockAll,
+		cloudType:  ct,
+		started:    make(chan struct{}, 64),
+		release:    make(chan struct{}, 64),
+		blockFirst: blockAll,
 	}
 }
 
@@ -41,18 +43,26 @@ func (p *syncCountProvider) Name() string                      { return "countin
 func (p *syncCountProvider) CloudType() config.CloudType       { return p.cloudType }
 func (p *syncCountProvider) TargetIndex() int                  { return p.targetIndex }
 func (p *syncCountProvider) ConvertPorts(port string) []string { return []string{port} }
-func (p *syncCountProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
+func (p *syncCountProvider) CreateRules(_ provider.RuleSnapshot, rules []config.RuleAction) (provider.CreateResult, error) {
 	return provider.CreateResult{Written: len(rules)}, nil
 }
-func (p *syncCountProvider) DeleteRules([]config.RuleInfo) error { return nil }
+func (p *syncCountProvider) DeleteRules(provider.RuleSnapshot, []config.RuleInfo) (provider.DeleteResult, error) {
+	return provider.DeleteResult{}, nil
+}
 
 func (p *syncCountProvider) GetRules() ([]config.RuleInfo, error) {
-	p.calls.Add(1)
-	if p.blockAll {
+	n := p.calls.Add(1)
+	if p.blockFirst && n == 1 {
 		p.started <- struct{}{}
 		<-p.release
 	}
 	return nil, nil
+}
+
+// GetSnapshot 测试 mock：复用 GetRules 的既有行为，Revision 固定为非空值。
+func (p *syncCountProvider) GetSnapshot() (provider.RuleSnapshot, error) {
+	rules, err := p.GetRules()
+	return provider.RuleSnapshot{Rules: rules, Revision: "1"}, err
 }
 
 // waitForCalls 等待 Provider 调用次数达到 want（超时失败，不使用固定 sleep 断言时序）
@@ -147,11 +157,11 @@ func TestControl_FalseToTrueTriggersRoundImmediately(t *testing.T) {
 	}
 
 	s.ApplyState(stateWithProvider(t, s, true, time.Hour))
-	waitForCalls(t, p, 1, "false → true 必须立即触发一轮同步")
+	waitForCalls(t, p, 2, "false → true 必须立即触发一轮同步")
 
 	time.Sleep(120 * time.Millisecond)
-	if got := p.calls.Load(); got != 1 {
-		t.Errorf("false → true 只应立即触发一轮, GetRules = %d, want 1", got)
+	if got := p.calls.Load(); got != 2 {
+		t.Errorf("false → true 只应立即触发一轮（一轮 = S0 + S1 两次快照），GetRules = %d, want 2", got)
 	}
 }
 
@@ -164,7 +174,7 @@ func TestControl_TrueToTrueOnlyResetsTicker(t *testing.T) {
 
 	// 先进入启用态：false → true 立即一轮
 	s.ApplyState(stateWithProvider(t, s, true, time.Hour))
-	waitForCalls(t, p, 1, "false → true 未触发首轮")
+	waitForCalls(t, p, 2, "false → true 未触发首轮")
 	before := p.calls.Load()
 
 	// true → true 换用很短的新 interval
@@ -200,18 +210,18 @@ func TestControl_TrueToFalseFinishesCurrentRound(t *testing.T) {
 
 	// 当前轮必须被允许完成：放行后计数归零，说明本轮确实走完（calls 不回退）
 	p.release <- struct{}{}
-	waitForCalls(t, p, 1, "当前轮未完成")
+	waitForCalls(t, p, 2, "当前轮未完成")
 	time.Sleep(150 * time.Millisecond)
-	if got := p.calls.Load(); got != 1 {
-		t.Fatalf("关闭开关后不得启动新一轮: GetRules = %d, want 1", got)
+	if got := p.calls.Load(); got != 2 {
+		t.Fatalf("关闭开关后不得启动新一轮: GetRules = %d, want 2（一轮 = S0 + S1）", got)
 	}
 
 	// 暂停状态下再次投递状态与触发均不得启动新一轮
 	s.ApplyState(stateWithProvider(t, s, false, 10*time.Millisecond))
 	s.TriggerSync()
 	time.Sleep(200 * time.Millisecond)
-	if got := p.calls.Load(); got != 1 {
-		t.Fatalf("暂停后排队 trigger/状态通知不得启动新一轮: GetRules = %d, want 1", got)
+	if got := p.calls.Load(); got != 2 {
+		t.Fatalf("暂停后排队 trigger/状态通知不得启动新一轮: GetRules = %d, want 2", got)
 	}
 }
 
@@ -266,12 +276,12 @@ func TestStaleTriggerAfterPauseDoesNotAddRound(t *testing.T) {
 
 	// 进入启用态并完成第一轮
 	s.ApplyState(stateWithProvider(t, s, true, time.Hour))
-	waitForCalls(t, p, 1, "false → true 未触发首轮")
+	waitForCalls(t, p, 2, "false → true 未触发首轮")
 	waitApplied("启用态未应用")
 	time.Sleep(100 * time.Millisecond)
 	baseline := p.calls.Load()
-	if baseline != 1 {
-		t.Fatalf("前置条件：启用后应恰好 1 轮，实际 %d", baseline)
+	if baseline != 2 {
+		t.Fatalf("前置条件：启用后应恰好 1 轮（一轮 = S0 + S1 两次快照），实际 %d", baseline)
 	}
 
 	// 暂停并等待其真正生效
@@ -293,7 +303,7 @@ func TestStaleTriggerAfterPauseDoesNotAddRound(t *testing.T) {
 	s.Resume()
 	waitApplied("恢复未应用")
 	time.Sleep(600 * time.Millisecond)
-	if got := p.calls.Load(); got != baseline+1 {
+	if got := p.calls.Load(); got != baseline+2 {
 		t.Fatalf("恢复后应恰好新增 1 轮（陈旧 trigger 必须被丢弃）: %d → %d", baseline, got)
 	}
 }
@@ -335,8 +345,8 @@ func TestStopWaitsForBlockedRound(t *testing.T) {
 		t.Fatal("放行当前轮次后 Wait 未返回")
 	}
 
-	if got := p.calls.Load(); got != 1 {
-		t.Errorf("停止后不得启动新一轮: GetRules = %d, want 1", got)
+	if got := p.calls.Load(); got != 2 {
+		t.Errorf("停止后不得启动新一轮: GetRules = %d, want 2（一轮 = S0 + S1）", got)
 	}
 }
 
@@ -392,7 +402,7 @@ func TestPausedPublishedStateDropsTickerRound(t *testing.T) {
 	s := New(NewRuntimeManager(st))
 	startRun(t, s)
 
-	waitForCalls(t, p, 1, "启用态启动未执行首轮")
+	waitForCalls(t, p, 2, "启用态启动未执行首轮")
 
 	// 已提交暂停：只发布真值，不投递控制通知（模拟消费前的窗口）
 	s.Runtime().Apply(stateWithProvider(t, s, false, 50*time.Millisecond))
@@ -402,8 +412,8 @@ func TestPausedPublishedStateDropsTickerRound(t *testing.T) {
 
 	// 观察窗口覆盖至少 8 个定时器周期：暂停期间不得启动任何新一轮
 	time.Sleep(400 * time.Millisecond)
-	if got := p.calls.Load(); got != 1 {
-		t.Fatalf("暂停已提交时定时触发不得启动新轮次: GetRules = %d, want 1", got)
+	if got := p.calls.Load(); got != 2 {
+		t.Fatalf("暂停已提交时定时触发不得启动新轮次: GetRules = %d, want 2（一轮 = S0 + S1）", got)
 	}
 }
 
@@ -442,7 +452,7 @@ func TestNoNewRoundAfterStop(t *testing.T) {
 	st.Providers = []provider.Provider{p}
 	s := New(NewRuntimeManager(st))
 	go s.Run()
-	waitForCalls(t, p, 1, "启用态启动未执行首轮")
+	waitForCalls(t, p, 2, "启用态启动未执行首轮")
 
 	s.Stop()
 	s.Wait()

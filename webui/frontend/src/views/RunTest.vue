@@ -29,7 +29,7 @@ async function runDryRun() {
         模拟测试按当前云资源目标与域名规则计算变更预览，不实际写入任何云防火墙规则；建议在修改目标或规则后执行，确认预期变更后再开启同步
       </div>
       <NSpace align="center">
-        <NButton type="primary" :loading="loading" @click="runDryRun">执行模拟测试</NButton>
+        <NButton type="primary" size="large" :loading="loading" @click="runDryRun">执行模拟测试</NButton>
         <span v-if="lastRunAt" style="font-size: 14px; color: #999">
           上次执行：{{ lastRunAt.toLocaleTimeString() }}
         </span>

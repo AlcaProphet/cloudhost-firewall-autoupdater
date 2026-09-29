@@ -41,31 +41,29 @@ async function fetchStatus() {
   } catch { /* 轮询失败忽略 */ }
 }
 
-// 同步健康提示（Issue6 A3）：不引入任何时间阈值判定，只用「最近一轮结论 +
-// last_success 是否缺失或落后于 last_sync」表达「停滞」。
-// 两个时间戳都是内存态，重启后为 null，因此 null 时按「尚无记录」措辞，
-// 不写「从未成功」。暂停时不提示（暂停本身不制造轮次）。
+// 同步健康提示（Issue7 §7.4）：只依据后端 outcome 与 cleanup 计数展示，
+// 绝不用「last_success 落后于 last_sync」推导失败（那会把 idle 误报成异常）。
+//   - idle：无目标或无适用规则，属正常，不提示；
+//   - failed：红色；
+//   - partial：黄色，明确是平台无法实施（OperationalHealth 仍为 unhealthy）；
+//   - success + cleanup_deferred：黄色提示「所需权限已确认，陈旧规则清理延后」；
+//   - success 且无残留：不提示。
 const healthHint = computed(() => {
   if (!status.value.enabled) return null
   const round = status.value.last_round
   if (!round) return null
 
   if (round.outcome === 'failed') {
-    const skipped = round.skipped > 0 ? `，跳过 ${round.skipped}` : ''
-    return { type: 'error' as const, text: `最近一轮同步失败：共 ${round.total} 项，失败 ${round.failed}${skipped}。请查看同步日志排查。` }
+    const partial = round.skipped > 0 ? `，部分实施 ${round.skipped}` : ''
+    return { type: 'error' as const, text: `最近一轮同步失败：共 ${round.total} 个目标，失败 ${round.failed}${partial}。请查看同步日志排查。` }
   }
   if (round.outcome === 'partial') {
-    return { type: 'warning' as const, text: `最近一轮同步部分完成：共 ${round.total} 项，跳过 ${round.skipped}（该云产品无法表达对应规则）。` }
+    return { type: 'warning' as const, text: `最近一轮同步部分完成：共 ${round.total} 个目标，其中 ${round.skipped} 个目标存在平台无法实施的规则（已确认的权限不受影响）。` }
   }
-  // success：若 last_success 落后于 last_sync，说明最近一轮不是成功轮
-  const lastSync = status.value.last_sync
-  const lastSuccess = status.value.last_success
-  if (lastSync && lastSuccess && lastSync !== lastSuccess) {
-    return { type: 'warning' as const, text: '最近一轮同步未取得完整成功，上一次成功时间早于最近一轮完成时间。' }
+  if ((round.cleanup_deferred ?? 0) > 0) {
+    return { type: 'warning' as const, text: `所需权限已确认，陈旧规则清理延后：仍有 ${round.cleanup_deferred} 条残留候选（本次已清理 ${round.cleanup_deleted ?? 0} 条）。` }
   }
-  if (lastSync && !lastSuccess) {
-    return { type: 'warning' as const, text: '最近一轮同步已完成，但尚无成功记录（进程重启后该记录会重置）。' }
-  }
+  // idle（无目标/无适用规则）与无残留的 success 都不产生提示
   return null
 })
 
@@ -166,6 +164,7 @@ onUnmounted(() => {
             <div style="font-size: 20px">云资源目标 <b style="font-size: 28px">{{ stats.targets }}</b> 个</div>
             <div style="font-size: 20px">域名规则 <b style="font-size: 28px">{{ stats.rules }}</b> 条</div>
             <div style="font-size: 20px">最近同步 新增 <b style="font-size: 28px">{{ status.last_round?.added ?? 0 }}</b> / 删除 <b style="font-size: 28px">{{ status.last_round?.deleted ?? 0 }}</b></div>
+            <div style="font-size: 20px">清理候选 <b style="font-size: 28px">{{ status.last_round?.cleanup_candidates ?? 0 }}</b> / 已清理 <b style="font-size: 28px">{{ status.last_round?.cleanup_deleted ?? 0 }}</b> / 残留 <b style="font-size: 28px">{{ status.last_round?.cleanup_deferred ?? 0 }}</b></div>
           </NSpace>
         </NCard>
       </NGi>

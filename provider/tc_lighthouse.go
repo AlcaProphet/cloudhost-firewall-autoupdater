@@ -2,10 +2,11 @@ package provider
 
 import (
 	"fmt"
+	"log/slog"
+	"strconv"
 	"strings"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/portconv"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/profile"
 	lighthouse "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/lighthouse/v20200324"
@@ -59,50 +60,85 @@ func (p *TCLighthouse) TargetIndex() int {
 	return p.targetIndex
 }
 
-// GetRules 查询当前所有防火墙规则（分页）
-func (p *TCLighthouse) GetRules() ([]config.RuleInfo, error) {
-	var allRules []config.RuleInfo
-	var offset int64
+// GetSnapshot 查询当前所有防火墙规则（分页）并携带 FirewallVersion。
+//
+// Issue7 §6.1：FirewallVersion 必须进入快照；分页期间版本变化说明读取不一致，
+// 必须先重读整个快照，仍不一致则按快照不完整失败，绝不退化为无版本写入。
+func (p *TCLighthouse) GetSnapshot() (RuleSnapshot, error) {
+	const maxVersionRetries = 2
+	offset := int64(0)
 	limit := int64(100)
 
-	for {
-		req := lighthouse.NewDescribeFirewallRulesRequest()
-		req.InstanceId = common.StringPtr(p.instanceID)
-		req.Offset = common.Int64Ptr(offset)
-		req.Limit = common.Int64Ptr(limit)
+	for attempt := 0; attempt < maxVersionRetries; attempt++ {
+		var allRules []config.RuleInfo
+		offset = 0
+		firstVersion, lastVersion := "", ""
 
-		resp, err := p.client.DescribeFirewallRules(req)
-		if err != nil {
-			return nil, fmt.Errorf("查询防火墙规则失败: %w", err)
-		}
+		for {
+			req := lighthouse.NewDescribeFirewallRulesRequest()
+			req.InstanceId = common.StringPtr(p.instanceID)
+			req.Offset = common.Int64Ptr(offset)
+			req.Limit = common.Int64Ptr(limit)
 
-		for _, r := range resp.Response.FirewallRuleSet {
-			info := config.RuleInfo{
-				Protocol:      strVal(r.Protocol),
-				Port:          strVal(r.Port),
-				CidrBlock:     strVal(r.CidrBlock),
-				Ipv6CidrBlock: strVal(r.Ipv6CidrBlock),
-				Action:        strVal(r.Action),
-				Description:   strVal(r.FirewallRuleDescription),
+			resp, err := p.client.DescribeFirewallRules(req)
+			if err != nil {
+				return RuleSnapshot{}, fmt.Errorf("查询防火墙规则失败: %w", err)
 			}
-			allRules = append(allRules, info)
+			if resp == nil || resp.Response == nil {
+				return RuleSnapshot{}, fmt.Errorf("%w: Lighthouse 返回空响应", ErrSnapshotIncomplete)
+			}
+
+			if resp.Response.FirewallVersion == nil {
+				return RuleSnapshot{}, fmt.Errorf("%w: Lighthouse 未返回 FirewallVersion", ErrSnapshotIncomplete)
+			}
+			version := strconv.FormatUint(*resp.Response.FirewallVersion, 10)
+			if firstVersion == "" {
+				firstVersion = version
+			}
+			lastVersion = version
+
+			for _, r := range resp.Response.FirewallRuleSet {
+				info := config.RuleInfo{
+					Protocol:      strVal(r.Protocol),
+					Port:          strVal(r.Port),
+					CidrBlock:     strVal(r.CidrBlock),
+					Ipv6CidrBlock: strVal(r.Ipv6CidrBlock),
+					Action:        strVal(r.Action),
+					Description:   strVal(r.FirewallRuleDescription),
+				}
+				allRules = append(allRules, info)
+			}
+
+			// 分页：返回数量 < limit 表示已到最后一页
+			if int64(len(resp.Response.FirewallRuleSet)) < limit {
+				break
+			}
+			offset += limit
 		}
 
-		// 分页：返回数量 < limit 表示已到最后一页
-		if int64(len(resp.Response.FirewallRuleSet)) < limit {
-			break
+		if firstVersion == lastVersion {
+			return RuleSnapshot{Rules: allRules, Revision: lastVersion}, nil
 		}
-		offset += limit
+		slog.Warn("Lighthouse 分页期间防火墙版本变化，重读整个快照",
+			"first", firstVersion, "last", lastVersion, "attempt", attempt+1)
 	}
+	return RuleSnapshot{}, fmt.Errorf("%w: Lighthouse 分页期间 FirewallVersion 持续变化", ErrSnapshotIncomplete)
+}
 
-	return allRules, nil
+// GetRules 旧逐规则同步路径的兼容包装（已废弃，见 Provider 接口注释）。
+func (p *TCLighthouse) GetRules() ([]config.RuleInfo, error) {
+	snapshot, err := p.GetSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	return snapshot.Rules, nil
 }
 
 // CreateRules 增量添加防火墙规则。
 //
 // Lighthouse 不支持任何本工具需要跳过的期望规则形态（ICMPv6 由其原生支持），
 // 因此成功时恒为 {len(rules), 0}（Issue6 A11）。
-func (p *TCLighthouse) CreateRules(rules []config.RuleAction) (CreateResult, error) {
+func (p *TCLighthouse) CreateRules(snapshot RuleSnapshot, rules []config.RuleAction) (CreateResult, error) {
 	if len(rules) == 0 {
 		return CreateResult{}, nil
 	}
@@ -138,10 +174,17 @@ func (p *TCLighthouse) CreateRules(rules []config.RuleAction) (CreateResult, err
 		fwRules = append(fwRules, fwRule)
 	}
 
+	// 版本保护（Issue7 §6.1）：Create 必须携带 S0 的 FirewallVersion；
+	// 缺失或不可解析即快照不完整，绝不退化为无版本写入。
+	version, err := strconv.ParseUint(strings.TrimSpace(snapshot.Revision), 10, 64)
+	if err != nil {
+		return CreateResult{}, fmt.Errorf("%w: Lighthouse 写入缺少可用的 FirewallVersion", ErrSnapshotIncomplete)
+	}
+
 	req := lighthouse.NewCreateFirewallRulesRequest()
 	req.InstanceId = common.StringPtr(p.instanceID)
 	req.FirewallRules = fwRules
-	// 不传 FirewallVersion（由云 API 自行管理）
+	req.FirewallVersion = common.Uint64Ptr(version)
 
 	if _, err := p.client.CreateFirewallRules(req); err != nil {
 		return CreateResult{}, fmt.Errorf("添加防火墙规则失败: %w", err)
@@ -149,10 +192,18 @@ func (p *TCLighthouse) CreateRules(rules []config.RuleAction) (CreateResult, err
 	return CreateResult{Written: len(fwRules), Skipped: 0}, nil
 }
 
-// DeleteRules 精确删除防火墙规则
-func (p *TCLighthouse) DeleteRules(rules []config.RuleInfo) error {
+// DeleteRules 按完整规则定义精确删除（Lighthouse 无稳定 RuleID）。
+//
+// Issue7 §6.1：Delete 必须携带 S1 的 FirewallVersion；缺失或不可解析即快照不完整，
+// 绝不降级为无版本删除。删除请求不得包含任何 Desired key（由调用方保证）。
+func (p *TCLighthouse) DeleteRules(snapshot RuleSnapshot, rules []config.RuleInfo) (DeleteResult, error) {
 	if len(rules) == 0 {
-		return nil
+		return DeleteResult{}, nil
+	}
+
+	version, err := strconv.ParseUint(strings.TrimSpace(snapshot.Revision), 10, 64)
+	if err != nil {
+		return DeleteResult{}, fmt.Errorf("%w: Lighthouse 删除缺少可用的 FirewallVersion", ErrSnapshotIncomplete)
 	}
 
 	var fwRules []*lighthouse.FirewallRule
@@ -182,44 +233,15 @@ func (p *TCLighthouse) DeleteRules(rules []config.RuleInfo) error {
 	req := lighthouse.NewDeleteFirewallRulesRequest()
 	req.InstanceId = common.StringPtr(p.instanceID)
 	req.FirewallRules = fwRules
+	req.FirewallVersion = common.Uint64Ptr(version)
 
-	_, err := p.client.DeleteFirewallRules(req)
-	if err != nil {
-		return fmt.Errorf("删除防火墙规则失败: %w", err)
+	if _, err := p.client.DeleteFirewallRules(req); err != nil {
+		return DeleteResult{}, fmt.Errorf("删除防火墙规则失败: %w", err)
 	}
-	return nil
+	return DeleteResult{Deleted: len(fwRules), Resolved: len(fwRules)}, nil
 }
 
-// ConvertPorts 统一端口 → Lighthouse 格式
-// Lighthouse 支持逗号分隔，Port 字段 ≤ 64 字符
-// 超限时拆分为多个条目
+// ConvertPorts 统一端口 → Lighthouse 格式（唯一样本见 provider.ExpandPorts）
 func (p *TCLighthouse) ConvertPorts(port string) []string {
-	ports := portconv.Parse(port)
-	if len(ports) == 1 {
-		return ports // ALL 或单端口
-	}
-
-	// 尝试合并为逗号分隔（总长度 ≤ 64）
-	joined := strings.Join(ports, ",")
-	if len(joined) <= 64 {
-		return []string{joined}
-	}
-
-	// 超限：拆分为多个条目，每个 ≤ 64 字符
-	var result []string
-	current := ""
-	for _, p := range ports {
-		if current == "" {
-			current = p
-		} else if len(current+","+p) <= 64 {
-			current += "," + p
-		} else {
-			result = append(result, current)
-			current = p
-		}
-	}
-	if current != "" {
-		result = append(result, current)
-	}
-	return result
+	return ExpandPorts(config.CloudTCLighthouse, port)
 }

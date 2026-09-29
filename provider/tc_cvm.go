@@ -3,12 +3,10 @@ package provider
 import (
 	"fmt"
 	"log/slog"
-	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/portconv"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/profile"
 	vpc "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/vpc/v20170312"
@@ -62,50 +60,74 @@ func (p *TCCVM) TargetIndex() int {
 	return p.targetIndex
 }
 
-// GetRules 查询安全组入站规则
-func (p *TCCVM) GetRules() ([]config.RuleInfo, error) {
+// GetSnapshot 查询安全组入站规则并携带 Version。
+//
+// Issue7 §6.2：SecurityGroupPolicySet.Version 必须进入快照；每条 Ingress 保留 API 返回的
+// 真实 PolicyIndex。缺少 PolicyIndex 的规则**仍进入快照**（否则会丢失覆盖判断并可能重复创建），
+// 但它不会被当作可删除候选——由规划器统一给出 owned_locator_missing 的 cleanup_deferred。
+func (p *TCCVM) GetSnapshot() (RuleSnapshot, error) {
 	req := vpc.NewDescribeSecurityGroupPoliciesRequest()
 	req.SecurityGroupId = common.StringPtr(p.securityGroupID)
 
 	resp, err := p.client.DescribeSecurityGroupPolicies(req)
 	if err != nil {
-		return nil, fmt.Errorf("查询安全组规则失败: %w", err)
+		return RuleSnapshot{}, fmt.Errorf("查询安全组规则失败: %w", err)
+	}
+	if resp == nil || resp.Response == nil {
+		return RuleSnapshot{}, fmt.Errorf("%w: CVM 返回空响应", ErrSnapshotIncomplete)
 	}
 
-	var rules []config.RuleInfo
 	policySet := resp.Response.SecurityGroupPolicySet
 	if policySet == nil {
-		return rules, nil
+		return RuleSnapshot{}, fmt.Errorf("%w: CVM 未返回安全组规则集合", ErrSnapshotIncomplete)
+	}
+	version := strVal(policySet.Version)
+	if version == "" {
+		return RuleSnapshot{}, fmt.Errorf("%w: CVM 未返回安全组 Version", ErrSnapshotIncomplete)
 	}
 
-	// 只取 Ingress（入站）规则
-	// PolicyIndex 是安全组全方向全局索引（Ingress+Egress 共用编号空间），与 Ingress 数组索引不一致；
-	// 缺失时跳过该规则（不参与本工具删除），避免按错误索引定位误删 Egress 或其他规则
+	// 只取 Ingress（入站）规则。PolicyIndex 是安全组全方向全局索引
+	// （Ingress+Egress 共用编号空间），与 Ingress 数组索引不一致，必须原样保留。
+	rules := make([]config.RuleInfo, 0, len(policySet.Ingress))
+	missingIndex := 0
 	for _, r := range policySet.Ingress {
-		if r.PolicyIndex == nil {
-			slog.Warn("CVM 规则缺少 PolicyIndex，跳过该规则（避免误删）", "description", strVal(r.PolicyDescription))
-			continue
+		policyIndex := ""
+		if r.PolicyIndex != nil {
+			policyIndex = strconv.FormatInt(*r.PolicyIndex, 10)
+		} else {
+			missingIndex++
 		}
-		info := config.RuleInfo{
+		rules = append(rules, config.RuleInfo{
 			Protocol:      strings.ToUpper(strVal(r.Protocol)),
 			Port:          strVal(r.Port),
 			CidrBlock:     strVal(r.CidrBlock),
 			Ipv6CidrBlock: strVal(r.Ipv6CidrBlock),
 			Action:        strings.ToUpper(strVal(r.Action)),
 			Description:   strVal(r.PolicyDescription),
-			PolicyIndex:   strconv.FormatInt(*r.PolicyIndex, 10),
-		}
-		rules = append(rules, info)
+			PolicyIndex:   policyIndex,
+		})
+	}
+	if missingIndex > 0 {
+		slog.Warn("CVM 存在缺少 PolicyIndex 的入站规则，这些规则不会被自动删除", "数量", missingIndex)
 	}
 
-	return rules, nil
+	return RuleSnapshot{Rules: rules, Revision: version}, nil
+}
+
+// GetRules 旧逐规则同步路径的兼容包装（已废弃，见 Provider 接口注释）。
+func (p *TCCVM) GetRules() ([]config.RuleInfo, error) {
+	snapshot, err := p.GetSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	return snapshot.Rules, nil
 }
 
 // CreateRules 增量添加入站规则。
 //
 // CVM 的 100 条规则上限是**硬错误**（不属 skipped，也不可重试），因此超出上限时
 // 返回空结果与错误；成功时恒为 {len(rules), 0}（Issue6 A11）。
-func (p *TCCVM) CreateRules(rules []config.RuleAction) (CreateResult, error) {
+func (p *TCCVM) CreateRules(snapshot RuleSnapshot, rules []config.RuleAction) (CreateResult, error) {
 	if len(rules) == 0 {
 		return CreateResult{}, nil
 	}
@@ -145,10 +167,18 @@ func (p *TCCVM) CreateRules(rules []config.RuleAction) (CreateResult, error) {
 		policies = append(policies, policy)
 	}
 
+	// 版本保护（Issue7 §6.2）：Create 必须携带 S0 的 Version；
+	// 缺失即快照不完整，绝不退化为无版本写入。
+	version := strings.TrimSpace(snapshot.Revision)
+	if version == "" {
+		return CreateResult{}, fmt.Errorf("%w: CVM 写入缺少可用的安全组 Version", ErrSnapshotIncomplete)
+	}
+
 	req := vpc.NewCreateSecurityGroupPoliciesRequest()
 	req.SecurityGroupId = common.StringPtr(p.securityGroupID)
 	req.SecurityGroupPolicySet = &vpc.SecurityGroupPolicySet{
 		Ingress: policies,
+		Version: common.StringPtr(version),
 	}
 
 	if _, err := p.client.CreateSecurityGroupPolicies(req); err != nil {
@@ -157,59 +187,57 @@ func (p *TCCVM) CreateRules(rules []config.RuleAction) (CreateResult, error) {
 	return CreateResult{Written: len(policies), Skipped: 0}, nil
 }
 
-// DeleteRules 按 PolicyIndex 降序逐条删除入站规则
-func (p *TCCVM) DeleteRules(rules []config.RuleInfo) error {
+// DeleteRules 在**同一个** DeleteSecurityGroupPolicies 请求内按 PolicyIndex 批量删除入站规则。
+//
+// Issue7 §6.2：
+//   - 必须携带同一 S1 的 Version（缺失即快照不完整，绝不无版本删除）；
+//   - 绝不逐条复用已经变化的 Version（逐条删除会造成索引漂移）；
+//   - 任一候选缺 PolicyIndex、索引不可解析或索引重复映射到不同规则时直接拒绝删除。
+func (p *TCCVM) DeleteRules(snapshot RuleSnapshot, rules []config.RuleInfo) (DeleteResult, error) {
 	if len(rules) == 0 {
-		return nil
+		return DeleteResult{}, nil
 	}
 
-	// 按 PolicyIndex 降序排列（避免索引偏移）
-	sorted := make([]config.RuleInfo, len(rules))
-	copy(sorted, rules)
-	sort.Slice(sorted, func(i, j int) bool {
-		pi, _ := strconv.Atoi(sorted[i].PolicyIndex)
-		pj, _ := strconv.Atoi(sorted[j].PolicyIndex)
-		return pi > pj
-	})
-
-	// 逐条删除
-	deleted := 0
-	for _, r := range sorted {
-		idx, err := strconv.ParseInt(r.PolicyIndex, 10, 64)
-		if err != nil {
-			slog.Warn("无效的 PolicyIndex，跳过", "index", r.PolicyIndex)
-			continue
-		}
-
-		req := vpc.NewDeleteSecurityGroupPoliciesRequest()
-		req.SecurityGroupId = common.StringPtr(p.securityGroupID)
-		req.SecurityGroupPolicySet = &vpc.SecurityGroupPolicySet{
-			Ingress: []*vpc.SecurityGroupPolicy{
-				{PolicyIndex: common.Int64Ptr(idx)},
-			},
-		}
-
-		_, err = p.client.DeleteSecurityGroupPolicies(req)
-		if err != nil {
-			// ResourceNotFound 视为成功（幂等）
-			if strings.Contains(err.Error(), "ResourceNotFound") {
-				slog.Warn("规则已不存在，跳过", "index", r.PolicyIndex)
-				continue
-			}
-			deleteErr := fmt.Errorf("删除安全组规则失败 (index=%s): %w", r.PolicyIndex, err)
-			if deleted > 0 {
-				return &PartialDeleteError{Deleted: deleted, Err: deleteErr}
-			}
-			return deleteErr
-		}
-		deleted++
+	version := strings.TrimSpace(snapshot.Revision)
+	if version == "" {
+		return DeleteResult{}, fmt.Errorf("%w: CVM 删除缺少可用的安全组 Version", ErrSnapshotIncomplete)
 	}
-	return nil
+
+	seen := make(map[int64]string, len(rules))
+	policies := make([]*vpc.SecurityGroupPolicy, 0, len(rules))
+	for _, r := range rules {
+		idx, err := strconv.ParseInt(strings.TrimSpace(r.PolicyIndex), 10, 64)
+		if err != nil {
+			return DeleteResult{}, fmt.Errorf("候选缺少可用的 PolicyIndex（%q），拒绝删除以避免误删", r.PolicyIndex)
+		}
+		if prev, dup := seen[idx]; dup {
+			return DeleteResult{}, fmt.Errorf("候选存在重复 PolicyIndex=%d（%q 与 %q），无法唯一定位，拒绝删除", idx, prev, r.Description)
+		}
+		seen[idx] = r.Description
+		policies = append(policies, &vpc.SecurityGroupPolicy{PolicyIndex: common.Int64Ptr(idx)})
+	}
+
+	req := vpc.NewDeleteSecurityGroupPoliciesRequest()
+	req.SecurityGroupId = common.StringPtr(p.securityGroupID)
+	req.SecurityGroupPolicySet = &vpc.SecurityGroupPolicySet{
+		Ingress: policies,
+		Version: common.StringPtr(version),
+	}
+
+	if _, err := p.client.DeleteSecurityGroupPolicies(req); err != nil {
+		// ResourceNotFound 视为成功（幂等）：规则已不存在，不计入 Deleted
+		if strings.Contains(err.Error(), "ResourceNotFound") {
+			slog.Warn("安全组规则已不存在，按幂等处理", "provider", p.Name(), "数量", len(policies))
+			return DeleteResult{Resolved: len(policies)}, nil
+		}
+		return DeleteResult{}, fmt.Errorf("删除安全组规则失败: %w", err)
+	}
+	return DeleteResult{Deleted: len(policies), Resolved: len(policies)}, nil
 }
 
-// ConvertPorts CVM 不支持逗号分隔，拆分为多条
+// ConvertPorts CVM 不支持逗号分隔，拆分为多条（唯一样本见 provider.ExpandPorts）
 func (p *TCCVM) ConvertPorts(port string) []string {
-	return portconv.Parse(port)
+	return ExpandPorts(config.CloudTCCVM, port)
 }
 
 // checkRuleLimit 检查安全组规则总数是否接近上限

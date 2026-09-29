@@ -32,9 +32,20 @@ type syncStatusProvider struct {
 	calls int
 }
 
-func (p *syncStatusProvider) Name() string                { return "sync-status" }
-func (p *syncStatusProvider) CloudType() config.CloudType { return config.CloudTCCVM }
-func (p *syncStatusProvider) TargetIndex() int            { return 0 }
+func (p *syncStatusProvider) Name() string { return "sync-status" }
+
+// CloudType 在 partial 模式下返回 SWAS：该平台无法表达 DROP 规则，
+// 规划阶段即产生 unsupported，目标结论为 partial（Issue7 §5.3）。
+func (p *syncStatusProvider) CloudType() config.CloudType {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.mode == syncStatusPartial {
+		return config.CloudAliSWAS
+	}
+	return config.CloudTCCVM
+}
+
+func (p *syncStatusProvider) TargetIndex() int { return 0 }
 
 func (p *syncStatusProvider) GetRules() ([]config.RuleInfo, error) {
 	p.mu.Lock()
@@ -48,13 +59,19 @@ func (p *syncStatusProvider) GetRules() ([]config.RuleInfo, error) {
 		return nil, nil
 	default:
 		return []config.RuleInfo{{
-			Protocol: "TCP", Port: "443", Action: "ACCEPT",
+			Protocol: "TCP", Port: "443", Action: "DROP",
 			CidrBlock: "127.0.0.1/32", Description: "[auto-dns]",
 		}}, nil
 	}
 }
 
-func (p *syncStatusProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
+// GetSnapshot 测试 mock：复用 GetRules 的既有行为，Revision 固定为非空值。
+func (p *syncStatusProvider) GetSnapshot() (provider.RuleSnapshot, error) {
+	rules, err := p.GetRules()
+	return provider.RuleSnapshot{Rules: rules, Revision: "1"}, err
+}
+
+func (p *syncStatusProvider) CreateRules(_ provider.RuleSnapshot, rules []config.RuleAction) (provider.CreateResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls++
@@ -64,11 +81,11 @@ func (p *syncStatusProvider) CreateRules(rules []config.RuleAction) (provider.Cr
 	return provider.CreateResult{Written: len(rules)}, nil
 }
 
-func (p *syncStatusProvider) DeleteRules([]config.RuleInfo) error {
+func (p *syncStatusProvider) DeleteRules(provider.RuleSnapshot, []config.RuleInfo) (provider.DeleteResult, error) {
 	p.mu.Lock()
 	p.calls++
 	p.mu.Unlock()
-	return nil
+	return provider.DeleteResult{}, nil
 }
 
 func (p *syncStatusProvider) ConvertPorts(port string) []string { return []string{port} }
@@ -204,9 +221,10 @@ func newSyncStatusState(t *testing.T, enabled bool, rules []config.DomainRule, p
 	return state
 }
 
+// syncStatusRule 使用 DROP：TCCVM 支持（success 路径），SWAS 不支持（partial 路径）。
 func syncStatusRule() config.DomainRule {
 	return config.DomainRule{
-		Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Targets: []int{0},
+		Host: "localhost", Protocol: "TCP", Ports: "443", Action: "DROP", Targets: []int{0},
 	}
 }
 
@@ -237,7 +255,8 @@ func getSyncStatus(t *testing.T, url string) syncer.SyncStatus {
 
 func waitForSyncComplete(t *testing.T, events <-chan notifier.Event) {
 	t.Helper()
-	deadline := time.NewTimer(5 * time.Second)
+	// 超时必须覆盖云厂商目标间限速（SWAS 为 5s）：轮次完成事件在该限速之后才发布。
+	deadline := time.NewTimer(15 * time.Second)
 	defer deadline.Stop()
 	for {
 		select {

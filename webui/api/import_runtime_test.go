@@ -24,15 +24,23 @@ type countingImportProvider struct {
 func (p *countingImportProvider) Name() string                { return "counting-import" }
 func (p *countingImportProvider) CloudType() config.CloudType { return config.CloudTCCVM }
 func (p *countingImportProvider) TargetIndex() int            { return int(p.targetIndex.Load()) }
-func (p *countingImportProvider) CreateRules(rules []config.RuleAction) (provider.CreateResult, error) {
+func (p *countingImportProvider) CreateRules(_ provider.RuleSnapshot, rules []config.RuleAction) (provider.CreateResult, error) {
 	return provider.CreateResult{Written: len(rules)}, nil
 }
-func (p *countingImportProvider) DeleteRules([]config.RuleInfo) error { return nil }
-func (p *countingImportProvider) ConvertPorts(port string) []string   { return portconv.Parse(port) }
+func (p *countingImportProvider) DeleteRules(provider.RuleSnapshot, []config.RuleInfo) (provider.DeleteResult, error) {
+	return provider.DeleteResult{}, nil
+}
+func (p *countingImportProvider) ConvertPorts(port string) []string { return portconv.Parse(port) }
 
 func (p *countingImportProvider) GetRules() ([]config.RuleInfo, error) {
 	p.calls.Add(1)
 	return nil, nil
+}
+
+// GetSnapshot 测试 mock：复用 GetRules 的既有行为，Revision 固定为非空值。
+func (p *countingImportProvider) GetSnapshot() (provider.RuleSnapshot, error) {
+	rules, err := p.GetRules()
+	return provider.RuleSnapshot{Rules: rules, Revision: "1"}, err
 }
 
 // stubProviderSyncer 包装真实 Syncer：发布前把候选 Provider 列表替换为计数 stub，

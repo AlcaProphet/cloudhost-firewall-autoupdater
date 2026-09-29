@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/portconv"
 	swas "github.com/alibabacloud-go/swas-open-20200601/v3/client"
 	"github.com/alibabacloud-go/tea/tea"
 )
@@ -57,13 +56,21 @@ func (p *AliSWAS) TargetIndex() int {
 	return p.targetIndex
 }
 
-// GetRules 查询防火墙规则（分页）
-func (p *AliSWAS) GetRules() ([]config.RuleInfo, error) {
+// GetSnapshot 查询防火墙规则（分页）并证明遍历完整。
+//
+// Issue7 §6.3：必须完整遍历 PageNumber，页失败即 snapshot 失败；TotalCount 可用时
+// 以它作为完整性判据（返回条数少于总数即视为不完整），不可用时退回「本页不足一页」判据。
+func (p *AliSWAS) GetSnapshot() (RuleSnapshot, error) {
 	var allRules []config.RuleInfo
 	pageNumber := int32(1)
 	pageSize := int32(100)
+	var totalCount *int32
 
-	for {
+	// 页数硬上限：PageNumber 严格递增，但服务端若持续返回非空重复页会无限翻页
+	// （与 P3-25 同类的无界循环风险）。100 页 × 100 条远超单实例合理规则数。
+	const maxPages = 100
+
+	for page := 0; page < maxPages; page++ {
 		req := &swas.ListFirewallRulesRequest{
 			InstanceId: tea.String(p.instanceID),
 			RegionId:   tea.String(p.regionID),
@@ -73,14 +80,16 @@ func (p *AliSWAS) GetRules() ([]config.RuleInfo, error) {
 
 		resp, err := p.client.ListFirewallRules(req)
 		if err != nil {
-			return nil, fmt.Errorf("查询防火墙规则失败: %w", err)
+			return RuleSnapshot{}, fmt.Errorf("查询防火墙规则失败: %w", err)
+		}
+		if resp == nil || resp.Body == nil {
+			return RuleSnapshot{}, fmt.Errorf("%w: SWAS 返回空响应", ErrSnapshotIncomplete)
 		}
 
 		body := resp.Body
-		if body == nil || body.FirewallRules == nil {
-			break
+		if body.TotalCount != nil {
+			totalCount = body.TotalCount
 		}
-
 		for _, r := range body.FirewallRules {
 			info := config.RuleInfo{
 				Protocol:    strVal(r.RuleProtocol),
@@ -93,14 +102,41 @@ func (p *AliSWAS) GetRules() ([]config.RuleInfo, error) {
 			allRules = append(allRules, info)
 		}
 
-		// 分页判断
+		// TotalCount 可用时以它为权威判据（服务端可能返回少于 PageSize 的中间页）；
+		// 不可用时退回「本页不足一页即最后一页」的既有判据。
+		if totalCount != nil {
+			if int32(len(allRules)) >= *totalCount {
+				break
+			}
+			if len(body.FirewallRules) == 0 {
+				return RuleSnapshot{}, fmt.Errorf("%w: SWAS 分页提前结束（已读 %d 条，云端声明共 %d 条）",
+					ErrSnapshotIncomplete, len(allRules), *totalCount)
+			}
+			pageNumber++
+			continue
+		}
 		if int32(len(body.FirewallRules)) < pageSize {
 			break
 		}
 		pageNumber++
 	}
 
-	return allRules, nil
+	if totalCount != nil && int32(len(allRules)) < *totalCount {
+		return RuleSnapshot{}, fmt.Errorf("%w: SWAS 仅读取 %d 条，云端声明共 %d 条",
+			ErrSnapshotIncomplete, len(allRules), *totalCount)
+	}
+
+	// 阿里云无规则版本号，Revision 合法为空；删除必须依赖同一快照回读的稳定 RuleId。
+	return RuleSnapshot{Rules: allRules}, nil
+}
+
+// GetRules 旧逐规则同步路径的兼容包装（已废弃，见 Provider 接口注释）。
+func (p *AliSWAS) GetRules() ([]config.RuleInfo, error) {
+	snapshot, err := p.GetSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	return snapshot.Rules, nil
 }
 
 // CreateRules 批量创建防火墙规则。
@@ -110,7 +146,7 @@ func (p *AliSWAS) GetRules() ([]config.RuleInfo, error) {
 // 无法表达：记 WARN 后跳过，并在返回值里如实计入 Skipped（Issue6 A11）。修复前
 // 混合批次照常提交、全 DROP 时直接 return nil，调用方无法区分「全部写入成功」
 // 与「全部跳过」，导致 added 虚增且每轮重复出现、永不收敛。
-func (p *AliSWAS) CreateRules(rules []config.RuleAction) (CreateResult, error) {
+func (p *AliSWAS) CreateRules(_ RuleSnapshot, rules []config.RuleAction) (CreateResult, error) {
 	if len(rules) == 0 {
 		return CreateResult{}, nil
 	}
@@ -151,21 +187,22 @@ func (p *AliSWAS) CreateRules(rules []config.RuleAction) (CreateResult, error) {
 	return CreateResult{Written: len(fwRules), Skipped: skipped}, nil
 }
 
-// DeleteRules 批量删除防火墙规则
-func (p *AliSWAS) DeleteRules(rules []config.RuleInfo) error {
+// DeleteRules 按同一 S1 回读的稳定 RuleId 批量删除。
+//
+// Issue7 §6.3：cleanup 只使用 S1 的非空 RuleId；任一候选缺 RuleId 时整体拒绝，
+// 绝不按规则值降级删除（SWAS 的删除定位只有 RuleId）。API 文档未声明 RuleIds 上限，
+// 因此不凭空设定业务分批；遇服务端限制时以真实错误为准。
+func (p *AliSWAS) DeleteRules(_ RuleSnapshot, rules []config.RuleInfo) (DeleteResult, error) {
 	if len(rules) == 0 {
-		return nil
+		return DeleteResult{}, nil
 	}
 
-	var ruleIDs []*string
+	ruleIDs := make([]*string, 0, len(rules))
 	for _, r := range rules {
-		if r.RuleID != "" {
-			ruleIDs = append(ruleIDs, tea.String(r.RuleID))
+		if strings.TrimSpace(r.RuleID) == "" {
+			return DeleteResult{}, fmt.Errorf("候选缺少可用的 RuleId，拒绝删除以避免误删: %s", describeCloudRule(r))
 		}
-	}
-
-	if len(ruleIDs) == 0 {
-		return nil
+		ruleIDs = append(ruleIDs, tea.String(r.RuleID))
 	}
 
 	req := &swas.DeleteFirewallRulesRequest{
@@ -174,21 +211,15 @@ func (p *AliSWAS) DeleteRules(rules []config.RuleInfo) error {
 		RuleIds:    ruleIDs,
 	}
 
-	_, err := p.client.DeleteFirewallRules(req)
-	if err != nil {
-		return fmt.Errorf("删除防火墙规则失败: %w", err)
+	if _, err := p.client.DeleteFirewallRules(req); err != nil {
+		return DeleteResult{}, fmt.Errorf("删除防火墙规则失败: %w", err)
 	}
-	return nil
+	return DeleteResult{Deleted: len(ruleIDs), Resolved: len(ruleIDs)}, nil
 }
 
-// ConvertPorts 统一端口 → 阿里云斜杠格式
+// ConvertPorts 统一端口 → 阿里云斜杠格式（唯一样本见 provider.ExpandPorts）
 func (p *AliSWAS) ConvertPorts(port string) []string {
-	ports := portconv.Parse(port)
-	var result []string
-	for _, p := range ports {
-		result = append(result, portconv.ToSlash(p))
-	}
-	return result
+	return ExpandPorts(config.CloudAliSWAS, port)
 }
 
 // normalizeSWASPort 将阿里云端口格式归一化

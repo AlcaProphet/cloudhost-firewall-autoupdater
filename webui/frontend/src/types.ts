@@ -34,13 +34,13 @@ export interface DomainRule {
   enable_ipv6: boolean
 }
 
-// RoundSummary 一轮同步的整轮汇总（Issue6 A18；字段口径按 F4 裁决）
+// RoundSummary 一轮同步的整轮汇总（Issue7 §5.4：统计单元为**有适用规则的目标**）
 //
 // 不变量：total === ok + changed + failed + skipped
-//   - ok      成功且无变更的单元
-//   - changed 成功且发生增删的单元
-//   - failed  DNS 或云调用失败的单元
-//   - skipped Provider 明确未实施操作的单元（如 SWAS 无法表达 DROP）
+//   - ok      目标 success 且零增删（允许存在 cleanup_deferred）
+//   - changed 目标 success 且确认发生增删
+//   - failed  目标最终 failed
+//   - skipped 目标未失败但存在 unsupported（部分实施目标数，字段名保留以兼容）
 export interface RoundSummary {
   finished_at: string
   total: number
@@ -50,6 +50,10 @@ export interface RoundSummary {
   skipped: number
   added: number
   deleted: number
+  // 清理可观测性：候选数 / 实际确认清理数 / 最终残留候选数
+  cleanup_candidates: number
+  cleanup_deleted: number
+  cleanup_deferred: number
   duration_ms: number
   outcome: 'success' | 'failed' | 'partial' | 'idle'
 }
@@ -79,16 +83,70 @@ export interface RuleChange {
   skip_reason?: string
 }
 
-// DryRunResult 试运行结果（to_add/to_delete 为规则明细数组）
+// FunctionalKey 功能身份：address-family + canonical CIDR + 协议 + 端口 + action
+export interface FunctionalKey {
+  family: string
+  cidr: string
+  protocol: string
+  port: string
+  action: string
+}
+
+// PlannedRule 目标级期望功能的一项
+export interface PlannedRule {
+  key: FunctionalKey
+  comment: string
+  description: string
+  rule_ids: number[]
+  domains: string[]
+  implementable: boolean
+}
+
+// CloudRule 云端规则摘要（匹配结果里回显实际命中的规则）
+export interface CloudRule {
+  protocol: string
+  port: string
+  cidr_block?: string
+  ipv6_cidr_block?: string
+  action: string
+  description: string
+  policy_index?: string
+  rule_id?: string
+}
+
+// PlanMatch 一条期望功能被云端规则精确满足
+export interface PlanMatch {
+  key: FunctionalKey
+  description: string
+  rules: CloudRule[]
+}
+
+// PlanIssue 稳定、可分类、可展示的规划问题
+export interface PlanIssue {
+  code: string
+  message: string
+  key?: FunctionalKey
+  domain?: string
+  rule_id?: number
+}
+
+// DryRunResult 目标级试运行结果（Issue7 §7.1）：每目标一项，数组恒为 []，绝不为 null
 export interface DryRunResult {
+  target_id: number
   provider: string
-  domain: string
+  domains: string[]
+  desired: PlannedRule[]
+  satisfied_by_owned: PlanMatch[]
+  satisfied_by_external: PlanMatch[]
   to_add: RuleChange[]
-  to_delete: RuleChange[]
-  error?: string
-  // skipped 无法实施的期望规则（如阿里云轻量云不支持 DROP；
-  // Issue6 A11，只追加字段，to_add/to_delete 的名称与结构不变）
-  skipped?: RuleChange[]
+  // cleanup_candidates 只是预览：正式流程还要在 S1 上重新过一遍安全门才可能删除
+  cleanup_candidates: RuleChange[]
+  cleanup_deferred: PlanIssue[]
+  dns_errors: PlanIssue[]
+  unsupported: PlanIssue[]
+  conflicts: PlanIssue[]
+  coverage_ready: boolean
+  error: string
 }
 
 // DryRunResponse Dry Run 响应包装（空状态语义化）

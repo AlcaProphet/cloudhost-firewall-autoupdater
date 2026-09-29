@@ -19,10 +19,15 @@ func (m *mockProvider) Name() string                         { return "mock" }
 func (m *mockProvider) CloudType() config.CloudType          { return m.cloudType }
 func (m *mockProvider) TargetIndex() int                     { return m.targetIndex }
 func (m *mockProvider) GetRules() ([]config.RuleInfo, error) { return nil, nil }
-func (m *mockProvider) CreateRules(rules []config.RuleAction) (CreateResult, error) {
+func (m *mockProvider) GetSnapshot() (RuleSnapshot, error) {
+	return RuleSnapshot{Revision: "1"}, nil
+}
+func (m *mockProvider) CreateRules(_ RuleSnapshot, rules []config.RuleAction) (CreateResult, error) {
 	return CreateResult{Written: len(rules)}, nil
 }
-func (m *mockProvider) DeleteRules(rules []config.RuleInfo) error { return nil }
+func (m *mockProvider) DeleteRules(RuleSnapshot, []config.RuleInfo) (DeleteResult, error) {
+	return DeleteResult{}, nil
+}
 func (m *mockProvider) ConvertPorts(port string) []string {
 	return portconv.Parse(port)
 }

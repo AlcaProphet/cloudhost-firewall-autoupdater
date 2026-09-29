@@ -3,6 +3,7 @@ package provider
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -296,6 +297,9 @@ func mockECS(t *testing.T, host string) *AliECS {
 	return &AliECS{client: cli, securityGroupID: "sg-mock", regionID: "cn-hangzhou", targetIndex: 1}
 }
 
+// mockSnapshot 返回测试用云端快照（腾讯云写入需要非空版本号）。
+func mockSnapshot() RuleSnapshot { return RuleSnapshot{Revision: "7"} }
+
 // ─── Lighthouse ───
 
 // TestRequest_LighthouseCreateProtocolPortAndIPv6 ICMP 端口固定 ALL、IPv6+ICMP 切 ICMPv6 并写 Ipv6CidrBlock。
@@ -356,7 +360,7 @@ func TestRequest_LighthouseCreateProtocolPortAndIPv6(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		if _, err := p.CreateRules([]config.RuleAction{tc.rule}); err != nil {
+		if _, err := p.CreateRules(mockSnapshot(), []config.RuleAction{tc.rule}); err != nil {
 			t.Fatalf("%s: CreateRules 失败: %v", tc.name, err)
 		}
 	}
@@ -370,6 +374,10 @@ func TestRequest_LighthouseCreateProtocolPortAndIPv6(t *testing.T) {
 		if got, _ := strField(body, "InstanceId"); got != "lhins-mock" {
 			t.Errorf("%s: InstanceId = %q", tc.name, got)
 		}
+		// Issue7 §6.1：Create 必须携带 S0 的 FirewallVersion（mockSnapshot = 7）
+		if got, ok := body["FirewallVersion"]; !ok || got != float64(7) {
+			t.Errorf("%s: FirewallVersion = %v, want 7（版本保护不得丢失）", tc.name, got)
+		}
 		rules := objList(t, body, "FirewallRules")
 		if len(rules) != 1 {
 			t.Fatalf("%s: FirewallRules 数量 = %d, want 1", tc.name, len(rules))
@@ -378,12 +386,45 @@ func TestRequest_LighthouseCreateProtocolPortAndIPv6(t *testing.T) {
 	}
 }
 
+// TestRequest_LighthouseDeleteCarriesS1Version Issue7 §6.1：Delete 必须携带 S1 的
+// FirewallVersion；版本缺失即快照不完整，绝不降级为无版本删除。
+func TestRequest_LighthouseDeleteCarriesS1Version(t *testing.T) {
+	mock, host := newMockCloudAPI(t)
+	p := mockLighthouse(t, host)
+
+	target := config.RuleInfo{Protocol: "TCP", Port: "443", CidrBlock: "1.2.3.4/32", Action: "ACCEPT", Description: "[auto-dns]"}
+	res, err := p.DeleteRules(RuleSnapshot{Revision: "12"}, []config.RuleInfo{target})
+	if err != nil {
+		t.Fatalf("DeleteRules 失败: %v", err)
+	}
+	if res.Deleted != 1 || res.Resolved != 1 {
+		t.Errorf("DeleteResult = %+v, want {Deleted:1 Resolved:1}", res)
+	}
+
+	deletes := requestsWithAction(t, mock.recorded(), "DeleteFirewallRules")
+	if len(deletes) != 1 {
+		t.Fatalf("DeleteFirewallRules 请求数 = %d, want 1", len(deletes))
+	}
+	if got, ok := bodyJSON(t, deletes[0])["FirewallVersion"]; !ok || got != float64(12) {
+		t.Errorf("DeleteFirewallRules 必须携带 S1 FirewallVersion=12, got %v（版本保护不得丢失）", got)
+	}
+
+	// 版本缺失：必须按快照不完整失败，且不得发出删除请求
+	before := len(requestsWithAction(t, mock.recorded(), "DeleteFirewallRules"))
+	if _, err := p.DeleteRules(RuleSnapshot{}, []config.RuleInfo{target}); !errors.Is(err, ErrSnapshotIncomplete) {
+		t.Fatalf("缺少 FirewallVersion 必须返回 ErrSnapshotIncomplete，实际: %v", err)
+	}
+	if after := len(requestsWithAction(t, mock.recorded(), "DeleteFirewallRules")); after != before {
+		t.Errorf("版本缺失时不得发出删除请求: %d → %d", before, after)
+	}
+}
+
 // TestRequest_LighthouseExactDeleteByRuleSpec Lighthouse 按完整规则定义精确删除（API 无规则 ID）。
 func TestRequest_LighthouseExactDeleteByRuleSpec(t *testing.T) {
 	mock, host := newMockCloudAPI(t)
 	p := mockLighthouse(t, host)
 
-	err := p.DeleteRules([]config.RuleInfo{
+	_, err := p.DeleteRules(mockSnapshot(), []config.RuleInfo{
 		{Protocol: "TCP", Port: "443", CidrBlock: "1.2.3.4/32", Action: "ACCEPT", Description: "[t] c"},
 		{Protocol: "ICMP", CidrBlock: "5.6.7.8/32", Action: "ACCEPT", Description: "[t] icmp"},
 	})
@@ -425,17 +466,17 @@ func TestRequest_CVMICMPOmitsPortAndIPv6Field(t *testing.T) {
 	mock.defaultReply = emptyPolicyReply
 	p := mockCVM(t, host)
 
-	if _, err := p.CreateRules([]config.RuleAction{
+	if _, err := p.CreateRules(mockSnapshot(), []config.RuleAction{
 		{Protocol: "ICMP", Port: "ALL", Action: "ACCEPT", CidrBlock: "1.2.3.4/32", Description: "[t] icmp"},
 	}); err != nil {
 		t.Fatalf("CreateRules(ICMP) 失败: %v", err)
 	}
-	if _, err := p.CreateRules([]config.RuleAction{
+	if _, err := p.CreateRules(mockSnapshot(), []config.RuleAction{
 		{Protocol: "ICMP", Port: "ALL", Action: "ACCEPT", Ipv6CidrBlock: "2001:db8::1/128", Description: "[t] icmp6"},
 	}); err != nil {
 		t.Fatalf("CreateRules(ICMPv6) 失败: %v", err)
 	}
-	if _, err := p.CreateRules([]config.RuleAction{
+	if _, err := p.CreateRules(mockSnapshot(), []config.RuleAction{
 		{Protocol: "TCP", Port: "443", Action: "ACCEPT", CidrBlock: "1.2.3.4/32", Description: "[t] tcp"},
 	}); err != nil {
 		t.Fatalf("CreateRules(TCP) 失败: %v", err)
@@ -444,6 +485,11 @@ func TestRequest_CVMICMPOmitsPortAndIPv6Field(t *testing.T) {
 	creates := requestsWithAction(t, mock.recorded(), "CreateSecurityGroupPolicies")
 	if len(creates) != 3 {
 		t.Fatalf("CreateSecurityGroupPolicies 请求数 = %d, want 3", len(creates))
+	}
+
+	// Issue7 §6.2：Create 必须携带 S0 的 Version（mockSnapshot = "7"）
+	if v, _ := strField(objField(t, bodyJSON(t, creates[0]), "SecurityGroupPolicySet"), "Version"); v != "7" {
+		t.Errorf("SecurityGroupPolicySet.Version = %q, want \"7\"（版本保护不得丢失）", v)
 	}
 
 	icmp := objList(t, objField(t, bodyJSON(t, creates[0]), "SecurityGroupPolicySet"), "Ingress")[0]
@@ -474,33 +520,82 @@ func TestRequest_CVMICMPOmitsPortAndIPv6Field(t *testing.T) {
 	}
 }
 
-// TestRequest_CVMDeleteDescendingPolicyIndex 删除必须按 PolicyIndex 降序，避免索引偏移。
-func TestRequest_CVMDeleteDescendingPolicyIndex(t *testing.T) {
+// TestRequest_CVMDeleteBatchedIndicesIssue7 §6.2：候选必须放在**同一个**
+// DeleteSecurityGroupPolicies 请求的 Ingress 数组中，并携带同一 S1 的 Version，
+// 避免逐条删除造成索引漂移。
+func TestRequest_CVMDeleteBatchedIndices(t *testing.T) {
 	mock, host := newMockCloudAPI(t)
+	mock.defaultReply = emptyPolicyReply
 	p := mockCVM(t, host)
 
-	err := p.DeleteRules([]config.RuleInfo{
+	res, err := p.DeleteRules(RuleSnapshot{Revision: "39"}, []config.RuleInfo{
 		{PolicyIndex: "3", Description: "[t] a"},
 		{PolicyIndex: "10", Description: "[t] b"},
+		{PolicyIndex: "4", Description: "[t] c"},
 	})
 	if err != nil {
 		t.Fatalf("DeleteRules 失败: %v", err)
 	}
+	if res.Deleted != 3 || res.Resolved != 3 {
+		t.Errorf("DeleteResult = %+v, want {Deleted:3 Resolved:3}", res)
+	}
 
 	deletes := requestsWithAction(t, mock.recorded(), "DeleteSecurityGroupPolicies")
-	if len(deletes) != 2 {
-		t.Fatalf("DeleteSecurityGroupPolicies 请求数 = %d, want 2", len(deletes))
+	if len(deletes) != 1 {
+		t.Fatalf("DeleteSecurityGroupPolicies 请求数 = %d, want 1（必须单请求批量删除）", len(deletes))
 	}
-	want := []float64{10, 3}
-	for i, req := range deletes {
-		ingress := objList(t, objField(t, bodyJSON(t, req), "SecurityGroupPolicySet"), "Ingress")
-		if len(ingress) != 1 {
-			t.Fatalf("第 %d 次删除 Ingress 数量 = %d, want 1", i, len(ingress))
+	ps := objField(t, bodyJSON(t, deletes[0]), "SecurityGroupPolicySet")
+	if v, _ := strField(ps, "Version"); v != "39" {
+		t.Errorf("SecurityGroupPolicySet.Version = %q, want \"39\"（删除必须使用同一 S1 版本）", v)
+	}
+	ingress := objList(t, ps, "Ingress")
+	if len(ingress) != 3 {
+		t.Fatalf("Ingress 数量 = %d, want 3（同一请求内批量提交）", len(ingress))
+	}
+	got := map[float64]bool{}
+	for _, item := range ingress {
+		idx, ok := item["PolicyIndex"].(float64)
+		if !ok {
+			t.Fatalf("Ingress 项缺少 PolicyIndex: %+v", item)
 		}
-		got, ok := ingress[0]["PolicyIndex"].(float64)
-		if !ok || got != want[i] {
-			t.Errorf("第 %d 次删除 PolicyIndex = %v, want %v", i, ingress[0]["PolicyIndex"], want[i])
+		got[idx] = true
+	}
+	for _, want := range []float64{3, 4, 10} {
+		if !got[want] {
+			t.Errorf("缺少 PolicyIndex=%v: %+v", want, ingress)
 		}
+	}
+}
+
+// TestRequest_CVMDeleteRejectsUnsafeCandidates 缺少/不可解析/重复的删除定位必须拒绝，
+// 绝不允许无版本或按值降级删除（Issue7 §6.2）。
+func TestRequest_CVMDeleteRejectsUnsafeCandidates(t *testing.T) {
+	target := config.RuleInfo{PolicyIndex: "3", Description: "[t] a"}
+
+	cases := []struct {
+		name       string
+		snapshot   RuleSnapshot
+		candidates []config.RuleInfo
+	}{
+		{"缺少 S1 版本", RuleSnapshot{}, []config.RuleInfo{target}},
+		{"缺少 PolicyIndex", RuleSnapshot{Revision: "39"}, []config.RuleInfo{{Description: "[t] a"}}},
+		{"PolicyIndex 不可解析", RuleSnapshot{Revision: "39"}, []config.RuleInfo{{PolicyIndex: "x", Description: "[t] a"}}},
+		{"重复 PolicyIndex", RuleSnapshot{Revision: "39"}, []config.RuleInfo{
+			{PolicyIndex: "3", Description: "[t] a"}, {PolicyIndex: "3", Description: "[t] b"},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock, host := newMockCloudAPI(t)
+			mock.defaultReply = emptyPolicyReply
+			p := mockCVM(t, host)
+			if _, err := p.DeleteRules(tc.snapshot, tc.candidates); err == nil {
+				t.Fatal("不安全的删除定位必须返回错误")
+			}
+			if got := len(requestsWithAction(t, mock.recorded(), "DeleteSecurityGroupPolicies")); got != 0 {
+				t.Errorf("定位不安全时不得发出删除请求，实际 %d", got)
+			}
+		})
 	}
 }
 
@@ -510,7 +605,7 @@ func TestRequest_CVMDeleteSwallowsResourceNotFound(t *testing.T) {
 	mock.defaultReply = `{"Response":{"Error":{"Code":"ResourceNotFound","Message":"规则不存在"},"RequestId":"mock"}}`
 	p := mockCVM(t, host)
 
-	if err := p.DeleteRules([]config.RuleInfo{{PolicyIndex: "7", Description: "[t] a"}}); err != nil {
+	if _, err := p.DeleteRules(mockSnapshot(), []config.RuleInfo{{PolicyIndex: "7", Description: "[t] a"}}); err != nil {
 		t.Fatalf("ResourceNotFound 必须视为成功（幂等），实际返回: %v", err)
 	}
 	if got := len(requestsWithAction(t, mock.recorded(), "DeleteSecurityGroupPolicies")); got != 1 {
@@ -518,31 +613,27 @@ func TestRequest_CVMDeleteSwallowsResourceNotFound(t *testing.T) {
 	}
 }
 
-// TestRequest_CVMDeleteReturnsConfirmedProgress 删除中途失败时必须通过可 errors.As 的
-// PartialDeleteError 返回此前已由云端确认成功的独立删除请求数。
-func TestRequest_CVMDeleteReturnsConfirmedProgress(t *testing.T) {
+// TestRequest_CVMDeleteIsSingleRequest CVM 删除不再有逐条部分进度：
+// 全部候选必须在一个请求内提交，失败即整体未确认（部分进度语义由 ECS 分批承担）。
+func TestRequest_CVMDeleteIsSingleRequest(t *testing.T) {
 	mock, host := newMockCloudAPI(t)
-	mock.reply = func(index int, _ recordedRequest) (int, string) {
-		if index == 1 {
-			return http.StatusOK, `{"Response":{"Error":{"Code":"InternalError","Message":"模拟失败"},"RequestId":"mock"}}`
-		}
-		return http.StatusOK, mock.defaultReply
+	mock.reply = func(_ int, _ recordedRequest) (int, string) {
+		return http.StatusInternalServerError, `{"Response":{"Error":{"Code":"InternalError","Message":"模拟失败"},"RequestId":"mock"}}`
 	}
 	p := mockCVM(t, host)
 
-	err := p.DeleteRules([]config.RuleInfo{
-		{PolicyIndex: "10", Description: "[t] first"},
-		{PolicyIndex: "3", Description: "[t] second"},
+	res, err := p.DeleteRules(RuleSnapshot{Revision: "39"}, []config.RuleInfo{
+		{PolicyIndex: "1", Description: "[t] a"},
+		{PolicyIndex: "2", Description: "[t] b"},
 	})
-	var partial *PartialDeleteError
-	if !errors.As(err, &partial) {
-		t.Fatalf("错误 = %T %v, want *PartialDeleteError", err, err)
+	if err == nil {
+		t.Fatal("删除失败必须返回错误")
 	}
-	if partial.Deleted != 1 {
-		t.Errorf("Deleted = %d, want 1", partial.Deleted)
+	if res.Deleted != 0 {
+		t.Errorf("未确认任何删除时 Deleted = %d, want 0", res.Deleted)
 	}
-	if partial.Err == nil || errors.Unwrap(partial) == nil {
-		t.Fatalf("PartialDeleteError 必须保留并 Unwrap 原始错误: %+v", partial)
+	if got := len(requestsWithAction(t, mock.recorded(), "DeleteSecurityGroupPolicies")); got != 1 {
+		t.Errorf("请求数 = %d, want 1（单请求批量）", got)
 	}
 }
 
@@ -559,7 +650,7 @@ func TestRequest_CVMRuleLimitStopsAt100(t *testing.T) {
 		mock.defaultReply = statisticsReply(95)
 		p := mockCVM(t, host)
 
-		_, err := p.CreateRules(makeRules(6))
+		_, err := p.CreateRules(mockSnapshot(), makeRules(6))
 		if err == nil {
 			t.Fatal("95 + 6 > 100 必须返回错误")
 		}
@@ -576,7 +667,7 @@ func TestRequest_CVMRuleLimitStopsAt100(t *testing.T) {
 		mock.defaultReply = statisticsReply(85)
 		p := mockCVM(t, host)
 
-		if _, err := p.CreateRules(makeRules(6)); err != nil {
+		if _, err := p.CreateRules(mockSnapshot(), makeRules(6)); err != nil {
 			t.Fatalf("85 + 6 = 91 未超上限，应允许（仅 WARN）: %v", err)
 		}
 		if got := len(requestsWithAction(t, mock.recorded(), "CreateSecurityGroupPolicies")); got != 1 {
@@ -590,7 +681,7 @@ func TestRequest_CVMRuleLimitStopsAt100(t *testing.T) {
 		mock.defaultReply = `{"Response":{"SecurityGroupPolicySet":{"Ingress":[` + ingress + `]},"RequestId":"mock"}}`
 		p := mockCVM(t, host)
 
-		if _, err := p.CreateRules(makeRules(1)); err == nil {
+		if _, err := p.CreateRules(mockSnapshot(), makeRules(1)); err == nil {
 			t.Fatal("手动计数 100 + 1 > 100 必须返回错误")
 		}
 		if got := len(requestsWithAction(t, mock.recorded(), "CreateSecurityGroupPolicies")); got != 0 {
@@ -623,7 +714,7 @@ func TestRequest_SWASPortSlashDropSkipAndDelete(t *testing.T) {
 		t.Fatalf("SWAS ConvertPorts(ALL) = %v, want [-1/-1]", ports)
 	}
 	// 全 ACCEPT：Written 必须等于实际提交条数，Skipped 为 0（Issue6 A11）
-	res, err := p.CreateRules([]config.RuleAction{
+	res, err := p.CreateRules(mockSnapshot(), []config.RuleAction{
 		{Protocol: "ICMP", Port: ports[0], Action: "ACCEPT", CidrBlock: "1.2.3.4/32", Description: "[t] icmp"},
 		{Protocol: "TCP", Port: "80/80", Action: "ACCEPT", CidrBlock: "1.2.3.4/32", Description: "[t] tcp"},
 	})
@@ -656,7 +747,7 @@ func TestRequest_SWASPortSlashDropSkipAndDelete(t *testing.T) {
 	// {Written:0, Skipped:N}——修复前返回 nil，调用方无法区分「写入成功」与「全部跳过」，
 	// 于是 added 虚增且每轮重复出现、永不收敛（Issue6 A11）。
 	before := len(mock.recorded())
-	dropRes, err := p.CreateRules([]config.RuleAction{
+	dropRes, err := p.CreateRules(mockSnapshot(), []config.RuleAction{
 		{Protocol: "TCP", Port: "80/80", Action: "DROP", CidrBlock: "1.2.3.4/32", Description: "[t] drop"},
 	})
 	if err != nil {
@@ -670,7 +761,7 @@ func TestRequest_SWASPortSlashDropSkipAndDelete(t *testing.T) {
 	}
 
 	// 混合 DROP + ACCEPT：只提交 ACCEPT，DROP 被跳过，两者分别计数
-	mixedRes, err := p.CreateRules([]config.RuleAction{
+	mixedRes, err := p.CreateRules(mockSnapshot(), []config.RuleAction{
 		{Protocol: "TCP", Port: "443/443", Action: "DROP", CidrBlock: "1.2.3.4/32", Description: "[t] drop"},
 		{Protocol: "TCP", Port: "443/443", Action: "ACCEPT", CidrBlock: "1.2.3.4/32", Description: "[t] accept"},
 	})
@@ -686,21 +777,54 @@ func TestRequest_SWASPortSlashDropSkipAndDelete(t *testing.T) {
 		t.Fatalf("混合场景只应提交 1 条 ACCEPT，实际 %d", len(rules))
 	}
 
-	// 删除：使用 RuleId
-	if err := p.DeleteRules([]config.RuleInfo{
-		{RuleID: "rule-a", Description: "[t] a"},
-		{RuleID: "", Description: "[t] empty"},
-	}); err != nil {
+	// 删除：只使用 S1 回读的 RuleId。含空 RuleId 的批次必须整体拒绝（Issue7 §6.3），
+	// 由规划器在候选阶段就把缺定位的规则排除（cleanup_deferred）。
+	if _, err := p.DeleteRules(mockSnapshot(), []config.RuleInfo{{RuleID: "rule-a", Description: "[t] a"}}); err != nil {
 		t.Fatalf("DeleteRules 失败: %v", err)
 	}
 	deletes := requestsWithAction(t, mock.recorded(), "DeleteFirewallRules")
 	if len(deletes) != 1 {
 		t.Fatalf("DeleteFirewallRules 请求数 = %d, want 1", len(deletes))
 	}
-	var ids []string
-	ids = rpcCommaList(deletes[0], "RuleIds")
-	if len(ids) != 1 || ids[0] != "rule-a" {
-		t.Errorf("RuleIds = %v, want [rule-a]（空 RuleID 必须跳过）", ids)
+	if ids := rpcCommaList(deletes[0], "RuleIds"); len(ids) != 1 || ids[0] != "rule-a" {
+		t.Errorf("RuleIds = %v, want [rule-a]", ids)
+	}
+}
+
+// TestRequest_SWASDeleteUsesRuleIdsOnly Issue7 §6.3：SWAS 清理只使用同一 S1 回读的
+// 非空 RuleId；任一候选缺 RuleId 时必须整体拒绝，绝不按值降级删除。
+func TestRequest_SWASDeleteUsesRuleIdsOnly(t *testing.T) {
+	mock, host := newMockCloudAPI(t)
+	p := mockSWAS(t, host)
+
+	res, err := p.DeleteRules(RuleSnapshot{}, []config.RuleInfo{
+		{RuleID: "r1", Description: "[auto-dns] a"},
+		{RuleID: "r2", Description: "[auto-dns] b"},
+	})
+	if err != nil {
+		t.Fatalf("DeleteRules 失败: %v", err)
+	}
+	if res.Deleted != 2 || res.Resolved != 2 {
+		t.Errorf("DeleteResult = %+v, want {Deleted:2 Resolved:2}", res)
+	}
+	deletes := requestsWithAction(t, mock.recorded(), "DeleteFirewallRules")
+	if len(deletes) != 1 {
+		t.Fatalf("DeleteFirewallRules 请求数 = %d, want 1", len(deletes))
+	}
+	if ids := rpcCommaList(deletes[0], "RuleIds"); len(ids) != 2 || ids[0] != "r1" || ids[1] != "r2" {
+		t.Errorf("RuleIds = %v, want [r1 r2]", ids)
+	}
+
+	// 任一候选缺 RuleId：整体拒绝且不得发出任何删除请求
+	before := len(requestsWithAction(t, mock.recorded(), "DeleteFirewallRules"))
+	if _, err := p.DeleteRules(RuleSnapshot{}, []config.RuleInfo{
+		{RuleID: "r1", Description: "[auto-dns] a"},
+		{Description: "[auto-dns] 缺定位"},
+	}); err == nil {
+		t.Fatal("缺少 RuleId 的候选必须整体拒绝删除")
+	}
+	if after := len(requestsWithAction(t, mock.recorded(), "DeleteFirewallRules")); after != before {
+		t.Errorf("定位不完整时不得发出删除请求: %d → %d", before, after)
 	}
 }
 
@@ -715,7 +839,7 @@ func TestRequest_ECSPortRangeIPv6DeleteAndBatching(t *testing.T) {
 		t.Fatalf("ECS ConvertPorts(ALL) = %v, want [-1/-1]", got)
 	}
 
-	if _, err := p.CreateRules([]config.RuleAction{
+	if _, err := p.CreateRules(mockSnapshot(), []config.RuleAction{
 		{Protocol: "ICMP", Port: "-1/-1", Action: "ACCEPT", CidrBlock: "1.2.3.4/32", Description: "[t] icmp"},
 		{Protocol: "TCP", Port: "443/443", Action: "ACCEPT", Ipv6CidrBlock: "2001:db8::1/128", Description: "[t] v6"},
 	}); err != nil {
@@ -746,11 +870,8 @@ func TestRequest_ECSPortRangeIPv6DeleteAndBatching(t *testing.T) {
 		t.Errorf("IPv6 规则不得写 SourceCidrIp: %+v", perms[2])
 	}
 
-	// 删除：SecurityGroupRuleId 数组，空 RuleID 跳过
-	if err := p.DeleteRules([]config.RuleInfo{
-		{RuleID: "sgr-a", Description: "[t] a"},
-		{RuleID: "", Description: "[t] empty"},
-	}); err != nil {
+	// 删除：SecurityGroupRuleId 数组（定位不完整的候选由规划器 deferred，不进入删除请求）
+	if _, err := p.DeleteRules(mockSnapshot(), []config.RuleInfo{{RuleID: "sgr-a", Description: "[t] a"}}); err != nil {
 		t.Fatalf("DeleteRules 失败: %v", err)
 	}
 	revokes := requestsWithAction(t, mock.recorded(), "RevokeSecurityGroup")
@@ -764,7 +885,7 @@ func TestRequest_ECSPortRangeIPv6DeleteAndBatching(t *testing.T) {
 
 	// 分批：150 条 → 100 + 50
 	mockBefore := len(requestsWithAction(t, mock.recorded(), "AuthorizeSecurityGroup"))
-	if _, err := p.CreateRules(makeRules(150)); err != nil {
+	if _, err := p.CreateRules(mockSnapshot(), makeRules(150)); err != nil {
 		t.Fatalf("分批 CreateRules 失败: %v", err)
 	}
 	auths = requestsWithAction(t, mock.recorded(), "AuthorizeSecurityGroup")
@@ -776,6 +897,88 @@ func TestRequest_ECSPortRangeIPv6DeleteAndBatching(t *testing.T) {
 	}
 	if got := len(rpcIndexedObjects(t, auths[mockBefore+1], "Permissions")); got != 50 {
 		t.Errorf("第 2 批数量 = %d, want 50", got)
+	}
+}
+
+// TestRequest_ECSDeleteBatches100 Issue7 §6.4：删除也必须每批最多 100，稳定切批；
+// 150 个候选固定拆为 100 + 50。
+func TestRequest_ECSDeleteBatches100(t *testing.T) {
+	mock, host := newMockCloudAPI(t)
+	p := mockECS(t, host)
+
+	candidates := make([]config.RuleInfo, 0, 150)
+	for i := 0; i < 150; i++ {
+		candidates = append(candidates, config.RuleInfo{RuleID: fmt.Sprintf("sgr-%03d", i), Description: "[auto-dns]"})
+	}
+	res, err := p.DeleteRules(RuleSnapshot{}, candidates)
+	if err != nil {
+		t.Fatalf("DeleteRules 失败: %v", err)
+	}
+	if res.Deleted != 150 || res.Resolved != 150 {
+		t.Errorf("DeleteResult = %+v, want {Deleted:150 Resolved:150}", res)
+	}
+
+	revokes := requestsWithAction(t, mock.recorded(), "RevokeSecurityGroup")
+	if len(revokes) != 2 {
+		t.Fatalf("RevokeSecurityGroup 请求数 = %d, want 2（150 = 100 + 50）", len(revokes))
+	}
+	if got := len(rpcIndexedList(t, revokes[0], "SecurityGroupRuleId")); got != 100 {
+		t.Errorf("第 1 批数量 = %d, want 100", got)
+	}
+	if got := len(rpcIndexedList(t, revokes[1], "SecurityGroupRuleId")); got != 50 {
+		t.Errorf("第 2 批数量 = %d, want 50", got)
+	}
+}
+
+// TestRequest_ECSDeleteSecondBatchFailureKeepsConfirmedProgress 第二批失败时，
+// 第一批已确认删除必须保留，剩余候选由调用方计入 deferred（Issue7 §6.4）。
+func TestRequest_ECSDeleteSecondBatchFailureKeepsConfirmedProgress(t *testing.T) {
+	mock, host := newMockCloudAPI(t)
+	mock.reply = func(index int, _ recordedRequest) (int, string) {
+		if index == 1 {
+			return http.StatusInternalServerError,
+				`{"Code":"InternalError","Message":"模拟第二批失败","RequestId":"mock"}`
+		}
+		return http.StatusOK, mock.defaultReply
+	}
+	p := mockECS(t, host)
+
+	candidates := make([]config.RuleInfo, 0, 150)
+	for i := 0; i < 150; i++ {
+		candidates = append(candidates, config.RuleInfo{RuleID: fmt.Sprintf("sgr-%03d", i), Description: "[auto-dns]"})
+	}
+	res, err := p.DeleteRules(RuleSnapshot{}, candidates)
+	if err == nil {
+		t.Fatal("第二批失败必须返回错误")
+	}
+	var partial *PartialDeleteError
+	if !errors.As(err, &partial) {
+		t.Fatalf("部分成功必须返回 *PartialDeleteError，实际: %v", err)
+	}
+	if res.Deleted != 100 || res.Resolved != 100 {
+		t.Errorf("DeleteResult = %+v, want {Deleted:100 Resolved:100}（保留前一批确认计数）", res)
+	}
+	if partial.Deleted != 100 {
+		t.Errorf("PartialDeleteError.Deleted = %d, want 100", partial.Deleted)
+	}
+	if got := len(requestsWithAction(t, mock.recorded(), "RevokeSecurityGroup")); got != 2 {
+		t.Errorf("请求数 = %d, want 2（失败后不再继续后续批次）", got)
+	}
+}
+
+// TestRequest_ECSDeleteRejectsMissingLocator 定位不完整必须整体拒绝，不得按值降级删除。
+func TestRequest_ECSDeleteRejectsMissingLocator(t *testing.T) {
+	mock, host := newMockCloudAPI(t)
+	p := mockECS(t, host)
+
+	if _, err := p.DeleteRules(RuleSnapshot{}, []config.RuleInfo{
+		{RuleID: "sgr-a", Description: "[auto-dns] a"},
+		{Description: "[auto-dns] 缺定位"},
+	}); err == nil {
+		t.Fatal("缺少 SecurityGroupRuleId 的候选必须整体拒绝删除")
+	}
+	if got := len(requestsWithAction(t, mock.recorded(), "RevokeSecurityGroup")); got != 0 {
+		t.Errorf("定位不完整时不得发出删除请求，实际 %d", got)
 	}
 }
 
@@ -791,7 +994,7 @@ func TestRequest_ECSCreateReturnsConfirmedProgress(t *testing.T) {
 	}
 	p := mockECS(t, host)
 
-	res, err := p.CreateRules(makeRules(101))
+	res, err := p.CreateRules(mockSnapshot(), makeRules(101))
 	if err == nil {
 		t.Fatal("第 2 批失败必须返回错误")
 	}

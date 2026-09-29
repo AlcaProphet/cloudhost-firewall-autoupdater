@@ -151,7 +151,7 @@ EventBus 取消 channel 订阅时只从订阅表删除记录，不关闭 channel
 
 [Design4.md](./HistoryDocs/Design4.md) 记录的已实现 UI、同步、扫描、告警和产品标识决策仍保持有效，除非本文档、Build6/Build7 已实施合同或 Issue7 当前定案明确替代。产品显示名、二进制名、数据目录兼容标识和 GHCR 镜像名继续使用 `FWAlizer` / `fwalizer`。
 
-Build6/Build7 的 Step 均已完成，不再作为当前实施顺序。P1-01 后续修复必须严格按 [Issue7.md](./Issue7.md) Step 1～5 串行进行：每次只实施一个 Step，验收后等待用户授权下一步。文档、自动测试、本地进程、Docker、浏览器与真实云 API/SMTP/Webhook 证据必须分层记录，不得互相替代。
+Build6/Build7 的 Step 均已完成，不再作为当前实施顺序。P1-01 修复已按 [Issue7.md](./Issue7.md) Step 1～5 **串行实施完成（2026-09-29，本地）**：Step 1 纯规划器与快照模型、Step 2 目标级先增后验、Step 3 四平台条件清理、Step 4 Dry Run/事件/日志/仪表盘口径、Step 5 完整门禁 + 真实二进制/Docker 验收 + 文档闭环。**真实四云、浏览器回归与远端 CI/GHCR 仍未执行**，属用户单独执行范围（见 ProdTestList.md PT-I7-01～07）。文档、自动测试、本地进程、Docker、浏览器与真实云 API/SMTP/Webhook 证据必须分层记录，不得互相替代。
 
 ---
 
@@ -170,6 +170,8 @@ TAG 是唯一操作授权；comment 只是可读备注，不参与身份、Diff�
 固定流程是 `S0 Describe → Plan → Add → S1 Describe → coverage verification → 安全门 → 条件 Delete → 必要时 S2 验证`。任何 Add 先于 Delete；Add/Describe/覆盖验证失败时旧规则全保留。重试从整个目标重新 Describe/Plan，不复用旧快照删除定位。
 
 ### 8.3 平台化清理与健康
+
+> **实施状态（2026-09-29）：** 本节设计已按 Issue7 Step 1～4 本地实施完成，逐 Step 证据见 [Issue7.md](./Issue7.md) §12.3；真实云验证仍待人工执行。
 
 - Lighthouse 使用功能唯一性 + 当前 TAG + 同快照 `FirewallVersion`；有歧义即保留。
 - CVM 使用同一快照的 `PolicyIndex + Version`，避免逐条删除造成索引漂移。
@@ -190,4 +192,5 @@ TAG 是唯一操作授权；comment 只是可读备注，不参与身份、Diff�
 | v1.2 | 2026-09-27 | Step 7 ✅ 验收通过：远端 Actions 运行 `36300428681` 成功并真实推送 `ghcr.io/alcaprophet/fwalizer:2.0.0`，O5-02 关闭；真实 SMTP/收件箱与 Webhook 经用户决定免除人工验收、由用户自行处理（不写成已通过） |
 | v1.3 | 2026-09-27 | 独立核验后的文档一致性修正：实施状态段中"远端 GitHub Actions 仍待确认"改为已确认（运行 `36300428681`）；覆盖率复测值、非法输入用例计数、audit 阻断边界与 GHCR `latest` 标签按实测事实回写到 Build6/Issue5 对应记录 |
 | v1.4 | 2026-09-27 | 核验修正批次落地（不涉及 Issue6 条目）：规则 `targets` 显式必填（省略 400）、更新/删除按 `RowsAffected=0` 判定 404、扫描结果查询参数 `cloud_type` 加枚举校验、协调器 commit 后发布收紧为不可失败；同步 AGENTS §9.1 与 Build6 §4.2/§4.3/§12.9 |
+| v1.6 | 2026-09-29 | P1-01 按 Issue7 Step 1～5 本地实施完成：更新实施顺序（含真实云/浏览器/CI 仍未执行的分层说明）与第八节实施状态标记 |
 | v1.5 | 2026-09-29 | P1-01 正式定案为“TAG 唯一操作授权 + comment 纯可读 + 目标级功能期望集 + 先增后验 + 平台化条件清理 + 可接受残留”；实施合同转入 Issue7 Step 1～5；当前配置包正文由漂移的 version 2 修正为已实施 version 3 |

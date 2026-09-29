@@ -71,7 +71,7 @@ func (s *Syncer) retrySyncDetailed(p provider.Provider, rule config.DomainRule, 
 
 		// 3. 执行删除（成功才计数；幂等"已不存在"视为成功但不计数）
 		if len(diff.ToDelete) > 0 {
-			if err := p.DeleteRules(diff.ToDelete); err != nil {
+			if _, err := p.DeleteRules(provider.RuleSnapshot{}, diff.ToDelete); err != nil {
 				// 逐条删除 Provider 可能在后续请求失败前已有确认成功项；先累计其
 				// 明确进度，再按原始错误继续幂等/重试判定。
 				var partial *provider.PartialDeleteError
@@ -94,7 +94,7 @@ func (s *Syncer) retrySyncDetailed(p provider.Provider, rule config.DomainRule, 
 
 		// 4. 执行添加（成功才计数；幂等"已存在"视为成功但不计数）
 		if len(diff.ToAdd) > 0 {
-			res, err := p.CreateRules(diff.ToAdd)
+			res, err := p.CreateRules(provider.RuleSnapshot{}, diff.ToAdd)
 			// 即使最终返回错误，Written 仍可表示此前已成功的独立子批次；
 			// 当前失败且提交状态未知的子批次由 Provider 保持为 0。
 			added += res.Written
@@ -156,6 +156,10 @@ func isRetryable(err error) bool {
 	// 3. 字符串兜底（大小写不敏感）
 	msg := strings.ToLower(err.Error())
 	retryable := []string{
+		// 腾讯云版本竞争：Lighthouse UnsupportedOperation.FirewallVersionMismatch /
+		// CVM UnsupportedOperation.VersionMismatch。必须整目标重试，绝不降级为无版本写入。
+		"firewallversionmismatch",
+		"versionmismatch",
 		"requestlimitexceeded",
 		"internalerror",
 		"firewallbusy",
@@ -169,6 +173,24 @@ func isRetryable(err error) bool {
 		}
 	}
 	return false
+}
+
+// isPartialDelete 判断删除是否部分成功（云端已确认部分批次）。
+func isPartialDelete(err error) bool {
+	var partial *provider.PartialDeleteError
+	return errors.As(err, &partial)
+}
+
+// isVersionMismatch 判断是否为腾讯云版本竞争错误。
+//
+// Lighthouse = UnsupportedOperation.FirewallVersionMismatch；CVM = UnsupportedOperation.VersionMismatch。
+// 必须显式识别为可重试条件，绝不允许去掉版本重发。
+func isVersionMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "firewallversionmismatch") || strings.Contains(msg, "versionmismatch")
 }
 
 // isIdempotentCreate 判断"规则已存在"
@@ -190,21 +212,10 @@ func isIdempotentDelete(err error) bool {
 		strings.Contains(msg, "InvalidInstanceId.NotFound")
 }
 
-// truncateDesc 按云厂商描述字段长度限制截断（保证 [TAG] 前缀完整）
-// 使用 rune 切片避免截断 UTF-8 多字节字符（如中文）
+// truncateDesc 按云厂商描述字段长度限制截断（保证 [TAG] 前缀完整）。
+//
+// 唯一实现已收口到 provider.TruncateDescription，本函数只是旧逐规则路径的兼容包装
+// （Issue7 Step 1：避免截断逻辑出现第二套实现）。
 func truncateDesc(desc string, ct config.CloudType) string {
-	maxLen := 0
-	switch ct {
-	case config.CloudTCLighthouse:
-		maxLen = 64 // FirewallRuleDescription ≤ 64 字符
-	case config.CloudAliSWAS:
-		maxLen = 50 // Remark ≤ 50 字符（阿里云 SWAS API）
-	default:
-		return desc // 其他云厂商限制宽松，无需截断
-	}
-	runes := []rune(desc)
-	if len(runes) <= maxLen {
-		return desc
-	}
-	return string(runes[:maxLen])
+	return provider.TruncateDescription(ct, desc)
 }

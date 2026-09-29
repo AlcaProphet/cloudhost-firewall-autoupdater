@@ -165,7 +165,7 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 
 	// 同步日志写入：订阅 sync:complete 和 sync:error 事件
 	logWriter := &webapi.StoreLogWriter{Store: store}
-	s.EventBus().Subscribe(notifier.EventDomainSyncComplete, logWriter)
+	s.EventBus().Subscribe(notifier.EventTargetSyncComplete, logWriter)
 	s.EventBus().Subscribe(notifier.EventSyncError, logWriter)
 
 	// 信号监听必须在 HTTP 绑定前建立：绑定失败时的极早信号也不会丢失。
