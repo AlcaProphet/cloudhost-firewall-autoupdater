@@ -1,7 +1,7 @@
 # Design5.md — FWAlizer 设计记录（当前）
 
 > **文档定位：** 本文档是 FWAlizer 的当前设计记录（设计大方向、架构构想与决策记录，非强制，供参考），承接已存档的 [Design1-4](./HistoryDocs/)。
-> 编码约束遵循 [AGENTS.md](./AGENTS.md)（唯一强要求）；[Build6.md](./Build6.md) 与 [Build7.md](./Build7.md) 均为已完成的构建记录（Build7 Step 0～7 已完成）；当前 P1-01 TAG 所有权与目标级同步实施合同见 [Issue7.md](./Issue7.md)（**Step 0～5 已本地实施完成**，本地提交 `28559ed`；独立核验补强见 Issue7 §12.4，真实云/浏览器/远端 CI 仍未执行）。问题历史见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)。
+> 编码约束遵循 [AGENTS.md](./AGENTS.md)（唯一强要求）；[Build6.md](./Build6.md) 与 [Build7.md](./Build7.md) 均为已完成的构建记录（Build7 Step 0～7 已完成）；当前 P1-01 TAG 所有权与目标级同步实施合同见 [Issue7.md](./Issue7.md)（**Step 0～5 主体已本地实施**，提交 `28559ed`；F1/F5 补强已提交为 `38bdc19`；完整核验未完成项见 Issue7 §12.5，真实云/浏览器/远端 CI 仍未执行）。问题历史见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)。
 > **Build7 实施状态（2026-09-28）：** 本文档第三节描述的 **version 2 配置包设计已由 Build7 的 version 3 取代并实施完成**：version 3 是唯一导入/导出版本（version 1/2 与其他版本直接 400）；`GET/PUT /api/alerts` 为四对象严格契约（触发策略 / 邮件含主题正文 / Webhook / Uptime Kuma Push）；新增 `POST /api/alerts/test-email`、唯一 `OperationalHealth` 计算源（`internal/health`）+ 30 秒内部监督器 + `GET /api/health/operational`（`/api/health` 保持静态存活语义）。逐步证据见 [Build7.md](./Build7.md) 第八节。**未执行的真实外部验收**（真实 SMTP/收件箱、Webhook、Uptime Kuma HTTP/Push、真实云 API、远端 CI）见 [ProdTestList.md](./ProdTestList.md)，不得写成通过。
 > **实施状态：** 2026-09-24 Build6 Step 1、Step 2、Step 3 与 Step 4 已验收通过：运行时已收束为唯一 WebUI + SQLite，CLI、`.env` Headless、业务环境变量入口和 `webui_port` 业务设置已从代码与当前文档移除，监听参数只由三个部署变量提供；HTTP 生命周期已形成最终形态（同步 listener、仅 `EADDRINUSE` 降级、显式 `http.Server`、`Wait`、幂等 `Shutdown`、两类 SSE 服务器级退出、main 统一收尾）；普通 API 最小持久化校验边界已落地（统一严格解码与 1 MiB、领域校验与归一化、`RowsAffected`/引用检查、事务化 settings/alerts、删除被引用目标 409、500 安全文案、日志级别动态更新）。远端 GitHub Actions 结果已由 2026-09-27 tag `v2.0.0` 的真实运行 `36300428681`（成功）确认，详见下段与 Issue5 O5-02。
 >
@@ -151,7 +151,7 @@ EventBus 取消 channel 订阅时只从订阅表删除记录，不关闭 channel
 
 [Design4.md](./HistoryDocs/Design4.md) 记录的已实现 UI、同步、扫描、告警和产品标识决策仍保持有效，除非本文档、Build6/Build7 已实施合同或 Issue7 当前定案明确替代。产品显示名、二进制名、数据目录兼容标识和 GHCR 镜像名继续使用 `FWAlizer` / `fwalizer`。
 
-Build6/Build7 的 Step 均已完成，不再作为当前实施顺序。P1-01 修复已按 [Issue7.md](./Issue7.md) Step 1～5 **串行实施完成（2026-09-29，本地）**：Step 1 纯规划器与快照模型、Step 2 目标级先增后验、Step 3 四平台条件清理、Step 4 Dry Run/事件/日志/仪表盘口径、Step 5 完整门禁 + 真实二进制/Docker 验收 + 文档闭环。**真实四云、浏览器回归与远端 CI/GHCR 仍未执行**，属用户单独执行范围（见 ProdTestList.md PT-I7-01～07）。文档、自动测试、本地进程、Docker、浏览器与真实云 API/SMTP/Webhook 证据必须分层记录，不得互相替代。
+Build6/Build7 的 Step 均已完成，不再作为当前实施顺序。P1-01 已按 [Issue7.md](./Issue7.md) Step 1～5 完成主体实施（2026-09-29，本地）：Step 1 纯规划器与快照模型、Step 2 目标级先增后验、Step 3 四平台条件清理、Step 4 Dry Run/事件/日志/仪表盘口径、Step 5 本地门禁 + 真实二进制/Docker 验收 + 文档闭环；F1/F5 补强已提交为 `38bdc19`。完整复核仍发现清理失败 outcome、目标事件字段、Dry Run 目标范围、幂等清理计数及测试可靠性等未完成项，统一由 Issue7 §12.5 独立追踪，不能把主体实施完成解释为无保留闭环。**真实四云、浏览器回归与远端 CI/GHCR 仍未执行**，属用户单独执行范围（见 ProdTestList.md PT-I7-01～07）。文档、自动测试、本地进程、Docker、浏览器与真实云 API/SMTP/Webhook 证据必须分层记录，不得互相替代。
 
 ---
 
@@ -171,7 +171,7 @@ TAG 是唯一操作授权；comment 只是可读备注，不参与身份、Diff�
 
 ### 8.3 平台化清理与健康
 
-> **实施状态（2026-09-29）：** 本节设计已按 Issue7 Step 1～4 本地实施完成，逐 Step 证据见 [Issue7.md](./Issue7.md) §12.3；真实云验证仍待人工执行。
+> **实施状态（2026-09-29）：** 本节设计的主体已按 Issue7 Step 1～4 本地实施，逐 Step 证据见 [Issue7.md](./Issue7.md) §12.3，F1/F5 补强见 §12.4；完整复核未完成项见 §12.5，其中 R7-01 的可重试清理失败 outcome 尚不符合下述 success/healthy 设计语义。真实云验证仍待人工执行。
 
 - Lighthouse 使用功能唯一性 + 当前 TAG + 同快照 `FirewallVersion`；有歧义即保留。
 - CVM 使用同一快照的 `PolicyIndex + Version`，避免逐条删除造成索引漂移。
@@ -187,6 +187,7 @@ TAG 是唯一操作授权；comment 只是可读备注，不参与身份、Diff�
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| v1.8 | 2026-09-29 | P1-01 完整复核收口：F1/F5 补强状态更新为已提交 `38bdc19`；主体实施与无保留闭环分开表述，未完成的清理失败 outcome、目标事件字段、Dry Run 目标范围、幂等计数及测试可靠性统一指向 Issue7 §12.5 |
 | v1.0 | 2026-09-22 | 建立 Build6 当前设计记录；固定 WebUI-only、SQLite 唯一配置源、version 2 完整敏感快照、原子导入、HTTP/SSE 和运行时快照边界 |
 | v1.1 | 2026-09-27 | 同步 Build6 Step 7 实际状态：自动补测/统一门禁/真实二进制与 Docker 容器验收/文档闭环完成，Issue6 A10/A5/A7/A6/A8 按用户确认边界最小修复；当时真实 SMTP/收件箱与 Webhook 尚待用户执行，Step 7 记为 ◧（该状态随后由 v1.2 更新为 ✅） |
 | v1.2 | 2026-09-27 | Step 7 ✅ 验收通过：远端 Actions 运行 `36300428681` 成功并真实推送 `ghcr.io/alcaprophet/fwalizer:2.0.0`，O5-02 关闭；真实 SMTP/收件箱与 Webhook 经用户决定免除人工验收、由用户自行处理（不写成已通过） |

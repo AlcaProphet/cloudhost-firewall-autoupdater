@@ -10,9 +10,9 @@
 >
 > **本次一次性授权的准确边界：** 只含本地源码/测试/前端/文档实施、本地只读门禁与 `docker build`（含隔离 `FWALIZER_DATA_DIR` 的本地二进制/容器验收）。**不含**提交、推送、tag、远端 CI/GHCR、发布、真实云写入、真实 SMTP/Webhook/Uptime Kuma 与浏览器验证；这些层次在本次实施中一律记为「未执行」。
 >
-> **实施状态（2026-09-29）：** Step 0～5 **已全部本地实施完成**（本地提交 `28559ed`）：Step 1 纯规划器/快照模型、Step 2 目标级先增后验、Step 3 四平台条件清理、Step 4 Dry Run/事件/日志/仪表盘口径、Step 5 完整门禁 + 真实二进制/Docker 验收 + 文档闭环。逐 Step 证据见 §12.3。
+> **实施状态（2026-09-29）：** Step 0～5 **主体已本地实施**（本地提交 `28559ed`）：Step 1 纯规划器/快照模型、Step 2 目标级先增后验、Step 3 四平台条件清理、Step 4 Dry Run/事件/日志/仪表盘口径、Step 5 本地门禁 + 真实二进制/Docker 验收 + 文档闭环。逐 Step 证据见 §12.3；完整核验确认的未完成项见 §12.5，故不得将“主体已实施”表述为无保留闭环。
 >
-> **独立核验补强（2026-09-29，工作树改动，未提交）：** 对 `28559ed` 做独立只读核验后，按用户裁决修复两项缺陷——F1 Lighthouse 期望侧多端口展开粒度回归（`provider/plan.go` + 新增判别性用例）、F5 SWAS 分页硬上限用尽未按 `snapshot_incomplete` 失败（`provider/ali_swas.go` + 新增判别性用例）；并如实登记 F2（`go test ./... -race -count=1` 受既有 flaky 用例 `TestIsRetryable_RealWorldShapes` 影响，按裁决不改测试代码）与 F4（可重试清理失败语义分歧，仅登记）。完整记录见 §12.4。**补强改动未提交、未推送、未打 tag、未触发远端 CI/GHCR、未调用真实云、未执行浏览器验证**。
+> **独立核验补强（2026-09-29，已提交）：** 对 `28559ed` 做独立只读核验后，按用户裁决修复两项缺陷——F1 Lighthouse 期望侧多端口展开粒度回归（`provider/plan.go` + 新增判别性用例）、F5 SWAS 分页硬上限用尽未按 `snapshot_incomplete` 失败（`provider/ali_swas.go` + 新增判别性用例）；并如实登记 F2（`go test ./... -race -count=1` 受既有 flaky 用例 `TestIsRetryable_RealWorldShapes` 影响，按裁决不改测试代码）与 F4（可重试清理失败语义分歧，仅登记）。补强已提交为 `38bdc19`；提交后 `main` 相对 `origin/main` ahead 4、工作树干净。完整记录见 §12.4。**仍未推送、未打 tag、未触发远端 CI/GHCR、未调用真实云、未执行浏览器验证**。完整复核发现的未完成项独立追踪见 §12.5。
 
 ---
 
@@ -847,7 +847,8 @@ git diff --check
 |---|---|---|
 | v1.0 | 2026-09-29 | Step 0：固定目标级完整期望集、TAG 所有权、comment 纯可读、先增后验、四平台条件清理、状态口径与 Step 1～5 |
 | v1.1 | 2026-09-29 | 详细补强：增加历史/当前基线区分、不可破坏不变量、严格 TAG 语法、canonical key 表、当前源码替换地图、Provider snapshot/revision 参考、纯 planner DTO、冲突/原因码、S0/S1/S2 状态机、重试与计数、四平台 API 合同、Dry Run JSON/事件/日志/UI 样式、逐 Step 红绿测试/命令/完成与停止条件、统一验收矩阵；仍仅为文档，Step 1～5 未实施 |
-| v1.4 | 2026-09-29 | 独立核验补强（工作树改动，未提交）：① 修复 Lighthouse 期望侧多端口展开粒度回归（§12.4 F1）；② SWAS 分页上限用尽改为 `snapshot_incomplete`（§12.4 F5）；③ 如实登记 `go test ./... -race -count=1` 受既有 flaky 用例影响（§12.4 F2，按用户裁决不改测试代码）；④ 登记可重试清理失败的语义分歧待后续处理（§12.4 F4）；⑤ 订正 §12.3 的提交状态/文件计数与 §12.1 的过时基线表述 |
+| v1.5 | 2026-09-29 | 完整核验未完成项独立追踪：新增 §12.5 R7-01～R7-06，区分强要求违背、集成缺口、待裁决语义、计数偏差、测试证据失效与 flaky 门禁；同步补强已提交为 `38bdc19`、ahead 4、提交后工作树干净的当前事实 |
+| v1.4 | 2026-09-29 | 独立核验补强（当时先留工作树，随后提交为 `38bdc19`）：① 修复 Lighthouse 期望侧多端口展开粒度回归（§12.4 F1）；② SWAS 分页上限用尽改为 `snapshot_incomplete`（§12.4 F5）；③ 如实登记 `go test ./... -race -count=1` 受既有 flaky 用例影响（§12.4 F2，按用户裁决不改测试代码）；④ 登记可重试清理失败的语义分歧待后续处理（§12.4 F4）；⑤ 订正 §12.3 的提交状态/文件计数与 §12.1 的过时基线表述 |
 | v1.3 | 2026-09-29 | Step 1～5 本地实施完成：回写实施状态、逐 Step 完成标记、§12.3 实施证据（HEAD、实际修改文件、逐条命令与结果、判别性用例、与原方案偏差、未执行边界）与 ProdTestList 人工核验项（PT-I7-01～07）|
 | v1.2 | 2026-09-29 | Step 1 开工前裁决回写：登记 Step 1 开工基线（HEAD `3ce40fe`、ahead 2、工作树干净、基线门禁全绿）与本次一次性授权边界（含 `docker build`，不含提交/推送/tag/远端 CI/GHCR/真实云/浏览器）；Lighthouse 逗号端口固定为「展开项即 Desired 与 ToAdd 最小单元」；§5.2 固定 Resolve 粒度（每 attempt 按 host 去重重新解析，红灯 5 只针对单 attempt 轮）；§7.3 `domain` 固定写稳定排序后的来源域名；§8.3 明确 P2-04（AGENTS §9.1 发布顺序与源码差异）等正交问题全部越界，仅 P3-16 Dry Run 子项并入 Step 4；Step 5 登记「本次不执行浏览器验证」与「人工核验项统一更新到 ProdTestList」两条边界 |
 
@@ -928,9 +929,9 @@ git diff --check
 
 ---
 
-### 12.4 独立核验补强记录（2026-09-29，工作树改动，未提交）
+### 12.4 独立核验补强记录（2026-09-29，已提交为 `38bdc19`）
 
-> **范围：** 对已提交的 `28559ed`（Step 1～5）做独立只读核验后，按用户 2026-09-29 裁决执行的补强：修 F1、修 F5、登记 F2/F4、订正文档。**仍然不含**提交、推送、tag、远端 CI/GHCR、真实云、真实 SMTP/Webhook/Uptime Kuma 与浏览器验证。
+> **范围：** 对已提交的 `28559ed`（Step 1～5）做独立只读核验后，按用户 2026-09-29 裁决执行的补强：修 F1、修 F5、登记 F2/F4、订正文档。补强随后提交为 `38bdc19`。**仍然不含**推送、tag、远端 CI/GHCR、真实云、真实 SMTP/Webhook/Uptime Kuma 与浏览器验证。
 
 **已核验通过（复核，不重复外推）**
 
@@ -967,4 +968,32 @@ git diff --check
 
 - 定向门禁：`go test ./internal/tag ./provider ./syncer -race -count=1` → 3 包全 ok；`go test ./... -race -count=1` → 12/12 包 ok（F2 前提下不承诺稳定复现）。
 - **未执行（不得写成通过）**：真实腾讯云/阿里云（含 Lighthouse 多端口收敛、四平台删除安全、版本竞争、ECS 分批）、浏览器回归、真实 SMTP/收件箱/Webhook/Uptime Kuma、远端 CI/GHCR；SWAS `Remark` 上限仍无仓内依据。
-- 本次补强**只改工作树**（`provider/plan.go`、`provider/plan_test.go`、`provider/snapshot_test.go`、`provider/ali_swas.go` 与本次文档回写），**未提交、未推送、未打 tag、未修改任何远端状态**。
+- 本次补强涉及 `provider/plan.go`、`provider/plan_test.go`、`provider/snapshot_test.go`、`provider/ali_swas.go` 与同期文档回写，已提交为 `38bdc19da5a791cc3c64ab01840fd8f3c4d1f9b8`；提交后 `main` 相对 `origin/main` ahead 4、工作树干净。**未推送、未打 tag、未修改任何远端状态**。
+
+---
+
+### 12.5 完整核验未完成项独立追踪（2026-09-29）
+
+> **定位与授权边界：** 本节记录在当前 `HEAD 38bdc19` 上对 P1-01 实施改动进行三路独立只读复核后确认的剩余问题，作为后续独立修复入口。它不否定 §12.3 已完成的主体实现与 §12.4 已修复的 F1/F5，也不表示以下代码修复已经获得授权或完成。本次只同步文档，未修改源码、测试、数据库或外部状态。
+
+| ID | 级别 | 状态 | 未完成内容 | 当前证据与后续验收合同 |
+|---|---|---|---|---|
+| R7-01 | **P1** | 🔵 待修复 | **可重试清理失败的最终 outcome 违反 AGENTS 强要求。** `syncer/target.go` 当前会把 version mismatch、限流、网络超时等可重试 Delete 错误交给整个目标重试，3 次耗尽后记为 `failed`；但 AGENTS §三要求所需功能已由 S1 证明存在后，任何清理延后或删除失败均保持 `success + cleanup_deferred`/healthy。该缺陷不会误删规则，但会制造错误 unhealthy 与告警。 | 修复时先补判别性用例：S1 已覆盖、Delete 连续返回可重试错误、重试耗尽后仍为 success/healthy，残留全部进入 `cleanup_deferred`；同时保留“每次 retry 从新快照重新规划”和 Add/覆盖失败零 Delete。不允许仅放宽断言或绕过版本保护。 |
+| R7-02 | **P2** | 🔵 待修复 | **目标事件字段不完整，真实 sync_logs 清理详情失真。** `publishTargetResult` 未发布 `cleanup_deleted`、`duration_ms`，`unsupported` 仅以 `skipped/skipped_details` 表达；`StoreLogWriter` 读取缺失的 `cleanup_deleted` 后得到 0，可能把“候选 2、已清理 1、延后 1”写成“已确认清理 0”。 | 补全稳定事件字段并增加 `syncTarget → publisher → EventBus → StoreLogWriter → SQLite` 整链测试，断言 candidates/deleted/deferred 与实际结果一致；明确 `unsupported` 的稳定结构，不能只用手工构造完整事件的 writer 单测代替生产链。 |
+| R7-03 | **P2 / 待裁决** | 🟠 语义待确认 | **Dry Run“每目标一项”的范围不一致。** AGENTS/本文现写“每目标一项”，但 `DryRun` 会跳过没有适用规则的已配置目标。 | 后续实施前由用户裁决：A. 所有已配置目标均返回空数组骨架；或 B. 合同改为“每个有适用规则的目标一项”。正式同步 `RoundSummary.Total` 只统计有适用规则目标的既有口径不得被顺带改变。裁决后补“两个目标、规则只引用一个目标”的判别性测试。 |
+| R7-04 | **P3** | 🔵 待修复 | **幂等“规则已不存在”后的清理计数可能失真。** Delete 返回幂等错误并执行 S2 后，当前验证只确认 Desired 仍被覆盖，没有用 S2 planner 的实际残留候选校正 `resolved`，已消失的候选仍可能计入 `cleanup_deferred`。 | 补单候选与多候选幂等 NotFound 用例；以 S2 实际剩余候选为最终 deferred，已证明消失的候选计入清理完成，同时保持 outcome success 与删除安全不变。 |
+| R7-05 | **P3 / 测试缺口** | 🔵 待修复 | **`TestDryRun_ArraysNeverNull` 没有判别力。** 测试字段名已经包含引号，断言又重复拼接引号，实际搜索 `""results"":null`，即使 DTO 数组退化为 `null` 也不会失败。当前源码静态核对仍会构造非 nil 数组，因此这是证据失效，不是已确认的生产序列化缺陷。 | 修正字段断言或解码为 `json.RawMessage` 后逐字段检查，并加入至少一个能证明旧断言会漏报的失败先行用例；保留顶层及目标内所有数组恒为 `[]` 的合同。 |
+| R7-06 | **门禁可靠性** | 🔵 待独立处理 | **既有 flaky 用例 F2 仍可复现。** 完整核验再次出现 `TestIsRetryable_RealWorldShapes` 期望 timeout、实际 `connection reset by peer`，随后该用例单独 `-count=50` 又通过；因此全量 race 单次绿色仍不能外推为稳定门禁。 | 后续单独修复产生真实 timeout 错误的测试助手，不放宽业务断言；在修复前所有门禁记录继续同时报告实际运行次数、失败次数与失败形状。 |
+
+**已复核成立、不得在修复上述条目时破坏的正向控制**
+
+- 严格 TAG 命名空间、comment 不参与身份、canonical 五维 `FunctionalKey`、目标级聚合/去重与统一能力矩阵成立。
+- F1 Lighthouse 多端口期望侧逐项展开和已存在合并规则零重建/零清理成立；F5 SWAS 100 页上限无法证明完整时返回 `ErrSnapshotIncomplete` 成立。
+- 正式同步保持 `S0 → Add(S0 revision) → S1 → 同一 planner 覆盖验证 → 安全门 → Delete(S1 定位) → 必要时 S2`；Add、Describe 或覆盖验证失败时 Delete 调用恒为 0。
+- Lighthouse/CVM 版本保护、SWAS/ECS 仅用 S1 稳定 ID、ECS 每批不超过 100 及部分成功计数成立；未发现全量覆盖 API 或新的误删路径。
+- 正式同步与 Dry Run 共用 `provider.PlanTarget`；Dashboard/OperationalHealth 继续只消费后端 `RoundOutcome`，不得引入第二套健康推断。
+
+**证据与外部边界**
+
+- 本轮只读复核的定向命令包括 `go test ./internal/tag ./provider ./syncer -race -count=1`、Provider snapshot/request 用例、Syncer target/cleanup 用例、`go vet ./provider ./internal/tag` 与 `git diff --check 3ce40fe..HEAD`；核心定向门禁通过，但 F2 在包含 `syncer` 的另一轮 race 运行中再次复现。
+- 真实四云、Lighthouse 多端口真机收敛、真实版本竞争/删除定位、真实浏览器、真实 SMTP/Webhook/Uptime Kuma、当前 revision 的远端 CI/GHCR 仍未执行；继续以 `ProdTestList.md` PT-I7-01～07、PT-B7-01～09 为准，不得用本节的源码/单测证据替代。
