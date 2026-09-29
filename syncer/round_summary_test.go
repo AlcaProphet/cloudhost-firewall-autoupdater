@@ -324,9 +324,9 @@ func TestRoundSummary_OnlySkippedIsPartial(t *testing.T) {
 	}
 }
 
-// TestTargetSyncCompleteCarriesSkippedDetails 目标级完成事件必须携带
-// 可结构化消费的规则与原因，而不只是 skipped 整数（Issue7 §7.2）。
-func TestTargetSyncCompleteCarriesSkippedDetails(t *testing.T) {
+// TestTargetSyncCompleteCarriesUnsupported 目标级完成事件必须携带与 planner/Dry Run
+// 相同的稳定 unsupported 结构，而不只是 skipped 整数（Issue7 §7.2、R7-02）。
+func TestTargetSyncCompleteCarriesUnsupported(t *testing.T) {
 	p := &roundFakeProvider{cloudType: config.CloudAliSWAS}
 	rules := []config.DomainRule{{ID: 1, Host: "example.com", Protocol: "TCP", Ports: "443", Action: "DROP"}}
 	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"example.com": "1.2.3.4/32"})
@@ -343,16 +343,62 @@ func TestTargetSyncCompleteCarriesSkippedDetails(t *testing.T) {
 		if got := ev.Data["skipped"]; got != 1 {
 			t.Fatalf("skipped = %#v, want 1", got)
 		}
-		details, ok := ev.Data["skipped_details"].([]provider.RuleChange)
+		details, ok := ev.Data["unsupported"].([]provider.PlanIssue)
 		if !ok || len(details) != 1 {
-			t.Fatalf("skipped_details = %#v, want 1 条结构化详情", ev.Data["skipped_details"])
+			t.Fatalf("unsupported = %#v, want 1 条结构化详情", ev.Data["unsupported"])
 		}
 		detail := details[0]
-		if detail.Protocol != "TCP" || detail.Port != "443" || detail.Action != "DROP" || detail.Cidr != "1.2.3.4/32" || detail.SkipReason == "" {
+		if detail.Code != provider.IssueUnsupportedAction || detail.Key == nil ||
+			detail.Key.Protocol != "TCP" || detail.Key.Port != "443" || detail.Key.Action != "DROP" ||
+			detail.Key.CIDR != "1.2.3.4/32" || detail.Message == "" {
 			t.Errorf("详情 = %+v, want 完整规则与非空原因", detail)
+		}
+		if got, ok := ev.Data["duration_ms"].(int64); !ok || got < 0 {
+			t.Errorf("duration_ms = %#v, want 非负 int64", ev.Data["duration_ms"])
+		}
+		if _, ok := ev.Data["cleanup_deleted"]; !ok {
+			t.Fatal("目标完成事件缺少 cleanup_deleted")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("未收到 target:sync_complete 事件")
+	}
+}
+
+// TestSyncErrorRetainsUnsupportedAfterAddFailure 验证同一目标既有平台能力限制、
+// 又在可实施规则的 Add 阶段失败时，最终 failed 事件仍保留 S0 已确认的
+// unsupported 明细，并携带所有目标事件公共字段（Issue7 §5.3、R7-02）。
+func TestSyncErrorRetainsUnsupportedAfterAddFailure(t *testing.T) {
+	p := &roundFakeProvider{cloudType: config.CloudAliSWAS, createErr: errors.New("permission denied")}
+	rules := []config.DomainRule{
+		{ID: 1, Host: "example.com", Protocol: "TCP", Ports: "443", Action: "DROP"},
+		{ID: 2, Host: "example.com", Protocol: "TCP", Ports: "8443", Action: "ACCEPT"},
+	}
+	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"example.com": "1.2.3.4/32"})
+	events := make(chan notifier.Event, 1)
+	s.bus.Subscribe(notifier.EventSyncError, roundEventSink{ch: events})
+
+	res := s.syncTarget(s.runtime.Snapshot(), p, rules)
+	if res.outcome != TargetFailed {
+		t.Fatalf("Add 失败必须得到 failed，实际 %q", res.outcome)
+	}
+
+	select {
+	case ev := <-events:
+		unsupported, ok := ev.Data["unsupported"].([]provider.PlanIssue)
+		if !ok || len(unsupported) != 1 || unsupported[0].Code != provider.IssueUnsupportedAction {
+			t.Fatalf("failed 事件 unsupported = %#v, want 1 条 unsupported_action", ev.Data["unsupported"])
+		}
+		if ev.Data["error"] == "" {
+			t.Fatal("failed 事件必须包含稳定 error")
+		}
+		if _, ok := ev.Data["cleanup_deleted"]; !ok {
+			t.Fatal("failed 事件缺少 cleanup_deleted")
+		}
+		if got, ok := ev.Data["duration_ms"].(int64); !ok || got < 0 {
+			t.Errorf("duration_ms = %#v, want 非负 int64", ev.Data["duration_ms"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("未收到保留 unsupported 的 sync:error 事件")
 	}
 }
 

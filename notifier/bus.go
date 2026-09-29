@@ -13,8 +13,8 @@ const (
 	EventSyncStart    EventType = "sync:start"
 	EventSyncComplete EventType = "sync:complete" // 全局：一轮同步完成
 	// EventTargetSyncComplete 目标级：一个云目标的云端写入与覆盖验证完成（Issue7 §7.2）。
-	// 事件 Data 至少包含 provider/target_id/domains/outcome/added/deleted/skipped/
-	// cleanup_candidates/cleanup_deleted/cleanup_deferred；失败走 EventSyncError。
+	// 事件 Data 至少包含 provider/target_id/domains/outcome/added/deleted/unsupported/
+	// cleanup_candidates/cleanup_deleted/cleanup_deferred/duration_ms；失败走 EventSyncError。
 	EventTargetSyncComplete EventType = "target:sync_complete"
 	// EventDomainSyncComplete 历史逐域名完成事件：不再承载云端增删数量，生产链不再发布。
 	EventDomainSyncComplete EventType = "domain:sync_complete"

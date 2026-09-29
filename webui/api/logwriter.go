@@ -92,8 +92,8 @@ func (w *StoreLogWriter) OnEvent(event notifier.Event) error {
 func targetDetailLines(event notifier.Event) []string {
 	var lines []string
 
-	if skipped := toInt(event.Data["skipped"]); skipped > 0 {
-		lines = append(lines, formatSkippedDetails(skipped, event.Data["skipped_details"])...)
+	if unsupported, ok := event.Data["unsupported"].([]provider.PlanIssue); ok && len(unsupported) > 0 {
+		lines = append(lines, formatUnsupportedDetails(unsupported)...)
 	}
 
 	candidates := toInt(event.Data["cleanup_candidates"])
@@ -119,18 +119,24 @@ func joinDetails(head string, lines []string) string {
 	}
 }
 
-func formatSkippedDetails(count int, raw any) []string {
-	lines := []string{fmt.Sprintf("无法实施 %d 条期望规则", count)}
-	details, _ := raw.([]provider.RuleChange)
+func formatUnsupportedDetails(details []provider.PlanIssue) []string {
+	lines := []string{fmt.Sprintf("无法实施 %d 条期望规则", len(details))}
 	for _, detail := range details {
-		cidr := detail.Cidr
-		if cidr == "" {
-			cidr = "-"
+		protocol, port, action, cidr := "-", "-", "-", "-"
+		if detail.Key != nil {
+			protocol = detail.Key.Protocol
+			port = detail.Key.Port
+			action = detail.Key.Action
+			cidr = detail.Key.CIDR
 		}
-		lines = append(lines, fmt.Sprintf("- %s %s %s %s：%s", detail.Protocol, detail.Port, detail.Action, cidr, detail.SkipReason))
-	}
-	if len(details) == 0 {
-		lines = append(lines, "- 未提供具体规则或原因")
+		reason := detail.Message
+		if reason == "" {
+			reason = detail.Code
+		}
+		if reason == "" {
+			reason = "-"
+		}
+		lines = append(lines, fmt.Sprintf("- %s %s %s %s：%s", protocol, port, action, cidr, reason))
 	}
 	return lines
 }

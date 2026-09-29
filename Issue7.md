@@ -13,6 +13,8 @@
 > **实施状态（2026-09-29）：** Step 0～5 **主体已本地实施**（本地提交 `28559ed`）：Step 1 纯规划器/快照模型、Step 2 目标级先增后验、Step 3 四平台条件清理、Step 4 Dry Run/事件/日志/仪表盘口径、Step 5 本地门禁 + 真实二进制/Docker 验收 + 文档闭环。逐 Step 证据见 §12.3；完整核验确认的未完成项见 §12.5，故不得将“主体已实施”表述为无保留闭环。
 >
 > **独立核验补强（2026-09-29，已提交）：** 对 `28559ed` 做独立只读核验后，按用户裁决修复两项缺陷——F1 Lighthouse 期望侧多端口展开粒度回归（`provider/plan.go` + 新增判别性用例）、F5 SWAS 分页硬上限用尽未按 `snapshot_incomplete` 失败（`provider/ali_swas.go` + 新增判别性用例）；并如实登记 F2（`go test ./... -race -count=1` 受既有 flaky 用例 `TestIsRetryable_RealWorldShapes` 影响，按裁决不改测试代码）与 F4（可重试清理失败语义分歧，仅登记）。补强已提交为 `38bdc19`；提交后 `main` 相对 `origin/main` ahead 4、工作树干净。完整记录见 §12.4。**仍未推送、未打 tag、未触发远端 CI/GHCR、未调用真实云、未执行浏览器验证**。完整复核发现的未完成项独立追踪见 §12.5。
+>
+> **R7 修复进展（2026-09-29）：** R7-01 已提交为 `b80b1b0`。R7-02 已在当前工作树完成本地修复（未提交）：目标完成/失败事件统一补齐 `cleanup_deleted`、目标全生命周期 `duration_ms` 与非 null `[]provider.PlanIssue` `unsupported`；S0 已确认的 unsupported 在后续 Add 失败时仍保留；`StoreLogWriter` 改为只消费 canonical `unsupported`；新增真实 `Syncer.Run → syncTarget → publisher → EventBus → StoreLogWriter → SQLite` 整链用例，证明清理 `candidates/deleted/deferred=2/1/1` 与落库详情一致。定向四包 race、全量 12 包 race、`go vet ./...`、`go build ./...`、`git diff --check` 本次均通过；R7-03～R7-06 仍未完成，R7-06 的既有 flaky 仍不得因本次单次绿色外推为稳定绿色。
 
 ---
 
@@ -845,6 +847,7 @@ git diff --check
 
 | 版本 | 日期 | 内容 |
 |---|---|---|
+| v1.7 | 2026-09-29 | R7-02 已在当前工作树修复：目标完成/失败事件补齐 `cleanup_deleted`、目标全生命周期 `duration_ms` 与 canonical `[]provider.PlanIssue` `unsupported`，Add 失败保留 S0 已确认能力限制；日志 writer 移除 `skipped_details` 双源并消费 canonical 结构；新增 publisher/EventBus/SQLite 真实整链 `2/1/1` 判别用例；定向与全量 race、vet/build/diff-check 本次通过；R7-03～R7-06 未处理 |
 | v1.6 | 2026-09-29 | R7-01 已在当前工作树修复：以私有类型区分「S1 已确认覆盖后的可重试 Delete 错误」，前两次继续整目标重试，第三次耗尽收敛为 `success + cleanup_deferred`；新增限流/版本竞争耗尽与第三次成功的判别性用例，定向 race、健康回归、vet/build 通过；全量 race 仅再次复现既有 R7-06 flaky，本次未处理 |
 | v1.0 | 2026-09-29 | Step 0：固定目标级完整期望集、TAG 所有权、comment 纯可读、先增后验、四平台条件清理、状态口径与 Step 1～5 |
 | v1.1 | 2026-09-29 | 详细补强：增加历史/当前基线区分、不可破坏不变量、严格 TAG 语法、canonical key 表、当前源码替换地图、Provider snapshot/revision 参考、纯 planner DTO、冲突/原因码、S0/S1/S2 状态机、重试与计数、四平台 API 合同、Dry Run JSON/事件/日志/UI 样式、逐 Step 红绿测试/命令/完成与停止条件、统一验收矩阵；仍仅为文档，Step 1～5 未实施 |
@@ -975,12 +978,12 @@ git diff --check
 
 ### 12.5 完整核验未完成项独立追踪（2026-09-29）
 
-> **定位与授权边界：** 本节最初记录在 `HEAD 38bdc19` 上对 P1-01 实施改动进行三路独立只读复核后确认的问题，并作为逐项修复入口。R7-01 已于 2026-09-29 在当前工作树完成本地修复；R7-02～R7-06 仍保持各自行内状态，不能因 R7-01 完成而外推为已修复。它不否定 §12.3 已完成的主体实现与 §12.4 已修复的 F1/F5。
+> **定位与授权边界：** 本节最初记录在 `HEAD 38bdc19` 上对 P1-01 实施改动进行三路独立只读复核后确认的问题，并作为逐项修复入口。R7-01 已提交为 `b80b1b0`；R7-02 已于 2026-09-29 在当前工作树完成本地修复但尚未提交；R7-03～R7-06 仍保持各自行内状态，不能因前两项完成而外推为已修复。它不否定 §12.3 已完成的主体实现与 §12.4 已修复的 F1/F5。
 
-| ID | 级别 | 状态 | 未完成内容 | 当前证据与后续验收合同 |
+| ID | 级别 | 状态 | 内容 | 当前证据与后续验收合同 |
 |---|---|---|---|---|
-| R7-01 | **P1** | ✅ 已本地修复（当前工作树，未提交） | **可重试清理失败耗尽后的 outcome 已符合 AGENTS 强要求。** `syncer/target.go` 新增私有 `retryableCleanupError`，只标记本 attempt 已由 S1 确认覆盖、失败点仅为 version mismatch/限流/网络超时等可重试 Delete 错误；前两次仍完整重试，第三次耗尽后保留残留并返回 `success + cleanup_deferred`。DNS/Describe/Add/S1/S2 失败仍走 `failed`，未修改 Provider、`isRetryable` 或 OperationalHealth。 | 红灯→绿灯：`TestCleanup_RetryableFailureExhaustedKeepsSuccessAndDefers` 覆盖限流与版本竞争，断言 3 次 attempt、每次重读快照、每次使用当次 S1 revision、最终 success/healthy 与 deferred=1；`TestCleanup_RetryableFailureThenSuccessKeepsWholeTargetRetry` 证明第三次成功仍删除并执行 S2。定向 `syncer` race、`internal/health` 回归、`go vet ./...`、`go build ./...`、`git diff --check` 通过；全量 `go test ./... -race -count=1` 仅再次复现 R7-06 的既有 `connection reset by peer` flaky，故不得记为全量稳定绿。 |
-| R7-02 | **P2** | 🔵 待修复 | **目标事件字段不完整，真实 sync_logs 清理详情失真。** `publishTargetResult` 未发布 `cleanup_deleted`、`duration_ms`，`unsupported` 仅以 `skipped/skipped_details` 表达；`StoreLogWriter` 读取缺失的 `cleanup_deleted` 后得到 0，可能把“候选 2、已清理 1、延后 1”写成“已确认清理 0”。 | 补全稳定事件字段并增加 `syncTarget → publisher → EventBus → StoreLogWriter → SQLite` 整链测试，断言 candidates/deleted/deferred 与实际结果一致；明确 `unsupported` 的稳定结构，不能只用手工构造完整事件的 writer 单测代替生产链。 |
+| R7-01 | **P1** | ✅ 已修复并提交（`b80b1b0`） | **可重试清理失败耗尽后的 outcome 已符合 AGENTS 强要求。** `syncer/target.go` 新增私有 `retryableCleanupError`，只标记本 attempt 已由 S1 确认覆盖、失败点仅为 version mismatch/限流/网络超时等可重试 Delete 错误；前两次仍完整重试，第三次耗尽后保留残留并返回 `success + cleanup_deferred`。DNS/Describe/Add/S1/S2 失败仍走 `failed`，未修改 Provider、`isRetryable` 或 OperationalHealth。 | 红灯→绿灯：`TestCleanup_RetryableFailureExhaustedKeepsSuccessAndDefers` 覆盖限流与版本竞争，断言 3 次 attempt、每次重读快照、每次使用当次 S1 revision、最终 success/healthy 与 deferred=1；`TestCleanup_RetryableFailureThenSuccessKeepsWholeTargetRetry` 证明第三次成功仍删除并执行 S2。定向 `syncer` race、`internal/health` 回归、`go vet ./...`、`go build ./...`、`git diff --check` 通过；全量 race 曾复现 R7-06，故不得记为稳定绿。 |
+| R7-02 | **P2** | ✅ 已本地修复（当前工作树，未提交） | **目标事件与真实 sync_logs 清理详情已统一。** `publishTargetResult` 对完成/失败事件统一发布 `cleanup_deleted`、目标全生命周期 `duration_ms` 与非 null canonical `[]provider.PlanIssue` `unsupported`；`runTargetAttempt` 在 S0 规划后即保留 unsupported，故后续 Add 失败仍不会丢失能力限制；`StoreLogWriter` 删除 `skipped_details` 双源并直接消费 canonical 结构。 | 红灯→绿灯：`TestTargetSyncCompleteCarriesUnsupported`、`TestSyncErrorRetainsUnsupportedAfterAddFailure` 覆盖完成/失败公共字段与结构化能力限制；`TestStoreLogWriter_ProductionChainPersistsCleanupCounts` 通过真实 `Syncer.Run → syncTarget → publisher → EventBus → StoreLogWriter → SQLite` 证明候选/已清理/延后 `2/1/1` 与落库详情一致，并验证 `duration_ms`、非 null 空 `unsupported`。`go test ./internal/tag ./provider ./syncer ./webui/api -race -count=1`、`go test ./... -race -count=1`（本次 12 包）、`go vet ./...`、`go build ./...`、`git diff --check` 通过；R7-06 的既有 flaky 仍未修复，不外推稳定性。 |
 | R7-03 | **P2 / 待裁决** | 🟠 语义待确认 | **Dry Run“每目标一项”的范围不一致。** AGENTS/本文现写“每目标一项”，但 `DryRun` 会跳过没有适用规则的已配置目标。 | 后续实施前由用户裁决：A. 所有已配置目标均返回空数组骨架；或 B. 合同改为“每个有适用规则的目标一项”。正式同步 `RoundSummary.Total` 只统计有适用规则目标的既有口径不得被顺带改变。裁决后补“两个目标、规则只引用一个目标”的判别性测试。 |
 | R7-04 | **P3** | 🔵 待修复 | **幂等“规则已不存在”后的清理计数可能失真。** Delete 返回幂等错误并执行 S2 后，当前验证只确认 Desired 仍被覆盖，没有用 S2 planner 的实际残留候选校正 `resolved`，已消失的候选仍可能计入 `cleanup_deferred`。 | 补单候选与多候选幂等 NotFound 用例；以 S2 实际剩余候选为最终 deferred，已证明消失的候选计入清理完成，同时保持 outcome success 与删除安全不变。 |
 | R7-05 | **P3 / 测试缺口** | 🔵 待修复 | **`TestDryRun_ArraysNeverNull` 没有判别力。** 测试字段名已经包含引号，断言又重复拼接引号，实际搜索 `""results"":null`，即使 DTO 数组退化为 `null` 也不会失败。当前源码静态核对仍会构造非 nil 数组，因此这是证据失效，不是已确认的生产序列化缺陷。 | 修正字段断言或解码为 `json.RawMessage` 后逐字段检查，并加入至少一个能证明旧断言会漏报的失败先行用例；保留顶层及目标内所有数组恒为 `[]` 的合同。 |

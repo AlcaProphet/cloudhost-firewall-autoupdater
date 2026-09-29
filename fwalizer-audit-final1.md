@@ -50,7 +50,7 @@
 - [x] **Step 1｜纯规划器与失败先行用例**：已完成（严格 TAG 所有权、唯一 `FunctionalKey`、能力矩阵、目标级纯 planner、快照 revision、ECS token 保护）。
 - [x] **Step 2｜目标级先增后验**：已完成（`S0 → Add(S0 版本) → S1 → 覆盖验证`；Add/验证失败时删除调用恒为 0）。
 - [x] **Step 3｜四平台条件清理**：已完成（Lighthouse→CVM→SWAS→ECS 串行；安全门 + S1 定位 + S2 强制 + 残留计数）。
-- [◧] **Step 4｜Dry Run、事件、日志、Dashboard 与健康口径**：主体已实施（同一 planner、`EventTargetSyncComplete`、目标级 sync_logs、Dashboard 修 idle），但目标事件缺字段导致日志详情失真、Dry Run 无适用规则目标是否返回仍待裁决，见 Issue7 §12.5 R7-02/R7-03。
+- [◧] **Step 4｜Dry Run、事件、日志、Dashboard 与健康口径**：主体已实施；R7-02 目标事件字段与真实 sync_logs 整链已在当前工作树修复，现仅 Dry Run 无适用规则目标是否返回仍待裁决，见 Issue7 §12.5 R7-03。
 - [x] **Step 5｜完整门禁与真实云验收**：本地部分已完成（`go test -race`/vet/build/gofmt/前端/compose/docker build/真实二进制/容器验收与文档闭环）；独立核验补强后复跑门禁为 12/12 包 ok，但 `go test ./... -race -count=1` 存在一个与本项无关的既有 flaky 用例（`TestIsRetryable_RealWorldShapes`，见 Issue7 §12.4 F2），不得把单次绿色外推为稳定绿色；**真实云与浏览器仍待人工执行**（PT-I7-01～07）。
 
 **主线停止条件**：必须逐 Step 实施和验收；任一 Step 未满足 [Issue7.md](./Issue7.md) 的停止条件时，不进入下一 Step。不得把 mock、单测、本地进程或 Docker 结果外推为真实云验收。
@@ -70,8 +70,8 @@
 - [ ] **I-09｜P3-07**：Issue7 Step 1～4 完成后重新证明生产零引用，再清理旧同步包装与关联测试。
 - [ ] **I-10｜其余独立 P3**：P3-04、P3-06、P3-09、P3-16 非 Dry Run 子项、P3-19、P3-20，按各 finding 的前置与真实环境边界逐项处理。
 - [ ] **I-11｜P3-17、P3-18**：仅做文档/注释闭环；不得与业务语义修改混在同一批次。
-- [ ] **I-12｜Issue7 R7-01（P1）**：修复可重试清理失败耗尽后错误进入 failed/unhealthy；保持 S1 已覆盖后的 success + cleanup_deferred 强语义与每 attempt 重读快照。
-- [ ] **I-13｜Issue7 R7-02（P2）**：补全目标事件 `cleanup_deleted`/`duration_ms`/`unsupported` 并增加 publisher 到 SQLite 的整链测试。
+- [x] **I-12｜Issue7 R7-01（P1）**：已修复并提交为 `b80b1b0`；可重试清理失败耗尽后保持 S1 已覆盖的 success + cleanup_deferred 强语义与每 attempt 重读快照。
+- [x] **I-13｜Issue7 R7-02（P2）**：已在当前工作树修复（未提交）；补全目标事件 `cleanup_deleted`/`duration_ms`/canonical `unsupported`，并以真实 publisher/EventBus/SQLite 整链证明清理 `2/1/1` 落库一致。
 - [ ] **I-14｜Issue7 R7-03（P2/待裁决）**：裁决 Dry Run“每目标一项”是否包含无适用规则的已配置目标，再同步合同与判别性测试。
 - [ ] **I-15｜Issue7 R7-04（P3）**：用 S2 实际残留校正幂等 NotFound 后的 cleanup_deleted/cleanup_deferred 计数。
 - [ ] **I-16｜Issue7 R7-05（P3）**：修复 Dry Run 数组非 null 测试的重复引号，使测试真正可判别。
@@ -892,7 +892,7 @@ FAIL
 1. ✅ Step 1 纯规划器保留已修复 P0-01 的绿色回归，并吸收 P2-01、P2-03 与 P3-25 安全前置。
 2. ✅ Step 2 实现目标级 Add → Describe → coverage verification 与安全门，Step 3 起门开即条件删除。
 3. ✅ Step 3 按 Lighthouse/CVM/SWAS/ECS 逐平台开启条件清理，同时吸收 P2-02。
-4. ◧ Step 4 主体已落地，但目标事件字段、Dry Run 无适用规则目标范围仍有 R7-02/R7-03 未完成；Dashboard/健康主线与 P2-08/P2-09 修复保持成立。
+4. ◧ Step 4 主体已落地，R7-02 目标事件与日志整链已在当前工作树修复；仅 Dry Run 无适用规则目标范围仍有 R7-03 待裁决，Dashboard/健康主线与 P2-08/P2-09 修复保持成立。
 5. ◧ Step 5 本地二进制/Docker 与主体门禁证据已取得，F1/F5 补强已提交；R7-04～R7-06 及 **PT-I7 四云/浏览器真实验收**仍未完成。
 
 > P0-01 已是必保留的绿色回归；P2-01 仍需在唯一 functional key 中失败先行修复。P1-02/flock 仍是可独立实施的高优先级项，但不是 P1-01 的前置。

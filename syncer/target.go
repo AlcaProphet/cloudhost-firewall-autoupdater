@@ -49,6 +49,7 @@ type targetResult struct {
 	cleanupDeleted    int
 	cleanupResolved   int
 	cleanupDeferred   int
+	durationMS        int64
 	err               error
 }
 
@@ -68,11 +69,18 @@ func (e *retryableCleanupError) Unwrap() error { return e.err }
 // 每个 attempt 都重新 Resolve、取 S0、规划；已由云端确认的写入跨 attempt 保留，
 // 但再次规划后不会重复计数（已生效规则不会再次出现在 ToAdd 中）。
 func (s *Syncer) syncTarget(state *RuntimeState, p provider.Provider, rules []config.DomainRule) targetResult {
+	started := time.Now()
 	res := targetResult{
 		targetID: p.TargetIndex(),
 		provider: p.Name(),
 		domains:  ruleHosts(rules),
 		outcome:  TargetSuccess,
+	}
+	finish := func() targetResult {
+		// 目标耗时覆盖完整生命周期，包括整目标重试与退避；所有最终事件共用同一口径。
+		res.durationMS = time.Since(started).Milliseconds()
+		s.publishTargetResult(res)
+		return res
 	}
 	dnsFailedHosts := make(map[string]bool)
 	var lastErr error
@@ -95,8 +103,7 @@ func (s *Syncer) syncTarget(state *RuntimeState, p provider.Provider, rules []co
 
 		if err == nil {
 			res.outcome = attemptRes.outcome
-			s.publishTargetResult(res)
-			return res
+			return finish()
 		}
 		lastErr = err
 		var cleanupErr *retryableCleanupError
@@ -107,8 +114,7 @@ func (s *Syncer) syncTarget(state *RuntimeState, p provider.Provider, rules []co
 			res.err = nil
 			slog.Warn("清理重试耗尽，保留残留并记为 cleanup_deferred",
 				"provider", p.Name(), "cleanup_deferred", res.cleanupDeferred, "error", cleanupErr)
-			s.publishTargetResult(res)
-			return res
+			return finish()
 		}
 		if !isRetryable(err) {
 			break
@@ -118,8 +124,7 @@ func (s *Syncer) syncTarget(state *RuntimeState, p provider.Provider, rules []co
 	res.outcome = TargetFailed
 	res.err = lastErr
 	// 达到最大重试次数仍失败时发布一次目标级失败事件（中间 attempt 不发布）
-	s.publishTargetResult(res)
-	return res
+	return finish()
 }
 
 // runTargetAttempt 执行一次完整的「S0 → Plan → Add → S1 → 覆盖验证 → 条件清理」。
@@ -154,6 +159,9 @@ func (s *Syncer) runTargetAttempt(
 		DNSErrors: dnsErrors,
 		Snapshot:  s0,
 	})
+	// S0 已经确定的平台能力限制必须立即进入 attempt 结果；若后续 Add 失败，
+	// 最终 failed 事件仍需保留这些 unsupported 明细（Issue7 §5.3、§7.2）。
+	res.unsupported = plan0.Unsupported
 
 	// 4) Add：永远先于任何删除；携带 S0 快照做版本保护
 	if len(plan0.ToAdd) > 0 {
@@ -462,11 +470,12 @@ func ruleHosts(rules []config.DomainRule) []string {
 // publishTargetResult 发布目标级结果事件（Issue7 §7.2）。
 //
 //   - 成功/部分实施：EventTargetSyncComplete，Data 携带 provider/target_id/domains/
-//     outcome/added/deleted/skipped/cleanup_* ；
+//     outcome/added/deleted/unsupported/cleanup_*/duration_ms；
 //   - 失败：EventSyncError，Data 明确 target_id/domains，不再伪装成单域名结果。
 //
 // 生产链不再发布 EventDomainSyncComplete（避免两套完成事件造成重复日志）。
 func (s *Syncer) publishTargetResult(res targetResult) {
+	unsupported := append([]provider.PlanIssue{}, res.unsupported...)
 	data := map[string]any{
 		"provider":           res.provider,
 		"target_id":          res.targetID,
@@ -475,16 +484,19 @@ func (s *Syncer) publishTargetResult(res targetResult) {
 		"added":              res.added,
 		"deleted":            res.deleted,
 		"outcome":            string(res.outcome),
+		"unsupported":        unsupported,
 		"cleanup_candidates": res.cleanupCandidates,
+		"cleanup_deleted":    res.cleanupDeleted,
 		"cleanup_deferred":   res.cleanupDeferred,
+		"duration_ms":        res.durationMS,
+		// skipped 仅保留目标事件的既有计数表达；结构化明细唯一以 unsupported 为准。
+		"skipped": len(unsupported),
 	}
 	if res.outcome == TargetFailed {
 		data["error"] = errText(res.err)
 		s.bus.Publish(notifier.Event{Type: notifier.EventSyncError, Timestamp: time.Now(), Data: data})
 		return
 	}
-	data["skipped"] = len(res.unsupported)
-	data["skipped_details"] = issueRuleChanges(res.unsupported)
 	s.bus.Publish(notifier.Event{Type: notifier.EventTargetSyncComplete, Timestamp: time.Now(), Data: data})
 }
 
@@ -494,20 +506,4 @@ func errText(err error) string {
 		return ""
 	}
 	return err.Error()
-}
-
-// issueRuleChanges 把不可实施明细转成日志/前端可直接消费的规则摘要。
-func issueRuleChanges(issues []provider.PlanIssue) []provider.RuleChange {
-	out := make([]provider.RuleChange, 0, len(issues))
-	for _, it := range issues {
-		ch := provider.RuleChange{SkipReason: it.Message}
-		if it.Key != nil {
-			ch.Protocol = it.Key.Protocol
-			ch.Port = it.Key.Port
-			ch.Action = it.Key.Action
-			ch.Cidr = it.Key.CIDR
-		}
-		out = append(out, ch)
-	}
-	return out
 }
