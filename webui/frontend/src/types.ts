@@ -130,7 +130,7 @@ export interface PlanIssue {
   rule_id?: number
 }
 
-// DryRunResult 目标级试运行结果（Issue7 §7.1）：每目标一项，数组恒为 []，绝不为 null
+// DryRunResult 目标级试运行结果（Issue7 §7.1）：每个已配置目标一项，数组恒为 []，绝不为 null
 export interface DryRunResult {
   target_id: number
   provider: string

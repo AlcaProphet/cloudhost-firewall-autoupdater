@@ -568,7 +568,7 @@ var ErrDryRunInProgress = errors.New("Dry Run 正在执行中")
 
 // DryRunResponse 试运行响应（包装对象：空状态语义化）。
 //
-// Issue7 §7.1：results 每目标一项，且必须是非 null 数组（空态序列化为 []）。
+// Issue7 §7.1：results 每个已配置目标一项，且必须是非 null 数组（空态序列化为 []）。
 type DryRunResponse struct {
 	Results  []DryRunResult `json:"results"`
 	Warnings []string       `json:"warnings"`
@@ -576,9 +576,10 @@ type DryRunResponse struct {
 
 // DryRunResult 目标级试运行结果（Issue7 §7.1）。
 //
-// 每目标一项，`target_id` 是前端列表与 v-for 的稳定 key；所有数组固定输出 []，
-// 绝不输出 null。Dry Run 只基于 S0，因此 CoverageReady 表示「当前快照是否已覆盖
-// 全部可实施期望」，而不是对未来 Add 的预测。
+// 每个已配置目标一项，`target_id` 是前端列表与 v-for 的稳定 key；所有数组固定输出 []，
+// 绝不输出 null。无适用规则时结果表示未调度，CoverageReady 保持 false；有适用规则时
+// Dry Run 只基于 S0，因此 CoverageReady 表示「当前快照是否已覆盖全部可实施期望」，
+// 而不是对未来 Add 的预测。
 type DryRunResult struct {
 	TargetID            int                    `json:"target_id"`
 	Provider            string                 `json:"provider"`
@@ -644,10 +645,14 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 	// 不写入、不发布事件、不修改熔断器、只取 S0。
 	for _, p := range state.Providers {
 		rules := filterRulesForTarget(state.Config.DomainRules, p.TargetIndex())
+		result := emptyDryRunResult(p.TargetIndex(), p.Name(), ruleHosts(rules))
 		if len(rules) == 0 {
+			// Dry Run 展示所有已配置目标，便于发现规则适用范围遗漏；但正式同步不会
+			// 调度无适用规则的目标，因此这里也只返回未调度骨架，不解析 DNS、
+			// 不读取云快照、不进入 planner，也不产生限速等待。
+			resp.Results = append(resp.Results, result)
 			continue
 		}
-		result := emptyDryRunResult(p.TargetIndex(), p.Name(), ruleHosts(rules))
 
 		// 每目标按 host 去重解析一次（report=false：不写熔断器、不发 DNS 事件）
 		resolved, dnsErrors, _ := s.resolveTargetRules(state, rules, nil, false)

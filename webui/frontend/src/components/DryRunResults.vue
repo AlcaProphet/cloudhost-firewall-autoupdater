@@ -1,9 +1,10 @@
 <script setup lang="ts">
-// Dry Run 结果展示（Issue7 §7.5）：每目标一张卡片，target_id 作为稳定 key。
+// Dry Run 结果展示（Issue7 §7.5）：每个已配置目标一张卡片，target_id 作为稳定 key。
 //
 // 固定口径：
 //   - 清理候选只是预览：标题必须写「满足安全门后可清理」，不得表述为确定删除；
 //   - cleanup_deferred / unsupported / conflicts 显示稳定原因文案；
+//   - 无适用规则目标只显示未调度提示，不渲染空规划表格；
 //   - 所有数组在 DTO 层恒为 []，这里只做空态展示。
 import { NCard, NDataTable, NAlert, NSpace, NStatistic, NGrid, NGi, NTag } from 'naive-ui'
 import { computed } from 'vue'
@@ -115,7 +116,7 @@ function issueText(issue: PlanIssue): string {
 
       <!-- 统计条（目标级口径） -->
       <NGrid :cols="8" :x-gap="12" style="margin-bottom: 16px">
-        <NGi><NStatistic label="目标数" :value="stats.targets" /></NGi>
+        <NGi><NStatistic label="已配置目标" :value="stats.targets" /></NGi>
         <NGi><NStatistic label="所需功能" :value="stats.desired" /></NGi>
         <NGi><NStatistic label="已由 TAG 满足" :value="stats.owned" /></NGi>
         <NGi><NStatistic label="已由外部满足" :value="stats.external" /></NGi>
@@ -138,92 +139,99 @@ function issueText(issue: PlanIssue): string {
           size="small"
         >
           <template #header-extra>
-            <NTag size="small" :bordered="false">{{ item.domains?.length || 0 }} 个来源域名</NTag>
+            <NTag v-if="item.domains?.length" size="small" :bordered="false">{{ item.domains.length }} 个来源域名</NTag>
+            <NTag v-else type="default" size="small" :bordered="false">无适用规则</NTag>
             <NTag size="small" :bordered="false" style="margin-left: 8px">{{ resourceID(item.provider) }}</NTag>
           </template>
 
-          <NAlert v-if="item.error" type="error" :show-icon="false" style="margin-bottom: 12px">
-            {{ item.error }}
+          <NAlert v-if="!item.domains?.length" type="info" :show-icon="false">
+            当前没有适用于此目标的域名规则；正式同步将跳过此目标，不会读取或修改其云防火墙
           </NAlert>
 
-          <div style="font-size: 14px; color: #888; margin-bottom: 8px">
-            来源域名：{{ (item.domains || []).join(', ') || '-' }}
-          </div>
-
-          <div style="font-size: 14px; color: #666; margin-bottom: 4px">所需功能（完整期望集）</div>
-          <NDataTable
-            :columns="desiredColumns"
-            :data="desiredRows(item.desired)"
-            :bordered="true"
-            size="small"
-            :max-height="200"
-          />
-
-          <div style="font-size: 14px; color: #666; margin: 12px 0 4px">已由 TAG 规则满足</div>
-          <NDataTable
-            :columns="changeColumns"
-            :data="matchRows(item.satisfied_by_owned)"
-            :bordered="true"
-            size="small"
-            :max-height="200"
-          />
-
-          <div style="font-size: 14px; color: #666; margin: 12px 0 4px">已由外部规则满足（只读，永不改动）</div>
-          <NDataTable
-            :columns="changeColumns"
-            :data="matchRows(item.satisfied_by_external)"
-            :bordered="true"
-            size="small"
-            :max-height="200"
-          />
-
-          <div style="font-size: 14px; color: #2080f0; margin: 12px 0 4px">待新增</div>
-          <NDataTable
-            :columns="changeColumns"
-            :data="item.to_add?.length ? item.to_add : emptyChange()"
-            :bordered="true"
-            size="small"
-            :max-height="200"
-          />
-
-          <!-- 清理候选只是预览：必须表达「满足安全门后可清理」 -->
-          <div style="font-size: 14px; color: #f0a020; margin: 12px 0 4px">
-            清理候选（满足安全门后可清理，非确定删除）
-          </div>
-          <NDataTable
-            :columns="changeColumns"
-            :data="item.cleanup_candidates?.length ? item.cleanup_candidates : emptyChange()"
-            :bordered="true"
-            size="small"
-            :max-height="200"
-          />
-
-          <template v-if="item.cleanup_deferred?.length">
-            <div style="font-size: 14px; color: #f0a020; margin: 12px 0 4px">清理延后原因</div>
-            <NAlert v-for="(issue, i) in item.cleanup_deferred" :key="`cd-${i}`" type="warning" :show-icon="false" style="margin-bottom: 4px">
-              {{ issueText(issue) }}
+          <template v-else>
+            <NAlert v-if="item.error" type="error" :show-icon="false" style="margin-bottom: 12px">
+              {{ item.error }}
             </NAlert>
-          </template>
 
-          <template v-if="item.unsupported?.length">
-            <div style="font-size: 14px; color: #f0a020; margin: 12px 0 4px">平台无法实施（目标记为部分实施）</div>
-            <NAlert v-for="(issue, i) in item.unsupported" :key="`un-${i}`" type="warning" :show-icon="false" style="margin-bottom: 4px">
-              {{ issueText(issue) }}
-            </NAlert>
-          </template>
+            <div style="font-size: 14px; color: #888; margin-bottom: 8px">
+              来源域名：{{ item.domains.join(', ') }}
+            </div>
 
-          <template v-if="item.conflicts?.length">
-            <div style="font-size: 14px; color: #d03050; margin: 12px 0 4px">冲突（冻结清理，需人工确认）</div>
-            <NAlert v-for="(issue, i) in item.conflicts" :key="`cf-${i}`" type="error" :show-icon="false" style="margin-bottom: 4px">
-              {{ issueText(issue) }}
-            </NAlert>
-          </template>
+            <div style="font-size: 14px; color: #666; margin-bottom: 4px">所需功能（完整期望集）</div>
+            <NDataTable
+              :columns="desiredColumns"
+              :data="desiredRows(item.desired)"
+              :bordered="true"
+              size="small"
+              :max-height="200"
+            />
 
-          <template v-if="item.dns_errors?.length">
-            <div style="font-size: 14px; color: #d03050; margin: 12px 0 4px">DNS 解析失败（目标记为失败，保留现有规则）</div>
-            <NAlert v-for="(issue, i) in item.dns_errors" :key="`dns-${i}`" type="error" :show-icon="false" style="margin-bottom: 4px">
-              {{ issueText(issue) }}
-            </NAlert>
+            <div style="font-size: 14px; color: #666; margin: 12px 0 4px">已由 TAG 规则满足</div>
+            <NDataTable
+              :columns="changeColumns"
+              :data="matchRows(item.satisfied_by_owned)"
+              :bordered="true"
+              size="small"
+              :max-height="200"
+            />
+
+            <div style="font-size: 14px; color: #666; margin: 12px 0 4px">已由外部规则满足（只读，永不改动）</div>
+            <NDataTable
+              :columns="changeColumns"
+              :data="matchRows(item.satisfied_by_external)"
+              :bordered="true"
+              size="small"
+              :max-height="200"
+            />
+
+            <div style="font-size: 14px; color: #2080f0; margin: 12px 0 4px">待新增</div>
+            <NDataTable
+              :columns="changeColumns"
+              :data="item.to_add?.length ? item.to_add : emptyChange()"
+              :bordered="true"
+              size="small"
+              :max-height="200"
+            />
+
+            <!-- 清理候选只是预览：必须表达「满足安全门后可清理」 -->
+            <div style="font-size: 14px; color: #f0a020; margin: 12px 0 4px">
+              清理候选（满足安全门后可清理，非确定删除）
+            </div>
+            <NDataTable
+              :columns="changeColumns"
+              :data="item.cleanup_candidates?.length ? item.cleanup_candidates : emptyChange()"
+              :bordered="true"
+              size="small"
+              :max-height="200"
+            />
+
+            <template v-if="item.cleanup_deferred?.length">
+              <div style="font-size: 14px; color: #f0a020; margin: 12px 0 4px">清理延后原因</div>
+              <NAlert v-for="(issue, i) in item.cleanup_deferred" :key="`cd-${i}`" type="warning" :show-icon="false" style="margin-bottom: 4px">
+                {{ issueText(issue) }}
+              </NAlert>
+            </template>
+
+            <template v-if="item.unsupported?.length">
+              <div style="font-size: 14px; color: #f0a020; margin: 12px 0 4px">平台无法实施（目标记为部分实施）</div>
+              <NAlert v-for="(issue, i) in item.unsupported" :key="`un-${i}`" type="warning" :show-icon="false" style="margin-bottom: 4px">
+                {{ issueText(issue) }}
+              </NAlert>
+            </template>
+
+            <template v-if="item.conflicts?.length">
+              <div style="font-size: 14px; color: #d03050; margin: 12px 0 4px">冲突（冻结清理，需人工确认）</div>
+              <NAlert v-for="(issue, i) in item.conflicts" :key="`cf-${i}`" type="error" :show-icon="false" style="margin-bottom: 4px">
+                {{ issueText(issue) }}
+              </NAlert>
+            </template>
+
+            <template v-if="item.dns_errors?.length">
+              <div style="font-size: 14px; color: #d03050; margin: 12px 0 4px">DNS 解析失败（目标记为失败，保留现有规则）</div>
+              <NAlert v-for="(issue, i) in item.dns_errors" :key="`dns-${i}`" type="error" :show-icon="false" style="margin-bottom: 4px">
+                {{ issueText(issue) }}
+              </NAlert>
+            </template>
           </template>
         </NCard>
       </NSpace>

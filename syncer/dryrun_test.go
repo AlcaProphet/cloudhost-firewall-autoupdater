@@ -109,6 +109,103 @@ func TestDryRun_OneSnapshotPerTargetAndOneResolvePerHost(t *testing.T) {
 	}
 }
 
+// TestDryRun_IncludesTargetsWithoutApplicableRules R7-03：所有已配置目标都必须返回，
+// 但无适用规则的目标只返回未调度空骨架，且绝不解析 DNS 或访问云 API。
+func TestDryRun_IncludesTargetsWithoutApplicableRules(t *testing.T) {
+	p1 := newProbeProvider(config.CloudTCLighthouse, 1)
+	p2 := newProbeProvider(config.CloudTCCVM, 2)
+	rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+	rules[0].Targets = []int{1}
+	s := newTargetSyncer(t, []provider.Provider{p1, p2}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+
+	resolves := 0
+	base := s.resolveHostFn
+	s.resolveHostFn = func(host string) ([]dns.ResolvedIP, error) {
+		resolves++
+		return base(host)
+	}
+
+	resp, err := s.DryRun()
+	if err != nil {
+		t.Fatalf("DryRun 失败: %v", err)
+	}
+	if len(resp.Results) != 2 {
+		t.Fatalf("结果数量 = %d, want 2（所有已配置目标各一项）", len(resp.Results))
+	}
+
+	byID := make(map[int]DryRunResult, len(resp.Results))
+	for _, result := range resp.Results {
+		byID[result.TargetID] = result
+	}
+	if got := byID[1]; len(got.Domains) != 1 || got.Domains[0] != "a.example.com" {
+		t.Fatalf("目标 1 domains = %v, want [a.example.com]", got.Domains)
+	}
+	skipped, ok := byID[2]
+	if !ok {
+		t.Fatal("缺少无适用规则的目标 2")
+	}
+	assertUnscheduledDryRunResult(t, skipped)
+
+	if resolves != 1 {
+		t.Fatalf("DNS 解析次数 = %d, want 1（目标 2 不得解析）", resolves)
+	}
+	if snapshots, creates, deletes := p1.counts(); snapshots != 1 || creates != 0 || deletes != 0 {
+		t.Fatalf("目标 1 snapshot/create/delete = %d/%d/%d, want 1/0/0", snapshots, creates, deletes)
+	}
+	if snapshots, creates, deletes := p2.counts(); snapshots != 0 || creates != 0 || deletes != 0 {
+		t.Fatalf("目标 2 snapshot/create/delete = %d/%d/%d, want 0/0/0", snapshots, creates, deletes)
+	}
+}
+
+// TestDryRun_NoRulesReturnsAllConfiguredTargets 零规则时仍展示全部配置目标，同时保留全局提示。
+func TestDryRun_NoRulesReturnsAllConfiguredTargets(t *testing.T) {
+	p1 := newProbeProvider(config.CloudAliSWAS, 1)
+	p2 := newProbeProvider(config.CloudAliECS, 2)
+	s := newTargetSyncer(t, []provider.Provider{p1, p2}, nil, nil)
+	s.resolveHostFn = func(string) ([]dns.ResolvedIP, error) {
+		t.Fatal("零规则时不得解析 DNS")
+		return nil, nil
+	}
+
+	resp, err := s.DryRun()
+	if err != nil {
+		t.Fatalf("DryRun 失败: %v", err)
+	}
+	if len(resp.Results) != 2 {
+		t.Fatalf("结果数量 = %d, want 2（零规则仍展示全部配置目标）", len(resp.Results))
+	}
+	if len(resp.Warnings) != 1 || resp.Warnings[0] != "暂无域名规则，请先在域名规则页配置" {
+		t.Fatalf("warnings = %v, want 暂无域名规则提示", resp.Warnings)
+	}
+	for _, result := range resp.Results {
+		assertUnscheduledDryRunResult(t, result)
+	}
+	for _, p := range []*targetProbeProvider{p1, p2} {
+		if snapshots, creates, deletes := p.counts(); snapshots != 0 || creates != 0 || deletes != 0 {
+			t.Fatalf("目标 %d snapshot/create/delete = %d/%d/%d, want 0/0/0",
+				p.TargetIndex(), snapshots, creates, deletes)
+		}
+	}
+}
+
+func assertUnscheduledDryRunResult(t *testing.T, result DryRunResult) {
+	t.Helper()
+	if len(result.Domains) != 0 || len(result.Desired) != 0 || len(result.SatisfiedByOwned) != 0 ||
+		len(result.SatisfiedByExternal) != 0 || len(result.ToAdd) != 0 || len(result.CleanupCandidates) != 0 ||
+		len(result.CleanupDeferred) != 0 || len(result.DNSErrors) != 0 || len(result.Unsupported) != 0 ||
+		len(result.Conflicts) != 0 {
+		t.Fatalf("无适用规则目标必须返回空骨架: %+v", result)
+	}
+	if result.Domains == nil || result.Desired == nil || result.SatisfiedByOwned == nil ||
+		result.SatisfiedByExternal == nil || result.ToAdd == nil || result.CleanupCandidates == nil ||
+		result.CleanupDeferred == nil || result.DNSErrors == nil || result.Unsupported == nil || result.Conflicts == nil {
+		t.Fatalf("无适用规则目标的数组不得为 nil: %+v", result)
+	}
+	if result.CoverageReady || result.Error != "" {
+		t.Fatalf("无适用规则目标 coverage_ready/error = %v/%q, want false/空", result.CoverageReady, result.Error)
+	}
+}
+
 // TestDryRun_ArraysNeverNull 所有数组字段必须序列化为 []，不得为 null。
 func TestDryRun_ArraysNeverNull(t *testing.T) {
 	p := newProbeProvider(config.CloudTCLighthouse, 1)

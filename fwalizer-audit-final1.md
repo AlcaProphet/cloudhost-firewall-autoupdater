@@ -41,7 +41,7 @@
 | P2-08、P2-09 | ✅ 已实施（Dashboard 只消费后端 outcome；Dry Run 以 `target_id` 为 key） | Issue7 Step 4 |
 | P2-04～P2-07 | 🔵 未修复，且不构成 P1-01 前置 | 独立问题队列 |
 | P3-25 | ✅ 已实施（重复/未推进 token 立即 `snapshot_incomplete`，本 attempt 零删除） | Issue7 Step 1 |
-| P3-11、P3-22 与 Dry Run 相关 P3-16 | ✅ 已实施（目标级日志并上抛写库错误；Dry Run 每目标一次快照；`RunTest.vue` 44px） | Issue7 Step 4 |
+| P3-11、P3-22 与 Dry Run 相关 P3-16 | ✅ 已实施（目标级日志并上抛写库错误；Dry Run 对每个有适用规则的目标一次快照、无适用规则目标零云调用；`RunTest.vue` 44px） | Issue7 Step 4 |
 | 其余 P3 | 🔵/⏳ 未修复、文档清理或待真实验证 | 按 0.4 的独立队列处理 |
 
 ### 0.3 当前唯一串行主线：Issue7
@@ -50,7 +50,7 @@
 - [x] **Step 1｜纯规划器与失败先行用例**：已完成（严格 TAG 所有权、唯一 `FunctionalKey`、能力矩阵、目标级纯 planner、快照 revision、ECS token 保护）。
 - [x] **Step 2｜目标级先增后验**：已完成（`S0 → Add(S0 版本) → S1 → 覆盖验证`；Add/验证失败时删除调用恒为 0）。
 - [x] **Step 3｜四平台条件清理**：已完成（Lighthouse→CVM→SWAS→ECS 串行；安全门 + S1 定位 + S2 强制 + 残留计数）。
-- [◧] **Step 4｜Dry Run、事件、日志、Dashboard 与健康口径**：主体已实施；R7-02 目标事件字段与真实 sync_logs 整链已在当前工作树修复，现仅 Dry Run 无适用规则目标是否返回仍待裁决，见 Issue7 §12.5 R7-03。
+- [x] **Step 4｜Dry Run、事件、日志、Dashboard 与健康口径**：主体已实施；R7-02 已提交为 `eab4bea`，R7-03 已按用户裁决 A 在当前工作树修复——所有已配置目标各返回一项，无适用规则目标以零 DNS/云 API/planner 的未调度空骨架展示。R7-04～R7-06 仍按 Issue7 §12.5 独立处理，不回退 Step 4 主体状态。
 - [x] **Step 5｜完整门禁与真实云验收**：本地部分已完成（`go test -race`/vet/build/gofmt/前端/compose/docker build/真实二进制/容器验收与文档闭环）；独立核验补强后复跑门禁为 12/12 包 ok，但 `go test ./... -race -count=1` 存在一个与本项无关的既有 flaky 用例（`TestIsRetryable_RealWorldShapes`，见 Issue7 §12.4 F2），不得把单次绿色外推为稳定绿色；**真实云与浏览器仍待人工执行**（PT-I7-01～07）。
 
 **主线停止条件**：必须逐 Step 实施和验收；任一 Step 未满足 [Issue7.md](./Issue7.md) 的停止条件时，不进入下一 Step。不得把 mock、单测、本地进程或 Docker 结果外推为真实云验收。
@@ -71,8 +71,8 @@
 - [ ] **I-10｜其余独立 P3**：P3-04、P3-06、P3-09、P3-16 非 Dry Run 子项、P3-19、P3-20，按各 finding 的前置与真实环境边界逐项处理。
 - [ ] **I-11｜P3-17、P3-18**：仅做文档/注释闭环；不得与业务语义修改混在同一批次。
 - [x] **I-12｜Issue7 R7-01（P1）**：已修复并提交为 `b80b1b0`；可重试清理失败耗尽后保持 S1 已覆盖的 success + cleanup_deferred 强语义与每 attempt 重读快照。
-- [x] **I-13｜Issue7 R7-02（P2）**：已在当前工作树修复（未提交）；补全目标事件 `cleanup_deleted`/`duration_ms`/canonical `unsupported`，并以真实 publisher/EventBus/SQLite 整链证明清理 `2/1/1` 落库一致。
-- [ ] **I-14｜Issue7 R7-03（P2/待裁决）**：裁决 Dry Run“每目标一项”是否包含无适用规则的已配置目标，再同步合同与判别性测试。
+- [x] **I-13｜Issue7 R7-02（P2）**：已修复并提交为 `eab4bea`；补全目标事件 `cleanup_deleted`/`duration_ms`/canonical `unsupported`，并以真实 publisher/EventBus/SQLite 整链证明清理 `2/1/1` 落库一致。
+- [x] **I-14｜Issue7 R7-03（P2）**：已按用户裁决 A 在当前工作树修复（未提交）；Dry Run 覆盖所有已配置目标，无适用规则目标只返回未调度空骨架且零 DNS/云 API/planner/限速，正式同步统计口径不变。
 - [ ] **I-15｜Issue7 R7-04（P3）**：用 S2 实际残留校正幂等 NotFound 后的 cleanup_deleted/cleanup_deferred 计数。
 - [ ] **I-16｜Issue7 R7-05（P3）**：修复 Dry Run 数组非 null 测试的重复引号，使测试真正可判别。
 - [ ] **I-17｜Issue7 R7-06（门禁）**：单独修复 `TestIsRetryable_RealWorldShapes` 的 timeout 制造助手，不放宽业务断言。
@@ -892,7 +892,7 @@ FAIL
 1. ✅ Step 1 纯规划器保留已修复 P0-01 的绿色回归，并吸收 P2-01、P2-03 与 P3-25 安全前置。
 2. ✅ Step 2 实现目标级 Add → Describe → coverage verification 与安全门，Step 3 起门开即条件删除。
 3. ✅ Step 3 按 Lighthouse/CVM/SWAS/ECS 逐平台开启条件清理，同时吸收 P2-02。
-4. ◧ Step 4 主体已落地，R7-02 目标事件与日志整链已在当前工作树修复；仅 Dry Run 无适用规则目标范围仍有 R7-03 待裁决，Dashboard/健康主线与 P2-08/P2-09 修复保持成立。
+4. ✅ Step 4 主体已落地；R7-02 已提交为 `eab4bea`，R7-03 已按裁决 A 在当前工作树修复，Dry Run 展示所有已配置目标且无适用规则目标零云调用；Dashboard/健康主线与 P2-08/P2-09 修复保持成立。
 5. ◧ Step 5 本地二进制/Docker 与主体门禁证据已取得，F1/F5 补强已提交；R7-04～R7-06 及 **PT-I7 四云/浏览器真实验收**仍未完成。
 
 > P0-01 已是必保留的绿色回归；P2-01 仍需在唯一 functional key 中失败先行修复。P1-02/flock 仍是可独立实施的高优先级项，但不是 P1-01 的前置。
