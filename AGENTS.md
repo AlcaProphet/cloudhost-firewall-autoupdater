@@ -1,7 +1,7 @@
 # AGENTS.md — FWAlizer AI 编码指令
 
 > 本文档是给 AI 编码助手的指令集，也是项目**唯一的强要求文档**（详见「十二、文档体系与优先级」）。
-> 项目设计方向见 [Design5.md](./Design5.md)（设计记录，当前），当前构建方案见 [Build7.md](./Build7.md)（告警与运行健康，Step 0～7 分步实施），问题记录见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)，人工验收清单见 [ProdTestList.md](./ProdTestList.md)；[Build6.md](./Build6.md) 已收束为**已完成的历史构建记录**（其 version 2 配置包边界已由 Build7 的 version 3 取代）；历史文档（Design1-4、Build1-5、Issue1-4）已移入 [HistoryDocs/](./HistoryDocs/)（已存档，仅记录，不再用于构建，仅用于核查等情况）。
+> 项目设计方向见 [Design5.md](./Design5.md)（设计记录，当前），已完成构建记录见 [Build7.md](./Build7.md)（告警与运行健康，Step 0～7），当前待实施工作见 [Issue7.md](./Issue7.md)（P1-01 TAG 所有权与目标级同步，Step 0 已完成，Step 1～5 待实施）；问题历史见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)，人工验收清单见 [ProdTestList.md](./ProdTestList.md)。
 
 ---
 
@@ -12,7 +12,7 @@
 - **产品与兼容标识**：产品显示名、二进制名、`FWALIZER_DATA_DIR` 部署变量、数据目录及 GHCR 镜像继续使用 `FWAlizer` / `fwalizer`，避免破坏保留的部署边界
 - **Go 版本**：`go 1.25`
 - **平台约束**：仅支持 **Linux 与 macOS**（平台文件 build tag 精确为 `linux || darwin`）；**不支持 Windows**（Windows pidfile 实现与 `%APPDATA%` 数据目录分支已移除，`GOOS=windows` 构建按预期失败）；构建与发布面向 `linux/amd64`
-- **文档定位与优先级**：编码前先阅读本文件（强要求）。设计记录见 [Design5.md](./Design5.md)（当前，非强制，供参考）；当前详细构建方案见 [Build7.md](./Build7.md)（Step 0～7）；[Build6.md](./Build6.md) 为已完成的历史构建记录（其 version 2 配置包条款已由 Build7 的 version 3 取代，仅用于核查）；问题记录见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)；人工验收清单见 [ProdTestList.md](./ProdTestList.md)；历史文档（Design1-4、Build1-5、Issue1-4）见 [HistoryDocs/](./HistoryDocs/)（已存档，仅记录，不再用于构建，仅用于核查等情况）
+- **文档定位与优先级**：编码前先阅读本文件（强要求）。设计记录见 [Design5.md](./Design5.md)（当前，非强制，供参考）；Build6/Build7 为已完成的历史构建记录；当前待实施合同与串行步骤见 [Issue7.md](./Issue7.md)；问题历史见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)；人工验收清单见 [ProdTestList.md](./ProdTestList.md)；历史文档（Design1-4、Build1-5、Issue1-4）见 [HistoryDocs/](./HistoryDocs/)
 - **Build6 已完成构建（历史记录）**：目标形态固定为 WebUI 单二进制 + SQLite。截至 2026-09-27，Step 0～7 已验收通过。Step 5 的工程实现、本地自动门禁、浏览器人工回归及真实云/DNS/同步链路已经完成并由用户确认真机通过；跨实例不同自增历史的人工交叉导入因当前无该使用场景而免除（底层 ID 映射仍由自动化覆盖）。Step 7 的自动补测、统一验收门禁、真实二进制/Docker 容器验收与文档闭环已完成，并按用户确认的最小边界修复 Issue6 A10/A5/A7/A6/A8；**在此之后按用户一次性授权完成 Issue6 批次 1（A1、A12）、批次 3（A20、A16）、批次 2（A2）、批次 4（A3、A18、A13、A15 与 A11 接口部分）、批次 5（A4、A9、A14、A17）、批次 6（A11 收尾）与批次 7（A19、A8 文档收口）**，批次 8（低风险清理）亦已完成，Issue6 §2.1 状态表为权威记录。远端 GitHub Actions 已取得真实结果（tag `v2.0.0` → 运行 `36300428681` 成功，含远端 `go test -race -v ./...`，并真实推送 `ghcr.io/alcaprophet/fwalizer:2.0.0`），Issue5 O5-02 已关闭。真实 Email/SMTP/收件箱与 Webhook 的人工验收（原 `ProdTestList.md` PT-B6-08/09）经用户 2026-09-27 明确决定跳过、由用户自行处理，属**人工验收免除**（沿用 PT-B6-04 先例），不阻塞 Step 7，**但这两个外部链路仍无真实通过结论，不得写成已经通过**。
 - **Build7 实施状态（2026-09-28）**：Build7（[Build7.md](./Build7.md)，告警与运行健康）**Step 0～6 已全部实施完成，Step 7（核验缺陷修复）亦已完成**：告警三个触发开关（默认全部关闭，渠道与触发同时开启才订阅）、可编辑纯文本邮件主题与正文（固定事件后缀与稳定详情顺序）、`POST /api/alerts/test-email`、唯一 `OperationalHealth` 计算源（`internal/health`）+ 30 秒内部监督器 + `GET /api/health/operational`、Uptime Kuma Push（默认关闭、默认 60s、最小 20s）；配置包为 version 3，version 1/2 与其他版本直接拒绝。Step 7 修复了两项核验缺陷：告警页测试邮件请求体多带 `enabled` 导致必然 HTTP 400（前端改为显式 8 字段载荷，后端严格契约不变）；启动窗口把「同步引擎尚未启动」误判为「未运行」导致重启误报 Push DOWN 与运行健康异常（启动顺序确定性化 + 固定 10 秒启动宽限）。**本机已取得的证据**：`go test ./... -race -count=1`（12 包）、`go vet ./...`、`go build ./...`、前端 `npm ci`/`npm run build`/两条 `npm audit`（0 漏洞）、`docker compose config`、`docker build`、容器非 root（uid 1000）+ `healthy` + `docker stop` 有界且退出码 0、真实二进制进程级用例（静态 `/api/health` 与 `/api/health/operational` 200、Push 心跳发往本地 mock、SIGTERM 干净退出、UI 载荷测试邮件走完假 SMTP、重启后首条心跳为 up）。**仍无真实通过结论（不得写成通过）**：真实 SMTP 接受、真实收件箱投递、真实 Webhook、真实 Uptime Kuma HTTP Monitor 与 Push 的 DOWN/恢复通知、真实云 API、远端 CI/GHCR 均未执行，清单见 [ProdTestList.md](./ProdTestList.md)。
 
@@ -64,7 +64,14 @@
   [TAG] comment
   ```
   示例：`[auto-dns] 生产API`
-- 不同云厂商的规则标识字段不同（详见 HistoryDocs/Build1.md），均以 `[TAG]` 前缀识别
+- TAG 是唯一的自动操作授权命名空间：仅当描述等于 `[TAG]` 或以 `[TAG] `（右方有一个空格）开头时才属于当前 TAG；`[TAG]foo` 不属于该命名空间
+- comment 只用于人类可读，可为空、重复、修改或被平台截断，不参与所有权、功能身份、Diff、删除定位或唯一性校验；修改 comment 不触发云规则重建
+- 非当前 TAG 规则可以被只读用于判定所需功能是否已存在，但永远不得被修改、删除或接管；只有功能 key 精确等价才算满足，不推断更宽 CIDR/端口的包含关系
+- 功能 key 固定由 `address-family + canonical CIDR + canonical protocol + canonical port expression + action` 组成；TAG、comment、description、本地规则 ID、域名、云端 RuleID/PolicyIndex 均不进入 key
+- 同一云目标上的所有适用规则必须先汇总为目标级完整期望功能集，同一功能 key 只创建一条；新建规则的 comment 按本地规则 ID 升序取第一个非空值，全空时只写 `[TAG]`
+- 同步顺序固定为“获取快照 → 目标级规划 → 增量添加 → 重读并验证所需功能已存在 → 经安全门条件删除陈旧 TAG 规则”；任何 Add 都必须在 Delete 之前，Add 失败或结果不确定时保留旧规则
+- 自动清理只在完整期望集非空、所有适用域名解析成功且非空、无平台能力跳过、新快照已证明覆盖完整、候选仍属于当前 TAG、平台删除定位无歧义且不会删除任何期望 key 时执行；其他情况只记录 `cleanup_deferred` 并保留残留
+- 只要所需功能已经重读确认存在，清理延后或删除失败仍记为 `success` 且 operational health 保持 healthy；平台能力导致的期望规则无法实施记为 `partial`；DNS/Describe/Add/新增后覆盖验证失败记为 `failed`
 - 删除时“规则已不存在”视为成功（幂等），不报错
 - 添加时“规则已存在”视为成功，WARN 日志并跳过
 - 支持协议：TCP / UDP / TCP+UDP / **ICMP**（ICMP 时端口由各 Provider 按 API 要求处理：Lighthouse 传 ALL，阿里云传 -1/-1，CVM 省略 Port 字段）
@@ -101,17 +108,17 @@
 
 ## 六、乐观锁与重试
 
-- 每次写入前重新拉取最新规则状态（Describe → Diff → Create/Delete）
-- 不传入版本号参数（Lighthouse 的 `FirewallVersion`、CVM 的 `Version`，由云 API 自行管理）
+- 每次写入前重新拉取最新规则状态；每次重试都从整个云目标的 Describe/规划重新开始，不沿用上一 attempt 的删除定位
+- Lighthouse 和 CVM 的增删必须传入与当次快照一致的 `FirewallVersion` / `Version`；版本不匹配时重新 Describe/规划，不得降级为无版本保护删除
 - 写入失败自动重试（最多 3 次，指数退避）
-- 重试时重新走完整流程：Describe → Diff → Create/Delete
+- SWAS 与 ECS 使用当次重读快照中的稳定 RuleID 删除；Lighthouse 只在功能 key 唯一且当前 TAG 归属唯一时删除；CVM 使用同一快照的 `PolicyIndex + Version` 定位并避免逐条删除导致索引漂移
 
 ---
 
 ## 七、API 频率限制
 
 - 不同云厂商频率限制不同，取对应间隔（详见 HistoryDocs/Build1.md）
-- 同一云厂商内串行处理（共享配额），域名之间加入间隔
+- 同一云厂商内串行处理（共享配额），目标之间加入间隔；同一目标内域名只做解析去重，不再以“单域名规则”为云端写入/重试单元
 - 不同云厂商可并行同步（API 配额独立）
 
 ---
@@ -190,13 +197,13 @@
 - 项目交付范围仅包含 WebUI 单二进制 + SQLite 以及 Docker/服务器部署；不包含 `.env` Headless 业务模式、CLI 子命令、桌面托盘、开机自启或原生桌面打包计划
 - 日志多路复用器 `MultiHandler` 统一定义在 `app/logutil.go`（消除与 `webui/api/logstream.go` 的重复）
 - WebUI 模式通过 pidfile（`config/pidfile.go` + 平台文件（linux/darwin））防止多实例运行
-- 事件类型：全局同步完成用 `EventSyncComplete`，逐域名同步完成用 `EventDomainSyncComplete`，运行健康异常边沿用 `EventOperationalUnhealthy`（定义于 `notifier/bus.go`）
-- 同步全局开关：`POST /api/sync/pause|resume` 端点（先写 DB 后通知 Syncer）；`SyncStatus.enabled` 字段；前端「模拟测试」页（路由 `/dry-run`）承载变更预览（`DryRunResponse{results, warnings}` 包装、`to_add`/`to_delete` 为规则明细数组）；连接测试保留在目标添加/编辑弹窗（`POST /api/test-connection`）
+- 事件类型：全局同步完成用 `EventSyncComplete`，目标级云端写入与覆盖验证用 `EventTargetSyncComplete`，DNS 失败继续用 `EventDNSFailed`，运行健康异常边沿用 `EventOperationalUnhealthy`；`EventDomainSyncComplete` 不再承载云端增删数量
+- 同步全局开关：`POST /api/sync/pause|resume` 端点（先写 DB 后通知 Syncer）；`SyncStatus.enabled` 字段；前端「模拟测试」页（路由 `/dry-run`）承载目标级变更预览，正式同步与 Dry Run 共用同一纯规划器；至少表达 `desired`、`satisfied_by_owned`、`satisfied_by_external`、`to_add`、`cleanup_candidates`、`cleanup_deferred`、`dns_errors`、`unsupported`、`conflicts`、`coverage_ready`；连接测试保留在目标添加/编辑弹窗（`POST /api/test-connection`）
 - 地域自动补全：数据源为 `PlatformAPIDocs/PlatformZoneGuide/`（后端 `webui/api/zones.go` 提供 `GET /api/zones`，文档更新时需同步数据）；后端仅提供预填数据、不校验地域合法性（允许输入列表外值，由云 API 自行报错，符合「不过度防御」）
 - 资源扫描：`provider/scan.go` 实现四平台只读列表查询（Lighthouse `DescribeInstances`、SWAS `ListInstances`、CVM/ECS `DescribeSecurityGroups`），`webui/api/scan.go` 提供 `POST /api/scan-resources`（凭据缺失快速失败）、`GET/DELETE /api/scanned-resources`；结果按 cloud_type+region 覆盖式入库（`scanned_resources` 表），仅供添加目标自动补全，同步流程不依赖
 - 清空所有数据：`POST /api/config/reset` 只接受单一空对象 `{}`，经配置变更协调器在单事务内调 `Store.ResetAllTx()` 清空全部业务表（targets/rules/settings/sync_logs/alert_policy/alert_email/alert_webhook/uptime_kuma_push/scanned_resources），并恢复告警默认全部关闭与 `health_timeout=10m`、Push `interval=60s` 的默认值，等效重新初始化；前端入口需红色警告按钮 + 卡片式二次确认
 - 普通 API 最小校验边界：固定结构请求与配置导入统一走 `webui/api/decode.go` 的 `decodeJSONStrict`（拒绝未知字段/尾随 JSON/多个顶层值，超限 413；普通请求 1 MiB、配置导入 10 MiB），路径 ID 用 `strconv.Atoi` 严格解析且必须大于 0；请求 DTO 不含数据库 `id`；更新/删除按 `RowsAffected` 返回 404；规则请求的 `targets` 必须显式提供（省略返回 400），空数组仍表示适用于全部目标
-- 配置变更协调器：目标、规则、settings、alerts、pause/resume、reset 与配置导入的写入口统一经 `webui/api/ConfigCoordinator` 串行化（锁 → 单事务 → 事务内完整业务快照 → 事务内构造候选 `RuntimeState` 与候选告警集合 → commit → 无失败发布：日志级别 → 告警集合 → 运行健康监督器唤醒 → Uptime Kuma Push 唤醒 → `RuntimeState`）；非法输入零写入零 apply，commit 之后不重新读库、不构造 Provider、不访问网络
+- 配置变更协调器：目标、规则、settings、alerts、pause/resume、reset 与配置导入的写入口统一经 `webui/api/ConfigCoordinator` 串行化（锁 → 单事务 → 事务内完整业务快照 → 事务内构造候选 `RuntimeState` 与候选告警集合 → commit → 无失败发布：日志级别 → 告警集合 → `RuntimeState` → 运行健康监督器唤醒 → Uptime Kuma Push 唤醒）；唤醒时新运行时必须已可见；非法输入零写入零 apply，commit 之后不重新读库、不构造 Provider、不访问网络
 - Provider 凭据为不可变值 `provider.Credentials`，由 `ClientPool` 在创建时持有且无 setter；已删除进程级全局凭据与 `provider.SetCredentials`，连接测试、资源扫描、正式同步与 Dry Run 共用同一显式凭据模型和一次快照
 - 运行时设置动态生效：日志级别使用 `app.LogLevelVar`（`slog.LevelVar`）与 `LogBroadcaster.SetLevel`；DNS 熔断阈值随完整 `RuntimeState` 原子发布（普通变更经 `dns.CircuitBreaker.Clone` + `SetThreshold` 保留既有失败计数；完整导入**确定**新建 breaker 并清空计数）
 - 前端 UI 规范：全局字号 16px、页面级操作按钮统一 `size="large"`（44px，`App.vue` themeOverrides 按分尺寸变量覆盖）；表格内操作按钮（编辑/删除）保持小号；所有二次确认使用 `NModal preset="card"` 卡片式弹窗（危险操作确认按钮 `type="error"`）
@@ -212,8 +219,8 @@
 |---------|------|------|--------|
 | **强要求** | **AGENTS.md（本文件）** | AI 编码指令与约束 | **唯一强要求，尽量不违背** |
 | 设计构想 | [Design5.md](./Design5.md)（当前）；历史：[HistoryDocs/](./HistoryDocs/)（Design1-4 已存档） | 设计大方向、架构构想、决策记录 | 非强制，供参考 |
-| 构建方案 | [Build7.md](./Build7.md)（当前，Step 0～7）；历史构建记录：[Build6.md](./Build6.md)（已完成）；更早：[HistoryDocs/](./HistoryDocs/)（Build1-5 已存档） | 详细的分步构建方案与验收命令 | 非强制，执行建议 |
-| 问题记录 | [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)（当前）；历史：[HistoryDocs/](./HistoryDocs/)（Issue1-4 已存档） | 记录的错误与修复方案 | 非强制，经验参考 |
+| 构建方案 | [Build7.md](./Build7.md)（Step 0～7 已完成）；历史构建记录：[Build6.md](./Build6.md)（已完成）；更早：[HistoryDocs/](./HistoryDocs/)（Build1-5 已存档） | 详细的分步构建方案与验收命令 | 非强制，执行建议 |
+| 问题记录 | [Issue7.md](./Issue7.md)（当前待实施合同）；[Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)（已实施问题记录与残余候选）；历史：[HistoryDocs/](./HistoryDocs/)（Issue1-4 已存档） | 记录的错误、固定产品语义、分步实施与验收合同 | 非强制，经验参考 |
 
 **执行规则：**
 
@@ -233,6 +240,7 @@
 | [Build6.md](./Build6.md) | 开发者 | 已完成的历史构建记录：Step 0-7（version 2 配置包边界已被 Build7 的 version 3 取代，仅用于核查） | 已完成 |
 | [Issue5.md](./Issue5.md) | 开发者 | 问题追踪：R5、O5 与 A5 事项 | 活跃 |
 | [Issue6.md](./Issue6.md) | 开发者 | 问题追踪：A1～A20 批次、后续核验与残余候选 | 活跃 |
+| [Issue7.md](./Issue7.md) | 开发者 | P1-01 TAG 所有权、目标级规划、先增后验与平台化清理；Step 0 文档合同已完成，Step 1～5 待实施 | 当前 |
 | [ProdTestList.md](./ProdTestList.md) | 人类（用户） | 待用户执行的真实外部人工验收清单 | 活跃 |
 | [HistoryDocs/](./HistoryDocs/) | 开发者 | Build1-5、Issue1-4、Design1-4 共 13 份历史文档（已存档，仅记录，不再用于构建，仅用于核查等情况） | 已存档 |
 

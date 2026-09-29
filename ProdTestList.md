@@ -1,7 +1,7 @@
 # ProdTestList.md — 后续人工真机验收清单
 
-> **用途：** 仅保留 [Build6.md](./Build6.md) 中尚未执行、需要用户在真实外部服务上手动完成的验收项。
-> **状态时间：** 2026-09-27（PT-B7-09 于 2026-09-28 增补）。Build6 **Step 0～7 均已验收通过**；Build6 范围内**没有待执行项**——但下方 PT-B7 表仍有 **9 项未执行**的真实外部验收（PT-B7-01～09），两者范围不同，勿混读。
+> **用途：** 仅保留需要用户在真实浏览器、云平台或外部服务上手动完成的验收项。
+> **状态时间：** 2026-09-29。Build6/Build7 已完成，但 PT-B7 的 9 项外部边界仍未执行；Issue7 当前只完成 Step 0 文档合同，下方 PT-I7 项只是 Step 5 未来真实验收清单，在代码 Step 1～4 完成前不得执行或记为通过。
 > **不记录：** 已完成或不适用的人工项目，以及单元/集成测试、race、vet、build、npm audit、Docker、脚本、HTTP 探测、远端 CI 和源码核验（这些分层证据统一记录在 Build6.md Step 7 的「实际证据」中）。
 >
 > **Build7（2026-09-28）：** 当前构建方案为 [Build7.md](./Build7.md)（告警与运行健康），**Step 0～7 已全部实施完成**（Step 7 为核验缺陷修复）。本清单登记其尚未执行、需要真实外部环境的人工验收项（见下方 PT-B7 表）。**注意：** 自动化测试、本地假 SMTP、`httptest` mock 与 Docker 容器验收均不能替代这些真实外部验收，也不得把任何一项写成已通过。**Step 7 补充：** 新增的进程级用例（假 SMTP 的 UI 载荷测试邮件、`GOMAXPROCS=1` 重启后 Push 首条心跳为 up）只缩小了自动化覆盖缺口，**不改变** PT-B7-07 浏览器人工回归「未执行」的状态。
@@ -20,7 +20,18 @@
 | PT-B7-06 | 真实运行健康异常邮件：开启第三触发条件，制造持续 unhealthy，确认只在边沿收到一次告警且恢复后再次异常会再次告警 | 未执行 |
 | PT-B7-07 | 浏览器人工回归（Build7 页面）：默认全部关闭、四卡片布局、保存、测试发送 loading/成功/失败、刷新后测试结果消失、敏感输入样式 | 未执行（本环境无浏览器工具，仅完成 HTTP 层与构建产物验证；Build7 Step 7 已修复「测试发送」必然 400 的载荷缺陷并新增进程级用例，但工具栏交互与刷新内存态仍需人工确认） |
 | PT-B7-08 | 远端 GitHub Actions 与 GHCR 发布（当前改动未推送） | 未执行 |
-| PT-B7-09 | **真实阿里云 SWAS `Remark` 字段的长度上限**：用真实 SWAS 账号尝试创建/修改防火墙规则，逐步加长 `Remark`，确认云端的**实际**上限，以及它是按**字符**还是**字节**计算。<br>**为什么需要：** `syncer/retry.go:200` 的注释声称 `Remark ≤ 50 字符（阿里云 SWAS API）`，但 `PlatformAPIDocs/AliyunSWASAPIGuide/` 下所有出现 `Remark` 的文件（`CreateFirewallRules.md:48`、`CreateFirewallRule.md:45`、`ListFirewallRules.md:61`、`EnableFirewallRule.md:40`、`DisableFirewallRule.md:40`、`ModifyFirewallRule.md:43`）**均未给出任何长度限制**，该常量目前**没有仓内依据**。<br>**影响：** 若真实上限 > 50，当前实现会在保存时**过度拒绝**合法规则；若 < 50，则会在云端失败而不是在保存时被拦住。按**字节**计算时中文备注的可用长度会按 3 倍缩水。<br>**用途：** 用于确定"规则标识串（`[TAG] host/协议/端口`）长度校验"中 SWAS 的 cap 常量 | 未执行 |
+| PT-B7-09 | **真实阿里云 SWAS `Remark` 字段的长度上限**：用真实 SWAS 账号尝试创建/修改防火墙规则，逐步加长 `Remark`，确认云端的**实际**上限，以及它是按**字符**还是**字节**计算。<br>**为什么需要：** `syncer/retry.go:200` 的注释声称 `Remark ≤ 50 字符（阿里云 SWAS API）`，但 `PlatformAPIDocs/AliyunSWASAPIGuide/` 下所有出现 `Remark` 的文件都未给出长度限制。<br>**影响：** 只影响 `[TAG] comment` 的可读 comment 截断预算；P1-01 定案已明确 comment 不承担身份，因此本项**不再是 Step 1～4 的实施前置**，也不用于构造 `[TAG] host/协议/端口` 身份串。 | 未执行 |
+
+### PT-I7：Issue7 Step 5 真实外部验收（当前不可执行）
+
+| 条目 | 内容 | 状态 |
+|---|---|---|
+| PT-I7-01 | 四平台共通：将同一目标的 IP 从 A 变为 B，从云平台操作时序/日志确认 B 先创建且重读可见，之后才可删除 A；人为使 B 创建失败时 A 必须保留 | 未执行（Step 1～4 未实施） |
+| PT-I7-02 | Tencent Lighthouse：验证 `FirewallVersion` 竞争后重新规划，不降级为无版本删除；制造同功能重复/人工精确等价规则，确认歧义时保留且所需权限正常 | 未执行（Step 1～4 未实施） |
+| PT-I7-03 | Tencent CVM：验证 `PolicyIndex + Version` 同快照删除、Version mismatch 重新规划、批量删除不因索引漂移误删；同时确认真实账号入站 100 条配额口径 | 未执行（Step 1～4 未实施） |
+| PT-I7-04 | Aliyun SWAS：验证非 TAG 精确等价规则会满足期望且不被修改；自动清理只使用 S1 稳定 `RuleId`；平台不支持项可见且冻结清理 | 未执行（Step 1～4 未实施） |
+| PT-I7-05 | Aliyun ECS：验证只使用 S1 `SecurityGroupRuleId`，超过 100 个删除候选会分批；模拟/观察分页异常时目标失败且零删除 | 未执行（Step 1～4 未实施） |
+| PT-I7-06 | 浏览器与运行健康：Dry Run 按目标展示人工规则满足、待新增、清理候选/延后、DNS 错误、unsupported 和冲突；只有清理延后时 Dashboard 黄色提示且 `/api/health/operational` 仍 200 | 未执行（Step 1～4 未实施） |
 
 ---
 

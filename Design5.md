@@ -1,7 +1,7 @@
 # Design5.md — FWAlizer 设计记录（当前）
 
 > **文档定位：** 本文档是 FWAlizer 的当前设计记录（设计大方向、架构构想与决策记录，非强制，供参考），承接已存档的 [Design1-4](./HistoryDocs/)。
-> 编码约束遵循 [AGENTS.md](./AGENTS.md)（唯一强要求）；当前详细分步实施和验收见 [Build7.md](./Build7.md)（告警与运行健康，Step 0～6）；[Build6.md](./Build6.md) 已收束为已完成的历史构建记录。问题追踪见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)。
+> 编码约束遵循 [AGENTS.md](./AGENTS.md)（唯一强要求）；[Build6.md](./Build6.md) 与 [Build7.md](./Build7.md) 均为已完成的构建记录（Build7 Step 0～7 已完成）；当前 P1-01 TAG 所有权与目标级同步实施合同见 [Issue7.md](./Issue7.md)（Step 0 文档合同已完成，Step 1～5 待实施）。问题历史见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)。
 > **Build7 实施状态（2026-09-28）：** 本文档第三节描述的 **version 2 配置包设计已由 Build7 的 version 3 取代并实施完成**：version 3 是唯一导入/导出版本（version 1/2 与其他版本直接 400）；`GET/PUT /api/alerts` 为四对象严格契约（触发策略 / 邮件含主题正文 / Webhook / Uptime Kuma Push）；新增 `POST /api/alerts/test-email`、唯一 `OperationalHealth` 计算源（`internal/health`）+ 30 秒内部监督器 + `GET /api/health/operational`（`/api/health` 保持静态存活语义）。逐步证据见 [Build7.md](./Build7.md) 第八节。**未执行的真实外部验收**（真实 SMTP/收件箱、Webhook、Uptime Kuma HTTP/Push、真实云 API、远端 CI）见 [ProdTestList.md](./ProdTestList.md)，不得写成通过。
 > **实施状态：** 2026-09-24 Build6 Step 1、Step 2、Step 3 与 Step 4 已验收通过：运行时已收束为唯一 WebUI + SQLite，CLI、`.env` Headless、业务环境变量入口和 `webui_port` 业务设置已从代码与当前文档移除，监听参数只由三个部署变量提供；HTTP 生命周期已形成最终形态（同步 listener、仅 `EADDRINUSE` 降级、显式 `http.Server`、`Wait`、幂等 `Shutdown`、两类 SSE 服务器级退出、main 统一收尾）；普通 API 最小持久化校验边界已落地（统一严格解码与 1 MiB、领域校验与归一化、`RowsAffected`/引用检查、事务化 settings/alerts、删除被引用目标 409、500 安全文案、日志级别动态更新）。远端 GitHub Actions 结果已由 2026-09-27 tag `v2.0.0` 的真实运行 `36300428681`（成功）确认，详见下段与 Issue5 O5-02。
 >
@@ -60,24 +60,25 @@ SQLite 是唯一业务配置源，并只通过 WebUI 管理：
 
 ---
 
-## 三、version 2 完整配置包
+## 三、version 3 完整配置包（当前）
 
 ### 3.1 定位与 Schema
 
-配置包是 SQLite 业务配置的完整可迁移表示，不是 SQLite 文件备份。新导出只生成 version 2，使用独立强类型 DTO，包含：
+配置包是 SQLite 业务配置的完整可迁移表示，不是 SQLite 文件备份。新导出只生成 version 3，使用独立强类型 DTO，包含：
 
 - UTC RFC3339 导出时间；
 - 带正数且唯一 `export_id` 的目标；
 - 通过 `target_export_ids` 引用目标的规则；
 - 腾讯云/阿里云完整凭据；
 - TAG、同步、DNS、日志和主题设置；
-- 邮件、SMTP 密码、Webhook URL 和渠道。
+- `alerts.policy`、`alerts.email`（含主题/正文与 SMTP 密码）、`alerts.webhook`；
+- `monitoring.uptime_kuma_push`。
 
-所有固定字段必须存在，数组不得为 `null`。新导出补齐全部默认值；version 1 或其他版本均返回 400，不做迁移、猜测或字段补全。精确 JSON Schema 以 [Build6.md 第三节](./Build6.md#三version-2-完整配置包契约) 为实施契约。
+所有固定字段必须存在，数组和对象不得为 `null`。新导出补齐全部默认值；version 1/2 或其他版本均返回 400，不做迁移、猜测或字段补全。精确当前 Schema 以 [Build7.md](./Build7.md) 与 `AGENTS.md` §9.1 为准；[Build6.md 第三节](./Build6.md#三version-2-完整配置包契约) 只是被 version 3 取代的历史记录。
 
 ### 3.2 安全边界
 
-version 2 是明文完整敏感快照，安全等级等同生产 Secret 或 SQLite 数据库备份。
+version 3 是明文完整敏感快照，安全等级等同生产 Secret 或 SQLite 数据库备份。
 
 - 导入、导出都使用危险级卡片确认；
 - 导出使用 POST、`Cache-Control: no-store` 和 Blob 下载；
@@ -137,7 +138,7 @@ EventBus 取消 channel 订阅时只从订阅表删除记录，不关闭 channel
 
 - 配置包加密、签名或密钥托管；
 - version 1 迁移器或兼容壳；
-- 云平台 API 算法重构或所有权契约变更；
+- 本地规则—云规则持久状态表、comment 唯一性/必填校验或在 description 中编码 host/协议/端口；
 - 实时地域/资源 ID 合法性验证；
 - 同步日志或扫描缓存导出；
 - SQLite 文件在线备份；
@@ -148,13 +149,39 @@ EventBus 取消 channel 订阅时只从订阅表删除记录，不关闭 channel
 
 ## 七、设计继承与实施顺序
 
-[Design4.md](./HistoryDocs/Design4.md) 记录的已实现 UI、同步、扫描、告警和产品标识决策仍保持有效，除非本文档或 Build6 明确替代。产品显示名、二进制名、数据目录兼容标识和 GHCR 镜像名继续使用 `FWAlizer` / `fwalizer`。
+[Design4.md](./HistoryDocs/Design4.md) 记录的已实现 UI、同步、扫描、告警和产品标识决策仍保持有效，除非本文档、Build6/Build7 已实施合同或 Issue7 当前定案明确替代。产品显示名、二进制名、数据目录兼容标识和 GHCR 镜像名继续使用 `FWAlizer` / `fwalizer`。
 
-实施必须严格按 [Build6.md](./Build6.md) 的 Step 0-7 串行进行：每次只实施一个 Step，验收后等待用户授权下一步。文档、自动测试、本地进程、Docker、浏览器与真实云 API/SMTP/Webhook 证据必须分层记录，不得互相替代。
+Build6/Build7 的 Step 均已完成，不再作为当前实施顺序。P1-01 后续修复必须严格按 [Issue7.md](./Issue7.md) Step 1～5 串行进行：每次只实施一个 Step，验收后等待用户授权下一步。文档、自动测试、本地进程、Docker、浏览器与真实云 API/SMTP/Webhook 证据必须分层记录，不得互相替代。
 
 ---
 
-## 八、变更记录
+## 八、P1-01 TAG 所有权与目标级同步定案（2026-09-29）
+
+### 8.1 设计取舍
+
+同步优先保证当前 IP 获得所需防火墙权限，陈旧规则清理为尽力而为的后台收敛。设计接受无法安全定位时的 TAG 残留，不接受为清理旧规则而在新权限生效前制造不可达窗口。
+
+TAG 是唯一操作授权；comment 只是可读备注，不参与身份、Diff、删除或唯一性。所有权只匹配精确 `[TAG]` 或 `[TAG] ` 前缀，不匹配 `[TAG]foo`。非 TAG 规则可只读满足精确等价的功能需求，但永不被接管。
+
+### 8.2 功能身份与流程
+
+云端功能身份改为 `address-family + canonical CIDR + canonical protocol + canonical port + action`，不包含 comment/description/域名/本地 ID/云端 ID。同一云目标的所有本地规则先汇总、解析、平台化展开和去重，再与云端快照比较。
+
+固定流程是 `S0 Describe → Plan → Add → S1 Describe → coverage verification → 安全门 → 条件 Delete → 必要时 S2 验证`。任何 Add 先于 Delete；Add/Describe/覆盖验证失败时旧规则全保留。重试从整个目标重新 Describe/Plan，不复用旧快照删除定位。
+
+### 8.3 平台化清理与健康
+
+- Lighthouse 使用功能唯一性 + 当前 TAG + 同快照 `FirewallVersion`；有歧义即保留。
+- CVM 使用同一快照的 `PolicyIndex + Version`，避免逐条删除造成索引漂移。
+- SWAS/ECS 只使用 S1 稳定 RuleID；ECS 删除每批不超过 100 个。
+- 空期望集、DNS 部分失败、平台能力跳过、快照不完整、定位歧义、TAG 修改和配置 reset/import 均不自动清理。
+- 所需功能已确认时，清理延后仍为 `success`/healthy；平台能力不支持为 `partial`/unhealthy；DNS、Describe、Add 或覆盖验证失败为 `failed`/unhealthy。
+
+详细数据合同、审计问题依赖、Step 1～5 及验收停止条件统一见 [Issue7.md](./Issue7.md)。
+
+---
+
+## 九、变更记录
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
@@ -163,3 +190,4 @@ EventBus 取消 channel 订阅时只从订阅表删除记录，不关闭 channel
 | v1.2 | 2026-09-27 | Step 7 ✅ 验收通过：远端 Actions 运行 `36300428681` 成功并真实推送 `ghcr.io/alcaprophet/fwalizer:2.0.0`，O5-02 关闭；真实 SMTP/收件箱与 Webhook 经用户决定免除人工验收、由用户自行处理（不写成已通过） |
 | v1.3 | 2026-09-27 | 独立核验后的文档一致性修正：实施状态段中"远端 GitHub Actions 仍待确认"改为已确认（运行 `36300428681`）；覆盖率复测值、非法输入用例计数、audit 阻断边界与 GHCR `latest` 标签按实测事实回写到 Build6/Issue5 对应记录 |
 | v1.4 | 2026-09-27 | 核验修正批次落地（不涉及 Issue6 条目）：规则 `targets` 显式必填（省略 400）、更新/删除按 `RowsAffected=0` 判定 404、扫描结果查询参数 `cloud_type` 加枚举校验、协调器 commit 后发布收紧为不可失败；同步 AGENTS §9.1 与 Build6 §4.2/§4.3/§12.9 |
+| v1.5 | 2026-09-29 | P1-01 正式定案为“TAG 唯一操作授权 + comment 纯可读 + 目标级功能期望集 + 先增后验 + 平台化条件清理 + 可接受残留”；实施合同转入 Issue7 Step 1～5；当前配置包正文由漂移的 version 2 修正为已实施 version 3 |
