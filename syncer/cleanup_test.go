@@ -3,9 +3,12 @@ package syncer
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
 
@@ -194,6 +197,101 @@ func TestCleanup_FailureKeepsSuccessAndDefers(t *testing.T) {
 	}
 	if !p.hasRule("1.1.1.1/32", "443") {
 		t.Fatal("新增的期望规则不得受影响")
+	}
+}
+
+// TestCleanup_RetryableFailureExhaustedKeepsSuccessAndDefers 验证 R7-01：
+// 每次 attempt 均已由 S1 证明所需功能存在，只有 Delete 可重试错误时仍完成三次
+// 整目标重试；重试耗尽后不得把清理残留升级成 failed/unhealthy。
+func TestCleanup_RetryableFailureExhaustedKeepsSuccessAndDefers(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "限流", err: errors.New("RequestLimitExceeded")},
+		{name: "版本竞争", err: errors.New("UnsupportedOperation.FirewallVersionMismatch")},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newProbeProvider(config.CloudTCLighthouse, 1, staleRule("TCP", "9999", "10.9.9.9/32", "", ""))
+			p.deleteErr = tc.err
+			rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+			s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+			completedEvents := make(chan notifier.Event, 1)
+			errorEvents := make(chan notifier.Event, 1)
+			s.bus.Subscribe(notifier.EventTargetSyncComplete, roundEventSink{ch: completedEvents})
+			s.bus.Subscribe(notifier.EventSyncError, roundEventSink{ch: errorEvents})
+			var sleeps []time.Duration
+			s.sleepFn = func(d time.Duration) { sleeps = append(sleeps, d) }
+
+			s.syncAll()
+
+			snapshots, creates, deletes := p.counts()
+			if snapshots != 6 || creates != 1 || deletes != maxRetries {
+				t.Fatalf("snapshot/create/delete = %d/%d/%d, want 6/1/%d（每次必须从新快照重新规划）",
+					snapshots, creates, deletes, maxRetries)
+			}
+			if len(sleeps) < 2 || sleeps[0] != time.Second || sleeps[1] != 2*time.Second {
+				t.Fatalf("退避序列 = %v, want 前两项 [1s 2s]", sleeps)
+			}
+			if got := p.deleteRevisionLog(); !reflect.DeepEqual(got, []string{"2", "2", "2"}) {
+				t.Fatalf("删除版本 = %v, want [2 2 2]（每次都必须使用当次 S1 revision）", got)
+			}
+
+			sum := s.Status().LastRound
+			if sum == nil || sum.Outcome != RoundSuccess || sum.Failed != 0 || sum.Changed != 1 {
+				t.Fatalf("清理重试耗尽仍必须 success 且保留已确认新增: %+v", sum)
+			}
+			if sum.CleanupCandidates != 1 || sum.CleanupDeleted != 0 || sum.CleanupDeferred != 1 {
+				t.Fatalf("清理计数 = candidates:%d deleted:%d deferred:%d, want 1/0/1",
+					sum.CleanupCandidates, sum.CleanupDeleted, sum.CleanupDeferred)
+			}
+			if s.Status().LastSuccess == nil {
+				t.Fatal("success + cleanup_deferred 必须刷新 last_success，以保持 operational health healthy")
+			}
+			if !p.hasRule("10.9.9.9/32", "9999") || !p.hasRule("1.1.1.1/32", "443") {
+				t.Fatal("清理重试耗尽后必须同时保留残留与已确认的期望规则")
+			}
+			select {
+			case ev := <-completedEvents:
+				if ev.Data["outcome"] != string(TargetSuccess) {
+					t.Fatalf("目标完成事件 outcome = %v, want success", ev.Data["outcome"])
+				}
+			case <-time.After(time.Second):
+				t.Fatal("清理重试耗尽后未发布目标完成事件")
+			}
+			select {
+			case ev := <-errorEvents:
+				t.Fatalf("清理重试耗尽后不得发布同步失败事件: %+v", ev)
+			case <-time.After(50 * time.Millisecond):
+			}
+		})
+	}
+}
+
+// TestCleanup_RetryableFailureThenSuccessKeepsWholeTargetRetry 验证修复不得取消重试：
+// 前两次 Delete 失败、第三次成功时，仍应删除候选并经 S2 收敛。
+func TestCleanup_RetryableFailureThenSuccessKeepsWholeTargetRetry(t *testing.T) {
+	retryErr := errors.New("RequestLimitExceeded")
+	p := newProbeProvider(config.CloudTCLighthouse, 1, staleRule("TCP", "9999", "10.9.9.9/32", "", ""))
+	p.deleteErrs = []error{retryErr, retryErr, nil}
+	rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+
+	s.syncAll()
+
+	snapshots, creates, deletes := p.counts()
+	if snapshots != 7 || creates != 1 || deletes != maxRetries {
+		t.Fatalf("snapshot/create/delete = %d/%d/%d, want 7/1/%d（第三次成功后必须补 S2）",
+			snapshots, creates, deletes, maxRetries)
+	}
+	sum := s.Status().LastRound
+	if sum == nil || sum.Outcome != RoundSuccess || sum.CleanupDeleted != 1 || sum.CleanupDeferred != 0 {
+		t.Fatalf("第三次清理成功必须正常收敛: %+v", sum)
+	}
+	if p.hasRule("10.9.9.9/32", "9999") || !p.hasRule("1.1.1.1/32", "443") {
+		t.Fatal("第三次成功后必须删除陈旧规则并保留期望规则")
 	}
 }
 

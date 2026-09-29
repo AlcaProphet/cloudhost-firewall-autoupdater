@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -51,6 +52,17 @@ type targetResult struct {
 	err               error
 }
 
+// retryableCleanupError 标记「本 attempt 已由 S1 证明所需功能存在，只有 Delete
+// 请求发生可重试错误」。前两次仍由 syncTarget 做完整目标重试；最后一次耗尽时，
+// 该类型允许把残留收敛为 success + cleanup_deferred，而不会吞掉 DNS、Describe、
+// Add、S1 覆盖验证或 S2 验证失败。
+type retryableCleanupError struct {
+	err error
+}
+
+func (e *retryableCleanupError) Error() string { return e.err.Error() }
+func (e *retryableCleanupError) Unwrap() error { return e.err }
+
 // syncTarget 执行一个目标的完整同步：最多 maxRetries 次整目标 attempt。
 //
 // 每个 attempt 都重新 Resolve、取 S0、规划；已由云端确认的写入跨 attempt 保留，
@@ -87,6 +99,17 @@ func (s *Syncer) syncTarget(state *RuntimeState, p provider.Provider, rules []co
 			return res
 		}
 		lastErr = err
+		var cleanupErr *retryableCleanupError
+		if attempt == maxRetries-1 && errors.As(err, &cleanupErr) {
+			// 本次已由 S1 证明所需功能存在；三次清理重试耗尽只延后残留，
+			// 不得把访问能力正常的目标误报为 failed/unhealthy。
+			res.outcome = attemptRes.outcome
+			res.err = nil
+			slog.Warn("清理重试耗尽，保留残留并记为 cleanup_deferred",
+				"provider", p.Name(), "cleanup_deferred", res.cleanupDeferred, "error", cleanupErr)
+			s.publishTargetResult(res)
+			return res
+		}
 		if !isRetryable(err) {
 			break
 		}
@@ -99,9 +122,7 @@ func (s *Syncer) syncTarget(state *RuntimeState, p provider.Provider, rules []co
 	return res
 }
 
-// runTargetAttempt 执行一次完整的「S0 → Plan → Add → S1 → 覆盖验证」。
-//
-// 本 Step 不做任何自动删除：所有清理候选一律进入 cleanup_deferred。
+// runTargetAttempt 执行一次完整的「S0 → Plan → Add → S1 → 覆盖验证 → 条件清理」。
 func (s *Syncer) runTargetAttempt(
 	state *RuntimeState,
 	p provider.Provider,
@@ -174,6 +195,12 @@ func (s *Syncer) runTargetAttempt(
 	if len(plan1.DNSErrors) > 0 {
 		return res, dnsFailureError(plan1.DNSErrors, dnsErrValues)
 	}
+	// S1 覆盖确认后即确定功能结论；后续清理失败只影响 cleanup_deferred。
+	if len(plan1.Unsupported) > 0 {
+		res.outcome = TargetPartial
+	} else {
+		res.outcome = TargetSuccess
+	}
 
 	// 7) 条件清理：只有安全门全部满足（CleanupDeletable 非空）且 S1 覆盖已确认时才删除；
 	//    Add 或覆盖验证失败时上面的 return 已保证本 attempt 零删除。
@@ -181,16 +208,9 @@ func (s *Syncer) runTargetAttempt(
 	res.cleanupDeleted = cleanupDeleted
 	res.deleted += cleanupDeleted
 	res.cleanupResolved = cleanupResolved
+	res.cleanupDeferred = len(plan1.CleanupCandidates) - cleanupResolved
 	if err != nil {
 		return res, err
-	}
-	res.cleanupDeferred = len(plan1.CleanupCandidates) - cleanupResolved
-
-	// 8) 目标结论：平台能力限制 → partial；否则 success（清理延后/删除失败不影响成功）
-	if len(plan1.Unsupported) > 0 {
-		res.outcome = TargetPartial
-	} else {
-		res.outcome = TargetSuccess
 	}
 	return res, nil
 }
@@ -267,9 +287,13 @@ func (s *Syncer) runTargetCleanup(
 		}
 	case isVersionMismatch(delErr):
 		// 版本竞争：整目标重新 attempt（绝不无版本重发）
-		return delRes.Deleted, resolved, fmt.Errorf("清理版本竞争，整目标重试: %w", delErr)
+		return delRes.Deleted, resolved, &retryableCleanupError{
+			err: fmt.Errorf("清理版本竞争，整目标重试: %w", delErr),
+		}
 	case isRetryable(delErr):
-		return delRes.Deleted, resolved, fmt.Errorf("清理失败（可重试）：%w", delErr)
+		return delRes.Deleted, resolved, &retryableCleanupError{
+			err: fmt.Errorf("清理失败（可重试）：%w", delErr),
+		}
 	default:
 		// 其它清理失败：所需权限已由 S1 证明，结果仍为 success + deferred
 		slog.Warn("清理失败，保留残留并记为 cleanup_deferred", "provider", p.Name(), "error", delErr)

@@ -34,6 +34,7 @@ type targetProbeProvider struct {
 	deleteCalls   int
 
 	deleteErr       error    // 非 nil 时删除调用直接失败
+	deleteErrs      []error  // 按 delete 调用序号（0 基）返回；用于验证清理重试收敛
 	deleteRevisions []string // 每次删除调用携带的快照版本（版本保护判别用）
 	deleteSizeLog   []int    // 每次删除调用的候选条数（分批判别用）
 	// partialDelete 非 nil 时模拟「部分批次成功」：返回该结果与 *PartialDeleteError
@@ -120,10 +121,14 @@ func (p *targetProbeProvider) materialize(rules []config.RuleAction) {
 func (p *targetProbeProvider) DeleteRules(snapshot provider.RuleSnapshot, rules []config.RuleInfo) (provider.DeleteResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	n := p.deleteCalls
 	p.deleteCalls++
 	p.deleteRevisions = append(p.deleteRevisions, snapshot.Revision)
 	p.deleteSizeLog = append(p.deleteSizeLog, len(rules))
 	p.seq = append(p.seq, fmt.Sprintf("delete:%d", len(rules)))
+	if n < len(p.deleteErrs) && p.deleteErrs[n] != nil {
+		return provider.DeleteResult{}, p.deleteErrs[n]
+	}
 	if p.deleteErr != nil {
 		return provider.DeleteResult{}, p.deleteErr
 	}

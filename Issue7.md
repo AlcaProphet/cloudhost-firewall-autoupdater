@@ -845,6 +845,7 @@ git diff --check
 
 | 版本 | 日期 | 内容 |
 |---|---|---|
+| v1.6 | 2026-09-29 | R7-01 已在当前工作树修复：以私有类型区分「S1 已确认覆盖后的可重试 Delete 错误」，前两次继续整目标重试，第三次耗尽收敛为 `success + cleanup_deferred`；新增限流/版本竞争耗尽与第三次成功的判别性用例，定向 race、健康回归、vet/build 通过；全量 race 仅再次复现既有 R7-06 flaky，本次未处理 |
 | v1.0 | 2026-09-29 | Step 0：固定目标级完整期望集、TAG 所有权、comment 纯可读、先增后验、四平台条件清理、状态口径与 Step 1～5 |
 | v1.1 | 2026-09-29 | 详细补强：增加历史/当前基线区分、不可破坏不变量、严格 TAG 语法、canonical key 表、当前源码替换地图、Provider snapshot/revision 参考、纯 planner DTO、冲突/原因码、S0/S1/S2 状态机、重试与计数、四平台 API 合同、Dry Run JSON/事件/日志/UI 样式、逐 Step 红绿测试/命令/完成与停止条件、统一验收矩阵；仍仅为文档，Step 1～5 未实施 |
 | v1.5 | 2026-09-29 | 完整核验未完成项独立追踪：新增 §12.5 R7-01～R7-06，区分强要求违背、集成缺口、待裁决语义、计数偏差、测试证据失效与 flaky 门禁；同步补强已提交为 `38bdc19`、ahead 4、提交后工作树干净的当前事实 |
@@ -974,11 +975,11 @@ git diff --check
 
 ### 12.5 完整核验未完成项独立追踪（2026-09-29）
 
-> **定位与授权边界：** 本节记录在当前 `HEAD 38bdc19` 上对 P1-01 实施改动进行三路独立只读复核后确认的剩余问题，作为后续独立修复入口。它不否定 §12.3 已完成的主体实现与 §12.4 已修复的 F1/F5，也不表示以下代码修复已经获得授权或完成。本次只同步文档，未修改源码、测试、数据库或外部状态。
+> **定位与授权边界：** 本节最初记录在 `HEAD 38bdc19` 上对 P1-01 实施改动进行三路独立只读复核后确认的问题，并作为逐项修复入口。R7-01 已于 2026-09-29 在当前工作树完成本地修复；R7-02～R7-06 仍保持各自行内状态，不能因 R7-01 完成而外推为已修复。它不否定 §12.3 已完成的主体实现与 §12.4 已修复的 F1/F5。
 
 | ID | 级别 | 状态 | 未完成内容 | 当前证据与后续验收合同 |
 |---|---|---|---|---|
-| R7-01 | **P1** | 🔵 待修复 | **可重试清理失败的最终 outcome 违反 AGENTS 强要求。** `syncer/target.go` 当前会把 version mismatch、限流、网络超时等可重试 Delete 错误交给整个目标重试，3 次耗尽后记为 `failed`；但 AGENTS §三要求所需功能已由 S1 证明存在后，任何清理延后或删除失败均保持 `success + cleanup_deferred`/healthy。该缺陷不会误删规则，但会制造错误 unhealthy 与告警。 | 修复时先补判别性用例：S1 已覆盖、Delete 连续返回可重试错误、重试耗尽后仍为 success/healthy，残留全部进入 `cleanup_deferred`；同时保留“每次 retry 从新快照重新规划”和 Add/覆盖失败零 Delete。不允许仅放宽断言或绕过版本保护。 |
+| R7-01 | **P1** | ✅ 已本地修复（当前工作树，未提交） | **可重试清理失败耗尽后的 outcome 已符合 AGENTS 强要求。** `syncer/target.go` 新增私有 `retryableCleanupError`，只标记本 attempt 已由 S1 确认覆盖、失败点仅为 version mismatch/限流/网络超时等可重试 Delete 错误；前两次仍完整重试，第三次耗尽后保留残留并返回 `success + cleanup_deferred`。DNS/Describe/Add/S1/S2 失败仍走 `failed`，未修改 Provider、`isRetryable` 或 OperationalHealth。 | 红灯→绿灯：`TestCleanup_RetryableFailureExhaustedKeepsSuccessAndDefers` 覆盖限流与版本竞争，断言 3 次 attempt、每次重读快照、每次使用当次 S1 revision、最终 success/healthy 与 deferred=1；`TestCleanup_RetryableFailureThenSuccessKeepsWholeTargetRetry` 证明第三次成功仍删除并执行 S2。定向 `syncer` race、`internal/health` 回归、`go vet ./...`、`go build ./...`、`git diff --check` 通过；全量 `go test ./... -race -count=1` 仅再次复现 R7-06 的既有 `connection reset by peer` flaky，故不得记为全量稳定绿。 |
 | R7-02 | **P2** | 🔵 待修复 | **目标事件字段不完整，真实 sync_logs 清理详情失真。** `publishTargetResult` 未发布 `cleanup_deleted`、`duration_ms`，`unsupported` 仅以 `skipped/skipped_details` 表达；`StoreLogWriter` 读取缺失的 `cleanup_deleted` 后得到 0，可能把“候选 2、已清理 1、延后 1”写成“已确认清理 0”。 | 补全稳定事件字段并增加 `syncTarget → publisher → EventBus → StoreLogWriter → SQLite` 整链测试，断言 candidates/deleted/deferred 与实际结果一致；明确 `unsupported` 的稳定结构，不能只用手工构造完整事件的 writer 单测代替生产链。 |
 | R7-03 | **P2 / 待裁决** | 🟠 语义待确认 | **Dry Run“每目标一项”的范围不一致。** AGENTS/本文现写“每目标一项”，但 `DryRun` 会跳过没有适用规则的已配置目标。 | 后续实施前由用户裁决：A. 所有已配置目标均返回空数组骨架；或 B. 合同改为“每个有适用规则的目标一项”。正式同步 `RoundSummary.Total` 只统计有适用规则目标的既有口径不得被顺带改变。裁决后补“两个目标、规则只引用一个目标”的判别性测试。 |
 | R7-04 | **P3** | 🔵 待修复 | **幂等“规则已不存在”后的清理计数可能失真。** Delete 返回幂等错误并执行 S2 后，当前验证只确认 Desired 仍被覆盖，没有用 S2 planner 的实际残留候选校正 `resolved`，已消失的候选仍可能计入 `cleanup_deferred`。 | 补单候选与多候选幂等 NotFound 用例；以 S2 实际剩余候选为最终 deferred，已证明消失的候选计入清理完成，同时保持 outcome success 与删除安全不变。 |
