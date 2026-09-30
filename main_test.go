@@ -229,18 +229,18 @@ func assertPortClosed(t *testing.T, url string) {
 	}
 }
 
-// assertPidFileCleanup 断言进程退出后 pidfile 已被清理。
-func assertPidFileCleanup(t *testing.T, dataDir string, timeout time.Duration) {
+// assertPidFileReleased 断言进程退出后文件保留且内核锁已释放。
+func assertPidFileReleased(t *testing.T, dataDir string) {
 	t.Helper()
-	pidPath := config.GetPidFilePath(dataDir)
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(pidPath); os.IsNotExist(err) {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	path := config.GetPidFilePath(dataDir)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("退出后锁文件应保留: %v", err)
 	}
-	t.Errorf("进程退出后 pidfile 未清理: %s", pidPath)
+	cleanup, err := config.WritePidFile(path)
+	if err != nil {
+		t.Fatalf("退出后锁未释放: %v", err)
+	}
+	cleanup()
 }
 
 // waitForLog 轮询等待子进程输出中出现指定子串。
@@ -275,7 +275,7 @@ func runUntilSignal(t *testing.T, dataDir string, extra map[string]string, sig o
 		t.Fatalf("等待进程退出失败: %v\n输出:\n%s", err, out.String())
 	}
 	assertPortClosed(t, fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
-	assertPidFileCleanup(t, dataDir, 3*time.Second)
+	assertPidFileReleased(t, dataDir)
 	return code, out.String()
 }
 
@@ -471,7 +471,7 @@ func runUntilSignalWithLog(t *testing.T, dataDir string, extra map[string]string
 		t.Fatalf("等待进程退出失败: %v\n输出:\n%s", err, out.String())
 	}
 	assertPortClosed(t, fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
-	assertPidFileCleanup(t, dataDir, 3*time.Second)
+	assertPidFileReleased(t, dataDir)
 	return code, out.String()
 }
 
@@ -574,7 +574,7 @@ func TestProcessBindFailureDoesNotStartSyncer(t *testing.T) {
 	if strings.Contains(out.String(), "开始同步") {
 		t.Errorf("HTTP 绑定失败时不得启动 Syncer；输出:\n%s", out.String())
 	}
-	assertPidFileCleanup(t, dataDir, 3*time.Second)
+	assertPidFileReleased(t, dataDir)
 }
 
 // TestProcessSSEExitsOnServerShutdown 真实 SSE 连接在服务器 shutdown 时主动退出并完成收尾。
@@ -615,7 +615,7 @@ func TestProcessSSEExitsOnServerShutdown(t *testing.T) {
 		t.Errorf("SSE 已主动退出，不应触发强制关闭；输出:\n%s", out.String())
 	}
 	assertPortClosed(t, base+"/api/health")
-	assertPidFileCleanup(t, dataDir, 3*time.Second)
+	assertPidFileReleased(t, dataDir)
 }
 
 // putJSON 发送 JSON PUT 请求并返回状态码（进程级用例专用）。
@@ -1046,7 +1046,7 @@ func TestProcessSecondInstanceRejectedByPidFile(t *testing.T) {
 		t.Errorf("第一个实例 health 状态码 = %d, want 200", resp.StatusCode)
 	}
 
-	// 收尾：第一个实例正常退出并清理 pidfile
+	// 收尾：第一个实例正常退出并释放文件锁
 	if err := first.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("发送 SIGTERM 失败: %v", err)
 	}
@@ -1055,7 +1055,159 @@ func TestProcessSecondInstanceRejectedByPidFile(t *testing.T) {
 	} else if code != 0 {
 		t.Errorf("第一个实例退出码 = %d, want 0\n输出:\n%s", code, firstOut.String())
 	}
-	assertPidFileCleanup(t, dataDir, 3*time.Second)
+	assertPidFileReleased(t, dataDir)
+}
+
+// TestProcessPidFileRestart 验证陈旧 PID 和 SIGTERM/SIGKILL 后同目录重启。
+func TestProcessPidFileRestart(t *testing.T) {
+	for _, sig := range []os.Signal{syscall.SIGTERM, syscall.SIGKILL} {
+		t.Run(sig.String(), func(t *testing.T) {
+			dataDir := t.TempDir()
+			path := config.GetPidFilePath(dataDir)
+			if err := os.WriteFile(path, []byte("1\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			port := freePort(t)
+			env := map[string]string{"WEBUI_PORT": strconv.Itoa(port)}
+			first, out := startProcess(t, dataDir, env)
+			url := fmt.Sprintf("http://127.0.0.1:%d/api/health", port)
+			waitForHTTP(t, url)
+			if err := first.Process.Signal(sig); err != nil {
+				t.Fatal(err)
+			}
+			code, err := waitForProcessExit(t, first, 20*time.Second)
+			if err != nil {
+				t.Fatalf("退出失败: %v\n%s", err, out.String())
+			}
+			if sig == syscall.SIGTERM && code != 0 {
+				t.Fatalf("SIGTERM exit=%d", code)
+			}
+			if sig == syscall.SIGKILL && code == 0 {
+				t.Fatal("SIGKILL 应为异常退出")
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("锁文件未保留: %v", err)
+			}
+			second, secondOut := startProcess(t, dataDir, env)
+			waitForHTTP(t, url)
+			if err := second.Process.Signal(syscall.SIGTERM); err != nil {
+				t.Fatal(err)
+			}
+			if code, err := waitForProcessExit(t, second, 20*time.Second); err != nil || code != 0 {
+				t.Fatalf("重启后退出: code=%d err=%v\n%s", code, err, secondOut.String())
+			}
+			assertPidFileReleased(t, dataDir)
+		})
+	}
+}
+
+// TestProcessPidFileKernelBarrier 两个真实进程均不得绕过测试持有的内核锁。
+func TestProcessPidFileKernelBarrier(t *testing.T) {
+	dataDir := t.TempDir()
+	cleanup, err := config.WritePidFile(config.GetPidFilePath(dataDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	for i := 0; i < 2; i++ {
+		cmd, out := startProcess(t, dataDir, map[string]string{"WEBUI_PORT": strconv.Itoa(freePort(t))})
+		code, err := waitForProcessExit(t, cmd, 15*time.Second)
+		if err != nil || code == 0 || !strings.Contains(out.String(), "FWAlizer 已在运行") {
+			t.Fatalf("内核锁屏障被绕过: code=%d err=%v\n%s", code, err, out.String())
+		}
+	}
+}
+
+// TestProcessPidFileConcurrentStart 同一屏障同时释放两个启动者，胜者在败者退出前保持运行。
+func TestProcessPidFileConcurrentStart(t *testing.T) {
+	dataDir := t.TempDir()
+	ports := []int{freePort(t), freePort(t)}
+	for ports[1] == ports[0] {
+		ports[1] = freePort(t)
+	}
+	cmds := make([]*exec.Cmd, 2)
+	outs := make([]*syncBuffer, 2)
+	gate := make(chan struct{})
+	started := make(chan error, 2)
+	for i := range cmds {
+		cmds[i] = exec.Command(testBinary)
+		cmds[i].Env = processEnv(dataDir, map[string]string{"WEBUI_PORT": strconv.Itoa(ports[i])})
+		outs[i] = &syncBuffer{}
+		cmds[i].Stdout, cmds[i].Stderr = outs[i], outs[i]
+		go func(cmd *exec.Cmd) { <-gate; started <- cmd.Start() }(cmds[i])
+	}
+	close(gate)
+	var startErr error
+	for range cmds {
+		if err := <-started; err != nil {
+			startErr = err
+		}
+	}
+	type result struct {
+		index int
+		err   error
+	}
+	exited := make(chan result, 2)
+	running, reaped := 0, 0
+	for i, cmd := range cmds {
+		if cmd.Process != nil {
+			running++
+			go func(i int, cmd *exec.Cmd) { exited <- result{i, cmd.Wait()} }(i, cmd)
+		}
+	}
+	// 每个进程只有一个 Wait 所有者；失败时有界回收仍在运行的子进程。
+	defer func() {
+		if reaped == running {
+			return
+		}
+		for _, cmd := range cmds {
+			if cmd.Process != nil {
+				if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+					t.Error(err)
+				}
+			}
+		}
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		for reaped < running {
+			select {
+			case <-exited:
+				reaped++
+			case <-timer.C:
+				t.Error("并发测试子进程回收超时")
+				return
+			}
+		}
+	}()
+	if startErr != nil {
+		t.Fatal(startErr)
+	}
+	var loser result
+	select {
+	case loser = <-exited:
+		reaped++
+	case <-time.After(15 * time.Second):
+		t.Fatalf("并发启动未拒绝一个实例\n%s\n%s", outs[0].String(), outs[1].String())
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(loser.err, &exitErr) || exitErr.ExitCode() == 0 || !strings.Contains(outs[loser.index].String(), "FWAlizer 已在运行") {
+		t.Fatalf("败者未因锁竞争退出: %v\n%s", loser.err, outs[loser.index].String())
+	}
+	winner := 1 - loser.index
+	waitForHTTP(t, fmt.Sprintf("http://127.0.0.1:%d/api/health", ports[winner]))
+	if err := cmds[winner].Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-exited:
+		reaped++
+		if r.index != winner || r.err != nil {
+			t.Fatalf("胜者退出失败: %v\n%s", r.err, outs[winner].String())
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("胜者未有界退出")
+	}
+	assertPidFileReleased(t, dataDir)
 }
 
 // ─── Build7 Step 4：真实二进制的 operational 端点与静态存活端点 ───

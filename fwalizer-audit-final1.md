@@ -15,6 +15,8 @@
 
 ---
 
+> **I-01 后续实施补记（2026-09-30）**：用户已授权执行 P1-02/P3-08 修复，基线 `fd298ef`（main ahead 1、开始时干净）。本轮修改 pidfile 源码/测试、README 与本文并取得本地门禁和 Docker 证据；尚未提交。头部 `d6d208e` 与 §14 的“只读复核”描述保留为此前批次历史，当前 I-01 状态见下表与 P1-02 实施补记。
+
 ## 0. 当前状态、执行索引与 TODOLIST
 
 ### 0.1 状态图例
@@ -36,7 +38,7 @@
 |---|---|---|
 | P0-01 | ✅ 已由 `108e528` 修复；原证据与回归必须保留 | Issue7 Step 1 重构 functional key 时保持绿色回归 |
 | P1-01 | ✅ 本地主体与 R7-01～R7-07 完整复核项均已实施并提交（R7-05 与文档回写提交为 `d6d208e`）；⏳ 真实云/浏览器/当前 revision 远端 CI 仍未执行 | [Issue7.md](./Issue7.md) §12.3 实施证据、§12.4 已提交补强、§12.5 R7 修复与本地门禁 |
-| P1-02 | 🔵 真实存在；已决定采用 `flock`，当前仍未实施 | 独立高优先级队列 I-01；同时收口 P3-08；本轮仅更新审计记录 |
+| P1-02、P3-08 | ✅ I-01 已在本地修复并取得文件锁、真实进程与 Linux/amd64 Docker 回归证据；尚未提交 | 见 P1-02 实施补记；不外推远端 CI/GHCR 或网络文件系统验收 |
 | P2-01 | ✅ 已实施（canonical family/协议归一化，IPv6 ICMP 与云端协议别名收敛） | Issue7 Step 1；保留原审计红灯作为正向控制 |
 | P2-03 | ✅ 已实施（能力矩阵产出 `unsupported_*`，目标 `partial` 且冻结清理） | Issue7 Step 1；旧“仅 WARN/Dry Run、不计 skipped”决策仅作历史记录 |
 | P2-02 | ✅ 已实施（ECS 删除每批 ≤100，150 → 100+50，部分成功如实计数） | Issue7 Step 3 |
@@ -62,7 +64,7 @@
 
 以下顺序是整理后的 backlog，不表示已授权实施；每次仍应只处理一个问题并保留判别性测试。
 
-- [ ] **I-01｜P1-02 + P3-08**：以 `flock` 替换 PID 判活，覆盖残留 pidfile、PID 复用与并发启动；当前方案已定但源码、测试、README 与当前门禁均未更新，不得标记完成。
+- [x] **I-01｜P1-02 + P3-08**：已以 `flock` 替换 PID 判活；残留 PID、真实内核锁屏障、GC、并发启动、SIGTERM/SIGKILL 后复用与 Linux/amd64 持久卷 Docker 回归均本地通过。源码、测试、README 和本文已更新，尚未提交；权限迁移仍留给 P3-12。
 - [ ] **I-02｜P2-04 + P3-03**：先发布 `RuntimeState`，再唤醒 Health/Push；同时收口首次 Push 失败后的重试/唤醒语义。AGENTS 目标顺序已在 Step 0 修订，当前剩余是代码与测试。
 - [ ] **I-03｜P2-06**：告警页增加 loaded 守卫，防止加载失败后用默认值覆盖真实敏感配置。
 - [ ] **I-04｜P2-07**：目标与规则删除增加卡片式二次确认，满足 AGENTS 强要求。
@@ -166,7 +168,7 @@
 > ⚠️ **可立即执行与待决的区分**：
 > - **P0-01（阿里云端口 key 不对称）已修复**：提交 `108e528`，回归 `TestDiff_AliyunPortRoundTripConverges`；Issue7 Step 1 的新规划器已保持该绿色回归。
 > - **P1-01 本地核验项已实施**：严格 TAG 命名空间、canonical `FunctionalKey`、目标级 planner、先增后验状态机与四平台条件清理主线已落地；核验补强提交为 `38bdc19`，R7-01～R7-07 均已进入当前提交历史（R7-05 为 `d6d208e`）。真实四云/浏览器/当前 revision 远端 CI 仍待执行。
-> - **P1-02（容器 pidfile 崩溃循环）仍为独立未修复项**：源码仍使用 PID 判活，方案已定为 `flock`；本轮只更新本报告，不赋予代码实施授权，也没有取得当前 Docker/进程门禁证据。
+> - **P1-02/P3-08 已按后续用户授权本地修复**：使用非阻塞独占 `flock`，真实进程与 Linux/amd64 Docker 回归通过，详见实施补记；未提交、未推送，远端 CI/GHCR 未执行。
 
 ### 本次审核中被驳回的候选（**请勿据其动手**）
 
@@ -330,75 +332,54 @@ FAIL
 
 ---
 
-### P1-02｜容器陈旧 pidfile 导致无限崩溃循环（Docker 部署专有）
+### P1-02｜陈旧 pidfile 与非原子判活导致启动失败或双实例（容器 PID 1 可形成崩溃循环）
 
-**当前状态：🔵 真实存在，方案已定，源码尚未修复。** 当前 HEAD 为 `34aa9b859c38904e701a19d672dcc4f65435b31c`；本轮只核验并更新本报告，未修改源码/测试、未构建、未运行测试或格式化。历史 Docker 复现仍然有效地支持问题判断，但不能写成本轮重新复验通过。
+**当前状态：✅ P1-02/P3-08（I-01）已于 2026-09-30 按用户“开始执行修复”授权本地修复，尚未提交。** 实施基线为 `fd298efde6d2f9b20bf1a78d43288172204c6a34`；开始时工作树干净，`main` 相对 `origin/main` ahead 1。下述历史失效链与复现保留用于追溯，不代表当前实现。
 
-#### 当前失效链与影响
+#### 历史失效链与影响
 
-启动调用链为 `main.go:5 → run.go:28 run → run.go:35 LoadDeploymentConfig → run.go:41 MkdirAll → run.go:46 runWebUI → run.go:70 GetPidFilePath → run.go:71 WritePidFile`。
+启动调用链为 `main → run → LoadDeploymentConfig → MkdirAll → runWebUI → GetPidFilePath → WritePidFile`。旧实现先 `ReadFile → 解析 PID → processExists/Signal(0)`，再 `os.WriteFile` 覆盖写入；正常退出删除文件，异常退出不执行清理。
 
-- `config/pidfile.go:16-34` 先 `ReadFile` 解析 PID，再调用 `processExists`，最后用 `os.WriteFile` 覆盖当前 PID；检查与占用不是原子操作。
-- `config/pidfile_unix.go:10-15` 用 `os.FindProcess` + `proc.Signal(syscall.Signal(0))` 判定“进程存在”，无法证明该进程就是本应用。
-- `run.go:71-76` 启动时写入并在正常退出时 `defer cleanup()`；SIGKILL/OOM-kill 不执行清理。
-- `build/Dockerfile:27-34` 让应用直接成为容器 PID 1，`docker-compose.yml.example:37-39` 用持久卷保存 `/app/data`，`:56-57` 使用 `restart: unless-stopped`。
-
-因此存在三类相互独立的失效：
-
-1. 容器被 SIGKILL/OOM-kill 后残留 `"1\n"`，新容器同样是 PID 1，`Signal(0)` 对自身成功，错误拒绝启动并形成重启循环。
-2. 旧实例崩溃后，残留 PID 被无关进程复用时，当前实现无法识别身份，会永久拒绝启动，直到人工删除文件。
-3. 两个进程可同时通过“读取/判活”检查，再分别覆盖写入，存在 TOCTOU 双实例窗口；一次并发实验未命中窗口不能证明并发安全。
+1. Dockerfile 直接启动应用，应用通常为容器 PID 1；Compose 将 `/app/data` 持久化并使用 `restart: unless-stopped`。SIGKILL/OOM-kill 后残留 `"1\n"`，新实例对自身判活成功并拒绝启动，形成重启循环。
+2. 普通 Linux/macOS 部署中，残留 PID 被无关进程复用时同样误拒绝启动，因此整个问题并非 Docker 专有。
+3. 两个实例可能同时通过判活检查再覆盖写入，造成 TOCTOU 双实例；任一实例正常退出还可能删除共享文件。
 
 #### 历史实测证据与可信边界
 
-审计过程曾用持久命名卷复现：预置 `/app/data/fwalizer.pid` 内容 `1` 后启动 `fwalizer:audit`，结果为 `state=exited exit=1`，日志为「FWAlizer 已在运行 (PID: 1)，请先停止现有实例」。首次 `--volumes-from` 实验未真正复用卷，后来改用持久命名卷才稳定复现；该方法学更正应保留。
+原审计用持久命名卷预置 `/app/data/fwalizer.pid` 内容 `1`，启动旧 `fwalizer:audit` 得到 `state=exited exit=1`，日志「FWAlizer 已在运行 (PID: 1)」。首次 `--volumes-from` 未真正复用卷，不能视为反证；改用持久命名卷后稳定复现。该证据是历史原缺陷复现，与以下修复后验收分开记录。
 
-这属于此前审计过程的历史实测，不是本轮重新运行结果。当前源码、Dockerfile、Compose 持久卷与重启配置仍与该复现链一致，因此静态证据支持问题仍在；但在实施完成前不得宣称已修复，也不得把历史结果升级为当前 Docker 通过。
+#### 已实施的最小修复
 
-#### 已确定的最小修复设计（仅记录，不在本阶段实施）
+- `config/pidfile.go` 保持 `WritePidFile(path) (cleanup func(), err error)` 与 `fwalizer.pid` 路径；以 `O_CREATE|O_RDWR, 0600` 打开，先取得锁再截断并写 PID，不在打开时使用 `O_TRUNC`。
+- `config/pidfile_unix.go` 保持精确 `linux || darwin`，以标准库 `syscall.Flock(LOCK_EX|LOCK_NB)` 替代 `processExists`；没有新增依赖，没有 PID 判活 fallback。
+- `EWOULDBLOCK/EAGAIN` 表示同目录已有持锁者；PID 仅通过同一文件描述符有界读取作诊断，空、损坏或读取失败都不能绕过锁。其他系统错误保留原因。
+- cleanup 捕获 `*os.File`，保证运行期间文件对象存活；只 `Close` 释放锁，不删除文件，关闭错误记录 WARN。加锁、截断、写入失败分支均关闭文件。
+- `run.go` 接入位置和退出顺序不变；锁仍在打开 SQLite 前取得，覆盖整个应用生命周期。
+- 已选择最小权限边界：只保证新建文件请求 `0600`；已有锁文件、数据目录、DB/WAL/SHM 的权限迁移留给 P3-12。
+- `README.md` 更新文件锁、残留文件无需清理、禁止运行中删除/替换、升级前停止旧实例及本地文件系统边界。
 
-用户已决定采用 `flock` 替换 PID 判活。推荐保持 `WritePidFile(path) (cleanup func(), err error)` 调用边界，具体为：
+#### 判别性验收与当前证据
 
-1. `config/pidfile.go` 用 `os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)` 打开锁文件；成功后在同一打开的文件描述符上取得非阻塞独占锁。
-2. 获取锁后截断并写入当前 PID；PID 只用于错误提示和诊断，不再参与实例判定。锁文件路径保留，cleanup 只关闭文件描述符释放锁。
-3. 锁竞争失败时，`EWOULDBLOCK`/`EAGAIN` 统一表示已有实例持锁；读取文件内容只为生成提示，空、损坏或无法读取时仍应拒绝启动，不能因诊断 PID 不可解析而绕过真实锁。权限、路径等其他错误原样返回。
-4. `config/pidfile_unix.go` 提供精确 `linux || darwin` 的平台 helper，删除不再需要的 `processExists`；`run.go:76` 现有 `defer cleanup()` 原则上可保持不变。cleanup 的 `Close()` 错误必须按 AGENTS.md 处理，最小方案是在无返回值 cleanup 中安全记录 WARN，不为本项扩大调用接口。
+| 层级 | 本轮结果与证明范围 |
+|---|---|
+| L0 静态 | `processExists`、`Signal(0)` 与无锁覆盖写已从 pidfile 生产代码移除；平台 tag 保持 `linux || darwin` |
+| L1 config | 预置 PID 1、当前 PID、空、损坏内容，无持锁均成功；外部内核锁持有时均拒绝且不覆盖；GC 后锁不丢失；释放后保留同一文件且可复用；新建权限 `0600`；不同目录独立；路径错误与 EBADF 保留原因 |
+| L1 重复门禁 | `go test ./config -race -run TestPidFile -count=20` 通过；最终定向测试含新增 EBADF 用例的 `GOGC=1 go test ./config -race -run TestPidFile -count=50` 通过 |
+| L1 负向控制 | 临时 `go test -overlay` 恢复旧 PID-only 写入算法，运行 `TestPidFileRejectsKernelLock` 的损坏内容子用例，按预期因“竞争者绕过真实内核锁”失败；实际仓库源码未覆盖，临时目录已清理 |
+| L2 真实进程 | 顺序拒绝、内核锁屏障、同步释放两个启动者一成一败、预置 PID 1、SIGTERM/SIGKILL 后同目录重启通过；五处旧“文件删除”断言统一改为“文件保留且锁可重新取得” |
+| L2 重复门禁 | 锁/重启及相关 SIGTERM/SIGINT/绑定失败/SSE 回归 `-race -count=5` 通过；并发夹具改为唯一 Wait 所有者并有界回收后，`go test . -race -run TestProcessPidFile -count=20 -timeout=10m` 通过 |
+| L3 Docker | `docker build --platform linux/amd64 -f build/Dockerfile -t fwalizer:i01-linux-amd64 .` 通过；uid 1000；持久命名卷预置 PID 1 启动 healthy；共享该卷的第二容器 exit=1 且因锁竞争拒绝，原实例仍 healthy；SIGKILL exit=137 后替换容器同卷 healthy；正常 stop 0.158s、exit=0，文件保留；临时容器与卷已清理 |
+| L4 工程门禁 | 全仓 12 包 `go test ./... -race -count=3 -timeout=20m` 通过；最终进程夹具收尾调整后再执行全仓 `-race -count=1 -timeout=20m` 亦通过；vet、build、前端 `npm run build` 通过；`CGO_ENABLED=0` 的 Linux/amd64、Darwin/arm64、Darwin/amd64 构建通过；gofmt 与 diff-check 通过 |
 
-#### 实现选项、推荐与影响
+全仓三轮门禁开始于最终进程夹具收尾调整之前（生产源码未再改变），其后定向 20 轮与全仓追加一轮针对最终测试版本执行，不将不同版本证据混写。Linux/amd64 容器证明 Linux 运行行为；Darwin 本机进程测试证明 macOS 运行行为，交叉编译本身只证明可构建。
 
-| 选项 | 推荐 | 影响 |
-|---|---|---|
-| `syscall.Flock`；或引入 `golang.org/x/sys/unix` | **推荐 `syscall.Flock`** | 标准库即可完成，不新增直接依赖；若改用 `x/sys/unix`，需改变依赖面但锁语义目标不变 |
-| cleanup 只 `Close()` 并保留锁文件；或关闭后 `Remove` | **推荐保留文件，只 `Close()`** | 避免“释放旧 inode 后删除路径”重新打开竞态；文件可残留但不再代表运行实例 |
-| 将文件权限迁移/收紧并入本项；或留给 P3-12 | **留给 P3-12** | 本项只解决实例互斥；既有 `0644` 文件是否显式 `Chmod` 不应无授权扩大到 I-01 |
-| 保留 PID 判活作为 fallback；或完全以锁为准 | **完全以锁为准** | fallback 会重新引入 PID 复用误判；PID 仅保留为诊断文本 |
+#### 风险与外部边界
 
-上述推荐不改变用户已决定的 `flock` 方向；若实施前要改动这些边界，必须先补充决策及其影响，不得自行扩展范围。该设计不违反 AGENTS.md：要求是通过 pidfile 防多实例，并未规定必须用 PID 判活。
-
-#### 受影响文件
-
-- 生产代码：`config/pidfile.go`、`config/pidfile_unix.go`；`run.go` 原则上不改，只有 cleanup 错误处理或签名改变时才联动。
-- 测试：新增 `config/pidfile_test.go` 覆盖锁竞争、空/损坏诊断、权限与释放；调整 `main_test.go:994-1059`，不再要求正常退出后文件删除，增加真实顺序、并发、SIGTERM、SIGKILL 后重启覆盖。
-- 用户文档：`README.md:132`、`:499` 将“检测已有实例/进程”改为“通过 OS 文件锁防止同一数据目录多实例，文件 PID 仅供诊断”。
-- 验收材料：本报告在代码与门禁证据取得后才能把 P1-02/I-01 改为已修复；`Issue7.md` 不纳入本项，因其已明确将 pidfile/flock 排除在 P1-01 主线之外。
-
-#### 判别性验收合同（按层级执行）
-
-1. 静态：源码不再有 `processExists`、`Signal(0)` 或无锁覆盖写入；平台 tag 仍精确为 `linux || darwin`。
-2. config：预置 `"1\n"`、当前测试 PID、空内容、损坏内容均不能绕过真实锁；测试进程先持有同一文件 `LOCK_EX` 时，`WritePidFile` 必须立即失败；新文件权限为 `0600`。
-3. 进程：两个真实二进制并发使用同一数据目录时严格只有一个获得锁；第一个进程 SIGTERM 或 SIGKILL 后，第二个均能启动；锁文件可以残留但不能阻止后续实例。
-4. Docker：持久命名卷预置 PID `1` 后容器能启动；运行容器被 `docker kill` 后复用同一卷仍能启动并达到既定健康状态。
-5. 工程门禁：受影响包 `-race`、全仓 `-race`、`go vet ./...`、`go build ./...`、`gofmt -l`、Linux/macOS 构建与 `git diff --check` 均通过。
-
-并发验收不得只依赖固定 `Sleep` 或“偶尔命中”旧 TOCTOU 窗口；先由测试持有内核锁再调用 `WritePidFile` 是最强判别控制。旧实现会错误覆盖并成功，新实现必须拒绝。
-
-#### 风险、外部边界与停止条件
-
-- `flock` 适用于当前 Linux/macOS 本地文件系统、Docker named volume 与普通本地部署；NFS 或部分网络文件系统语义可能不可靠，应作为部署边界提示，不在本项引入分布式锁。
-- 新实现无法识别仍在运行但使用旧 PID-only 版本的进程；升级时需先停止旧实例，不能以重新引入 PID 判活作为兼容层。
-- 本项不依赖真实云、DNS、SMTP、Webhook、Uptime Kuma 或浏览器；远端 CI/GHCR 可作常规发布门禁，但不是证明锁机制正确的必要条件。
-- 在实现、定向测试、真实进程测试和 Docker 复验未全部取得证据前，停止将 P1-02/I-01 标记为已修复；任一平台 tag、锁失败语义、SIGKILL 后重启或并发互斥不满足时，停止推进并回到方案/实现核查。
-- 本阶段停止条件已满足且必须保持：只更新本报告，不编辑代码或其他文档，不构建、不测试、不格式化；因此本轮不改变 P1-02 的未修复状态。
+- 文件锁文件长期保留，残留 PID 不表示实例仍在运行；运行中不得手工删除或替换文件，否则 inode 改变可能产生两把独立锁。
+- 升级前先停止旧 PID-only 实例；混跑旧版本与新版本不保证互斥，不重新引入 PID 判活兼容层。
+- 保证范围为 Linux/macOS 本地文件系统与底层为本地文件系统的 Docker 卷，不外推 NFS/网络文件系统；不引入分布式锁。
+- 本项不改变 P3-12 的权限迁移待办，也不关闭 P3-10 的其余错误处理待办。Issue7 未修改。
+- 未执行真实云、DNS、SMTP、Webhook、Uptime Kuma、浏览器或远端 CI/GHCR；这些链路不属于本项前置，也不能被本地通过替代。未提交、未推送、未发布。
 
 ---
 
@@ -671,11 +652,11 @@ FAIL
 | P3-05 | **问题真实存在，当前未修复；继续保留在独立队列 I-07。** 已修复/不存在结论均不成立。本轮仅更新审计记录，未修改源码、测试或依赖，未运行构建、测试或格式化 | **当前基线**：HEAD `34aa9b859c38904e701a19d672dcc4f65435b31c`，`main == origin/main`；工作树原有修改仅涉及本报告。`webui/api/deps.go:213-220` 注册 `GET /api/settings`；`webui/api/settings.go:15-20` 定义并在 `:33-50` 复制 `tc_access_id`、`tc_access_key`、`ali_access_id`、`ali_access_key` 到响应，再经 `writeJSON` 返回；`webui/api/deps.go:229-240` 的 `writeJSON` 只设置 `Content-Type`，不设置 `Cache-Control`。全仓生产代码中 `no-store` 仅见于 operational health、alerts、config export 等其他端点，未发现为 settings 补头的全局 middleware。现有 `webui/api/settings_alerts_test.go:13-52` 验证键集合/默认值/凭据回显，`redact_test.go:98-110` 验证既有脱敏契约，但均未判定缓存头。Issue7 已将本项留在 I-07，且 2026-09-29 用户裁决确认本轮越界不修复 | **后续设计与决策项（尚未授权实施）**：**A（推荐）**：仅在 `webui/api/settings.go` 的 `handleGetSettings` 入口设置 `w.Header().Set("Cache-Control", "no-store")`，使成功和数据库读取失败响应都保持禁缓存语义；新增/扩展本地 HTTP 测试精确断言该值。保持四个凭据字段的既有回显契约，不修改通用 `writeJSON`，避免扩大所有 JSON API 的缓存策略；不改前端、存储、配置导入导出或认证边界。**B**：接受现状，依赖浏览器/中间件配置或后续统一 HTTP 缓存策略；不建议，因为当前没有全局补头证据，敏感设置响应仍可能被缓存。是否授权单独处理 I-07/P3-05 需用户决策，本记录不擅自裁决。**影响文件**：实施时必改 `webui/api/settings.go`；建议改 `webui/api/settings_alerts_test.go`（或新增同包测试）。明确不改 `webui/api/deps.go` 的通用 `writeJSON`/路由、`Settings.vue`、数据库 schema、Provider、DNS、告警和配置包逻辑 | **判别性验收**：L0 静态确认 `no-store` 只加在 settings handler，未改变通用 JSON 响应策略、凭据字段或导入导出行为；L1 本地 HTTP 用例同时断言 `GET /api/settings` 为 200、JSON `Content-Type` 不变、四个凭据 sentinel 仍按既有契约返回，且 `Cache-Control` **恰为** `no-store`，并保留失败响应也带该头的控制；L2 运行受影响包测试，随后按项目门禁执行 race、vet、build 与 `git diff --check`；L3 可选地用真实本地二进制 `curl -i /api/settings` 核对最终响应头。当前所有实施/门禁命令均未执行，不得提前写成通过 | **风险、外部边界与停止条件**：风险低，改变仅影响浏览器和中间缓存，可能增加设置页重新请求，但不会移除响应中的凭据、清理 Vue 内存/DevTools/服务端日志，也不替代认证或脱敏。无需真实云、DNS、SMTP、Webhook、Uptime Kuma、浏览器或远端 CI/GHCR；本地 handler/HTTP 测试足以证明本项，浏览器 DevTools 只能补充，不能替代判别性测试。不要额外加入 `Pragma`/`Expires`、移除 GET 凭据回显、统一重构所有敏感 API 或引入认证。如果修复扩大到通用 `writeJSON`、凭据产品契约、认证/会话、配置导入导出或其他 I-07 项，停止并重新确认范围；在用户裁决、判别性 HTTP 回归测试及受影响门禁完成前，保持 P3-05/I-07 未修复，不得把本地通过外推为外部链路通过。 |
 | P3-06 | CVM 100 条上限按"入站+出站合计"判定，实际配额为**每方向** 100 | `provider/tc_cvm.go:234-241` 把 IngressIPv4+IngressIPv6+EgressIPv4+EgressIPv6 相加与 100 比较；`PlatformAPIDocs/TencentCVMAPIGuide/查询用户安全组配额.md:62` 为 `"SecurityGroupPolicyLimit": 100`；`安全组添加规则.md:18` 明确"一次请求中只能创建单个方向的规则" | 偏保守：出站规则多时会**拒绝合法的入站新增**（硬错误、不可重试）。修法：只统计入站计数。**建议用真实账号确认配额口径后再改**（属人工验收项） |
 | P3-07 | **死代码：`retrySync` 零生产调用方** | `syncer/retry.go:26` 仅被 3 个测试文件约 15 处调用；生产走 `retrySyncDetailed`（`syncer/syncer.go:905`） | 被取代后未删除。注意：`Issue6.md` A1 段仍把它写在生产链上，删除时需同步更新该文档 |
-| P3-08 | **真实存在，当前未修复**；与 P1-02 合并保留在独立队列 **I-01**。已修复/不存在结论均不成立，不能因顺序启动测试通过而关闭 | 精确链路为 `config/pidfile.go:17` 的 `ReadFile → 解析 PID → processExists → os.WriteFile`；`config/pidfile_unix.go:10` 的 `os.FindProcess + Signal(0)` 只能证明某 PID 存在，不能证明是 FWAlizer。`os.WriteFile` 会覆盖文件，检查与写入之间没有原子互斥、`O_EXCL` 或 `flock`。因此残留 PID `1`、当前 PID 或无关进程复用时会永久拒绝启动；两个进程也可同时通过检查并都启动，后写者覆盖 PID，任一实例退出还可能删除共享文件。已有 `main_test.go:1002` 仅覆盖首实例稳定运行后的顺序拒绝与正常退出，不能证明 PID 复用、SIGKILL 后复用或并发互斥；历史并发实验未命中窗口，不构成安全证据 | **后续设计**：I-01 仅将 PID 判活替换为同一文件描述符上的非阻塞独占 `flock`。`WritePidFile(path) (cleanup func(), err error)` 接口与路径保持不变；先 `os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)`，成功加锁后再截断并写入当前 PID。PID 只作诊断，不参与判定；锁竞争时即使内容为空、损坏或 PID 残留也必须拒绝，不能绕过；cleanup 只关闭文件描述符释放锁，不删除锁文件，`Close` 错误按 AGENTS 记录安全 WARN。影响文件限定为 `config/pidfile.go`、`config/pidfile_unix.go`、新增 `config/pidfile_test.go`、调整 `main_test.go`、`README.md` 与本审计条目；`run.go` 原则上不改，`Issue7.md` 不纳入。判别性验收至少覆盖：L0 静态移除 `processExists`、`Signal(0)` 与无锁覆盖写；L1 预置 PID 1、当前 PID、空/损坏内容并分别验证无持锁可启动、真实内核锁持有时必拒且不覆盖；L1 验证 cleanup 后锁文件仍在且可再次取得；L2 真实二进制顺序拒绝、SIGTERM 后复用、SIGKILL 后复用、锁屏障控制的并发启动一成一败；L3 持久命名卷预置 PID 1，`docker kill` 后同卷重启健康；L4 当前 revision 的受影响包 race、全仓 race、vet、build、gofmt、diff-check 及 Linux/macOS 构建。真实云、DNS、SMTP、Webhook、Uptime Kuma、浏览器不属于本项前置 | **风险与外部边界**：`flock` 只对 Linux/macOS 本地文件系统、Docker named volume 与普通本地部署作边界保证，不外推 NFS 或部分网络文件系统；运行中手工删除锁文件会因 inode 变化产生两把锁，文档必须说明不要删除，残留文件也无需清理；旧 PID-only 版本与新 flock 版本混跑不提供可靠兼容，升级前须先停止旧实例。权限范围存在一个实施前决策：A，将已存在锁文件、数据目录和 DB 的权限迁移并入 I-01，范围扩大且与 P3-12 重叠；B，I-01 仅保证新建锁文件 `0600`，已存在文件的 `Chmod`、数据目录 `0700` 和 DB `0600` 留给 P3-12，推荐 B，避免扩大实例互斥任务。未取得 L0～L4 当前 revision 证据前，或任一平台 build tag、锁失败语义、SIGKILL 重启、并发互斥不满足时，停止推进并回到方案/实现核查；不得标记 P3-08/I-01 完成 |
+| P3-08 | ✅ 已随 P1-02/I-01 本地修复，尚未提交 | 原 PID 判活的身份误判与 TOCTOU 已由同一文件上的非阻塞独占 `flock` 取代；真实内核锁屏障、GC、并发、SIGKILL/重启均有判别证据 | 详细实现、重复门禁和 Linux/amd64 Docker 证据见 P1-02 实施补记 | 网络文件系统、旧 PID-only 版本混跑不保证；已有文件/目录/DB 权限迁移仍属 P3-12 |
 | P3-09 | SQLite 写事务为 deferred，先读后写存在 WAL read→write 升级（`SQLITE_BUSY_SNAPSHOT`，`busy_timeout` 不生效）；且注释理由与驱动实现矛盾 | `config/store.go:32-34` `BeginTx(ctx,nil)`；`:77-78` 注释以"会让只读事务申请写锁"为由拒绝 `_txlock`；**但驱动 `modernc.org/sqlite@v1.54.0/tx.go:23` 为 `if !opts.ReadOnly && c.beginMode != ""`——只读事务根本不加 beginMode，该理由不成立** | 影响仅"偶发 500、重试即成功、不损坏数据"。修法：DSN 加 `_txlock=immediate`（`ReadOnly` 事务不受影响），并同步修正注释与 `config/store_dsn_test.go:142` 的断言 |
-| P3-10 | **问题真实存在，当前仍未修复；属于独立队列 I-07，不能标记完成。** 这是五类问题、六处返回值处理缺口，不是“均不可失败”或已被其他修复覆盖 | `config/pidfile.go:33` `os.Remove` 丢弃清理错误；`config/store.go:118/124` 两处失败收尾的 `db.Close()` 未检查；`webui/api/logstream.go:97` `_ = h.Handle(...)`；`webui/api/sync.go:127-130` `json.Marshal` 失败静默跳过事件；`webui/server.go:298` 静态 `/api/health` 的 `w.Write` 忽略 | 与 AGENTS §十一“所有 error 必须处理”冲突。SSE 序列化失败会静默丢事件，是影响最实质的一项；其余缺口通常低概率或当前 writer 实际少失败，但仍须补齐可观测错误处理 |
+| P3-10 | **问题真实存在，当前仍未修复；属于独立队列 I-07，不能标记完成。** 原为五类问题、六处返回值处理缺口；I-01 已替换 pidfile 删除并处理 Close 错误，当前剩余四类、五处，不是“均不可失败”或已被其他修复覆盖 | pidfile 子项已由 I-01 收口；`config/store.go:118/124` 两处失败收尾的 `db.Close()` 未检查；`webui/api/logstream.go:97` `_ = h.Handle(...)`；`webui/api/sync.go:127-130` `json.Marshal` 失败静默跳过事件；`webui/server.go:298` 静态 `/api/health` 的 `w.Write` 忽略 | 与 AGENTS §十一“所有 error 必须处理”冲突。SSE 序列化失败会静默丢事件，是影响最实质的一项；其余缺口通常低概率或当前 writer 实际少失败，但仍须补齐可观测错误处理 |
 | P3-11 | `StoreLogWriter.OnEvent` 吞掉写库失败（审计快照） | `webui/api/logwriter.go:83-86` 记 WARN 后 `return nil` → `notifier/bus.go:114` 的"事件处理失败"路径**永不可达** | ✅ 已由 Issue7 Step 4 修复：`AddSyncLog` 错误直接返回给 EventBus；保留原行作为历史红灯，不再列入剩余队列 |
-| P3-12 | **真实存在，当前未修复；状态保持“未完成/待独立处理”，对应 I-07。** 数据目录、SQLite DB 及 pidfile 没有应用层权限收敛，不能把既有启动/Docker 证据外推为权限验收通过 | `run.go:41` 使用 `os.MkdirAll(..., 0755)` 且无后续 `Chmod`；`config/pidfile.go:29` 使用 `os.WriteFile(..., 0644)` 且无后续 `Chmod`；`config/store.go:111-128` 直接 `sql.Open`，没有预创建/显式 `Chmod` DB；DB 明文保存云 AK/SK、SMTP 凭据、Webhook URL、Uptime Kuma Push URL。当前没有应用层 `Chmod`、`Umask`、`0600`、`0700` 权限原语 | 同机其他非特权用户可能遍历数据目录或读取明文敏感配置。**既有用户决策仍固定为数据目录 `0700`、数据库和 pidfile/lock 文件 `0600`**；对已存在目录/文件必须显式 `Chmod`，`MkdirAll`/`WriteFile` 的请求模式不能替代迁移收敛。本轮只更新审计记录，未修改源码、测试或其他文档，未构建、未运行测试或格式化 |
+| P3-12 | **真实存在，当前未修复；状态保持“未完成/待独立处理”，对应 I-07。** 数据目录、SQLite DB 及 pidfile 没有应用层权限收敛，不能把既有启动/Docker 证据外推为权限验收通过 | `run.go:41` 使用 `os.MkdirAll(..., 0755)` 且无后续 `Chmod`；I-01 新建锁文件已请求 `0600`，但已有文件未 `Chmod`；`config/store.go:111-128` 直接 `sql.Open`，没有预创建/显式 `Chmod` DB；DB 明文保存云 AK/SK、SMTP 凭据、Webhook URL、Uptime Kuma Push URL。当前仍无已有文件/目录权限迁移；新建锁文件 `0600` 不足以关闭本项 | 同机其他非特权用户可能遍历数据目录或读取明文敏感配置。**既有用户决策仍固定为数据目录 `0700`、数据库和 pidfile/lock 文件 `0600`**；对已存在目录/文件必须显式 `Chmod`，`MkdirAll`/`WriteFile` 的请求模式不能替代迁移收敛。本轮只更新审计记录，未修改源码、测试或其他文档，未构建、未运行测试或格式化 |
 | P3-13 | **问题真实存在，当前未修复；继续归入独立队列 I-07。** 本轮仅完成只读核验与本审计条目更新，未修改源码、测试或其他文件，未构建、未运行测试或格式化；不可标记完成。 | **当前基线与精确缺陷链：** HEAD 为 `34aa9b859c38904e701a19d672dcc4f65435b31c`，`main == origin/main`；工作树已有唯一 tracked 修改为本报告。`app/logutil.go:28-37` 的 `MultiHandler.Handle` 按顺序处理子 Handler，但 `:31-33` 在第一个启用 Handler 返回错误时立即 `return`，不会继续分发。生产组装顺序由 `run.go:99-100` 与 `app/logutil.go:85-88` 固定为 `stdout TextHandler → WebUI LogBroadcaster`；因此 stdout 写入失败（例如管道断裂）时，WebUI broadcaster、日志环形缓冲与 SSE 订阅者不会收到同一条日志，形成静默丢行。当前 `app/logutil_test.go` 只有日志级别和初始化测试，没有错误注入、继续分发、多错误聚合或 Disabled Handler 语义测试。已修复/不存在核对未发现收口证据；`Issue7.md:584-591` 明确本项是越界的正交问题，AGENTS §十一的 error 处理要求与 MultiHandler 文件归属也不构成已修复证据。另需注意 Go `slog.Logger` 会丢弃底层 Handler 返回的错误，故核心验收必须直接调用 `MultiHandler.Handle`，不能只通过 `slog.Logger` 观察返回值。 | **后续设计与用户决策（尚未授权实施）：** 影响生产代码仅限 `app/logutil.go` 的 `MultiHandler.Handle`，测试限于 `app/logutil_test.go`；`run.go` 的组装顺序、`webui/api/logstream.go`、SSE 协议、前端、日志格式和同步业务均明确不改。**A（推荐）**：继续遍历全部启用 Handler，收集错误；零错误返回 nil，单个错误原样返回，多个错误用标准库 `errors.Join` 返回，以保留单错误身份并让 `errors.Is/errors.As` 识别全部错误；保持现有顺序、`Enabled` 过滤、同步串行、`WithAttrs`/`WithGroup` 行为，不重试、不异步、不在错误路径再次写日志，避免 stdout 失败时递归。**B**：继续调用后续 Handler，但多个错误只返回第一个；实现更小，但丢失后续错误信息和 `errors.Is` 可观测性，不推荐。**C**：继续分发并吞掉/另行记录 Handler 错误；会削弱现有 error 处理契约，且可能形成日志递归，不推荐。当前仅记录 A 为推荐，不擅自替用户裁决或实施。 | **判别性验收、风险、外部边界与停止条件：** L0 静态确认不再在单个 Handler 出错后提前返回，所有启用 Handler 均尝试，多个错误经 `errors.Join` 聚合，未新增递归日志，顺序仍为 stdout 后 WebUI。L1 直接调用 `MultiHandler.Handle` 至少覆盖：前一 Handler 返回 sentinel 错误而后一 Handler 仍被调用并收到原始 Record；两个 Handler 出错且返回值可分别 `errors.Is`；中间 Handler 出错不阻断后续成功 Handler；Disabled Handler 的 `Handle` 不调用且不贡献错误；全成功及全 Disabled 控制组返回 nil。修复授权后再执行 `go test ./app`、`go test ./app -race`，随后按项目门禁执行全量 race、vet、build 与 `git diff --check`；本轮这些命令均未执行，不能预先写成通过。L3 可选用受控 stdout 管道断裂补充进程级证明，但不是必要前置。风险低：`errors.Join` 可能改变多错误 `Error()` 文本；不保留单错误原值会改变兼容性，故 A 原样返回单错误；继续串行调用不解决 Handler 阻塞，也不处理 panic。无需真实腾讯云、阿里云、DNS、SMTP、Webhook、Uptime Kuma、浏览器、Docker 或远端 CI/GHCR，本地 fake `slog.Handler` 已足以证明根因修复；真实 stdout 管道仅是补充边界。若实现改变 Handler 顺序、SSE/前端协议、日志格式、同步业务，加入重试/异步队列，修改 `slog` 递归错误路径，或把本地通过外推为外部链路通过，应立即停止并回到方案审查；在用户决策、判别性测试、受影响门禁和文档闭环完成前，保持 P3-13/I-07 未修复。 |
 | P3-14 | **🔵 问题真实存在，当前未修复，继续归入 I-07。** 本轮仅完成只读核验与本审计条目更新，未修改源码、测试或其他文件，未构建、未运行测试或格式化。 | **当前基线**：`main` / HEAD `34aa9b859c38904e701a19d672dcc4f65435b31c`，`main == origin/main`；本轮前工作树已有修改仅涉及本报告。`webui/api/sync.go:24` 的 `/api/sync/trigger`、`:76` 的 `/api/sync/dryrun` 在 `Syncer == nil` 时返回 HTTP 400；`:42、:61` 的 `/api/sync/pause` 与 `/api/sync/resume` 同样如此；`:94` 的 `/api/sync/events` 在 `EventBus == nil` 时返回 HTTP 400；`webui/api/logstream.go:131` 的 `/api/logs/stream` 在 `LogBroadcaster == nil` 时返回 HTTP 400。这些分支表示服务端依赖未接线或尚未就绪，不是客户端请求格式错误。对照 `webui/api/operational.go:46-52`，`Health == nil` 已按同类不可用语义返回 503，说明仓库已有正确范式。`/api/sync/status` 的 `Syncer == nil` 分支在 `webui/api/sync.go:16` 返回 200 且 `running:false`，并由 `webui/server_test.go:1119-1151` 作为未接入 Syncer 的状态查询场景固定覆盖；本条暂不扩大到该观察接口。现有 `webui/api/sync_test.go`、`webui/api/sse_test.go` 与相关日志流测试没有对上述 nil 依赖精确断言 503。前端 `webui/frontend/src/views/Logs.vue:45-49` 只创建 `EventSource` 并处理消息，没有应用层不可用提示或恢复逻辑；浏览器对该具体非 2xx 响应的重连表现本轮未人工验证。 | **后续最小设计与用户决策（尚未授权实施）**：A（推荐）仅把五个 handler 中六个未就绪依赖分支（trigger、dryrun、pause、resume、events、logs）传给 `writeError` 的状态码从 `http.StatusBadRequest` 改为 `http.StatusServiceUnavailable`，保留现有错误文案、JSON 形状和响应头；补充判别性本地 HTTP 测试。`/api/sync/status` 继续保持 200，Syncer 已接线但暂停的操作仍为 409，Dry Run 冲突仍为 409，SSE 能力不支持仍为 500，正常路径状态码不变。B：把 `/api/sync/status` 的 nil 分支也改为 503；不推荐，会改变已有状态查询兼容语义，应另立状态接口决策。C：同时补前端 `Logs.vue` 的错误提示或 EventSource 重连；可作为独立 UI 议题，不纳入 P3-14 后端最小修复。影响文件限定为 `webui/api/sync.go`、`webui/api/logstream.go` 及 `webui/api/sync_test.go`、`webui/api/sse_test.go`/日志流测试；不改 `writeError`、`webui/api/deps.go`、`run.go`、`operational.go`、前端、Provider、SSE 生命周期或重试策略。是否授权 A 需用户决策，本条不擅自裁决。 | **判别性验收、风险、外部边界与停止条件**：L0 静态确认上述六个 nil 分支均为 503，`/api/sync/status` 仍为 200，其他 409/500/200 分支未改变。L1 使用 `Deps{Syncer:nil}` 分别请求 `POST /api/sync/trigger`、`/api/sync/dryrun`、`/api/sync/pause`、`/api/sync/resume`，使用 `Deps{EventBus:nil}` 请求 `GET /api/sync/events`，使用 `Deps{LogBroadcaster:nil}` 请求 `GET /api/logs/stream`；每项精确断言 503、`application/json; charset=utf-8` 与 `{"error":"..."}` 形状，并证明不访问 Store/协调器、不调用 `probeSSE`、不建立订阅。保留正常 Syncer 触发 202、暂停触发 409、正常 pause/resume 200、正常 SSE 200、SSE 能力缺失 500、nil Syncer 的 status 200 等负向控制。L2 在获得授权后执行受影响包测试，再按项目门禁执行全量 race、vet、build 与 `git diff --check`；当前这些命令均未执行，不能预先写成通过，也不得以单次绿色外推为稳定绿色。L3 可选地用本地真实二进制和 `curl -i`核对最终状态码与 JSON 头部。风险低，主要是让调用方正确识别服务端不可用，前端仍可能因缺少应用层 `onerror`/恢复 UI 而只显示空日志；浏览器人工回归仅补充用户表现，不是后端关闭必要条件。该项不依赖真实腾讯云、阿里云、DNS、SMTP、Webhook、Uptime Kuma、Docker 或远端 CI/GHCR。未完成上述 nil 依赖判别性测试和受影响门禁前保持 P3-14/I-07 未修复；若扩大到 `/api/sync/status`、通用错误封装、运行时接线、前端重连、`Retry-After` 或 SSE 生命周期，或把浏览器未验证行为写成确定结论，应立即停止并重新审查范围。 |
 | P3-15 | 被丢弃的告警事件**每条约一条 WARN**，故障期日志洪水 | `notifier/inflight.go:62-67` `logDropped` 对每个被丢弃事件都记 WARN；`notifier/bus.go:113` 每事件每订阅者一个 goroutine | 500 个 DNS 失败事件 → 约 496 条 WARN。量级不大且信息有用，属可聚合项 |
@@ -730,7 +711,9 @@ FAIL
 
   当前推荐 A；本次仅更新审计记录，不擅自实施代码。
 
-**P3-10 独立追踪与后续设计：**
+**P3-10 独立追踪与后续设计（以下为 I-01 前的历史研究）：**
+
+> 2026-09-30 I-01 补记：下述第①项的 `os.Remove` 已随 flock 改造移除，cleanup 的 `Close` 错误已记录 WARN。后续 P3-10 仅处理剩余②～⑤，不得恢复 PID-only 判活或删除锁文件；本项整体仍未完成。
 
 - **状态与精确证据：** P3-10 问题真实存在，当前仍未修复，继续归入独立队列 I-07；不能因相关路径通常不报错、已有成功路径测试，或 P3-11 已由 Issue7 Step 4 修复而关闭本项。当前基线为 HEAD `34aa9b859c38904e701a19d672dcc4f65435b31c`，`main == origin/main`；工作树唯一 tracked 修改是本审计报告，本轮未编辑代码或测试，未构建、未运行测试、未格式化。六处缺口如下：
   1. `config/pidfile.go:33` 的 cleanup 闭包直接调用 `os.Remove(path)`，丢弃删除失败；陈旧 pidfile 可能因权限、路径类型或文件系统错误而无法清理，但当前没有日志。
@@ -749,7 +732,9 @@ FAIL
 
 - **风险、外部边界与停止条件：** 主要风险是错误处理改动遮蔽原始 Store 错误、日志错误处理形成递归、或把 SSE 的坏事件误报为已成功发送。A 的推荐语义仍然会跳过不可序列化事件，只是不再静默；不得把该事件写成“已发送”。本项真实性和修复验收只依赖本地静态核验、受控错误注入、受影响包测试和本地进程；不依赖真实腾讯云/阿里云、DNS、SMTP、Webhook、Uptime Kuma、浏览器、Docker 或远端 CI/GHCR，本地通过也不能改变这些外部验收项的状态。若实现改变 `WritePidFile` 的锁/判活语义、把 `db.Close` 错误覆盖主错误、改变 SSE 帧或事件结构、增加自定义错误事件协议、把 `/api/health` 改为 operational 语义、把客户端断开全部提升为 WARN，或把 P3-08/P3-12/P3-13 混入本项，应立即停止并回到方案审查；在用户对 SSE A/B 作出裁决、判别性测试及受影响门禁完成前，保持 P3-10/I-07 未修复。
 
-**P3-12 独立追踪与后续设计：**
+**P3-12 独立追踪与后续设计（旧核验事实保留）：**
+
+> 2026-09-30 I-01 补记：新建锁文件已请求 `0600`，已有锁文件/目录/DB 权限迁移仍未实施。旧 PID-only 源码和测试描述均为历史快照，不能用于恢复旧判活或删除语义；P3-12 仍未完成。
 
 - **精确证据与影响：** `run.go:41` 的 `os.MkdirAll(deploy.DataDir, 0755)` 对新目录只提出宽权限请求，且不会收紧已存在的 `0755/0777` 目录；`config/pidfile.go:29` 的 `os.WriteFile(path, data, 0644)` 同样不会改变既有 pidfile 权限。`config/store.go:111-128` 直接打开 SQLite，未预创建并设为 `0600`，也未处理已有数据库；WAL 模式下还必须核实 `config.db-wal` 与 `config.db-shm` 辅助文件的最终权限。数据库中的 `settings`、`alert_email.password` 等字段保存云 Access Key/Secret、SMTP 用户名/密码、Webhook URL 与 Uptime Kuma Push URL，故该问题不是纯形式规范，而是同机多用户的敏感信息暴露风险。当前没有源码级 `Chmod`、`Umask`、`0600` 或 `0700` 机制。
 
@@ -758,7 +743,7 @@ FAIL
 - **推荐的最小实施设计（仅供后续授权）：**
   1. `run.go`：使用 `os.MkdirAll(deploy.DataDir, 0700)` 后，无论目录新建还是已存在都显式执行 `os.Chmod(deploy.DataDir, 0700)`；任一权限收敛失败即启动失败，不以 WARN 后继续打开数据库或监听端口。不要递归修改数据目录中的其他用户文件。
   2. `config/store.go`：在 `sql.Open` 前以 `O_CREATE|O_RDWR`、`0600` 预创建数据库并对已有 DB 显式 `Chmod(path, 0600)`；打开/初始化前收紧已存在的 `config.db-wal`、`config.db-shm`，初始化后再次检查已出现的辅助文件，不能把 modernc SQLite 对权限的实现推断当作验收证据。
-  3. `config/pidfile.go`：新建 pidfile 请求 `0600`，对已有 pidfile 显式 `Chmod(path, 0600)`，保持当前 `ReadFile → processExists → WriteFile` 判活逻辑不变。未来 I-01 的 flock 锁文件复用同一 `0600` 权限原语，但 flock、PID 复用、TOCTOU 和并发启动不并入本项。
+  3. `config/pidfile.go`：新建 pidfile 请求 `0600`，对已有 pidfile 显式 `Chmod(path, 0600)`，保持 I-01 已实施的同一文件描述符 flock 互斥与文件保留语义，不得恢复旧 PID 判活。新建文件 `0600` 已完成，后续只补齐权限迁移，但 flock、PID 复用、TOCTOU 和并发启动不并入本项。
 
 - **仍需用户确认的实现选项（不在本轮擅自裁决）：**
   - **A（推荐）**：目录、DB、WAL/SHM、pidfile 的 `Chmod` 失败均 fail-closed，启动失败并保留可诊断错误；这符合敏感明文配置的保护目标，也避免把“权限修复失败”伪装成成功启动。
@@ -766,7 +751,7 @@ FAIL
   - **C**：把权限迁移与 I-01 的 flock 一并实施；可减少一次生命周期变更，但会扩大 I-01 范围并混淆 P3-12 与互斥语义，当前不建议。
   - 已固定的目标权限 `0700/0600` 不属于待重新裁决项；上述选项只涉及失败语义与 I-01 的边界。
 
-- **受影响文件与明确排除：** 预期生产改动限定为 `run.go`、`config/store.go`、`config/pidfile.go`；建议新增 `config/permissions_test.go`（或同等独立权限测试文件），并视 Docker 旧卷说明需要更新 `README.md`。不修改 `config/pidfile_unix.go` 的 PID 判活、I-01 的 flock 设计、SQLite schema/业务事务、Provider、同步/告警/HTTP 语义或其他 P3 条目；本轮实际只编辑本报告。
+- **受影响文件与明确排除：** 预期生产改动限定为 `run.go`、`config/store.go`、`config/pidfile.go`；建议新增 `config/permissions_test.go`（或同等独立权限测试文件），并视 Docker 旧卷说明需要更新 `README.md`。不修改 `config/pidfile_unix.go` 已实施的 flock 互斥、I-01 的文件保留设计、SQLite schema/业务事务、Provider、同步/告警/HTTP 语义或其他 P3 条目；本轮实际只编辑本报告。
 
 - **判别性验收：**
   1. L0 静态检查：不再以 `0755/0644` 作为目标权限，存在对已存在目录/文件的显式 `Chmod`，并确认未递归改写数据目录。
@@ -792,7 +777,7 @@ FAIL
 | **日志与集合** | **全部有界，两处例外** | `sync_logs` 裁剪至 1000（`config/store.go:984`）；`GetSyncLogs(100)`；`LogBroadcaster.ring` 固定 `[1000]string`；前端 `logLines` 上限 1000；`scanned_resources` 按 cloud_type+region **覆盖式**。例外：熔断器域名 map（P3-01）、ECS **资源扫描路径** `NextToken` 循环（P3-25）；同步路径守卫已修复 |
 | **配置快照** | **有界且不可变** | 每次配置变更创建一个 `RuntimeState`，旧状态与旧 `ClientPool` 被丢弃；`rc.DeepCopy()` + `DeepCopyRules` 确保发布后不可变；旧 SDK client 的空闲连接由 transport `IdleConnTimeout` 回收（**未显式 Close**，属可接受） |
 | **前端响应式状态** | **有界** | `logLines` 1000 封顶；dry-run 结果每次覆盖不追加；扫描缓存按 cloud_type 覆盖；无 `localStorage`/`sessionStorage`/`cookie`/`console.*` |
-| **Docker/进程资源** | **已验证正常，但含 P1-02** | 镜像非 root（`uid=1000(appuser)`）、`/app/data` 属主正确、`wget` 存在（BusyBox `/usr/bin/wget`）、`HEALTHCHECK` 指向静态 `/api/health`（30s/3s/10s/3）、容器 `healthy`、`docker stop` 0.125s 且 `ExitCode=0`、无 OOM。**但存在 P1-02 的崩溃循环** |
+| **Docker/进程资源** | **历史资源验收保留；P1-02 已本地修复** | 镜像非 root（`uid=1000(appuser)`）、`/app/data` 属主正确、`wget` 存在（BusyBox `/usr/bin/wget`）、`HEALTHCHECK` 指向静态 `/api/health`（30s/3s/10s/3）、容器 `healthy`、`docker stop` 0.125s 且 `ExitCode=0`、无 OOM。**后续 I-01 已取得 Linux/amd64 残留 PID 与 SIGKILL 同卷重启证据，见 P1-02** |
 
 **结论**：本项目的资源管理**明显优于**同规模项目。当前仍需关注的无界结构是熔断器域名 map（P3-01，已决定修）与 ECS 资源扫描路径分页循环（P3-25）；同步路径的同类问题已由 `snapshot_incomplete` 守卫修复，其余均已证明有界。
 
@@ -860,7 +845,7 @@ Step 0 已修正 `Design5.md` 当前 version 3 口径、Build7 状态与 `ProdTe
 
 | 子系统 | 稳定设计 | 脆弱点 | 不必要复杂度 | 推荐简化方向 |
 |---|---|---|---|---|
-| **startup/shutdown** | 启动顺序确定性化（`go s.Run()` → 有界等 `Started()` → 再启 `supervisor`/`pusher`）；信号在 HTTP 绑定**之前**注册；收尾顺序 `HTTP shutdown ‖ pusher→supervisor→syncer` 正确；`store.Close()` 在 `s.Wait()` 之后 | **P1-02 容器崩溃循环**；`Server.Start` 失败后 `started` 保持 true 且 `waitDone` 永不关闭（重试被拒、`Wait()` 永久阻塞，**当前接线不可达**）；`supervisor.Stop`/`pusher.Stop` 在 `Run` 从未启动时永久阻塞（Syncer 有 `runGuard`，这两个没有） | — | 按 P1-02 换 flock；与 Syncer 对齐给 supervisor/pusher 加 `started` 守卫 |
+| **startup/shutdown** | 启动顺序确定性化（`go s.Run()` → 有界等 `Started()` → 再启 `supervisor`/`pusher`）；信号在 HTTP 绑定**之前**注册；收尾顺序 `HTTP shutdown ‖ pusher→supervisor→syncer` 正确；`store.Close()` 在 `s.Wait()` 之后 | P1-02 已由 I-01 本地修复；`Server.Start` 失败后 `started` 保持 true 且 `waitDone` 永不关闭（重试被拒、`Wait()` 永久阻塞，**当前接线不可达**）；`supervisor.Stop`/`pusher.Stop` 在 `Run` 从未启动时永久阻塞（Syncer 有 `runGuard`，这两个没有） | — | P1-02 flock 已完成；与 Syncer 对齐给 supervisor/pusher 加 `started` 守卫 |
 | **配置事务与运行时发布** | **本项目最强的一环**：协调器 `锁 → 单事务 → 事务内快照 → 事务内构造候选 → commit → 无失败发布`；commit 后不读库不访问网络；`commit` 失败不 apply；`RuntimeState` 深拷贝 + 单锁替换；已证明**事务内无任何网络 I/O**（四个 SDK 工厂只做本地构造，无 IMDS/元数据/token 获取） | **P2-04 发布顺序**（Wake 早于 ApplyState） | — | 按 P2-04 决策调整顺序 + 同步修订 AGENTS.md:199 |
 | **同步调度** | 单一控制通道 + 4 处 `beginRound()` 硬门控（stop 门控与 enabled 门控**并列不合并**）；`Stop` 为吸收态且 `doneCh` 单所有者；`idle/failed/partial/success` 判定清晰 | P3-23 的无条件 Reset；P3-24 通知合并 | — | 仅 interval 实际变化时 Reset；`false → true` 保留恢复立即轮；按 Go 1.25 默认合同不加入 stale-tick drain，旧兼容模式另行裁决 |
 | **DNS/Provider** | 只使用**增量** API（已逐调用点验证，零全量覆盖 API）；TAG 精确匹配 + `Description` 匹配；熔断阈值随状态原子发布（普通变更 `Clone` 保留计数、导入重置）；`retrySyncDetailed` 每次 attempt 重新 `Describe → Diff → Create/Delete`；部分成功用 `PartialDeleteError` 如实累计 | P1-01 本地完整复核已收口但真实云未验收；P3-25 仅资源扫描路径仍未修复；`isRetryable` 依赖**字符串关键字兜底**（腾讯 SDK 错误类型无 `Unwrap`，属有据可查的妥协） | `retrySync` 死包装；`_txlock` 注释理由与驱动实现矛盾 | P0-01/P2-01/P2-02/P2-03 与同步路径 P3-25 已吸收；资源扫描分页继续按 I-19 独立处理，重构后重新证明再删 `retrySync` |
@@ -868,7 +853,7 @@ Step 0 已修正 `Design5.md` 当前 version 3 口径、Build7 状态与 `ProdTe
 | **OperationalHealth** | **唯一计算源被三个消费者真实共用**（`supervisor` / `operational` 端点 / `pusher` 都走同一个 `*health.Checker`）；2s 非阻塞探活（`Store` 结构体**无互斥量**，不持应用锁）；`StartupGrace=10s` 三分支正确；`failed/partial` 直到被 `success/idle` 覆盖；原因稳定去重排序；30s 边沿监督器 | 判定输入来自三次独立 `Snapshot()`（`run.go:127-142`），注释自述"一致快照"但可能混用新旧 policy/interval → 30s 内一次瞬时误判，自愈 | `slices.Compact` 冗余 | 一次取 `*RuntimeState` 后派生 policy/interval |
 | **HTTP/SSE** | 严格解码齐全（未知字段/尾随/多顶层值/10 MiB/1 MiB/413）；路径 ID `strconv.Atoi` 且 >0；请求 DTO 不含 DB `id`；导出 GET 已删（实测 405）；两类 SSE 监听服务器级 `ShutdownCh` 且每次写出有 5s deadline | P3-05 缺 `no-store`；P3-14 400/503 语义；`GET /api/alerts` 4 次非事务读存在撕裂窗口（PUT 单事务写，读侧可能"新 policy + 旧 email"，前端整体回传即把旧值写回） | `fs.Sub` 静默降级 | 补 `no-store`；GET alerts 改只读事务取快照 |
 | **前端** | 8 字段测试邮件载荷两侧严格一致（历史上真实 bug 点，现有注释+类型双重防护）；无 `console.*`/存储/cookie 泄漏；密码与 Webhook/Push URL 用 `type="password"`；导出用 `fetch`+Blob 且 `revokeObjectURL`；EventSource 单实例且卸载关闭；无 `addEventListener` 泄漏 | **P2-06 / P2-07 / P2-08 / P2-09**；P3-04 SSE 重放；P3-16 一批 UI/状态偏离 | 前端重复实现后端校验 | 逐项按 P2/P3 收敛；**不建议**引入 Pinia/Vitest 等重型栈 |
-| **Docker/CI** | 非 root + `CGO_ENABLED=0` 静态编译 + `HEALTHCHECK` 用静态 `/api/health`（实测全部符合）；前端在 builder 阶段构建并 `COPY` 进 Go 阶段（顺序正确）；容器实测 `healthy`、`ExitCode=0` | **清洁检出裸 Go 命令 100% 失败**（P1 级构建阻断）；P1-02 容器崩溃循环；`go get -u` 使构建不可复现（AGENTS §十 **有意设计**） | Makefile 与 CI 命令集不统一 | 给 `test`/`vet` 加 `frontend` 前置；`go get -u` 策略受强要求约束，**不建议**擅自改为锁版本 |
+| **Docker/CI** | 非 root + `CGO_ENABLED=0` 静态编译 + `HEALTHCHECK` 用静态 `/api/health`（实测全部符合）；前端在 builder 阶段构建并 `COPY` 进 Go 阶段（顺序正确）；容器实测 `healthy`、`ExitCode=0` | **清洁检出裸 Go 命令 100% 失败**（P1 级构建阻断）；P1-02 已本地修复；`go get -u` 使构建不可复现（AGENTS §十 **有意设计**） | Makefile 与 CI 命令集不统一 | 给 `test`/`vet` 加 `frontend` 前置；`go get -u` 策略受强要求约束，**不建议**擅自改为锁版本 |
 
 ### 附：构建阻断（原 P1，已并入批次 6 但严重度仍在）
 
@@ -1201,11 +1186,11 @@ FAIL
 4. ✅ Step 4 主体已落地；R7-02 已提交为 `eab4bea`，R7-03 已按裁决 A 修复并提交为 `297ccfe`，Dry Run 展示所有已配置目标且无适用规则目标零云调用；Dashboard/健康主线与 P2-08/P2-09 修复保持成立。
 5. ◧ Step 5 本地二进制/Docker 与主体门禁证据已取得，F1/F5 补强已提交，R7-01～R7-07 本地核验项已收口；**PT-I7 四云/浏览器真实验收**仍未完成。
 
-> P0-01 与 P2-01 均是必保留的绿色回归；P2-01 已在唯一 canonical functional key 中修复，不再是失败先行项。P1-02/flock 仍是可独立实施的高优先级项，但不是 P1-01 的前置。
+> P0-01 与 P2-01 均是必保留的绿色回归；P2-01 已在唯一 canonical functional key 中修复，不再是失败先行项。P1-02/flock 已在独立 I-01 本地修复，不是 P1-01 的前置。
 
 ### 10.2 当前独立问题入口
 
-与 Issue7 正交的 P1-02、P2-04～P2-07 及其余 P3 继续按第 0.4 节的 I-01～I-11 排队；P1-01 完整复核及后续研究形成的 R7-01～R7-07 对应 I-12～I-18。该编号只表示 backlog 顺序，不改变 finding 严重级别，也不构成代码实施授权。
+与 Issue7 正交的 P1-02/P3-08 已本地收口，其余 P2-04～P2-07 与 P3 继续按第 0.4 节的 I-01～I-11 排队；P1-01 完整复核及后续研究形成的 R7-01～R7-07 对应 I-12～I-18。该编号只表示 backlog 顺序，不改变 finding 严重级别，也不构成代码实施授权。
 
 ### 10.3 历史批次计划（与 Issue7 重叠部分已被取代）
 
@@ -1243,7 +1228,7 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 
 | 模块 | 主审 | 复核 | 文件数 | 入口/调用链 | 验证 | 未验证 |
 |---|---|---|---|---|---|---|
-| 启动/生命周期（`main.go`,`run.go`,`app/`） | A | 主代理 | 3 生产 | `main → run → runWebUI → 启动/收尾序列` | 容器 SIGTERM 实测 `ExitCode=0`；双实例 pidfile 实测；**历史 Docker 实测曾复现 P1-02** | 当前 `flock` 修复后的残留 PID、PID 复用、并发、SIGKILL 重启与真实部署机 systemd |
+| 启动/生命周期（`main.go`,`run.go`,`app/`） | A | 主代理 | 3 生产 | `main → run → runWebUI → 启动/收尾序列` | 容器 SIGTERM 实测 `ExitCode=0`；双实例 pidfile 实测；**历史 Docker 实测曾复现 P1-02** | I-01 已覆盖残留 PID、内核锁屏障、并发、SIGKILL 重启；真实部署机 systemd 仍未执行 |
 | 配置/DB/运行时（`config/`） | A | 主代理 | 7 生产 | `OpenStore → initTables → LoadBusinessSnapshot → BuildRuntimeState` | `config` 包 `-race` 绿；驱动源码核对 | 真实旧库迁移路径 |
 | 同步/DNS/重试（`syncer/`,`dns/`,`internal/`） | **B** | **主代理 overlay 探针复现 P0-01/P1-01/P2-01** | 7 生产 | `Run → beginRound → syncAll → runRound → syncDomain → retrySyncDetailed` | `syncer`/`provider`/`dns` 包测试绿 + 3 个判别性探针 | 真实云写入 |
 | Provider（4 云） | **B** | 主代理（逐 API 调用点验证） | 8 生产 | `Provider 接口 → 四实现 → SDK 调用` | **确认零全量覆盖 API**；CVM 配额对照官方文档 | 真实云 API |
@@ -1291,7 +1276,7 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 | **overlay 探针：Aliyun 端口 key 往返** | **P0-01 复现**：`ToAdd=1 ToDelete=1`（期望 0/0） |
 | **overlay 探针：空 comment desc 碰撞** | **P1-01 复现**：B 域名把 A 的 `1.1.1.1/32` 列入 `ToDelete` |
 | **overlay 探针：IPv6+ICMP key** | **P2-01 复现**：Lighthouse `ICMPv6` 与 CVM `ICMPV6` 均 1/1 |
-| **持久卷 + 预置陈旧 pidfile `1` 启动容器** | **历史 P1-02 复现**：`exited exit=1`，日志「FWAlizer 已在运行 (PID: 1)」。**更正**：首次用 `--volumes-from` 未能复现（卷未复用），后改持久命名卷稳定复现；本轮未重新运行 |
+| **持久卷 + 预置陈旧 pidfile `1` 启动容器** | **历史 P1-02 复现**：`exited exit=1`，日志「FWAlizer 已在运行 (PID: 1)」。**更正**：首次用 `--volumes-from` 未能复现（卷未复用），后改持久命名卷稳定复现；I-01 修复后已用持久命名卷验证不再阻止启动，见 P1-02 |
 | `git archive HEAD` 抽取清洁副本 → `go build/vet/test ./...`、`make vet` | **EXIT=1/1/1/2** `pattern frontend/dist: no matching files found`（构建阻断） |
 | 同上 + 手动 `mkdir webui/frontend/dist` → `go build ./...` | EXIT=0（定位根因） |
 | 顺序启动两个实例（同一 `FWALIZER_DATA_DIR`） | 历史结果：第二个被拒并提示 PID；只能证明顺序场景，不证明并发安全 |
@@ -1321,7 +1306,7 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 | **真实 Uptime Kuma HTTP Monitor** | **未执行** |
 | **真实 Uptime Kuma Push DOWN/恢复通知**（含 P2-04 的实际触发概率） | **未执行**。P2-04/P3-03 为代码与时序分析结论 |
 | **浏览器人工检查**（PT-B7-07、PT-I7-06；布局、按钮尺寸、Dry Run 卡片、重复 key 的实际 patch 行为、侧边栏高亮、SSE 重连表现） | **未执行**。本环境无浏览器工具；前端结论均为源码级 + 构建/框架源码取证 |
-| **Docker 容器运行** | 历史已执行（healthy / uid 1000 / ExitCode 0 / SIGKILL 后重启曾复现 P1-02）；本轮未重新运行，`flock` 修复后的残留 PID、SIGKILL 后重启与真实负载下“完成当前轮次再退出”均未验证 |
+| **Docker 容器运行** | 历史已执行（healthy / uid 1000 / ExitCode 0 / SIGKILL 后重启曾复现 P1-02）；I-01 已在 Linux/amd64 容器执行残留 PID、共享卷互斥、SIGKILL 后替换重启与正常 stop；真实负载下“完成当前轮次再退出”仍未验证 |
 | **远端 CI / GHCR** | **未执行**。既有 `v2.0.0`（run `36300428681`）结果属**更早 revision，不能证明当前改动** |
 | 真实 DNS 上游（`dns/resolver_test.go` 两用例无网络时 `t.Skip`） | **未执行** |
 | SQLite 真实 BUSY/慢盘争用下的 2s 探活上限端到端保证 | **未执行**（仅核对驱动有 `interruptOnDone`、`Store` 无互斥量） |
@@ -1349,6 +1334,8 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 **历史说明（保留）：** 原审计完成时 `fwalizer-audit-final1.md` 是用户要求写入根目录的新增未跟踪文件，`.gitignore` 未匹配它；后续文档提交已将本报告纳入版本控制，因此该说明不代表当前状态，也不应据此修改 `.gitignore`。
 
 | 当前复核（2026-09-30） | `d6d208edd86187e1795318ed555e8e96c5219df9` | `main == origin/main`；复核开始时工作树干净；本轮只更新本文与 `Issue7.md`，未修改代码，未运行构建、测试或格式化 |
+
+**I-01 后续实施（2026-09-30）：** 基线 `fd298ef`，开始时工作树干净、main ahead 1；本轮修改 6 个文件（含新增 `config/pidfile_test.go`），未提交、未推送；未修改 Issue7、业务逻辑或依赖，临时探针/容器/卷已清理。具体门禁见 P1-02。
 
 **历史审计确认：原始代码审核未修改、未创建、未删除任何受版本控制的仓库文件，未执行任何 state-changing git 命令，未触碰真实云/SMTP/Webhook/Uptime Kuma，未升级依赖，未安装任何全局工具。** 本次复核只更新两份文档；未修改代码、未重跑历史探针或门禁，也未触碰任何外部系统。
 
