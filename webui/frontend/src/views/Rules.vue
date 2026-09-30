@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { NDataTable, NButton, NModal, NForm, NFormItem, NInput, NSelect, NSpace, NSwitch, NTag, useMessage } from 'naive-ui'
-import { ref, onMounted, h, watch } from 'vue'
-import { request } from '../api'
+import { ref, onMounted, onUnmounted, h, watch, computed, nextTick } from 'vue'
+import { request, RequestError } from '../api'
 import { cloudLabelMap } from '../constants'
 import type { DomainRule } from '../types'
 
@@ -31,11 +31,22 @@ watch(() => form.value.protocol, (newProto) => {
   }
 })
 
-async function load() {
+// 列表只接受最新请求；删除和卸载使此前的响应失效。
+let pageActive = true
+let loadSequence = 0
+onUnmounted(() => {
+  pageActive = false
+  ++loadSequence
+})
+
+async function load(failureLabel = '加载规则失败') {
+  if (!pageActive) return
+  const sequence = ++loadSequence
   try {
-    rules.value = await request<DomainRule[]>('/api/rules')
+    const data = await request<DomainRule[]>('/api/rules')
+    if (pageActive && sequence === loadSequence) rules.value = data
   } catch (e: any) {
-    message.error(`加载规则失败: ${e.message}`)
+    if (pageActive && sequence === loadSequence) message.error(`${failureLabel}: ${e.message}`)
   }
 }
 
@@ -57,18 +68,21 @@ onMounted(async () => {
 })
 
 function openAdd() {
+  if (!pageActive || deletePhase.value !== 'idle') return
   editingId.value = null
   form.value = { host: '', protocol: 'TCP', ports: '', action: 'ACCEPT', comment: '', enable_ipv6: false, targets: [] }
   showModal.value = true
 }
 
 function openEdit(row: any) {
+  if (!pageActive || deletePhase.value !== 'idle') return
   editingId.value = row.id
   form.value = { host: row.host, protocol: row.protocol, ports: row.ports, action: row.action, comment: row.comment || '', enable_ipv6: !!row.enable_ipv6, targets: Array.isArray(row.targets) ? [...row.targets] : [] }
   showModal.value = true
 }
 
 async function saveRule() {
+  if (!pageActive || deletePhase.value !== 'idle') return
   const method = editingId.value ? 'PUT' : 'POST'
   const url = editingId.value ? `/api/rules/${editingId.value}` : '/api/rules'
   try {
@@ -85,14 +99,92 @@ async function saveRule() {
   }
 }
 
-async function deleteRule(row: any) {
+// 删除状态属于当前页面，不在关闭动画中清理，避免旧动画覆盖新确认。
+const deletePhase = ref<'idle' | 'confirming' | 'deleting' | 'refreshing'>('idle')
+const pendingDelete = ref<Readonly<DomainRule> | null>(null)
+const deleteBusy = computed(() => deletePhase.value === 'deleting' || deletePhase.value === 'refreshing')
+const showDeleteConfirm = computed(() => deletePhase.value === 'confirming' || deletePhase.value === 'deleting')
+const cancelDeleteButton = ref<{ $el: HTMLElement } | null>(null)
+const pageAddButton = ref<{ $el: HTMLElement } | null>(null)
+let deleteOrigin: HTMLElement | null = null
+let deleteDialogLeft = true
+let deleteFocusPending = false
+let deleteSucceeded = false
+
+// 列表刷新与退出动画都完成后再恢复焦点，避免 FocusTrap 后到的恢复覆盖。
+function finishDeleteFocus() {
+  if (!pageActive || deletePhase.value !== 'idle' || showModal.value || !deleteDialogLeft || !deleteFocusPending) return
+  deleteFocusPending = false
+  const focusTarget = !deleteSucceeded && deleteOrigin?.isConnected ? deleteOrigin : pageAddButton.value?.$el
+  focusTarget?.focus()
+}
+
+async function afterDeleteLeave() {
+  await nextTick()
+  if (showDeleteConfirm.value) return
+  deleteDialogLeft = true
+  finishDeleteFocus()
+}
+
+function focusDeleteCancel() {
+  if (pageActive && deletePhase.value === 'confirming') cancelDeleteButton.value?.$el.focus()
+}
+
+function openDeleteConfirm(row: DomainRule, origin: HTMLElement | null = null) {
+  if (!pageActive || deletePhase.value !== 'idle' || showModal.value) return
+  pendingDelete.value = { ...row, targets: [...row.targets] }
+  deleteOrigin = origin
+  deleteDialogLeft = false
+  deleteFocusPending = false
+  deletePhase.value = 'confirming'
+}
+
+function cancelDelete() {
+  if (deletePhase.value !== 'confirming') return
+  pendingDelete.value = null
+  deletePhase.value = 'idle'
+}
+
+function updateDeleteConfirm(show: boolean) {
+  if (!show) cancelDelete()
+}
+
+async function confirmDelete() {
+  if (!pageActive || deletePhase.value !== 'confirming' || !pendingDelete.value) return
+  const id = pendingDelete.value.id
+  deletePhase.value = 'deleting'
+  ++loadSequence
+  let deleted = false
   try {
-    await request(`/api/rules/${row.id}`, { method: 'DELETE' })
-    message.success('删除成功')
-    load()
-  } catch (e: any) {
-    message.error(`删除失败: ${e.message}`) // 修复：非 2xx 不再误报成功
+    await request(`/api/rules/${id}`, { method: 'DELETE' })
+    deleted = true
+  } catch (e: unknown) {
+    if (pageActive) {
+      message.error(e instanceof RequestError
+        ? `删除失败: ${e.message}`
+        : '未能确认删除结果，正在刷新列表核对；不会自动重试删除')
+    }
   }
+
+  // 离开页面不代表服务端取消；旧页面不再刷新、提示或抢占焦点。
+  if (!pageActive) return
+  if (deleted) {
+    rules.value = rules.value.filter(row => row.id !== id)
+    message.success('删除成功')
+  }
+  deleteSucceeded = deleted
+  deleteFocusPending = true
+  pendingDelete.value = null
+  deletePhase.value = 'refreshing'
+  try {
+    await load(deleted
+      ? '配置已删除，但列表刷新失败，请刷新页面核对'
+      : '核对删除结果时列表加载失败，请刷新页面')
+  } finally {
+    deletePhase.value = 'idle'
+  }
+  await nextTick()
+  finishDeleteFocus()
 }
 
 const columns = [
@@ -123,8 +215,8 @@ const columns = [
     render(row: any) {
       return h(NSpace, { size: 'small' }, {
         default: () => [
-          h(NButton, { size: 'tiny', onClick: () => openEdit(row) }, { default: () => '编辑' }),
-          h(NButton, { size: 'tiny', type: 'error', onClick: () => deleteRule(row) }, { default: () => '删除' }),
+          h(NButton, { size: 'tiny', disabled: deleteBusy.value, onClick: () => openEdit(row) }, { default: () => '编辑' }),
+          h(NButton, { size: 'tiny', type: 'error', disabled: deleteBusy.value, onClick: (event: MouseEvent) => openDeleteConfirm(row, event.currentTarget as HTMLElement) }, { default: () => '删除' }),
         ]
       })
     }
@@ -135,7 +227,7 @@ const columns = [
 <template>
   <div>
     <h2>域名规则</h2>
-    <NButton type="primary" size="large" style="margin: 8px 0 12px" @click="openAdd">添加规则</NButton>
+    <NButton ref="pageAddButton" type="primary" size="large" :disabled="deleteBusy" style="margin: 8px 0 12px" @click="openAdd">添加规则</NButton>
     <NDataTable :columns="columns" :data="rules" :bordered="true" />
 
     <NModal v-model:show="showModal" :title="editingId ? '编辑规则' : '添加规则'" preset="card" style="width: 540px">
@@ -164,6 +256,30 @@ const columns = [
         </NFormItem>
         <NButton type="primary" @click="saveRule">保存</NButton>
       </NForm>
+    </NModal>
+
+    <!-- 删除只在确认处理函数发起；所有关闭入口均为取消。 -->
+    <NModal
+      :show="showDeleteConfirm" @update:show="updateDeleteConfirm"
+      preset="card" title="删除规则配置" aria-label="删除规则配置"
+      style="width: min(520px, calc(100vw - 32px))"
+      :closable="!deleteBusy" :mask-closable="!deleteBusy" :close-on-esc="!deleteBusy"
+      :auto-focus="false" @after-enter="focusDeleteCancel" @after-leave="afterDeleteLeave"
+    >
+      <div v-if="pendingDelete" style="overflow-wrap: anywhere; line-height: 1.7">
+        <p>配置 ID：#{{ pendingDelete.id }}</p>
+        <p>域名：{{ pendingDelete.host }}</p>
+        <p>协议 / 端口 / 动作：{{ pendingDelete.protocol }} / {{ pendingDelete.ports }} / {{ pendingDelete.action }}</p>
+        <p>IP 版本：{{ pendingDelete.enable_ipv6 ? 'IPv4+6' : '仅IPv4' }}</p>
+        <p>适用目标：{{ pendingDelete.targets.length === 0 ? '全部目标' : pendingDelete.targets.map(id => targetOptions.find(option => option.value === id)?.label || `#${id}`).join('；') }}</p>
+      </div>
+      <p style="line-height: 1.7">删除后，后续同步将不再包含这条规则。不再需要的当前 TAG 云规则可能在满足安全条件后被清理；若目标已无适用规则，则会跳过该目标并保留已有云规则。</p>
+      <NSpace justify="end">
+        <NButton ref="cancelDeleteButton" size="large" :disabled="deleteBusy" @click="cancelDelete">取消</NButton>
+        <NButton type="error" size="large" :disabled="deleteBusy || !pendingDelete" :loading="deletePhase === 'deleting'" @click="confirmDelete">
+          {{ deletePhase === 'deleting' ? '删除中…' : '确认删除' }}
+        </NButton>
+      </NSpace>
     </NModal>
   </div>
 </template>
