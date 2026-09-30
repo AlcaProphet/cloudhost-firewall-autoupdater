@@ -41,7 +41,7 @@
 | P1-02、P3-08 | ✅ I-01 已在本地修复并取得文件锁、真实进程与 Linux/amd64 Docker 回归证据；尚未提交 | 见 P1-02 实施补记；不外推远端 CI/GHCR 或网络文件系统验收 |
 | P2-01 | ✅ 已实施（canonical family/协议归一化，IPv6 ICMP 与云端协议别名收敛） | Issue7 Step 1；保留原审计红灯作为正向控制 |
 | P2-03 | ✅ 已实施（能力矩阵产出 `unsupported_*`，目标 `partial` 且冻结清理） | Issue7 Step 1；旧“仅 WARN/Dry Run、不计 skipped”决策仅作历史记录 |
-| P2-02 | ✅ 已实施（ECS 删除每批 ≤100，150 → 100+50，部分成功如实计数） | Issue7 Step 3 |
+| P2-02 | ✅ 已实施；2026-09-30 在 `7aaa3f2` 基线定向 race 连续 3 次通过（每批 ≤100、部分成功与 S2 残留核验）；⏳ 真实 ECS 验收未执行 | Issue7 Step 3；本条当前实施补记；PT-I7-05 |
 | P2-08、P2-09 | ✅ 已实施（Dashboard 只消费后端 outcome；Dry Run 以 `target_id` 为 key） | Issue7 Step 4 |
 | P2-04～P2-07 | 🔵 未修复，且不构成 P1-01 前置 | 独立问题队列 |
 | P3-25（同步路径） | ✅ 已实施（重复/未推进 token 立即 `snapshot_incomplete`，本 attempt 零删除） | Issue7 Step 1 |
@@ -412,12 +412,31 @@ FAIL
 
 ### P2-02｜ECS 删除不分批：>100 条 RuleID 塞进单个 `RevokeSecurityGroup`
 
+> **当前状态（2026-09-30）：✅ 已由 Issue7 Step 3 修复，本轮研究确认现有实现无需重复整改；⏳ 真实 ECS 验收未执行。** 以下六项保留修复前审计快照，旧源码行号、逐规则同步单元以及 `failed/unhealthy` 影响描述不代表当前实现；当前行为与证据见下方实施补记。
+
 - **证据**：`provider/ali_ecs.go:163-190` 一次性把全部 `RuleID` 传给 `RevokeSecurityGroup`；而 **create 是分批的**（`:111-126` 使用 `batchRules(rules, 100)`）。`PlatformAPIDocs/AliyunECSAPIGuide/RevokeSecurityGroup.md` 明确 `SecurityGroupRuleId` **数组长度 0~100**。
 - **触发条件**：单个 (provider, 规则) 单元待删规则 >100——例如域名 IP 集大幅收缩（TCP+UDP 拆分后 50+ 个 IP 即达 100），或修改端口列表（60 个端口 × TCP+UDP = 120 条）。
 - **实际影响**：删除请求被云端拒绝 → 该单元每轮 `failed` → 整轮 failed → **运行健康持续 unhealthy 并反复告警**；同时**旧规则（旧 IP 的放行）永久残留在安全组里，安全面持续扩大**，需人工清理。
 - **推荐整改**：`DeleteRules` 复用 `batchRules(rules, 100)` 逐批提交，并把已确认批次累加进 `PartialDeleteError.Deleted`。
 - **判别性测试**：mock 增加"`SecurityGroupRuleId` 数量 >100 则返回 400"的约束，用 150 条断言产生 2 个请求。
 - **是否与 AGENTS.md 冲突**：否（§十一 要求遵守 `PlatformAPIDocs/` 的参数限制）
+
+#### 当前实施补记（2026-09-30）
+
+- **核验基线与范围**：`main` / `7aaa3f2`，相对 `origin/main` ahead 2，研究开始时工作树干净。本轮只读核对源码并运行下列针对性测试；随后按用户要求只更新本文，不修改生产代码、测试、Issue7 或人工验收清单，不提交、不推送。头部与 §14 的 `d6d208e` 仍是此前批次的历史复核基线，本项以此处基线为准。
+- **API 上限与成因**：仓内 `PlatformAPIDocs/AliyunECSAPIGuide/RevokeSecurityGroup.md` 与本轮查询的[阿里云官方文档](https://help.aliyun.com/zh/ecs/developer-reference/api-ecs-2014-05-26-revokesecuritygroup)均规定 `SecurityGroupRuleId` 数组长度为 0～100。旧实现的超限请求属于确定性构造错误，重发相同请求不能解决；当前分批已消除该根因。
+- **已实施方案**：`provider/ali_ecs.go` 的 `AliECS.DeleteRules` 在发出任何请求前检查全部候选的 RuleID 非空，使用 `ecsDeleteBatchSize=100` 与 `batchStrings` 按输入顺序切批并串行提交；150 条固定拆为 100+50。任一批失败立即停止后续批次，保留此前已确认的 `DeleteResult.Deleted/Resolved`；已有成功批次时同时返回 `PartialDeleteError.Deleted`。当前使用 RuleID 切片分批，不是历史建议中的 `batchRules`（该函数用于新增的 `RuleAction`）。
+- **部分成功与健康语义**：`syncer/target.go` 的 `runTargetCleanup` 对成功或部分成功删除取得 S2，并以同一纯 planner 重新验证期望覆盖；可信 S2 的实际清理候选数是最终 `cleanup_deferred` 的唯一来源。例如第一批确认删除 100 条、第二批失败，若 S2 仍覆盖完整期望且剩余 50 条候选，则目标为 `success`，`deleted/cleanup_deleted=100`、`cleanup_deferred=50`，不因清理延后本身转为 unhealthy。S2 Describe 或覆盖验证失败仍为 `failed`，不能用前批成功掩盖最终状态异常。
+- **重试边界**：部分成功分支优先完成 S2 核验，确认覆盖后收敛为清理延后，不在本次调用内继续补发失败批次；后续轮次基于新快照重新规划。未确认删除进度的可重试清理错误可进入整目标重试，不沿用旧 attempt 的删除定位。幂等 NotFound 不虚增实际删除计数，仍需 S2 核验覆盖与残留。
+- **本轮自动化证据**：以下命令在 `provider` 与 `syncer` 两包均通过，`-count=3` 连续执行三次：
+
+  ```bash
+  go test ./provider ./syncer -race -run '^(TestRequest_ECSDelete.*|TestCleanup_ECS.*|TestCleanup_PartialDeleteKeepsConfirmedAndDefersRest|TestCleanup_IdempotentNotFound.*)$' -count=3
+  ```
+
+  覆盖 `TestRequest_ECSDeleteBatches100`（实际 SDK 请求数为 2、每批为 100/50）、`TestRequest_ECSDeleteSecondBatchFailureKeepsConfirmedProgress`（保留 100 条确认计数）、`TestRequest_ECSDeleteRejectsMissingLocator`（缺定位零请求），以及同步层 ECS 候选交接、部分删除后的 S2/100+50 统计、幂等 NotFound 与 S2 不可信失败语义。Provider 证据来自真实 SDK 指向本地 HTTP mock，同步层证据来自探针 Provider；本轮未重跑全仓 race/vet/build、前端或 Docker 门禁，不能把本次定向绿色外推为全仓或真实云验收通过。
+- **可选测试补强（建议，尚未实施）**：断言两批 RuleID 拼接后与输入完全一致（无遗漏、无重复、顺序稳定）；增加 250 条候选且第二批失败的用例，证明第三批不会发送（现有 150 条只有两批，不能单独证明停止后续批次）；补充 0/100/101 条边界，并可给 mock 增加超过 100 条即返回错误的约束。这些属于证据补强，不表示生产分批修复仍未完成。
+- **真实验收边界**：`ProdTestList.md` PT-I7-05 仍未执行。后续在隔离测试安全组验证超过 100 个候选的真实分批清理，并确认期望规则与非当前 TAG 规则完整保留；当前 revision 的远端 CI/GHCR 也无本轮通过结论。本项状态为“本地已修复并取得定向回归证据，真实云验收待执行”。
 
 ---
 
