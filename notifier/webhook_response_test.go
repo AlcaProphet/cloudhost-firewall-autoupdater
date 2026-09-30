@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -306,5 +307,88 @@ func TestWebhookResponseCloseWarning(t *testing.T) {
 	}
 	if strings.Contains(messages, "close-secret") || strings.Contains(messages, "host-secret") {
 		t.Fatal("关闭错误泄漏")
+	}
+}
+
+// webhookGatedBody 的 Read 会阻塞到测试放行，Close 记录是否被调用。
+// 用于断言「在途名额保持到响应体读取与关闭都结束」（AGENTS §9.1 P2-05 边界第 2 条）。
+type webhookGatedBody struct {
+	readEntered chan struct{}
+	readRelease chan struct{}
+	once        sync.Once
+	closed      atomic.Bool
+	payload     string
+}
+
+func (b *webhookGatedBody) Read(p []byte) (int, error) {
+	b.once.Do(func() { close(b.readEntered) })
+	<-b.readRelease
+	if b.payload == "" {
+		return 0, io.EOF
+	}
+	n := copy(p, b.payload)
+	b.payload = b.payload[n:]
+	return n, nil
+}
+
+func (b *webhookGatedBody) Close() error {
+	b.closed.Store(true)
+	return nil
+}
+
+// TestWebhookResponseSlotHeldUntilClose 判别「在途名额保持到读取与关闭结束」。
+//
+// 背景（2026-09-30 第二轮只读核验）：既有 TestWebhookResponseProductionDeadline 只证明
+// 「正文读取期间名额不提前释放」，**没有任何断言证明名额保持到 Close 完成**——该性质此前
+// 仅由 `defer` 的 LIFO 顺序静态可证。本用例补齐这一判别性断言：把 Read 阻塞在测试控制的
+// 闸门上，断言阻塞期间名额仍被占用，且只有在 OnEvent 返回（读取与关闭均已完成）后才释放。
+func TestWebhookResponseSlotHeldUntilClose(t *testing.T) {
+	body := &webhookGatedBody{
+		readEntered: make(chan struct{}),
+		readRelease: make(chan struct{}),
+		payload:     `{"errcode":0,"errmsg":"ok"}`,
+	}
+	n := NewWebhookNotifier("https://host-secret.invalid/hook", "dingtalk")
+	n.SetInFlightLimiter(NewInFlightLimiter(4))
+	n.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: body}, nil
+	})}
+
+	done := make(chan error, 1)
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		done <- n.OnEvent(Event{Type: EventDNSFailed})
+	}()
+	<-started
+
+	// 读取已进入但被闸门阻塞：此时名额必须仍被占用，且响应体尚未关闭。
+	select {
+	case <-body.readEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("未进入响应体读取")
+	}
+	if got := n.limiter.InFlight(); got != 1 {
+		t.Fatalf("响应体读取期间在途名额应为 1，实际 %d（提前释放）", got)
+	}
+	if body.closed.Load() {
+		t.Fatal("读取未结束时响应体不应已关闭")
+	}
+
+	// 放行读取：OnEvent 应正常成功返回，且返回后名额与响应体都必须已回收。
+	close(body.readRelease)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("平台已明确接受，不应返回错误: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("OnEvent 未在读取放行后返回")
+	}
+	if !body.closed.Load() {
+		t.Fatal("OnEvent 返回后响应体未关闭")
+	}
+	if got := n.limiter.InFlight(); got != 0 {
+		t.Fatalf("OnEvent 返回后在途名额应已释放，实际 %d", got)
 	}
 }

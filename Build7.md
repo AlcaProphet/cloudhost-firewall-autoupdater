@@ -773,7 +773,9 @@ Push URL：空
 
 **后续纠正（2026-09-30，P2-04）：** 独立授权修复配置热更新发布时序，当前代码按「日志级别 → 告警集合 → RuntimeState → 监督器唤醒 → Push 唤醒」执行；新增两条发布分支的 Wake 可见性、PUT/import 与真实 Pusher 本地首发回归。该修复不修改启动顺序或 Push 内部机制，P3-03 与真实 Uptime Kuma DOWN/恢复验收仍独立未完成；本轮门禁详见 `fwalizer-audit-final1.md` P2-04 实施补记。
 
-**后续纠正（2026-09-30，P3-03）：** 上述 P2-04 补记中的「P3-03 未完成」为当时状态；本轮在 `7acf303` 基线按用户独立授权完成 P3-03 本地修复。非空非法 URL 校验失败后使用 timer/Wake/Stop 等待，timer 到期重读运行配置；非正间隔回退 60s、正值不足 20s 按 20s，保留未激活状态和正常发送周期。新增真实 20s timer、无 Wake 重读恢复、Wake/Stop、关闭/恢复、脏 SQLite、普通失败控制与日志脱敏用例；两个 overlay 负向控制精确失败，修复版定向 race、快速用例 20 轮 race、全量 12 包 race 连续 3 轮、vet/build/前端 build 与格式/diff-check 通过。本机工具链 Go 1.26.4，未单独运行 Go 1.25；尚未提交、未推送。空 URL/关闭分支、健康、告警、HTTP 超时和配置发布顺序不改；真实 Uptime Kuma DOWN/恢复与远端 CI/GHCR 仍未执行。详细证据见 `fwalizer-audit-final1.md` P3-03 当前实施补记。
+**后续纠正（2026-09-30，P3-03）：** 上述 P2-04 补记中的「P3-03 未完成」为当时状态；本轮在 `7acf303` 基线按用户独立授权完成 P3-03 本地修复。非空非法 URL 校验失败后使用 timer/Wake/Stop 等待，timer 到期重读运行配置；非正间隔回退 60s、正值不足 20s 按 20s，保留未激活状态和正常发送周期。新增真实 20s timer、无 Wake 重读恢复、Wake/Stop、关闭/恢复、脏 SQLite、普通失败控制与日志脱敏用例；两个 overlay 负向控制精确失败，修复版定向 race、快速用例 20 轮 race、全量 12 包 race 连续 3 轮、vet/build/前端 build 与格式/diff-check 通过。本机工具链 Go 1.26.4，未单独运行 Go 1.25；**该批次改动已提交为 `c5cc79d`**（不再处于未提交状态）、未推送。空 URL/关闭分支、健康、告警、HTTP 超时和配置发布顺序不改；真实 Uptime Kuma DOWN/恢复与远端 CI/GHCR 仍未执行。详细证据见 `fwalizer-audit-final1.md` P3-03 当前实施补记。
+
+**第二轮核验补记（2026-09-30，仅测试改动）**：为 P2-05 的「在途名额保持到读取与关闭结束」补一条此前缺失的判别性用例 `TestWebhookResponseSlotHeldUntilClose`（`notifier/webhook_response_test.go`）：闸门阻塞响应体读取期间断言 `InFlight()==1` 且响应体未关闭，放行并返回后断言 `InFlight()==0` 且响应体已关闭。判别力经「把 `defer release()` 改为读取前提前释放 → 精确失败 → 恢复 → 通过」验证；`-race -count=20` 通过。同时订正本文件 P3-03 段落的提交状态（已提交 `c5cc79d`）。门禁范围与边界见 `fwalizer-audit-final1.md`「最近核验基线」小节；**真实钉钉/飞书/Slack 接收仍未执行**。
 
 - operational endpoint 已在 Step 4 实现，本 Step 只接入 Uptime Kuma Push 与配置热重载；
 - URL 脱敏、超时、无重试和无自激循环；
