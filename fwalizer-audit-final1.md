@@ -17,6 +17,8 @@
 
 > **I-01 后续实施补记（2026-09-30）**：用户已授权执行 P1-02/P3-08 修复，基线 `fd298ef`（main ahead 1、开始时干净）。本轮修改 pidfile 源码/测试、README 与本文并取得本地门禁和 Docker 证据；尚未提交。头部 `d6d208e` 与 §14 的“只读复核”描述保留为此前批次历史，当前 I-01 状态见下表与 P1-02 实施补记。
 
+> **I-02 / P3-03 后续实施补记（2026-09-30）**：用户确认补强方案并授权执行；本轮基线 `main / 7acf303`（ahead 4，开始时干净）。仅修改 `internal/health/push.go`、既有 `push_test.go` 与审计/Build7 记录；P3-03 本地修复与门禁已完成，尚未提交、未推送。P2-04 已在本轮基线中提交为 `7acf303`，I-02 两项本地修复已收口。头部与 §14 的旧基线仍为历史复核记录；本轮证据见下方「P3-03 当前实施补记」，不外推真实 Uptime Kuma 或远端 CI/GHCR。
+
 ## 0. 当前状态、执行索引与 TODOLIST
 
 ### 0.1 状态图例
@@ -43,7 +45,8 @@
 | P2-03 | ✅ 已实施（能力矩阵产出 `unsupported_*`，目标 `partial` 且冻结清理） | Issue7 Step 1；旧“仅 WARN/Dry Run、不计 skipped”决策仅作历史记录 |
 | P2-02 | ✅ 已实施；2026-09-30 在 `7aaa3f2` 基线定向 race 连续 3 次通过（每批 ≤100、部分成功与 S2 残留核验）；⏳ 真实 ECS 验收未执行 | Issue7 Step 3；本条当前实施补记；PT-I7-05 |
 | P2-08、P2-09 | ✅ 已实施（Dashboard 只消费后端 outcome；Dry Run 以 `target_id` 为 key） | Issue7 Step 4 |
-| P2-04 | ✅ 已本地修复（未提交）；真实 Uptime Kuma 验收未执行 | RuntimeState 先发布再唤醒，判别性用例覆盖两条分支 |
+| P2-04 | ✅ 已修复并提交为 `7acf303`；真实 Uptime Kuma 验收未执行 | RuntimeState 先发布再唤醒，判别性用例覆盖两条分支 |
+| P3-03 | ✅ 本地修复与门禁已完成，尚未提交；真实 Uptime Kuma 验收未执行 | 非空非法 URL 使用有下限的 timer/Wake/Stop 等待；见 P3-03 实施补记 |
 | P2-05～P2-07 | 🔵 未修复，且不构成 P1-01 前置 | 独立问题队列 |
 | P3-25（同步路径） | ✅ 已实施（重复/未推进 token 立即 `snapshot_incomplete`，本 attempt 零删除） | Issue7 Step 1 |
 | P3-25（资源扫描路径） | 🔵 未修复（`provider/scan.go` 仍只判断空 token，未判断重复/未推进 token） | 独立低风险问题；不得把同步路径修复外推到扫描路径 |
@@ -66,7 +69,7 @@
 以下顺序是整理后的 backlog，不表示已授权实施；每次仍应只处理一个问题并保留判别性测试。
 
 - [x] **I-01｜P1-02 + P3-08**：已以 `flock` 替换 PID 判活；残留 PID、真实内核锁屏障、GC、并发启动、SIGTERM/SIGKILL 后复用与 Linux/amd64 持久卷 Docker 回归均本地通过。源码、测试、README 和本文已更新，尚未提交；权限迁移仍留给 P3-12。
-- [ ] **I-02｜P2-04 + P3-03**：P2-04 已于 2026-09-30 按独立授权本地修复（未提交）：先发布 `RuntimeState`，再唤醒 Health/Push，并补充判别性测试。P3-03 的非法 URL 重试仍未修复，本次不合并，因此 I-02 整项保持未完成。
+- [x] **I-02｜P2-04 + P3-03**：两项本地修复已收口。P2-04 已提交为 `7acf303`；P3-03 本轮按独立授权修复非空非法 URL 的无限等待，并限制异常间隔（非正值 60s、正值不足 20s 按 20s）。定向 race、快速用例 20 轮 race、全量 12 包 race 连续 3 次、vet/build/前端 build 与格式/diff-check 均通过；P3-03 尚未提交、未推送，真实 Uptime Kuma 与远端 CI/GHCR 未执行。
 - [ ] **I-03｜P2-06**：告警页增加 loaded 守卫，防止加载失败后用默认值覆盖真实敏感配置。
 - [ ] **I-04｜P2-07**：目标与规则删除增加卡片式二次确认，满足 AGENTS 强要求。
 - [ ] **I-05｜P2-05**：Webhook 按渠道解析业务错误码；真实 Webhook 仍需单独验收。
@@ -675,7 +678,7 @@ FAIL
 |---|---|---|---|
 | P3-01 | **🔵 问题真实存在，当前未修复**：DNS 熔断器 `failCount` 无淘汰机制，普通运行时发布还会全量 `Clone()` | `dns/circuitbreaker.go:11` 使用 `map[string]int`；`RecordSuccess`（`:59-67`）只写 `0` 不删除；`RecordFailure` 为新域名创建条目；`Clone`（`:37-50`）全量复制；`syncer/state.go:74-82` 的 `BreakerPreserve` 在普通配置发布时保留该 map；`syncer/target.go:362-381` 的解析路径确实持续写入 breaker。当前无 `delete`、裁剪、淘汰或过期机制 | 增长量等于进程生命周期内曾参与解析的不同域名数；成功解析留下永久 `0` 条目，删除/改名域名的正数失败计数也永久残留。属于低风险的无界内存增长，不是立即的功能故障。当前完整证据、后续设计、影响文件、判别性验收、外部边界与停止条件见下方 **P3-01 独立追踪与后续设计**；既有用户决策细化为 **A（推荐）**，尚未授权实施 |
 | P3-02 | 熔断器 `IsOpen` **不改变任何控制流**，仅影响日志分支 | `syncer/syncer.go:861-881`：解析照做、轮次照跑；全仓 `IsOpen` 唯一读取点 `:865` | "熔断"无隔离/降频效果；多 provider 共享同一域名时阈值按单元累加、由任一成功清零，"连续失败轮数"语义被扭曲。AGENTS §四字面满足（每轮本就只探测一次）。建议接受现状并在注释/文档写明语义 |
-| P3-03 | **问题真实存在，当前未修复；范围已收窄为非法 URL/`buildPushURL` 失败后的重试语义**。`internal/health/push.go:105-140` 在启用后首次发送或 URL 变化后的首次发送中，若 `sendOnce` 返回 `false`，保持 `active=false`、清空 `lastURL`，随后只等待 `wake` 或 `stop`，没有按 `cfg.Interval` 重新尝试；因此非法 URL 可使 Push 长期沉默，直到配置再次唤醒。该问题可由手工 SQLite、历史数据或内部构造绕过正常 API 校验进入运行时；`config/store.go:918-945` 读取 `url` 时不重新校验，虽会校验/规范化 interval。与 P2-04/I-02 的 RuntimeState→Wake 发布时序正交，不应借本条扩张时序、健康或告警修复范围 | 精确证据：`internal/health/push.go:186-195` 的首次 `buildPushURL` 失败返回 `false`；`:220-224` 的发送前第二次 `buildPushURL` 失败同样返回 `false`，两条路径都落入 `:130-139` 的纯 `wake/stop` 等待。对照 `:226-230`，`http.NewRequestWithContext` 构造失败返回 `true`，和网络错误 `:231-235`、HTTP 非 2xx `:238-241`、非法 JSON/`ok=false` `:243-254` 一样回到外层 interval 路径；故不能泛化为“所有首次 Push 失败都会无限静默”。受影响文件限定为 `internal/health/push.go:105-140,186-231` 与 `config/store.go:918-945`；实现/测试阶段如需新增文件必须先重新确认范围 | **推荐最小设计（选项 A）**：仅在 `sendOnce=false` 的非法 URL分支增加按 `cfg.Interval`（无效时回退 `config.DefaultPushInterval`）的 timer，并与 `wake/stop` 竞争等待；保持 `active=false`，按现有安全类别 WARN 限频，不记录 URL/token。修正 URL 后 `Wake()` 仍须立即触发重试；不修改健康判定、告警订阅、HTTP 超时、正常请求失败的 interval 语义、Push 完成等待或 shutdown 语义。判别性验收至少包括：1）通过直接 SQLite/内部构造注入启用的非法 URL，确认首次失败后不会忙循环，等待一个配置 interval 后再次尝试，`active` 仍为 false；2）在 interval 等待期间修正 URL 并调用 `Wake()`，确认不必等完整 interval 即发送成功；3）`stop` 可立即结束该等待且 `Stop()` 有界；4）用网络错误/HTTP 错误控制组确认原有 interval 重试仍在，且不会被改成 wake-only；5）日志仅含稳定类别、无完整 URL/token，WARN 频率与既有安全口径一致 | **风险与外部依赖**：风险低，改变仅是非法配置从“唤醒驱动重试”变为“interval 兜底重试”；最坏是脏数据持续按 interval 产生有限 WARN，不应形成紧循环或网络洪水。无需真实云、SMTP、Webhook、浏览器或远端 CI；本地 fake client/transport、受控 SQLite 与时序断言足以证明本条。真实 Uptime Kuma Push 的 DOWN/恢复通知仍是独立未验收边界，不得因本条通过而写成真实通过。用户决策：A（推荐）实施上述最小 timer/wake/stop 等待，补充判别性测试；B 接受现状，仅依赖正常 API 校验与后续配置 `Wake()`，则须明确接受手工 SQLite/历史脏数据可能长期沉默；不推荐扩大为把非法 URL纳入 operational health/告警，或统一重构所有 Push 失败策略。**停止条件**：在 A 的判别性用例、`go test`/race 与 diff-check 未证明前保持 P3-03 未修复；若实现改变健康/告警口径、生产 HTTP 超时、正常请求重试、`active` 语义、完成等待或 shutdown，记录为越界并停止；若出现忙循环、URL/token 泄漏、Wake 不再立即生效或无法保持无在途等待，也停止回到方案审查。 |
+| P3-03 | **✅ 已按用户确认的补强方案本地修复，尚未提交（2026-09-30）**。历史缺陷：启用且非空 URL 的 `buildPushURL` 失败后，`sendOnce=false` 导致 Run 保持未激活并只等 Wake/Stop，丢失周期检查。普通网络/HTTP/响应失败原本仍按周期继续，不能泛化为全部失败无限静默 | `Pusher.Run` 的失败分支新增 timer/Wake/Stop；timer 到期直接回循环顶部重读配置。`invalidURLRetryInterval` 对非正值回退 60s、正值不足 20s 按 20s，有效长间隔保持原值。真实 timer 用例同时验证周期校验与下限；旧等待逻辑及删除下限的两个 overlay 负向控制均精确失败，修复版通过 | 生产修改仅限 `internal/health/push.go`，测试扩展既有 `push_test.go`；不改 Store、发布顺序、健康/告警、正常发送周期、HTTP 超时或生命周期。定向 race、快速用例 20 轮 race、全量 race 连续 3 轮、vet/build/前端 build 与格式/diff-check 已通过，详情见下方实施补记。关闭/空 URL 保持纯等待；timer 不自动读 SQLite；持续非法地址不会自动变为合法；频繁 Wake 不受全局 WARN 限流。真实 Uptime Kuma DOWN/恢复及远端 CI/GHCR 均未执行 |
 | P3-04 | **SSE 断线重连重复回放最多 1000 行**，挤掉真实新日志 | `webui/frontend/src/views/Logs.vue:45-50` 无去重、无 `onerror`；`webui/api/logstream.go:52-88` 每次订阅都回放环形缓冲；`webui/api/sse.go:22` 无 `id:` 字段 | 后端重启/网络切换/休眠后浏览器自动重连即触发。修法：加 `id:` 序号+前端丢弃已见，或回放用独立 event 名 |
 | P3-05 | **问题真实存在，当前未修复；继续保留在独立队列 I-07。** 已修复/不存在结论均不成立。本轮仅更新审计记录，未修改源码、测试或依赖，未运行构建、测试或格式化 | **当前基线**：HEAD `34aa9b859c38904e701a19d672dcc4f65435b31c`，`main == origin/main`；工作树原有修改仅涉及本报告。`webui/api/deps.go:213-220` 注册 `GET /api/settings`；`webui/api/settings.go:15-20` 定义并在 `:33-50` 复制 `tc_access_id`、`tc_access_key`、`ali_access_id`、`ali_access_key` 到响应，再经 `writeJSON` 返回；`webui/api/deps.go:229-240` 的 `writeJSON` 只设置 `Content-Type`，不设置 `Cache-Control`。全仓生产代码中 `no-store` 仅见于 operational health、alerts、config export 等其他端点，未发现为 settings 补头的全局 middleware。现有 `webui/api/settings_alerts_test.go:13-52` 验证键集合/默认值/凭据回显，`redact_test.go:98-110` 验证既有脱敏契约，但均未判定缓存头。Issue7 已将本项留在 I-07，且 2026-09-29 用户裁决确认本轮越界不修复 | **后续设计与决策项（尚未授权实施）**：**A（推荐）**：仅在 `webui/api/settings.go` 的 `handleGetSettings` 入口设置 `w.Header().Set("Cache-Control", "no-store")`，使成功和数据库读取失败响应都保持禁缓存语义；新增/扩展本地 HTTP 测试精确断言该值。保持四个凭据字段的既有回显契约，不修改通用 `writeJSON`，避免扩大所有 JSON API 的缓存策略；不改前端、存储、配置导入导出或认证边界。**B**：接受现状，依赖浏览器/中间件配置或后续统一 HTTP 缓存策略；不建议，因为当前没有全局补头证据，敏感设置响应仍可能被缓存。是否授权单独处理 I-07/P3-05 需用户决策，本记录不擅自裁决。**影响文件**：实施时必改 `webui/api/settings.go`；建议改 `webui/api/settings_alerts_test.go`（或新增同包测试）。明确不改 `webui/api/deps.go` 的通用 `writeJSON`/路由、`Settings.vue`、数据库 schema、Provider、DNS、告警和配置包逻辑 | **判别性验收**：L0 静态确认 `no-store` 只加在 settings handler，未改变通用 JSON 响应策略、凭据字段或导入导出行为；L1 本地 HTTP 用例同时断言 `GET /api/settings` 为 200、JSON `Content-Type` 不变、四个凭据 sentinel 仍按既有契约返回，且 `Cache-Control` **恰为** `no-store`，并保留失败响应也带该头的控制；L2 运行受影响包测试，随后按项目门禁执行 race、vet、build 与 `git diff --check`；L3 可选地用真实本地二进制 `curl -i /api/settings` 核对最终响应头。当前所有实施/门禁命令均未执行，不得提前写成通过 | **风险、外部边界与停止条件**：风险低，改变仅影响浏览器和中间缓存，可能增加设置页重新请求，但不会移除响应中的凭据、清理 Vue 内存/DevTools/服务端日志，也不替代认证或脱敏。无需真实云、DNS、SMTP、Webhook、Uptime Kuma、浏览器或远端 CI/GHCR；本地 handler/HTTP 测试足以证明本项，浏览器 DevTools 只能补充，不能替代判别性测试。不要额外加入 `Pragma`/`Expires`、移除 GET 凭据回显、统一重构所有敏感 API 或引入认证。如果修复扩大到通用 `writeJSON`、凭据产品契约、认证/会话、配置导入导出或其他 I-07 项，停止并重新确认范围；在用户裁决、判别性 HTTP 回归测试及受影响门禁完成前，保持 P3-05/I-07 未修复，不得把本地通过外推为外部链路通过。 |
 | P3-06 | CVM 100 条上限按"入站+出站合计"判定，实际配额为**每方向** 100 | `provider/tc_cvm.go:234-241` 把 IngressIPv4+IngressIPv6+EgressIPv4+EgressIPv6 相加与 100 比较；`PlatformAPIDocs/TencentCVMAPIGuide/查询用户安全组配额.md:62` 为 `"SecurityGroupPolicyLimit": 100`；`安全组添加规则.md:18` 明确"一次请求中只能创建单个方向的规则" | 偏保守：出站规则多时会**拒绝合法的入站新增**（硬错误、不可重试）。修法：只统计入站计数。**建议用真实账号确认配额口径后再改**（属人工验收项） |
@@ -701,6 +704,15 @@ FAIL
 | P3-25（资源扫描路径） | ECS `ScanResources` 分页仍缺"token 未推进即失败"守卫 | `provider/scan.go` 的 `scanAliECS` 仍只在 token 为空时结束，重复/未推进 token 会持续追加并循环 | 🔵 **未修复**：需单独给扫描路径加已见 token/推进检查，并验证异常时不写入半截扫描结果；不能把同步路径的修复外推到扫描路径 |
 
 > 说明：第 9 节的决策表使用 #1..#7 编号（你实际决策的 7 项）；本 P3 表使用 P3-nn 编号，两套编号相互独立。P3-08 已合并原先拆分的两类 pidfile 失效（TOCTOU 漏判 / PID 复用误判），实施时由 flock 一次解决。
+
+**P3-03 当前实施补记（2026-09-30）：**
+
+- **授权与范围**：用户确认深入研究后的补强方案并要求开始修复；基线 `7acf303`，工作树开始时干净、main ahead 4。本轮生产修改仅 `internal/health/push.go`，测试仅扩展已有 `internal/health/push_test.go`；文档更新本文与 `Build7.md`。未修改 Store、配置 API、RuntimeManager、协调器、健康、告警、前端或云端操作；尚未提交、未推送。
+- **根因修复**：仅对非空非法 URL 的 `sendOnce=false` 分支保留 `active=false`/空 `lastURL`，增加有下限的 timer；到期直接 `continue` 重读已发布配置。Wake 停止 timer 并立即重读，Stop 停止 timer 并退出。非正 interval 使用默认 60s，正值不足 20s 按 20s，其他值保持原值。正常发送路径不增加重试或排队，不改变 HTTP 10s 上限。
+- **判别性覆盖**：`TestInvalidURLRetryInterval` 固定负值/零/极短/下限/默认/长间隔；`TestPushInvalidURLRetriesOnBoundedInterval` 使用真实 20s timer，证明 1ns 脏配置不会紧循环且再次产生安全校验日志，不进入 transport/健康计算、不泄漏 URL/token；`TestPushInvalidURLTimerRereadsConfig` 证明不调用 Wake 仍能在原 timer 到期后读取新配置，并立即向本地 mock 首发一次；`TestPushInvalidURLWakeAndStop`、`TestPushInvalidURLDisableAndReenable` 验证长等待中的 Wake、Stop、关闭/恢复；`TestPushNormalFailuresKeepPeriodicAttempts` 覆盖网络、HTTP、坏 JSON、ok=false 的原周期尝试且不立即重试；`TestPushInvalidURLShapes` 覆盖解析/scheme/host 错误且零 transport 调用；`TestPushDirtySQLiteConfigReachesRuntime` 用临时 SQLite 证明 `enabled=true + ftp URL + 1ns` 可到达运行配置。
+- **负向控制**：仓库外 Go overlay 将失败分支换回旧 Wake/Stop 等待（保留纯间隔 helper 以供测试编译），`TestPushInvalidURLRetriesOnBoundedInterval` 在 25s 后因没有第二次校验精确失败；另一 overlay 仅移除 20s 下限，同一用例因两次校验相隔约 11.8µs 精确失败。两个失败均为预期负向控制，没有改回仓库文件。修复版定向 race 通过，证明测试可判别原缺陷与新增高频风险。
+- **本轮门禁**：新增相关用例定向 `-race -count=1` 通过；六个快速新增用例（排除两个真实 20s 等待用例）`-race -count=20` 通过；`go test ./... -race -count=1 -timeout=5m` 全量 12 包连续三轮通过；`go vet ./...`、`go build ./...`、前端 `npm run build`、gofmt 与 `git diff --check` 通过。两个真实等待用例随定向测试及三轮全量各执行一次。执行工具链为本机 Go 1.26.4，未另行运行 Go 1.25。
+- **证据边界**：I-02 两项本地修复已收口，P2-04 已在基线提交为 `7acf303`，P3-03 尚未提交。真实 Uptime Kuma HTTP Monitor/Push DOWN 与恢复通知、真实云、SMTP/Webhook、浏览器、Docker 和当前 revision 远端 CI/GHCR 本轮均未执行。关闭或空 URL 的纯等待保持原样；timer 只重读 RuntimeState，不自动读 SQLite；持续非法地址仍需用户修正；定时 WARN 有周期下限，但没有新增对频繁 Wake 的全局日志限流。
 
 **P3-01 独立追踪与后续设计：**
 
@@ -877,7 +889,7 @@ Step 0 已修正 `Design5.md` 当前 version 3 口径、Build7 状态与 `ProdTe
 | **配置事务与运行时发布** | **本项目最强的一环**：协调器 `锁 → 单事务 → 事务内快照 → 事务内构造候选 → commit → 无失败发布`；commit 后不读库不访问网络；`commit` 失败不 apply；`RuntimeState` 深拷贝 + 单锁替换；已证明**事务内无任何网络 I/O**（四个 SDK 工厂只做本地构造，无 IMDS/元数据/token 获取） | P2-04 已本地修复：ApplyState 先于 Wake | — | 本轮判别性测试证明两条分支唤醒时新快照可见 |
 | **同步调度** | 单一控制通道 + 4 处 `beginRound()` 硬门控（stop 门控与 enabled 门控**并列不合并**）；`Stop` 为吸收态且 `doneCh` 单所有者；`idle/failed/partial/success` 判定清晰 | P3-23 的无条件 Reset；P3-24 通知合并 | — | 仅 interval 实际变化时 Reset；`false → true` 保留恢复立即轮；按 Go 1.25 默认合同不加入 stale-tick drain，旧兼容模式另行裁决 |
 | **DNS/Provider** | 只使用**增量** API（已逐调用点验证，零全量覆盖 API）；TAG 精确匹配 + `Description` 匹配；熔断阈值随状态原子发布（普通变更 `Clone` 保留计数、导入重置）；`retrySyncDetailed` 每次 attempt 重新 `Describe → Diff → Create/Delete`；部分成功用 `PartialDeleteError` 如实累计 | P1-01 本地完整复核已收口但真实云未验收；P3-25 仅资源扫描路径仍未修复；`isRetryable` 依赖**字符串关键字兜底**（腾讯 SDK 错误类型无 `Unwrap`，属有据可查的妥协） | `retrySync` 死包装；`_txlock` 注释理由与驱动实现矛盾 | P0-01/P2-01/P2-02/P2-03 与同步路径 P3-25 已吸收；资源扫描分页继续按 I-19 独立处理，重构后重新证明再删 `retrySync` |
-| **告警** | 默认全关；`渠道开关 + 触发开关`同时开启才订阅；邮件与 Webhook **共用同一固定渲染器**（顺序稳定、不遍历 map）；4 在途 + 满载丢弃最新 + 安全 WARN；限流器跨热重载连续；`test-email` 8 字段契约两侧严格一致且不写库；P3-11 写库错误已能上抛 | **P3-03 Push 非法配置边界**（P2-04 时序已本地修复）；P2-05 Webhook 只看状态码；P3-15 丢弃日志逐条 WARN；P3-19/P3-20/P3-21 邮件与响应体细节 | — | 解析业务错误码；聚合丢弃日志；独立确认 P3-03 是否需要对非法 URL 增加定时重试 |
+| **告警** | 默认全关；`渠道开关 + 触发开关`同时开启才订阅；邮件与 Webhook **共用同一固定渲染器**（顺序稳定、不遍历 map）；4 在途 + 满载丢弃最新 + 安全 WARN；限流器跨热重载连续；`test-email` 8 字段契约两侧严格一致且不写库；P3-11 写库错误已能上抛 | P3-03 非空非法 URL 周期校验已本地修复（P2-04 时序亦已修复）；P2-05 Webhook 只看状态码；P3-15 丢弃日志逐条 WARN；P3-19/P3-20/P3-21 邮件与响应体细节 | — | 解析业务错误码；聚合丢弃日志；P3-03 已按独立授权补齐有下限的定时校验，真实 Uptime Kuma 仍待验收 |
 | **OperationalHealth** | **唯一计算源被三个消费者真实共用**（`supervisor` / `operational` 端点 / `pusher` 都走同一个 `*health.Checker`）；2s 非阻塞探活（`Store` 结构体**无互斥量**，不持应用锁）；`StartupGrace=10s` 三分支正确；`failed/partial` 直到被 `success/idle` 覆盖；原因稳定去重排序；30s 边沿监督器 | 判定输入来自三次独立 `Snapshot()`（`run.go:127-142`），注释自述"一致快照"但可能混用新旧 policy/interval → 30s 内一次瞬时误判，自愈 | `slices.Compact` 冗余 | 一次取 `*RuntimeState` 后派生 policy/interval |
 | **HTTP/SSE** | 严格解码齐全（未知字段/尾随/多顶层值/10 MiB/1 MiB/413）；路径 ID `strconv.Atoi` 且 >0；请求 DTO 不含 DB `id`；导出 GET 已删（实测 405）；两类 SSE 监听服务器级 `ShutdownCh` 且每次写出有 5s deadline | P3-05 缺 `no-store`；P3-14 400/503 语义；`GET /api/alerts` 4 次非事务读存在撕裂窗口（PUT 单事务写，读侧可能"新 policy + 旧 email"，前端整体回传即把旧值写回） | `fs.Sub` 静默降级 | 补 `no-store`；GET alerts 改只读事务取快照 |
 | **前端** | 8 字段测试邮件载荷两侧严格一致（历史上真实 bug 点，现有注释+类型双重防护）；无 `console.*`/存储/cookie 泄漏；密码与 Webhook/Push URL 用 `type="password"`；导出用 `fetch`+Blob 且 `revokeObjectURL`；EventSource 单实例且卸载关闭；无 `addEventListener` 泄漏 | **P2-06 / P2-07 / P2-08 / P2-09**；P3-04 SSE 重放；P3-16 一批 UI/状态偏离 | 前端重复实现后端校验 | 逐项按 P2/P3 收敛；**不建议**引入 Pinia/Vitest 等重型栈 |
@@ -1218,7 +1230,7 @@ FAIL
 
 ### 10.2 当前独立问题入口
 
-与 Issue7 正交的 P1-02/P3-08 已本地收口，P2-04 亦已独立本地修复，剩余 P2-05～P2-07 与 P3 继续按第 0.4 节的 I-01～I-11 排队；P1-01 完整复核及后续研究形成的 R7-01～R7-07 对应 I-12～I-18。该编号只表示 backlog 顺序，不改变 finding 严重级别，也不构成代码实施授权。
+与 Issue7 正交的 P1-02/P3-08 已本地收口，P2-04 与 P3-03 亦已独立本地收口，剩余 P2-05～P2-07 与其余 P3 继续按第 0.4 节的 I-01～I-11 排队；P1-01 完整复核及后续研究形成的 R7-01～R7-07 对应 I-12～I-18。该编号只表示 backlog 顺序，不改变 finding 严重级别，也不构成代码实施授权。
 
 ### 10.3 历史批次计划（与 Issue7 重叠部分已被取代）
 
@@ -1332,7 +1344,7 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 | **真实收件箱投递**（含中文主题的 MTA 编码表现，P3-20） | **未执行**。用户已于 2026-09-27 决定跳过并自行处理 |
 | **真实 Webhook**（P2-05 的依据来自官方文档与公开同类报告，**非本项目实测**） | **未执行**。用户已决定跳过 |
 | **真实 Uptime Kuma HTTP Monitor** | **未执行** |
-| **真实 Uptime Kuma Push DOWN/恢复通知**（含 P2-04 的实际触发概率） | **未执行**。P2-04 已取得本地判别性回归与 mock 首发证据，P3-03 仍为代码与时序分析结论；均不代表真实外部通知通过 |
+| **真实 Uptime Kuma Push DOWN/恢复通知**（含 P2-04 的实际触发概率） | **未执行**。P2-04 已取得本地判别性回归与 mock 首发证据，P3-03 已取得真实 timer、本地 mock 与多轮 race 证据；均不代表真实外部通知通过 |
 | **浏览器人工检查**（PT-B7-07、PT-I7-06；布局、按钮尺寸、Dry Run 卡片、重复 key 的实际 patch 行为、侧边栏高亮、SSE 重连表现） | **未执行**。本环境无浏览器工具；前端结论均为源码级 + 构建/框架源码取证 |
 | **Docker 容器运行** | 历史已执行（healthy / uid 1000 / ExitCode 0 / SIGKILL 后重启曾复现 P1-02）；I-01 已在 Linux/amd64 容器执行残留 PID、共享卷互斥、SIGKILL 后替换重启与正常 stop；真实负载下“完成当前轮次再退出”仍未验证 |
 | **远端 CI / GHCR** | **未执行**。既有 `v2.0.0`（run `36300428681`）结果属**更早 revision，不能证明当前改动** |

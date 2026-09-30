@@ -3,13 +3,16 @@ package health
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -497,3 +500,273 @@ func parseQuery(raw string) map[string]string {
 var _ = config.DefaultPushInterval
 var _ = notifier.EventOperationalUnhealthy
 var _ = syncer.RoundIdle
+
+// invalidURLLogHandler 用实际日志通知校验时点，避免靠固定 Sleep 猜测首发。
+type invalidURLLogHandler struct {
+	slog.Handler
+	attempts chan time.Time
+}
+
+func (h *invalidURLLogHandler) Handle(ctx context.Context, record slog.Record) error {
+	if err := h.Handler.Handle(ctx, record); err != nil {
+		return err
+	}
+	record.Attrs(func(attr slog.Attr) bool {
+		if attr.Key == "category" && attr.Value.String() == "invalid_url" {
+			select {
+			case h.attempts <- time.Now():
+			default:
+			}
+		}
+		return true
+	})
+	return nil
+}
+
+func captureInvalidURLAttempts(t *testing.T) (*syncBuffer, <-chan time.Time) {
+	t.Helper()
+	buf := &syncBuffer{}
+	h := &invalidURLLogHandler{Handler: slog.NewTextHandler(buf, nil), attempts: make(chan time.Time, 16)}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return buf, h.attempts
+}
+
+func awaitInvalidURLAttempt(t *testing.T, attempts <-chan time.Time, budget time.Duration) time.Time {
+	t.Helper()
+	select {
+	case at := <-attempts:
+		return at
+	case <-time.After(budget):
+		t.Fatal("等待非法 URL 校验超时")
+		return time.Time{}
+	}
+}
+
+// TestInvalidURLRetryInterval 固定脏配置下的等待下限及默认值，正常有效间隔保持原值。
+func TestInvalidURLRetryInterval(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		input, want time.Duration
+	}{
+		{"negative", -time.Second, config.DefaultPushInterval},
+		{"zero", 0, config.DefaultPushInterval},
+		{"tiny", time.Nanosecond, config.MinPushInterval},
+		{"below_minimum", 19 * time.Second, config.MinPushInterval},
+		{"minimum", config.MinPushInterval, config.MinPushInterval},
+		{"default", config.DefaultPushInterval, config.DefaultPushInterval},
+		{"long", time.Hour, time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := invalidURLRetryInterval(tc.input); got != tc.want {
+				t.Fatalf("等待间隔 = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPushInvalidURLRetriesOnBoundedInterval 真实 timer 必须再次校验；1ns 脏配置不得紧循环。
+func TestPushInvalidURLRetriesOnBoundedInterval(t *testing.T) {
+	buf, attempts := captureInvalidURLAttempts(t)
+	f := newPushFixture(t)
+	const secretURL = "ftp://invalid.example/api/push/private-token"
+	f.setConfig(PushConfig{Enabled: true, URL: secretURL, Interval: time.Nanosecond})
+	p := f.startPush(t, time.Second)
+	first := awaitInvalidURLAttempt(t, attempts, time.Second)
+	second := awaitInvalidURLAttempt(t, attempts, config.MinPushInterval+5*time.Second)
+	if elapsed := second.Sub(first); elapsed < config.MinPushInterval-100*time.Millisecond {
+		t.Fatalf("异常 interval 造成过早校验: %v", elapsed)
+	}
+	p.Stop()
+	if p.InFlight() || f.deps.pinger.Calls() != 0 {
+		t.Fatal("非法 URL 不得进入网络发送或健康计算")
+	}
+	if logs := buf.String(); strings.Contains(logs, secretURL) || strings.Contains(logs, "private-token") {
+		t.Fatalf("非法 URL 日志泄漏敏感内容: %s", logs)
+	}
+}
+
+// TestPushInvalidURLTimerRereadsConfig 没有 Wake 也必须在 timer 到期后读新配置并立即首发。
+func TestPushInvalidURLTimerRereadsConfig(t *testing.T) {
+	_, attempts := captureInvalidURLAttempts(t)
+	f := newPushFixture(t)
+	f.setConfig(PushConfig{Enabled: true, URL: "ftp://invalid/token", Interval: config.MinPushInterval})
+	p := f.startPush(t, time.Second)
+	awaitInvalidURLAttempt(t, attempts, time.Second)
+	srv, rec := startPushServer(t, okHandler)
+	f.setConfig(PushConfig{Enabled: true, URL: srv.URL, Interval: time.Hour})
+	// 不调用 Wake：新配置的长间隔也不能推迟这次恢复首发。
+	waitForRequests(t, rec, 1, config.MinPushInterval+5*time.Second)
+	p.Stop()
+	if got := rec.count(); got != 1 {
+		t.Fatalf("恢复首发次数 = %d, want 1", got)
+	}
+}
+
+// TestPushInvalidURLWakeAndStop 长 timer 不得阻挡 Wake 恢复及 Stop 退出。
+func TestPushInvalidURLWakeAndStop(t *testing.T) {
+	_, attempts := captureInvalidURLAttempts(t)
+	f := newPushFixture(t)
+	f.setConfig(PushConfig{Enabled: true, URL: "ftp://invalid/token", Interval: time.Hour})
+	p := f.startPush(t, time.Second)
+	awaitInvalidURLAttempt(t, attempts, time.Second)
+	srv, rec := startPushServer(t, okHandler)
+	f.setConfig(PushConfig{Enabled: true, URL: srv.URL, Interval: time.Hour})
+	p.Wake()
+	waitForRequests(t, rec, 1, time.Second)
+	f.setConfig(PushConfig{Enabled: true, URL: "ftp://invalid/token", Interval: time.Hour})
+	p.Wake()
+	awaitInvalidURLAttempt(t, attempts, time.Second)
+	stopped := make(chan struct{})
+	go func() { p.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop 被非法 URL timer 阻塞")
+	}
+	if rec.count() != 1 {
+		t.Fatal("Wake 恢复重复首发")
+	}
+}
+
+// TestPushInvalidURLDisableAndReenable 失败等待时关闭配置必须立即可见，重新启用只首发一次。
+func TestPushInvalidURLDisableAndReenable(t *testing.T) {
+	_, attempts := captureInvalidURLAttempts(t)
+	f := newPushFixture(t)
+	f.setConfig(PushConfig{Enabled: true, URL: "ftp://invalid/token", Interval: time.Hour})
+	reads := make(chan PushConfig, 16)
+	p := NewPusher(PusherDeps{Checker: f.deps.checker(), Config: func() PushConfig {
+		cfg := f.configFunc()
+		reads <- cfg
+		return cfg
+	}, Timeout: time.Second})
+	go p.Run()
+	t.Cleanup(p.Stop)
+	awaitInvalidURLAttempt(t, attempts, time.Second)
+	<-reads
+	f.setConfig(PushConfig{Enabled: false, URL: "ftp://invalid/token", Interval: time.Hour})
+	p.Wake()
+	select {
+	case cfg := <-reads:
+		if cfg.Enabled {
+			t.Fatal("关闭后未读新配置")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("关闭未立即生效")
+	}
+	srv, rec := startPushServer(t, okHandler)
+	f.setConfig(PushConfig{Enabled: true, URL: srv.URL, Interval: time.Hour})
+	p.Wake()
+	waitForRequests(t, rec, 1, time.Second)
+	p.Stop()
+	if rec.count() != 1 {
+		t.Fatal("重新启用重复首发")
+	}
+}
+
+type pushFailingTransport func(*http.Request) (*http.Response, error)
+
+func (fn pushFailingTransport) RoundTrip(req *http.Request) (*http.Response, error) { return fn(req) }
+
+// TestPushNormalFailuresKeepPeriodicAttempts 发送失败仍按原周期继续，无新增立即重试。
+func TestPushNormalFailuresKeepPeriodicAttempts(t *testing.T) {
+	for _, mode := range []string{"network", "http_status", "invalid_json", "not_ok"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newPushFixture(t)
+			hits := make(chan time.Time, 16)
+			p := NewPusher(PusherDeps{Checker: f.deps.checker(), Config: f.configFunc, Timeout: time.Second})
+			p.client.Transport = pushFailingTransport(func(req *http.Request) (*http.Response, error) {
+				hits <- time.Now()
+				if mode == "network" {
+					return nil, errors.New("offline")
+				}
+				body, code := `{"ok":false}`, http.StatusOK
+				if mode == "http_status" {
+					code = http.StatusInternalServerError
+				}
+				if mode == "invalid_json" {
+					body = "invalid"
+				}
+				w := httptest.NewRecorder()
+				w.WriteHeader(code)
+				if _, err := w.WriteString(body); err != nil {
+					return nil, err
+				}
+				return w.Result(), nil
+			})
+			const interval = 50 * time.Millisecond
+			f.setConfig(PushConfig{Enabled: true, URL: "https://invalid.example/token", Interval: interval})
+			go p.Run()
+			t.Cleanup(p.Stop)
+			var first time.Time
+			for i := 0; i < 2; i++ {
+				select {
+				case at := <-hits:
+					if i == 0 {
+						first = at
+					} else if at.Sub(first) < interval {
+						t.Fatal("发送失败发生立即重试")
+					}
+				case <-time.After(time.Second):
+					t.Fatal("发送失败未按周期继续")
+				}
+			}
+		})
+	}
+}
+
+// TestPushInvalidURLShapes 不同 URL 校验失败均返回 false，且不进入 transport。
+func TestPushInvalidURLShapes(t *testing.T) {
+	for _, raw := range []string{"ftp://invalid/token", "not-a-url", "https:///token", "https://bad%host/token"} {
+		t.Run(raw, func(t *testing.T) {
+			f := newPushFixture(t)
+			p := NewPusher(PusherDeps{Checker: f.deps.checker(), Config: f.configFunc})
+			var calls atomic.Int64
+			p.client.Transport = pushFailingTransport(func(*http.Request) (*http.Response, error) {
+				calls.Add(1)
+				return nil, errors.New("unexpected request")
+			})
+			if p.sendOnce(context.Background(), PushConfig{Enabled: true, URL: raw}) {
+				t.Fatal("非法 URL 未返回 false")
+			}
+			if calls.Load() != 0 || p.InFlight() || f.deps.pinger.Calls() != 0 {
+				t.Fatal("非法 URL 进入发送路径")
+			}
+		})
+	}
+}
+
+// TestPushDirtySQLiteConfigReachesRuntime 证明绕过 API 的异常组合确实可到达运行配置。
+func TestPushDirtySQLiteConfigReachesRuntime(t *testing.T) {
+	store, err := config.OpenStore(filepath.Join(t.TempDir(), "config.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	tx, err := store.BeginTx(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(context.Background(), "UPDATE uptime_kuma_push SET enabled=1,url=?,interval=? WHERE id=1", "ftp://invalid/token", "1ns"); err != nil {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil {
+			t.Error(rollbackErr)
+		}
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.LoadBusinessSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := snapshot.ToRuntimeConfig().UptimeKumaPush
+	if !cfg.Enabled || cfg.URL != "ftp://invalid/token" || cfg.Interval != time.Nanosecond {
+		t.Fatalf("异常配置未到达运行快照: %+v", cfg)
+	}
+}

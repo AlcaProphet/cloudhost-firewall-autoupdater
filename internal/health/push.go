@@ -101,7 +101,7 @@ func NewPusher(deps PusherDeps) *Pusher {
 // Run 启动 Push 循环（阻塞，直到 Stop）。
 //
 // 循环在每个周期开始前重新读取配置，因此 URL/interval 热重载立即生效；
-// 关闭或 URL 非法时进入纯等待，不发任何网络请求。
+// 关闭或 URL 为空时只等待唤醒；非空非法 URL 按有下限的间隔重新校验，不发网络请求。
 func (p *Pusher) Run() {
 	defer close(p.done)
 
@@ -128,13 +128,18 @@ func (p *Pusher) Run() {
 				active = true
 				lastURL = cfg.URL
 			} else {
-				// 配置非法（例如非 http/https）：不进入发送状态，等待下一次唤醒
+				// 配置非法时保持未激活；定时重读配置，避免只依赖下一次唤醒。
 				active = false
 				lastURL = ""
+				timer := time.NewTimer(invalidURLRetryInterval(cfg.Interval))
 				select {
+				case <-timer.C:
+					continue
 				case <-p.wake:
+					timer.Stop()
 					continue
 				case <-p.stop:
+					timer.Stop()
 					return
 				}
 			}
@@ -155,6 +160,17 @@ func (p *Pusher) Run() {
 			return
 		}
 	}
+}
+
+// invalidURLRetryInterval 限制异常配置的校验频率；不改变正常发送路径的间隔。
+func invalidURLRetryInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return config.DefaultPushInterval
+	}
+	if interval < config.MinPushInterval {
+		return config.MinPushInterval
+	}
+	return interval
 }
 
 // Wake 立即唤醒一次配置重读（配置保存后调用；可合并、不阻塞）。
