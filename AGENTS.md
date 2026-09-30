@@ -20,6 +20,8 @@
 
 ---
 
+**P2-05 后续修复状态（2026-09-30）**：Webhook 三渠道业务响应校验与 16 KiB 有界读取已实施并提交为 `93e0e4b`，详见 [审计报告 P2-05](./fwalizer-audit-final1.md) 与 [Build7.md](./Build7.md) 后续补记。定向响应 race 20 轮、notifier 整包 race 3 轮、全量 12 包 race 1 轮及 vet/build/diff-check 已本地通过；重复证据不外推为全仓长期稳定绿色。真实钉钉/飞书/Slack 投递与该改动的产品浏览器、远端 CI/GHCR 未执行，PT-B7-03 仍为人工验收免除、非已通过。
+
 ## 二、核心编码原则
 
 ### 简单轻量化
@@ -161,6 +163,12 @@
 - `/api/health` 保持静态 Docker 存活语义不变（不反映同步或运行健康）；新增 `GET /api/health/operational`：健康 200、异常 503，固定 `Content-Type: application/json; charset=utf-8` 与 `Cache-Control: no-store`，每次请求现场计算，响应只含稳定原因，不泄露 SQL、路径、凭据或 URL；Dockerfile 与 Compose 的 `HEALTHCHECK` 继续使用 `/api/health`
 - 新增 30 秒内部健康监督器：仅在健康→异常边沿发布一次 `notifier.EventOperationalUnhealthy`（事件数据只含检查时间与稳定原因数组），持续异常不重复发送、原因变化只更新日志，恢复只写 INFO 且恢复后再次异常可重新发布一次；配置保存后立即唤醒一次检查；第三触发开关只控制该事件是否进入邮件/Webhook，不关闭 operational 端点与 Push；监督器与进程 shutdown 同一生命周期，不产生孤立 goroutine
 - Uptime Kuma 同时支持 HTTP Monitor 拉取 `/api/health/operational` 与 Push Monitor 反向心跳；Push 默认关闭，解析用户填写的完整 URL 后覆盖 `status`/`msg`/`ping` 并保留 token 与其他未知 query；HTTP 上限 10 秒、同一时刻最多一条在途、不排队不重试；仅 2xx 且响应 JSON 为 `{"ok":true}` 算成功；down 的 `msg` 由稳定原因用 `; ` 连接并截断到 250 字符以内；Push 失败不改写应用健康、不产生自激告警；日志不得包含完整 Push URL 或 token；shutdown 取消在途请求
+
+**P2-05 后续已实施边界（2026-09-30）**
+
+- 普通 Webhook 成功必须符合渠道业务协议：钉钉为 HTTP 2xx 且存在整数 `errcode=0`；飞书为 HTTP 2xx 且存在整数 `code=0` 或旧 `StatusCode=0`，两字段同时出现时必须都合法且为零；Slack 为 HTTP 200 且 TrimSpace 后正文恰好为 `ok`。缺字段、`null`、错误类型、空体、非法或未知响应均失败，不以默认零值或消息文本判断成功。
+- 响应体上限固定为 16 KiB，最多读取上限加一字节识别超限；原有 10 秒 HTTP 超时覆盖正文读取，在途名额保持到读取和关闭结束。错误/WARN 不输出或包装 URL、token、请求/响应正文、平台消息原文或底层读取/解析/关闭错误；业务错误仅保留安全渠道、固定类别和整数业务码。
+- 业务失败沿既有 EventBus 返回错误并记录 WARN；响应体关闭错误只记录固定 `response_close` WARN，平台已明确接受时不因此改判业务失败。不增加重试、补发、投递状态持久化或健康联动，不改变配置契约、异步投递、每渠道在途限流及 Uptime Kuma Push 的独立成功口径。
 
 **Build6 既有边界（继续有效，除被上述 Build7 条款明确替代者）**
 
