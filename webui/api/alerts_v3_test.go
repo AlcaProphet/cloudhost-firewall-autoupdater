@@ -74,9 +74,6 @@ const v3DefaultPolicyJSON = `{"dns_failed_enabled":false,"sync_error_enabled":fa
 // v3DefaultEmailJSON 是默认邮件片段（含 Build7 主题/正文）
 const v3DefaultEmailJSON = `{"enabled":false,"host":"","port":"587","username":"","password":"","from_addr":"","to_addr":"","subject":"[FWAlizer] 告警通知","body":"FWAlizer 检测到运行异常，请检查同步日志。"}`
 
-// v3DefaultMonitoringJSON 是默认 monitoring 片段
-const v3DefaultMonitoringJSON = `{"uptime_kuma_push":{"enabled":false,"url":"","interval":"60s"}}`
-
 // TestExportVersion3StructureAndFilename 空库导出必须是完整 version 3 结构：
 // policy/email/webhook + monitoring、默认全部关闭、默认主题正文与时长、v3 附件名。
 func TestExportVersion3StructureAndFilename(t *testing.T) {

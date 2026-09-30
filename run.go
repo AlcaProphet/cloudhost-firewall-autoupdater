@@ -23,9 +23,12 @@ import (
 
 // run 是 main 的可测试边界：返回进程退出码。
 //
+// 形参保留 stdout 槽位（当前不使用，故为 _）：与 main 的两个标准流一一对应，
+// 便于将来把面向用户的输出接到可注入 writer 上；错误输出固定走 stderr。
+//
 // 固定口径（Build6 Step 2）：不接受任何命令行参数；出现任意参数时输出错误、
 // 以非零状态退出，并且不读取部署参数、不创建数据目录、不监听端口。
-func run(args []string, stdout, stderr io.Writer) int {
+func run(args []string, _ io.Writer, stderr io.Writer) int {
 	if len(args) > 1 {
 		fmt.Fprintf(stderr, "不支持命令行参数: %v\n", args[1:])
 		fmt.Fprintln(stderr, "用法: fwalizer   # 无参数启动 WebUI，请通过浏览器完成全部配置")

@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
@@ -277,19 +276,6 @@ func bundleWithout(field string) string {
 		parts = append(parts, full[key])
 	}
 	return "{" + strings.Join(parts, ",") + "}"
-}
-
-// runtimeWithEmail 构造带启用邮件告警的运行时配置（用于告警接线断言）
-func runtimeWithEmail(host, password string) config.RuntimeConfig {
-	return config.RuntimeConfig{
-		Credentials: config.Credentials{}, Tag: "auto-dns", Interval: 5 * time.Minute,
-		DNS: "223.5.5.5", DNSTimeout: 10 * time.Second, DNSFailThreshold: 5,
-		LogLevel: "info", SyncEnabled: true, Theme: "light",
-		Email: config.AlertEmailConfig{
-			Enabled: true, Host: host, Port: "587", Username: "u", Password: password,
-			FromAddr: "f@example.com", ToAddr: "t@example.com",
-		},
-	}
 }
 
 // resetEnvRuntimeForTest 为需要显式运行时的用例发布一份初始状态。

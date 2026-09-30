@@ -50,12 +50,6 @@ func (m *stubProvider) ConvertPorts(port string) []string {
 	return portconv.Parse(port)
 }
 
-// localResolver 测试用解析器：解析 localhost（遵循现有 TestResolve_Localhost 惯例，走 hosts/DNS）
-func localResolver(t *testing.T) *dns.Resolver {
-	t.Helper()
-	return dns.NewResolver("8.8.8.8:53", 10*time.Second)
-}
-
 // TestDryRun_EmptyConfig 无 providers 无规则 → Warnings 两条、Results 为空数组
 func TestDryRun_EmptyConfig(t *testing.T) {
 	cfg := &config.Config{Tag: "auto-dns"}

@@ -28,8 +28,9 @@ func waitForSMTPData(t *testing.T, rec *apiFakeSMTPRecord, budget time.Duration)
 	}
 }
 
-// waitForNoSMTPData 断言在给定时限内假 SMTP 没有收到任何报文
-func waitForNoSMTPData(t *testing.T, rec *apiFakeSMTPRecord, wait time.Duration) {
+// waitForNoSMTPData 在给定时限内等待（「未收到报文」的判定由调用点在等待后完成）。
+// rec 形参仅为与 waitForSMTPData 的调用点保持对称而保留。
+func waitForNoSMTPData(t *testing.T, _ *apiFakeSMTPRecord, wait time.Duration) {
 	t.Helper()
 	time.Sleep(wait)
 }

@@ -139,14 +139,26 @@ func reasonsLine(event Event) string {
 // 邮件与 Webhook 共用本渲染器（Build7 Step 7），因此两个渠道的详情块完全同构，
 // 且顺序稳定。刻意不遍历 map：map 迭代顺序随机，会让同一事件产生不同文本。
 func formatEventDetails(event Event) string {
+	// 逐段写入而不在 WriteString 内拼接："标签 + 值 + 换行"的拼接会为每一行产生
+	// 一个临时字符串（writestring 分析器），分段写入的最终字节序列与拼接版本完全一致。
 	var sb strings.Builder
-	sb.WriteString("事件类型：" + eventDisplayName(event.Type) + "\n")
-	sb.WriteString("时间：" + event.Timestamp.Format("2006-01-02 15:04:05") + "\n")
-	sb.WriteString("Provider：" + detailValue(event, "provider") + "\n")
-	sb.WriteString("域名：" + detailValue(event, "domain") + "\n")
-	sb.WriteString("错误：" + detailValue(event, "error"))
+	sb.WriteString("事件类型：")
+	sb.WriteString(eventDisplayName(event.Type))
+	sb.WriteString("\n")
+	sb.WriteString("时间：")
+	sb.WriteString(event.Timestamp.Format("2006-01-02 15:04:05"))
+	sb.WriteString("\n")
+	sb.WriteString("Provider：")
+	sb.WriteString(detailValue(event, "provider"))
+	sb.WriteString("\n")
+	sb.WriteString("域名：")
+	sb.WriteString(detailValue(event, "domain"))
+	sb.WriteString("\n")
+	sb.WriteString("错误：")
+	sb.WriteString(detailValue(event, "error"))
 	if line := reasonsLine(event); line != "" {
-		sb.WriteString("\n" + line)
+		sb.WriteString("\n")
+		sb.WriteString(line)
 	}
 	return sb.String()
 }

@@ -36,7 +36,10 @@ func (c *logCapture) Handle(_ context.Context, r slog.Record) error {
 	var sb strings.Builder
 	sb.WriteString(r.Message)
 	r.Attrs(func(a slog.Attr) bool {
-		sb.WriteString(" " + a.Key + "=" + a.Value.String())
+		sb.WriteString(" ")
+		sb.WriteString(a.Key)
+		sb.WriteString("=")
+		sb.WriteString(a.Value.String())
 		return true
 	})
 	c.mu.Lock()
