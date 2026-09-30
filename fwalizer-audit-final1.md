@@ -5,15 +5,22 @@
 | 仓库 | `/Users/kyle/Desktop/Repo/cloudhost-firewall-autoupdater` |
 | 审计快照分支 / HEAD | `main` / `11918fb945fe9dfe2a86ead5bc833b14dd156a68` |
 | 审计快照开始前工作树 | **干净**（0 tracked 改动、0 非忽略未跟踪文件）；这是历史审计快照，不表示当前工作树状态 |
-| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-09-30 P2-07）」** |
+| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-09-30 P3-26 / P3-25 资源扫描）」** |
 | 审核性质 | 原始全量代码审核为**只读**；2026-09-30 批次只静态核验既有修复并更新本文与 `Issue7.md`，未修改代码，未运行构建、测试或格式化（属该批次记录） |
 | 审核方式 | 8 路并行子代理分模块审核 + 主代理亲自覆盖超时范围 + 判别性探针独立复现 + 交叉复核裁决 |
 | 审核范围（审计快照值） | 快照 `11918fb` 口径：233 个 tracked 文件；**53/53 生产 Go 文件**（10,890 行）；62 个测试文件（20,457 行）；18 个前端源文件（2,212 行）；6 个构建/部署/CI 文件；8 份合同文档。**当前值为 244 tracked / 55 生产 Go（12,606 行）/ 69 测试文件（24,896 行）/ 18 前端源（2,361 行）/ 同样 6 个构建文件与 8 份合同文档**（新增 `provider/plan.go`、`syncer/target.go`） |
 | 报告版本 | final1（已剔除全部被驳回/误报项，并纳入用户 7 项决策） |
 
-> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-09-30 P2-07）」小节为准**。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
+> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-09-30 P3-26 / P3-25 资源扫描）」小节为准**。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
 
-### 最近实施基线（2026-09-30 P2-07）
+### 最近实施基线（2026-09-30 P3-26 / P3-25 资源扫描）
+
+- **实施前基线**：`main / ec82d10`、本地 `origin/main / 7ff37b1`、ahead 2，工作树干净；本轮未 fetch、未提交、未推送。
+- **授权与范围**：用户确认研究及临时副本验证后的推荐方案并授权实施。仅修改 ECS 资源扫描生产路径（`provider/scan.go`），新增 Provider/API 回归并回写本文与 AGENTS 状态。同步防火墙路径、API handler/响应契约、SQLite schema、前端与 SDK 均未改动。P3-25、P3-26 分别保留证据与 finding 编号。
+- **本轮证据**：正式新增回归定向 `go test -race ./provider ./webui/api -run 'TestScanECS|TestDecodeECSScanPage' -count=20` 通过；临时副本恢复 HEAD 原生产代码，正式 token 回归及五类结构异常缓存回归均重新变红，证明判别力；原生 nil response/body 转换测试、真实 SDK → API → 临时 SQLite 缓存不变/完整替换/合法空结果清空均已覆盖。全量 race/vet/build/diff-check 结果见 P3-26 门禁补记。
+- **证据边界**：Go `1.26.4 darwin/arm64`，不是 Go 1.25 或 Linux 验收；未执行前端构建、浏览器、Docker/compose、真实云、SMTP/Webhook/Uptime Kuma 与远端 CI/GHCR。真实零资源响应是否省略集合仍未确认，缺失/null 集合失败是用户确认的保守兼容策略。不得外推长期稳定绿色或外部验收。
+
+### 前序实施基线（2026-09-30 P2-07，历史批次）
 
 - **实施前基线**：`main / 064b794`，本地 `origin/main / 7ff37b1`，ahead 1；工作树与暂存区干净。`064b794` 是既有 P2-06 修复提交，其原「尚未提交」状态已按 Git 更正。本轮未 fetch、未提交、未推送，本地跟踪引用不代表远端最新状态。
 - **授权与范围**：用户确认定型方案后授权修复 P2-07 并更新对应文档。生产变更仅在 `Targets.vue` / `Rules.vue`；新增轻量组件回归与 `test:delete` 脚本；更新本文、`ProdTestList.md` 和 README。Go API、协调器、Syncer、Provider、数据库 Schema 与 AGENTS 强要求零改动。
@@ -75,11 +82,11 @@
 | P3-03 | ✅ 已修复并**提交为 `c5cc79d`**；真实 Uptime Kuma 验收未执行 | 非空非法 URL 使用有下限的 timer/Wake/Stop 等待；见 P3-03 实施补记 |
 | P2-05 | ✅ 已按推荐方案 A 本地实施；门禁结果见 finding 补记，已提交为 `93e0e4b`；⏳ 真实 Webhook 未验收 | I-05 / P2-05 本轮实施补记 |
 | P2-06 | ✅ 已按完善后的方案 A 本地修复并取得组件、浏览器/API 与 SQLite 联合证据；已提交为 `064b794` | I-03 / P2-06 实施补记；不外推 PT-B7-07 全项或外部验收 |
-| P2-07 | ✅ 按定型方案本地修复，组件与真实二进制/浏览器/API/临时 SQLite 联合验收通过；尚未提交 | I-04 / P2-07 实施补记；不外推其他页面、真实云或远端验收 |
+| P2-07 | ✅ 按定型方案本地修复，组件与真实二进制/浏览器/API/临时 SQLite 联合验收通过；已提交为 `ec82d10` | I-04 / P2-07 实施补记；不外推其他页面、真实云或远端验收 |
 | P3-06 | 🔵 **结论已订正**：CVM 现有“四方向求和 vs 100”与 `AGENTS.md` 及官方 API 定义（`SecurityGroupPolicyLimit` = 安全组内规则上限）一致，**不是过度保守**；“每方向 100”无官方依据，“只统计入站”的修法已撤销；口径待 PT-I7-03 真实账号确认 | 见 P3-06 行；修正后不改 CVM 代码 |
 | P3-25（同步路径） | ✅ 已实施（重复/未推进 token 立即 `snapshot_incomplete`，本 attempt 零删除） | Issue7 Step 1 |
-| P3-25（资源扫描路径） | 🔵 未修复（`provider/scan.go` 仍只判断空 token，未判断重复/未推进 token） | 独立低风险问题；不得把同步路径修复外推到扫描路径 |
-| P3-26（新增，资源扫描分页中途空响应） | 🔵 未修复（`provider/scan.go` 中途空响应静默截断并覆盖缓存；与 P3-25 属不同缺陷类别） | 见 §2 P3-26 行 |
+| P3-25（资源扫描路径） | ✅ 已本地修复，尚未提交；重复/未推进/环路返回 ErrSnapshotIncomplete，不返回半截资源 | I-19；TestScanECSTokenProgress 与 API 缓存回归 |
+| P3-26（新增，资源扫描分页中途空响应） | ✅ 已本地修复，尚未提交；结构异常失败并保留缓存，有效空数组按 token 分页 | 见 P3-26 实施补记；独立于 P3-25 |
 | P3-11、P3-22 与 Dry Run 相关 P3-16 | ✅ 已实施（目标级日志上抛写库错误；Dry Run 每目标一次快照；`RunTest.vue` 44px 已修复） | Issue7 Step 4 |
 | P3-16 其余子项 | 🔵 未修复（侧边栏高亮、保存 in-flight 守卫、`theme` 双写、清空扫描误报成功、前端正则过严） | 独立问题队列 I-10 |
 | 其余 P3 | 🔵/⏳ 未修复、文档清理或待真实验证 | 按 0.4 的独立队列处理 |
@@ -151,23 +158,13 @@
   **2026-09-30 实施补记：** I-17/R7-06、I-18/R7-07 与 I-15/R7-04 已提交为 `b19d271`：accepted connections 均持有至 cleanup 并有界回收；私有 `cleanupResult` 直接传递实际删除与最终残留，可信 S2 planner 成为 `cleanup_deferred` 唯一最终来源。I-16/R7-05 随后按测试-only 边界修复并与文档回写提交为 `d6d208e`，结构化数组合同与逐字段负向控制均成立，未修改生产代码。提交中记录的两个 GOGC 压力门禁、两包 `-race -count=20`、全量 race 连续 3 次、vet、build、前端 build、diff-check 均本地通过；本次只读核验未重跑。真实云、浏览器与当前 revision 远端 CI/GHCR 仍未执行。
 
   **回归边界：** 必须继续保留四条阿里云构造路径、150ms 下限、`assertAliTimeout` 应用层 timeout 断言，以及生产 `newAliOpenAPIConfig` 的 10s `ConnectTimeout` / 30s `ReadTimeout` 正向默认值控制；不得修改生产超时、SDK、请求调用链或超时分类。本项与 R7-06 同属 accepted connection 生命周期根因，但继续保持独立文件、符号、断言与证据，不能合并成单一结论。
-- [ ] **I-19｜P3-25（资源扫描路径）**：🔵 **问题真实存在，当前仍未修复；已修复的只是同步路径，不能外推到资源扫描路径。** 当前基线为 HEAD `34aa9b859c38904e701a19d672dcc4f65435b31c`（**历史基线，非当前 HEAD；当前见头部「最近核验基线」小节**）、`main == origin/main`；本轮只更新本报告，源码与测试未改动，未运行构建、测试或格式化。`provider/scan.go:172-214` 的 `scanAliECS` 以 `nextToken` 驱动 `DescribeSecurityGroups` 分页，只在 `body.NextToken == nil` 或空字符串时结束，非空 token 直接继续请求；当前没有 `seenTokens`、当前 token 未推进检测、页数上限或 `snapshot_incomplete` 失败路径。因此当第 1 页返回 `T`、第 2 页仍返回 `T` 时，会持续发送相同 token，形成无界扫描循环。
+- [x] **I-19｜P3-25（资源扫描路径）**：✅ **已本地修复，尚未提交**（2026-09-30，实施前 `ec82d10`）。用户确认 P3-26 研究方案后授权同时加入已验证的 token 保护。`scanAliECS` 维护历史 token 集合，原样比较/传递 token，重复或未推进即返回 `nil, ErrSnapshotIncomplete`，不返回半截结果；不增加页数上限，不修改同步路径、SDK、API 或缓存 schema。
 
-  **调用链与影响证据：** `POST /api/scan-resources` 经 `webui/api/deps.go:193-196` 注册、`webui/api/scan.go:48-54` 调用 `provider.ScanResources`，只有扫描正常返回后才在 `webui/api/scan.go:56-69` 调用 `ReplaceScannedResources`（`config/store.go:534-550`）。所以重复/未推进 token 场景下，请求可能长期不返回，扫描刷新不会完成，也不会执行缓存覆盖写入；已有旧 `scanned_resources` 缓存会继续保留，不会因该循环被半截结果覆盖。该问题影响资源扫描可用性与请求有界性，不是防火墙同步删除路径；当前也没有真实阿里云异常分页响应的验收证据，不能写成真实云已验证。
+  **独立判别性证据：** `TestScanECSTokenProgress` 覆盖正常两页、`T1 → T1` 与 `T1 → T2 → T1`，分别断言两次正常请求、两次/三次后失败、错误哨兵及 nil 资源。mock 超出预期页后固定返回 400，让缺陷路径必然结束，避免靠超时判定；临时副本恢复 HEAD 原实现后重复/环路回归变红。`TestScanECSCacheIntegrity` 的 token 子项走实际 SDK/API/SQLite，证明 `success:false` 与旧缓存全部记录不变。
 
-  **同步路径对照：** `provider/ali_ecs.go:63-118` 的 `AliECS.GetSnapshot` 已有 `seenTokens`、当前 token 未推进与历史 token 重复检测，异常返回 `ErrSnapshotIncomplete` 且不返回半截快照；Issue7 与本报告已将该同步修复和本资源扫描 finding 分开登记。`provider/scan_test.go` 当前仅覆盖未知云类型错误，`webui/api/scan_test.go` 仅覆盖缓存查询/删除等路径，现有测试没有 ECS 扫描分页 token 的判别性覆盖。
+  **范围与证据边界：** P3-26 的结构异常与有效空页语义本次经用户单独研究、验证并确认后一起实施，两个 finding 仍分别验收。定向两包回归 race 20 轮通过，全量门禁见 P3-26；真实云异常响应与正常多页兼容未验收。不宣称不断产生全新 token 的异常服务有总时间硬上界，不改生产超时或引入固定页数上限。此前“仅 token 保护”的方案与 `34aa9b8` 基线属于历史设计，已由本次用户确认方案替代。
 
-  **最小后续设计（未实施）：** 仅修改 `provider/scan.go` 的 `scanAliECS` 与 `provider/scan_test.go`；不改同步路径、HTTP handler、SQLite schema、前端或 SDK。按 opaque 字符串原样比较和传递分页 token：维护 `seenTokens`，在接受下一页 token 前拒绝它与本次请求 token 相同，或已在历史中出现；异常统一返回 `nil, error`，错误以既有 `ErrSnapshotIncomplete` 为可判别哨兵并补充“ECS 资源扫描”上下文，确保累计的部分资源不会向调用方或缓存写入。当前不建议新增页数硬上限：同步路径没有该合同限制，重复/未推进/环路保护已足以终止本 finding，硬上限可能误伤合法的大规模扫描。
-
-  **判别性验收：** 修复后至少增加三类 provider 层用例：①两页正常推进，断言请求次数为 2、第二次携带 `T1`、返回两页完整资源；②第 1 页返回 `T`、第 2 页再次返回 `T`，断言最多请求 2 次、`errors.Is(err, ErrSnapshotIncomplete)` 为真且返回资源为空；③历史环路 `A → B → A`，断言最多请求 3 次后失败且不返回半截资源。重复 token 用例必须设置有界 mock 响应，不能靠超时证明修复。生产调用链的静态结论是扫描错误会在 `ReplaceScannedResources` 前短路，因此最低充分门禁是 provider 层“错误 + 零资源”证据；若未来确需 API 集成证据，应额外预置旧缓存并证明异常扫描返回 `success:false` 且旧缓存不变，不得为此新增生产注入接口。
-
-  **相邻风险与范围边界（已独立登记为 P3-26）：** `provider/scan.go:198-200` 对 `body == nil`、`SecurityGroups == nil` 或 `SecurityGroup == nil` 直接 `break`；该分支位于 token 检查（`:209-211`）**之前**且丢弃已累计的 `resources`。原判断"空安全组列表也可能是合法'无资源'响应"**仅对第 1 页成立**：后续页在 token 非空时出现空/nil 响应不可能构成合法终止态，此时会以 `nil` 错误返回半截资源，并被 `webui/api/scan.go:66` 覆盖写入 `scanned_resources` 缓存——属"静默截断当成功"，与 I-19 的"不终止循环"是**不同缺陷类别**。本轮按用户裁决**独立登记为 P3-26**（见 §2 的 P3-26 小节），**I-19 的范围保持不变**（仍只覆盖重复/未推进 token），因此两项均不得互相替代或互相掩盖。I-19 的外部边界仅为本地分页控制流、provider 判别性测试及必要的缓存短路证明；真实云通常无法主动制造重复 token，正常真实 ECS 多页扫描只能证明正向兼容，不能替代异常分支证据。远端 CI/GHCR、浏览器、SMTP、Webhook、Uptime Kuma 与四云防火墙写入/删除验收均不是本项直接证据，且当前仍未执行。
-
-  **用户决策记录：** 当前 AGENTS.md、Issue7 §12.5 与现有源码证据没有冲突，不需要用户裁决。若后续范围需要选择：A（推荐）仅加入重复/未推进/历史环路保护并复用 `ErrSnapshotIncomplete`，保持 API、缓存 schema 和 SDK 不变，风险最小且与同步路径语义一致；B 同时把空响应/空列表纳入失败并扩充 API 集成测试，但必须先确认阿里云正式响应语义，影响是扩大生产行为与验收范围；C 增加固定页数上限，能提供额外硬上界但可能拒绝合法大规模扫描，当前不推荐。未收到新的范围授权前按 A 保持为后续设计，不视为已实施。
-
-  **停止条件：** 在 `scanAliECS` 实际加入 token 保护、三类判别性用例通过并取得受影响包门禁前，保持 I-19 未修复；不得把同步路径的绿色测试、正常真实云扫描或单次本地绿色运行写成该 finding 已关闭或稳定通过。若修改同步路径、HTTP/API 契约、缓存 schema、前端、SDK，加入未经合同支持的页数上限，返回半截资源，混入空响应语义，或把真实云正常分页当作重复 token 异常分支证据，应立即停止并重新审查范围。
-
-**I-15～I-19 串行状态：** I-17+I-18、I-15、I-16 已按顺序完成，统一压力/race/vet/build/前端/diff-check 门禁亦已完成；下一独立项为 I-19 的资源扫描分页。不同 finding 仍须逐项串行，R7-06/R7-07 仅因同根因在同一批次连续处理；本次 R7-05 授权不包含 I-19。
+**I-15～I-19 串行状态：** I-17+I-18、I-15、I-16 已按顺序完成，统一压力/race/vet/build/前端/diff-check 门禁亦已完成；I-19 资源扫描分页已在 2026-09-30 经后续授权本地修复，见上方独立补记。不同 finding 仍须逐项串行，R7-06/R7-07 仅因同根因在同一批次连续处理；本次 R7-05 授权不包含 I-19。
 
 ### 0.5 真实外部与人工验收
 
@@ -186,7 +183,7 @@
 | **P1** | **2** |
 | **P2** | **9** |
 | **P3** | **25 + 新增 P3-26 = 26**（审计当时发现统计为 25；第二轮核验新增 1 项） |
-| **当前状态补记（2026-09-30 第二轮）** | P0-01 已于 `108e528` 修复并加回归；R7-01～R7-07 本地核验项已完成并进入当前提交历史（R7-05 为 `d6d208e`）；P3-11/P3-22 已修复；P3-25 仅同步路径已修复，资源扫描路径仍未修复。**第二轮核验补充**：P1-02/P3-08 已提交 `7aaa3f2`、P3-03 已提交 `c5cc79d`（原"尚未提交"已订正）；P3-06 结论订正（撤销"每方向 100"与"只统计入站"）；P3-16 的 `RunTest.vue` 44px 已修复；P3-17 的 `export_test.go:461` 已修复；P3-21 的 Webhook drain 子项部分已修复、Push 字节上限子项仍未修复；**新增 P3-26**（ECS 资源扫描分页中途空响应 → 静默截断并覆盖缓存）。上述 P0～P3 数量仍是审计当时的发现统计，不等于当前未修复数 |
+| **当前状态补记（2026-09-30 第二轮）** | P0-01 已于 `108e528` 修复并加回归；R7-01～R7-07 本地核验项已完成并进入当前提交历史（R7-05 为 `d6d208e`）；P3-11/P3-22 已修复；P3-25 当时仅同步路径已修复；资源扫描路径现已在 P3-26 同批授权下本地修复，见 I-19。**第二轮核验补充**：P1-02/P3-08 已提交 `7aaa3f2`、P3-03 已提交 `c5cc79d`（原"尚未提交"已订正）；P3-06 结论订正（撤销"每方向 100"与"只统计入站"）；P3-16 的 `RunTest.vue` 44px 已修复；P3-17 的 `export_test.go:461` 已修复；P3-21 的 Webhook drain 子项部分已修复、Push 字节上限子项仍未修复；**新增 P3-26**（ECS 资源扫描分页中途空响应 → 静默截断并覆盖缓存）。上述 P0～P3 数量仍是审计当时的发现统计，不等于当前未修复数 |
 | 会实际破坏云端防火墙规则的问题 | **有，已实测复现**（P0-01、P1-01、P2-01） |
 | ✅/⏳ **P1-01 本地核验项已实施，外部验收未完成** | 2026-09-29 定为“目标级完整期望集 + TAG 所有权 + comment 纯可读 + 先增后验 + 平台化条件删除 + 可接受残留”；Step 0～5 主体提交 `28559ed`，F1/F5 补强提交 `38bdc19`，R7-01～R7-04/R7-06/R7-07 提交于既有修复链，R7-05 与文档回写提交为 `d6d208e`；**真实云/浏览器/当前 revision 远端 CI 仍未执行** |
 | ⏳ **未执行的外部/人工验收** | **16 项登记边界：PT-B7-01～09（9 项）+ PT-I7-01～07（7 项）**；其中 PT-B7-02/03 为人工免除但仍无真实通过结论 |
@@ -198,7 +195,7 @@
 
 ### 一句话结论
 
-审计当时确认两条会每轮重复删改生产防火墙规则的路径：P0-01 已于 `108e528` 修复；P1-01 Step 1～5 主体已提交为 `28559ed`，F1/F5 补强已提交为 `38bdc19`，R7-01～R7-07 均已完成并进入当前提交历史（R7-05 为 `d6d208e`）；本地核验项已收口，但真实云/浏览器/当前 revision 远端 CI 仍未执行，不能写成外部验收或发布闭环；P3-25 只完成同步路径，资源扫描路径仍未修复。当前入口见 [Issue7.md](./Issue7.md) §12.3～§12.5。
+审计当时确认两条会每轮重复删改生产防火墙规则的路径：P0-01 已于 `108e528` 修复；P1-01 Step 1～5 主体已提交为 `28559ed`，F1/F5 补强已提交为 `38bdc19`，R7-01～R7-07 均已完成并进入当前提交历史（R7-05 为 `d6d208e`）；本地核验项已收口，但真实云/浏览器/当前 revision 远端 CI 仍未执行，不能写成外部验收或发布闭环；P3-25 当时只完成同步路径；资源扫描路径本轮已本地修复，见 I-19。当前入口见 [Issue7.md](./Issue7.md) §12.3～§12.5。
 
 > ⚠️ **可立即执行与待决的区分**：
 > - **P0-01（阿里云端口 key 不对称）已修复**：提交 `108e528`，回归 `TestDiff_AliyunPortRoundTripConverges`；Issue7 Step 1 的新规划器已保持该绿色回归。
@@ -682,67 +679,32 @@ FAIL
 
 ---
 
-### P3-26｜ECS 资源扫描分页中途空响应 → 静默截断当成功并覆盖缓存（🔵 未修复，2026-09-30 第二轮核验新增）
+### P3-26｜ECS 资源扫描结构异常 → 静默截断并覆盖缓存（✅ 已本地修复，尚未提交）
 
-**来源：** 2026-09-30 第二轮只读真实性核验按用户裁决新增；此前仅作为 I-19 的"相邻风险"附注，未独立编号。
+**来源与原问题：** 2026-09-30 第二轮核验新增。原 `scanAliECS` 遇到缺失 Body/集合便在 token 检查前 `break`，随后返回此前累计的资源和 nil 错误；API 据此覆盖当前云产品+地域的缓存。首页结构缺失会清空旧缓存；后续页缺失/null 会用半截结果替换缓存；数组 null 元素还可能 panic。原报告“丢弃已累计 resources”措辞不准确，实际是丢弃后续查询机会并把已累计部分当完整结果返回。扫描缓存只服务展示与自动补全，不参与防火墙同步写入。
 
-#### 缺陷链
+**方案更正与用户确认：** 原“仅首页空响应成功、后续页空响应失败”设计撤销。官方文档按返回 `NextToken` 为空/缺失判定末页，没有明确保证后续页非空；token 模式不返回 TotalCount。故有效空数组与结构异常必须分开，不能仅按页序号判断。用户确认保守策略：缺失/null 集合失败；显式空数组合法并按 token 分页。参考 [官方 DescribeSecurityGroups 文档](https://www.alibabacloud.com/help/en/ecs/developer-reference/api-ecs-2014-05-26-describesecuritygroups)。
 
-1. `provider/scan.go:187-215` 的 `scanAliECS` 每页先取 `body := resp.Body`（`:197`），随后在 `:198-200` 判断：
+**已实施：**
 
-   ```go
-   if body == nil || body.SecurityGroups == nil || body.SecurityGroups.SecurityGroup == nil {
-       break
-   }
-   ```
+- `scanAliECS` 通过纯转换函数 `decodeECSScanPage` 验证并映射 SDK 页，resp/Body/集合缺失、数组 null 元素、资源 ID 缺失或空统一返回包装 `ErrSnapshotIncomplete` 的错误；名称允许为空。任何失败返回 nil 资源，不带出之前的累计结果。
+- 有效页追加后只按返回 token 判定结束；显式空首页/中间页/末页均正常处理。成功零资源输出为非 nil 空数组，允许既有覆盖式缓存清除真正已无资源的地域。
+- 同次实施 P3-25 资源扫描 token 历史集合保护；错误不含原始 token。未修改同步 Provider、API handler、SQLite/前端/SDK，不增加重试或固定页数上限。
+- API 既有错误分支在 `ReplaceScannedResources` 前短路，返回 `success:false`，前端沿既有失败路径保留旧内存数据并显示错误。
 
-2. 该 `break` **位于 token 检查之前**（终止判定在 `:209-211`：`body.NextToken == nil || *body.NextToken == ""`），
-   且**不区分页序号**、**丢弃此前已 `append` 的资源**，最终在 `:214` 以 `return resources, nil` 返回**半截结果且无错误**。
-3. 调用方据此认为扫描成功：`webui/api/scan.go:49` 取得 `resources`、`:50-54` 的错误分支不触发，
-   `:66` 执行 `ReplaceScannedResources` —— 而该实现（`config/store.go:535` 起）是**按 cloud_type+region 先 DELETE 再 INSERT 的覆盖式写入**，
-   因此旧的完整缓存被**截断列表覆盖**。
+**独立回归与判别力：**
 
-#### 与 P3-25（资源扫描路径）的区别
+- `TestScanECSIncompletePage`：经真实 SDK 验证后续页缺集合/null 数组/null 元素/缺 ID，断言 `errors.Is(err, ErrSnapshotIncomplete)` 和 nil 资源。
+- `TestDecodeECSScanPageMissingResponse`：直接覆盖 HTTP mock 不能构造的原生 nil resp 与 nil Body；此证据与 `{}` JSON 解码明确区分。
+- `TestScanECSCacheIntegrity`：14 类真实 SDK → 实际 handler → 临时 SQLite 用例，含正常两页、有效空首页/中间页/末页、缺失/null 结构、非法元素/ID，以及 P3-25 重复/环路。失败时旧记录（含数据库 ID、名称及其他地域）完全不变；成功时资源 ID 内容正确，合法零结果清除对应地域旧缓存。
+- 临时副本恢复 `HEAD:provider/scan.go`，五类正式结构异常缓存用例全部变红，复现首屏清空或后续半截覆盖；P3-25 正式 token 回归也变红。正式工作树始终保留修复，无负向控制改写。
 
-| 维度 | P3-25（资源扫描路径） | P3-26（本条） |
-|---|---|---|
-| 行为 | token 重复/未推进 → **循环不终止**（请求挂起） | 中途空响应 → **提前终止并按成功返回** |
-| 数据后果 | 扫描不完成，旧缓存**保持不变** | 旧缓存被**半截结果覆盖** |
-| 修法 | 加 `seenTokens`/推进检测 → `ErrSnapshotIncomplete` | 区分"第 1 页空"与"后续页空"，后者按不完整快照失败 |
-| 证据类别 | 控制流有界性 | 数据完整性（缓存被污染） |
+**本轮门禁：** 定向 Provider/API 新回归 `-race -count=20` 通过；全量 12 包 `go test -race ./... -count=1 -timeout=20m`、`go vet ./...`、`go build ./...`、`gofmt` 与 `git diff --check` 通过。全量 race 为本轮一次结果，不外推长期稳定绿色。
 
-两者**不得互相替代或互相掩盖**：修复 P3-25 不会解决本条，修复本条也不会解决 P3-25。
-
-#### 触发条件与影响
-
-- 触发：ECS `DescribeSecurityGroups` 在**非首页**返回 `body == nil`、`SecurityGroups == nil` 或 `SecurityGroup == nil`（异常/SDK 解析差异/服务端边界响应），而 `NextToken` 仍非空。
-- 影响：资源扫描结果被静默截断，用户在"添加目标"时**看不到本应存在的资源**（自动补全缺项），且**无任何错误或 WARN**——属可观测性失效而非数据破坏（缓存只影响补全，不参与同步写入）。
-- 严重度：低（不参与防火墙同步与删除路径），但**高于原附注的定位**：它不是"可能"的猜测，而是代码路径确定可达。
-
-#### 最小修复设计（未实施）
-
-- 仅改 `provider/scan.go` 的 `scanAliECS` 与 `provider/scan_test.go`；不改同步路径、HTTP handler、SQLite schema、前端或 SDK。
-- 判据：仅当**第 1 页**（`nextToken == nil`，即首次请求）出现空响应时才按"无资源"成功返回；
-  一旦已接受过非空 token（即处于分页中段）再遇到空响应，统一返回 `nil, fmt.Errorf("%w: ECS 资源扫描分页中途空响应", ErrSnapshotIncomplete)`，
-  确保累计的部分资源**不向调用方或缓存写入**。
-- 附带补齐 `provider/scan.go:197` 的 `resp == nil` 守卫，与 `provider/ali_ecs.go:82` 的既有写法对齐。
-- 不建议新增页数硬上限（理由同 I-19：重复/未推进/环路保护已足以终止，硬上限可能误伤合法大规模扫描）。
-
-#### 判别性验收
-
-1. 第 1 页即空响应 → 返回空资源 + `nil` 错误（保持"无资源"合法语义）。
-2. 第 1 页返回非空 `NextToken`、第 2 页 `SecurityGroups == nil` → `errors.Is(err, ErrSnapshotIncomplete)` 为真且返回资源为空（修复前为半截资源 + `nil` 错误）。
-3. 第 1 页非空 token、第 2 页 `body == nil` → 同上。
-4. 两页正常推进 → 请求 2 次、返回两页完整资源（正向控制）。
-5. 生产调用链静态断言：错误在 `webui/api/scan.go:66` 的 `ReplaceScannedResources` **之前**短路，旧缓存不变；如需 API 集成证据，应预置旧缓存并断言 `success:false` 且缓存不变，不得为此新增生产注入接口。
-
-#### 风险、外部边界与停止条件
-
-- 主要风险是把合法"无资源"误判为失败：因此**只有分页中段**才判失败，第 1 页空响应维持原语义；若阿里云文档能证明后续页空响应也是合法终止态（当前无证据），则应停止并重新审查本判据。
-- 本项只依赖本地分页控制流与 provider 判别性测试，**不依赖真实云**；真实云通常无法主动制造中途空响应，正常多页扫描只能证明正向兼容，不能替代异常分支证据。
-- 在 `scanAliECS` 实际加入分页中段判据、上述判别性用例通过并取得 `provider`/`webui/api` 受影响包门禁前，保持 P3-26 未修复；不得把 P3-25 同步路径或资源扫描路径的绿色测试写成本条已关闭。
+**保留边界：** 本地 Go 1.26.4/macOS arm64。未执行 Go 1.25/Linux、前端构建、浏览器、Docker、真实云或远端 CI/GHCR；没有真实 SMTP/Webhook/Uptime Kuma 证据。官方资料未明确零资源时是否一定显式返回空数组，真实云若省略/null 集合将按确认策略失败并保留缓存，后续仅基于实际证据调整兼容形式。token 保护只证明重复/环路立即失败，不证明无限新 token 服务有总时限。本项可记录为本地修复完成，不记录为真实云或无保留发布验收完成。
 
 ---
+
 ### P3 清单（原 25 项 + 新增 P3-26，确认但低风险）
 
 | ID | 结论 | 关键证据 | 备注 |
@@ -772,8 +734,8 @@ FAIL
 | P3-23 | **核心问题真实存在，当前未修复；审计条目的两条附加依据需要降级或删除。** `true → true` 分支无条件 `ticker.Reset(latest.Config.Interval)`，因此不影响调度的主题、告警或其他配置保存也会重新计时；保存频率持续高于 interval 时，周期同步可能被无限推迟，并进一步触发运行健康的“距最近完成时间超过 `interval + health_timeout`”判据。`false → false` 对已停止 ticker 调用 `Reset` **不是 Go API 误用**；这是 Go 支持的重新激活方式，但暂停期间没有必要做此操作。按项目 `go.mod` 的 Go 1.25 合同，`Stop`/`Reset` 后的同步 ticker channel 语义也不支持直接断言“旧 tick 必然残留”，因此 stale-tick 子结论目前证据不足。状态：**部分成立，当前不能关闭**。 | **真实缺陷证据：** `syncer/syncer.go:295-297` 的 `true → true` 无条件 Reset；`ApplyState` 每次状态发布都会通知 Run（`:133-147`），普通目标、规则、settings、alerts、pause/resume 写入口经协调器 commit 后最终调用 `Syncer.ApplyState`（`webui/api/coordinator.go:71-87`、`webui/api/deps.go:130-161`）。当前基线为 HEAD `34aa9b859c38904e701a19d672dcc4f65435b31c`（**历史基线，非当前 HEAD；当前见头部「最近核验基线」小节**）、`main == origin/main`；工作树原有未提交修改仅为本报告，源码/测试未由本轮修改，本轮未运行构建、测试或格式化。`go.mod:3` 为 Go 1.25.0；停止后可 Reset 见 [Go time.Ticker 文档](https://pkg.go.dev/time#Ticker.Stop)，Go 1.23 起同步 timer/ticker channel 的 stale value 语义见 [Go 1.23 release notes](https://go.dev/doc/go1.23)。现有 `syncer/state_test.go:168-191` 只证明 interval 改变后会按新 interval 触发，不能证明同 interval 更新不会重新计时。 | **后续最小设计（推荐选项 A）：** 只改 `syncer/syncer.go` 的局部调度状态，创建 ticker 时保存 `tickerInterval := state.Config.Interval`；`false → true` 始终按最新 interval Reset、更新 `tickerInterval` 并保留恢复后的立即同步；`true → true` 仅当 `latest.Config.Interval != tickerInterval` 时 Reset 并更新记录；`true → false` Stop；`false → false` 不操作 ticker，暂停期间的最新 interval 由恢复时使用。不要加入 stale-tick drain、`time.Timer` 重写或时钟抽象。测试重点为 `syncer/state_test.go`：同 interval 的连续 ApplyState 不重新计时；高频保存非调度配置时周期同步仍发生；interval 实际变化仍重新计时；暂停期间修改 interval 后恢复使用最新值；保留 P3-24 的 pause→resume 通知合并控制。受影响范围限定为 `syncer/syncer.go` 与调度测试；不得修改 Provider、RuntimeManager、ConfigCoordinator、OperationalHealth、ApplyState 通知合并机制或外部链路。**选项 B**：额外承诺 `GODEBUG=asynctimerchan=1` 旧 timer channel 兼容，需要定义支持范围、补兼容测试并重新设计 Stop/Reset 后处理，超出本项最小修复范围，暂不推荐。 | **判别性验收与停止条件：** 静态确认 `true → true` 不再无条件 Reset、`false → false` 不再 Reset、`false → true` 仍 Reset，且没有新增 stale-tick drain；保留 P3-24 独立未处理。定向用例至少覆盖：①同 interval 更新后下一轮按原 ticker 剩余时间到期，而非从保存时重新等待完整 interval；②保存频率高于 interval 时仍能发生 ticker 驱动同步；③interval 改变时按新值重新计时；④暂停期间改 interval、恢复后立即同步且后续使用最新值；⑤旧语义下相应测试能判别失败。修复授权后再执行 `go test ./syncer -race -count=1`、`go test ./... -race -count=1`、`go vet ./...`、`go build ./...` 及项目要求的多轮门禁；本轮均未执行，不能预先写成通过。若修改生产范围超出 ticker 局部状态、引入未裁决的旧 timer 兼容承诺、把 P3-24 合并处理、误删恢复立即轮、比较初始而非当前实际 interval，或把单次绿色外推为稳定绿色，应立即停止并回到方案审查。**外部边界：** 本项仅依赖本地 Go 1.25、Syncer、ticker 和测试 Provider；不依赖真实腾讯云/阿里云、DNS、SMTP、Webhook、Uptime Kuma、浏览器、Docker 或远端 CI/GHCR。本地通过只能证明当前 Go 合同下的调度行为，不能外推真实外部链路已验收。 |
 | P3-24 | **真实存在，当前未修复；继续保留在独立队列 I-06。** 本轮仅补充审计记录，未修改源码或测试，未构建、未运行测试。轮内 `pause → resume` 的控制通知可被容量为 1 的 `controlCh` 合并，导致 Run 只观察到 `true → true`，恢复不触发按合同要求的立即同步一轮。 | **当前基线与缺陷证据：** HEAD 为 `34aa9b859c38904e701a19d672dcc4f65435b31c`，`main == origin/main`；工作树既有修改仅为本报告。`syncer/syncer.go:133-147` 的 `ApplyState` 发布新状态后向容量为 1 的 `controlCh` 非阻塞投递，已有通知时合并；`:217-221` 的 Run 使用本地循环相位 `enabled` 形成 `wasEnabled`；`:270-305` 只在 `false → true` 分支立即调用 `syncAll()`，`:295-297` 的 `true → true` 只 Reset ticker。可达交错为：当前相位为 `true` 时，在 Run 消费前连续 `ApplyState(false)`、`ApplyState(true)`；RuntimeManager 最终只读到 `true`，于是得到 `true → true`，恢复轮被静默跳过。暂停/恢复入口分别为 `webui/api/sync.go:35-52`、`:55-72`，均经 `webui/api/deps.go:122-161` 的协调器发布；协调器只串行化单次提交，不能保证 Run 在两次提交之间消费第一条通知。Build6 §12.5 要求 `false → true` 立即同步；Issue6 A7 修复的是已发布镜像先推进导致恢复边沿丢失的另一种交错，不覆盖本项。现有 `syncer/state_test.go:147-166` 只测初始 `false → true`，`:168-191` 只测正常 `true → true`，`syncer/syncer_test.go:197-237` 使用固定等待，均不能判别本项。 | **后续设计与待决策选项：** 需要在不恢复完整中间状态队列的前提下，保留最终状态语义并记住被合并的恢复边沿。**A（推荐）**：在 `Syncer` 内以 `s.mu` 保护 `resumeGeneration` 与 `handledResumeGeneration`；`ApplyState` 在线性化发布 `next` 时仅对真实 `false → true` 递增 generation，Run 消费控制通知时同锁取得最新 `RuntimeState`、读取并标记已观察 generation。最终 `Enabled=false` 时绝不启动同步；最终为 `true` 且存在未处理恢复 generation 时补发恰好一轮立即同步；普通 `true → true` 仍只按既有 ticker 规则处理，保留 `controlCh` 容量 1 合并语义。**B**：把控制通道改为携带每次状态或边沿的显式事件并逐条排队；语义直观但可能执行已过期的中间状态、扩大队列/生命周期范围，当前不推荐。**C**：仅增加 `pendingResume bool`；改动最小但在多个连续恢复边沿、消费与发布并发时更难证明不丢失或重复，除非补足线性化合同，当前不推荐。上述为后续设计，不是本轮实施授权；需用户在 A/B/C 中裁决后再改代码。 | **影响文件、判别性验收、风险与停止条件：** 生产影响应限定为 `syncer/syncer.go` 的状态字段、`ApplyState`、Run 控制消费与必要中文注释；测试影响为 `syncer/state_test.go`，必要时新建 `syncer/control_transition_test.go`。原则上不改 `RuntimeManager`、`ConfigCoordinator`、`webui/api/sync.go`、Provider、DNS、告警、OperationalHealth、Issue7 目标级状态机或外部 API。必须补确定性用例：①当前轮被 Provider 阻塞时连续 `true → false → true`，放行后断言首轮之外恰好再执行一轮立即同步；②连续 `true → false → true → false` 后最终暂停，断言不启动第二轮；③普通 `true → true` 不触发恢复轮；④正常单次 `false → true` 仍只触发一轮；⑤既有 queued trigger/paused ticker 回归继续成立。用 Provider 阻塞与 release channel 控制时序，不以固定 `Sleep` 猜竞态。主要风险是恢复 generation 被提前清除、最终暂停仍误启动、ticker/trigger 与恢复边沿重复跑两轮，或为保留中间状态扩大为无界队列；这些任一情况均应停止并回到方案审查。该项只依赖本地 Syncer、容量为 1 的控制 channel、可控 Provider 与确定性屏障，不依赖真实云、DNS、SMTP、Webhook、Uptime Kuma、浏览器、Docker 或远端 CI/GHCR。取得用户裁决、判别性回归测试、`go test ./syncer -race -count=1`、全量多轮 race、`go vet ./...`、`go build ./...`、gofmt/diff-check 及文档闭环前，保持 P3-24/I-06 未修复；不得把单次本地绿色或 P3-23 的修复外推为本项关闭。 |
 | P3-25（同步路径） | ECS 同步 `NextToken` 分页缺"token 未推进即退出"守卫（审计快照） | 审计快照 `provider/ali_ecs.go:96-102` 仅判空不判重复（**当前实现为 `:107-113`**：未推进与历史重复 token 均返回 `ErrSnapshotIncomplete`） | ✅ 已由 Issue7 Step 1 修复：重复/未推进 token 返回 `snapshot_incomplete`，目标失败且本 attempt 零删除；不再列入待修复 |
-| P3-25（资源扫描路径） | ECS `ScanResources` 分页仍缺"token 未推进即失败"守卫 | `provider/scan.go:187-215` 的 `scanAliECS` 仍只在 `body.NextToken == nil || *body.NextToken == ""` 时结束（唯一终止条件），非空 token 直接继续请求；无 `seenTokens`、无未推进检测、无页数上限、无 `ErrSnapshotIncomplete` 路径 | 🔵 **未修复**：需单独给扫描路径加已见 token/推进检查，并验证异常时不写入半截扫描结果；不能把同步路径的修复外推到扫描路径 |
-| **P3-26（新增）** | **ECS 资源扫描分页中途空响应 → 静默截断当成功并覆盖缓存**（与 P3-25 属不同缺陷类别，独立编号） | `provider/scan.go:198-200` 的 `if body == nil || body.SecurityGroups == nil || body.SecurityGroups.SecurityGroup == nil { break }` 位于 token 检查（`:209-211`）**之前**，且**丢弃已累计的 `resources`**，以 `nil` 错误返回；`webui/api/scan.go:66` 随后用该截断列表**覆盖** `scanned_resources` 缓存。附带缺口：`provider/scan.go:197` 解引用 `resp` 无 nil 守卫（对比 `provider/ali_ecs.go:82` 有 `resp == nil || resp.Body == nil`） | 🔵 **未修复**。原以"空安全组列表也可能是合法'无资源'响应"排除出 I-19——该理由**仅对第 1 页成立**；后续页在 token 非空时出现空/nil 响应不可能是合法终止态，属"静默截断当成功"。本轮按用户裁决**独立登记为本条**，I-19 范围保持不变（仍只覆盖重复/未推进 token）。I-19 的相邻风险附注同步改指本条 |
+| P3-25（资源扫描路径） | ECS 扫描缺 token 推进与环路保护 | scanAliECS 历史 token 集合；异常返回 nil 资源与 ErrSnapshotIncomplete | ✅ 已本地修复，尚未提交；I-19 独立回归与缓存整链证据 |
+| **P3-26（新增）** | ECS 扫描结构异常被当成功并覆盖缓存 | 原缺失集合 break 返回半截列表；首屏缺失也可清空旧缓存 | ✅ 已本地修复，尚未提交；decodeECSScanPage + 实际 API/SQLite 回归，兼容性边界见 P3-26 |
 
 > 说明：第 9 节的决策表使用 #1..#7 编号（你实际决策的 7 项）；本 P3 表使用 P3-nn 编号，两套编号相互独立。P3-08 已合并原先拆分的两类 pidfile 失效（TOCTOU 漏判 / PID 复用误判），实施时由 flock 一次解决。
 
@@ -886,12 +848,12 @@ FAIL
 | **HTTP body/连接** | **关闭完整**，两处可优化 | 全部 outbound body 均已关闭：`notifier/webhook.go:130-134`（defer 闭包内 Close，`93e0e4b` 起关闭错误记固定 `response_close` WARN）、`internal/health/push.go:252`；**生产 `io.ReadAll` 共 2 处且均有界**：`webui/api/decode.go:78` 由 `http.MaxBytesReader` 界定（1 MiB/10 MiB），`notifier/webhook.go:139` 由 `io.LimitReader` 界定（16 KiB+1）。未 drain 见 P3-21 |
 | **SQLite rows/事务** | **完全干净** | 6 处 `rows` 全部 `defer Close()`；`ensureColumnTx` 三条错误分支显式 Close；所有事务 `committed` 标志 + defer Rollback（仅忽略 `sql.ErrTxDone`）；`config/store_error_test.go:23` 证明 panic 也回滚；commit 失败**不 apply 不发布** |
 | **SSE** | **有界且退出闭合** | 两条流均 `defer unsubscribe()`，均 select `ShutdownCh`；`probeSSE` 在写响应头**之前**；每次写出独立 5s deadline（`webui/api/sse.go:10`）；订阅 channel 容量固定 `logRingSize+256`；**不存在"重连新开而不关旧"的累积**（`EventSource` 单实例） |
-| **日志与集合** | **全部有界，两处例外** | `sync_logs` 裁剪至 1000（`config/store.go:984`）；`GetSyncLogs(100)`；`LogBroadcaster.ring` 固定 `[1000]string`；前端 `logLines` 上限 1000；`scanned_resources` 按 cloud_type+region **覆盖式**。例外：熔断器域名 map（P3-01）、ECS **资源扫描路径** `NextToken` 循环（P3-25）；同步路径守卫已修复 |
+| **日志与集合** | **历史审计：两处例外；扫描重复/环路已补保护** | `sync_logs` 裁剪至 1000（`config/store.go:984`）；`GetSyncLogs(100)`；`LogBroadcaster.ring` 固定 `[1000]string`；前端 `logLines` 上限 1000；`scanned_resources` 按 cloud_type+region **覆盖式**。例外：熔断器域名 map（P3-01）；ECS 资源扫描重复/环路（P3-25）本轮已修复，但不断产生全新 token 的服务仍无整扫描总时限；同步路径守卫已修复 |
 | **配置快照** | **有界且不可变**（回收路径证据不足） | 每次配置变更创建一个 `RuntimeState`，旧状态与旧 `ClientPool` 被丢弃；`rc.DeepCopy()` + `DeepCopyRules` 确保发布后不可变；旧 SDK client **未显式 Close**（本身不是泄漏），但其空闲连接是否由 transport `IdleConnTimeout` 回收**证据不足**——全仓除本报告外 `IdleConnTimeout` 零命中，`provider/`/`notifier/`/`internal/health/` 亦无显式 `http.Transport` 配置，回收依赖 SDK/stdlib 默认值，未经核实 |
 | **前端响应式状态** | **有界** | `logLines` 1000 封顶；dry-run 结果每次覆盖不追加；扫描缓存按 cloud_type 覆盖；无 `localStorage`/`sessionStorage`/`cookie`/`console.*` |
 | **Docker/进程资源** | **历史资源验收保留；P1-02 已本地修复** | 镜像非 root（`uid=1000(appuser)`）、`/app/data` 属主正确、`wget` 存在（BusyBox `/usr/bin/wget`）、`HEALTHCHECK` 指向静态 `/api/health`（30s/3s/10s/3）、容器 `healthy`、`docker stop` 0.125s 且 `ExitCode=0`、无 OOM。**后续 I-01 已取得 Linux/amd64 残留 PID 与 SIGKILL 同卷重启证据，见 P1-02** |
 
-**结论**：本项目的资源管理**明显优于**同规模项目。当前仍需关注的无界结构是熔断器域名 map（P3-01，已决定修）与 ECS 资源扫描路径分页循环（P3-25）；同步路径的同类问题已由 `snapshot_incomplete` 守卫修复，其余均已证明有界。
+**结论**：本项目的资源管理**明显优于**同规模项目。当前仍需关注的无界结构是熔断器域名 map（P3-01，已决定修）与 ECS 资源扫描全新 token 持续推进时的总扫描时限；P3-25 重复/环路已在扫描路径修复，同步路径的同类问题亦已修复。
 
 ---
 
@@ -960,7 +922,7 @@ Step 0 已修正 `Design5.md` 当前 version 3 口径、Build7 状态与 `ProdTe
 | **startup/shutdown** | 启动顺序确定性化（`go s.Run()` → 有界等 `Started()` → 再启 `supervisor`/`pusher`）；信号在 HTTP 绑定**之前**注册；收尾顺序 `HTTP shutdown ‖ pusher→supervisor→syncer` 正确；`store.Close()` 在 `s.Wait()` 之后 | P1-02 已由 I-01 本地修复；`Server.Start` 失败后 `started` 保持 true 且 `waitDone` 永不关闭（重试被拒、`Wait()` 永久阻塞，**当前接线不可达**）；`supervisor.Stop`/`pusher.Stop` 在 `Run` 从未启动时永久阻塞（Syncer 有 `runGuard`，这两个没有） | — | P1-02 flock 已完成；与 Syncer 对齐给 supervisor/pusher 加 `started` 守卫 |
 | **配置事务与运行时发布** | **本项目最强的一环**：协调器 `锁 → 单事务 → 事务内快照 → 事务内构造候选 → commit → 无失败发布`；commit 后不读库不访问网络；`commit` 失败不 apply；`RuntimeState` 深拷贝 + 单锁替换；已证明**事务内无任何网络 I/O**（四个 SDK 工厂只做本地构造，无 IMDS/元数据/token 获取） | P2-04 已本地修复：ApplyState 先于 Wake | — | 本轮判别性测试证明两条分支唤醒时新快照可见 |
 | **同步调度** | 单一控制通道 + 4 处 `beginRound()` 硬门控（stop 门控与 enabled 门控**并列不合并**）；`Stop` 为吸收态且 `doneCh` 单所有者；`idle/failed/partial/success` 判定清晰 | P3-23 的无条件 Reset；P3-24 通知合并 | — | 仅 interval 实际变化时 Reset；`false → true` 保留恢复立即轮；按 Go 1.25 默认合同不加入 stale-tick drain，旧兼容模式另行裁决 |
-| **DNS/Provider** | 只使用**增量** API（已逐调用点验证，零全量覆盖 API）；TAG 精确匹配 + `Description` 匹配；熔断阈值随状态原子发布（普通变更 `Clone` 保留计数、导入重置）；`retrySyncDetailed` 每次 attempt 重新 `Describe → Diff → Create/Delete`；部分成功用 `PartialDeleteError` 如实累计 | P1-01 本地完整复核已收口但真实云未验收；P3-25 仅资源扫描路径仍未修复；`isRetryable` 依赖**字符串关键字兜底**（腾讯 SDK 错误类型无 `Unwrap`，属有据可查的妥协） | **`retrySync` 与 `retrySyncDetailed` 均为死包装（生产调用各为 0）**，`truncateDesc` 亦同（现为 `provider.TruncateDescription` 的兼容包装）；`syncDomain`/`syncDomainInternal` 在生产代码中已不存在（仅测试注释）；`_txlock` 注释理由与驱动实现矛盾 | P0-01/P2-01/P2-02/P2-03 与同步路径 P3-25 已吸收；资源扫描分页继续按 I-19 独立处理，重构后重新证明再删 `retrySync` |
+| **DNS/Provider** | 只使用**增量** API（已逐调用点验证，零全量覆盖 API）；TAG 精确匹配 + `Description` 匹配；熔断阈值随状态原子发布（普通变更 `Clone` 保留计数、导入重置）；`retrySyncDetailed` 每次 attempt 重新 `Describe → Diff → Create/Delete`；部分成功用 `PartialDeleteError` 如实累计 | P1-01 本地完整复核已收口但真实云未验收；P3-25 资源扫描路径本轮已本地修复（见 I-19）；`isRetryable` 依赖**字符串关键字兜底**（腾讯 SDK 错误类型无 `Unwrap`，属有据可查的妥协） | **`retrySync` 与 `retrySyncDetailed` 均为死包装（生产调用各为 0）**，`truncateDesc` 亦同（现为 `provider.TruncateDescription` 的兼容包装）；`syncDomain`/`syncDomainInternal` 在生产代码中已不存在（仅测试注释）；`_txlock` 注释理由与驱动实现矛盾 | P0-01/P2-01/P2-02/P2-03 与同步路径 P3-25 已吸收；资源扫描分页已按 I-19 独立本地修复，重构后重新证明再删 `retrySync` |
 | **告警** | 默认全关；`渠道开关 + 触发开关`同时开启才订阅；邮件与 Webhook **共用同一固定渲染器**（顺序稳定、不遍历 map）；4 在途 + 满载丢弃最新 + 安全 WARN；限流器跨热重载连续；`test-email` 8 字段契约两侧严格一致且不写库；P3-11 写库错误已能上抛 | P3-03 非空非法 URL 周期校验已本地修复（P2-04 时序亦已修复）；P2-05 已补齐三渠道响应校验与有界读取，真实 Webhook 未验收；P3-15 丢弃日志逐条 WARN；P3-19/P3-20/P3-21 邮件与响应体细节 | — | P2-05 已本地实施；聚合丢弃日志；P3-03 已按独立授权补齐有下限的定时校验，真实 Uptime Kuma 仍待验收 |
 | **OperationalHealth** | **唯一计算源被三个消费者真实共用**（`supervisor` / `operational` 端点 / `pusher` 都走同一个 `*health.Checker`）；2s 非阻塞探活（`Store` 结构体**无互斥量**，不持应用锁）；`StartupGrace=10s` 三分支正确；`failed/partial` 直到被 `success/idle` 覆盖；原因稳定去重排序；30s 边沿监督器 | 判定输入来自三次独立 `Snapshot()`（`run.go:127-142`），注释自述"一致快照"但可能混用新旧 policy/interval → 30s 内一次瞬时误判，自愈 | `slices.Compact` 冗余 | 一次取 `*RuntimeState` 后派生 policy/interval |
 | **HTTP/SSE** | 严格解码齐全（未知字段/尾随/多顶层值/10 MiB/1 MiB/413）；路径 ID `strconv.Atoi` 且 >0；请求 DTO 不含 DB `id`；导出 GET 已删（实测 405）；两类 SSE 监听服务器级 `ShutdownCh` 且每次写出有 5s deadline | P3-05 缺 `no-store`；P3-14 400/503 语义；`GET /api/alerts` 4 次非事务读存在撕裂窗口（PUT 单事务写，读侧可能"新 policy + 旧 email"，前端整体回传即把旧值写回） | `fs.Sub` 静默降级 | 补 `no-store`；GET alerts 改只读事务取快照 |
@@ -1318,7 +1280,7 @@ P2-01（IPv6+ICMP key，已由 Issue7 修复）、P2-02（ECS 删除分批，已
 
 **历史批次 3 — 生命周期、并发与内存（原始排序，当前状态以 0.2/0.4 为准）**
 
-P3-01（熔断器淘汰）、P3-23（ticker Reset）、P3-24（通知合并）、P3-25（ECS 同步分页守卫已修复，资源扫描分页守卫仍未修复）、P3-22（DryRun 限速，已由 Issue7 修复）、P3-09（`_txlock`）、P3-12（权限）
+P3-01（熔断器淘汰）、P3-23（ticker Reset）、P3-24（通知合并）、P3-25（ECS 同步分页守卫已修复，资源扫描分页守卫本轮已本地修复，见 I-19）、P3-22（DryRun 限速，已由 Issue7 修复）、P3-09（`_txlock`）、P3-12（权限）
 
 > 验收：配置保存 N 次后熔断器 map 不增长；`-race` 全绿
 
@@ -1334,7 +1296,7 @@ P3-05（`no-store`）、P3-10（忽略的 error）、P3-11（`StoreLogWriter` �
 
 Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7 个永不失败的测试；补字面量锚点；补构建契约测试；补 `pidfile` 单测；清理约 12 处 "version 2" 与 §4 文档漂移
 
-**依赖关系**：P1-01 的产品语义已确认，不再有配置形态决策前置。P3-25 **同步路径**已在自动清理前改为不完整快照硬失败；剩余的是不参与同步清理的资源扫描路径分页守卫，应独立验收。P2-04 代码已按 Step 0 修订的 AGENTS 发布顺序独立落地（2026-09-30，提交为 `7acf303`）；其余死代码与同文件清理应在 Issue7 Step 1～4 完成后再重新证明。
+**依赖关系**：P1-01 的产品语义已确认，不再有配置形态决策前置。P3-25 **同步路径**已在自动清理前改为不完整快照硬失败；资源扫描路径现已按独立证据本地修复，见 I-19 / P3-26；真实云仍未验收。P2-04 代码已按 Step 0 修订的 AGENTS 发布顺序独立落地（2026-09-30，提交为 `7acf303`）；其余死代码与同文件清理应在 Issue7 Step 1～4 完成后再重新证明。
 
 ---
 

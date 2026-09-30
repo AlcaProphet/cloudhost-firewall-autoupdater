@@ -181,8 +181,9 @@ func scanAliECS(region string, pool *ClientPool) ([]ScannedCloudResource, error)
 	}
 	e := client.(*ecs.Client)
 
-	var resources []ScannedCloudResource
+	resources := make([]ScannedCloudResource, 0)
 	var nextToken *string
+	seenTokens := make(map[string]bool)
 	maxResults := int32(100)
 	for {
 		req := &ecs.DescribeSecurityGroupsRequest{
@@ -194,22 +195,45 @@ func scanAliECS(region string, pool *ClientPool) ([]ScannedCloudResource, error)
 		if err != nil {
 			return nil, fmt.Errorf("查询安全组列表失败: %w", err)
 		}
-		body := resp.Body
-		if body == nil || body.SecurityGroups == nil || body.SecurityGroups.SecurityGroup == nil {
+		page, token, err := decodeECSScanPage(resp, region)
+		if err != nil {
+			return nil, err
+		}
+		resources = append(resources, page...)
+		// 只有返回的 token 为空才是末页；显式空数组不提前终止分页。
+		if token == "" {
 			break
 		}
-		for _, sg := range body.SecurityGroups.SecurityGroup {
-			resources = append(resources, ScannedCloudResource{
-				ResourceID: strVal(sg.SecurityGroupId),
-				Name:       strVal(sg.SecurityGroupName),
-				Region:     region,
-			})
+		// token 是不透明字符串，原样传递；历史集合同时识别未推进和环路。
+		if seenTokens[token] {
+			return nil, fmt.Errorf("%w: ECS 资源扫描分页 token 未推进或重复", ErrSnapshotIncomplete)
 		}
-		// NextToken 为空表示已到最后一页
-		if body.NextToken == nil || *body.NextToken == "" {
-			break
-		}
-		nextToken = body.NextToken
+		seenTokens[token] = true
+		nextToken = tea.String(token)
 	}
 	return resources, nil
+}
+
+// decodeECSScanPage 将 SDK 响应转换为有效资源页；结构异常不得伪装为空资源。
+// 缺失/null 集合采用保守失败策略，显式空数组合法；名称允许为空。
+func decodeECSScanPage(resp *ecs.DescribeSecurityGroupsResponse, region string) ([]ScannedCloudResource, string, error) {
+	if resp == nil || resp.Body == nil {
+		return nil, "", fmt.Errorf("%w: ECS 资源扫描响应缺失", ErrSnapshotIncomplete)
+	}
+	body := resp.Body
+	if body.SecurityGroups == nil || body.SecurityGroups.SecurityGroup == nil {
+		return nil, "", fmt.Errorf("%w: ECS 资源扫描集合缺失", ErrSnapshotIncomplete)
+	}
+	resources := make([]ScannedCloudResource, 0, len(body.SecurityGroups.SecurityGroup))
+	for _, sg := range body.SecurityGroups.SecurityGroup {
+		if sg == nil || strVal(sg.SecurityGroupId) == "" {
+			return nil, "", fmt.Errorf("%w: ECS 资源扫描资源标识缺失", ErrSnapshotIncomplete)
+		}
+		resources = append(resources, ScannedCloudResource{
+			ResourceID: strVal(sg.SecurityGroupId),
+			Name:       strVal(sg.SecurityGroupName),
+			Region:     region,
+		})
+	}
+	return resources, strVal(body.NextToken), nil
 }
