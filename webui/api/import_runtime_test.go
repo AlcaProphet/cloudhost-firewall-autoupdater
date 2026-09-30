@@ -197,7 +197,7 @@ func TestConfigImportSyncEnabledRuntimeConsistency(t *testing.T) {
 // TestConfigImportResetsDNSBreakerOrdinaryChangePreserves Step 7「DNS 阈值更新和 breaker 策略」
 // （Build6 §12.3 第 7 条 / Issue6 A8）：
 //
-//   - 普通配置变更（settings）沿用 BreakerPreserve：既有 DNS 熔断失败计数必须保留；
+//   - 普通配置变更（settings）沿用 BreakerPreserve：仍配置域名的失败计数必须保留；
 //   - 完整配置导入使用 BreakerReset：新建 breaker，失败计数清空。
 //
 // 观测方式只用导出的 IsOpen：阈值设为 2 并预置 2 次失败（已熔断）。
@@ -209,9 +209,12 @@ func TestConfigImportResetsDNSBreakerOrdinaryChangePreserves(t *testing.T) {
 	if err := e.store.SetSetting("dns_fail_threshold", "2"); err != nil {
 		t.Fatalf("预置 dns_fail_threshold 失败: %v", err)
 	}
+	rule := config.DomainRule{Host: "probe.test", Protocol: "TCP", Ports: "80", Action: "ACCEPT", Targets: []int{}}
+	rule.ID = e.seedRule(t, rule)
 	initial, err := syncer.BuildRuntimeState(nil, config.RuntimeConfig{
 		Tag: "auto-dns", Interval: 5 * time.Minute, DNS: "223.5.5.5", DNSTimeout: 10 * time.Second,
 		DNSFailThreshold: 2, LogLevel: "info", SyncEnabled: true, Theme: "light",
+		DomainRules: []config.DomainRule{rule},
 	}, syncer.BreakerReset)
 	if err != nil {
 		t.Fatalf("构造初始状态失败: %v", err)
@@ -238,12 +241,12 @@ func TestConfigImportResetsDNSBreakerOrdinaryChangePreserves(t *testing.T) {
 		t.Error("普通变更必须保留既有 DNS 熔断失败计数（BreakerPreserve）")
 	}
 
-	// 完整导入：必须新建 breaker 并清空计数
+	// 完整导入仍包含同一域名，区分 Reset 与因规则被删除而裁剪计数。
 	settings := `{"credentials":{"tencent":{"secret_id":"","secret_key":""},` +
 		`"aliyun":{"access_key_id":"","access_key_secret":""}},` +
 		`"tag":"auto-dns","interval":"5m","dns":"223.5.5.5","dns_timeout":"10s",` +
 		`"dns_fail_threshold":2,"log_level":"info","sync_enabled":true,"theme":"light"}`
-	body := bundleWithSettings(`[]`, `[]`, settings)
+	body := bundleWithSettings(`[]`, `[{"host":"probe.test","protocol":"TCP","ports":"80","action":"ACCEPT","target_export_ids":[],"comment":"","enable_ipv6":false}]`, settings)
 	if w := e.do(t, http.MethodPost, "/api/config/import", body); w.Code != http.StatusOK {
 		t.Fatalf("导入状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
 	}

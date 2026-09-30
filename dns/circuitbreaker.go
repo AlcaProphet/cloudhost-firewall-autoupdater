@@ -34,17 +34,19 @@ func (cb *CircuitBreaker) SetThreshold(threshold int) {
 	cb.threshold = threshold
 }
 
-// Clone 复制一个持有相同阈值与相同失败计数的熔断器（Build6 §12.3 第 7 条）。
+// CloneForDomains 为新配置复制熔断器，只保留配置域名的正数失败计数。
 //
-// 普通配置变更必须保留既有 DNS 熔断进度，因此候选运行时状态用本方法复制
-// 旧 breaker，而不是新建一个（新建会清空计数，只允许完整配置导入使用）。
-func (cb *CircuitBreaker) Clone() *CircuitBreaker {
+// 使用域名原值查找，重复域名不增加条目；不按历史 map 大小预分配，
+// 使新 map 的存储随实际保留的计数增长。新旧实例独立，旧轮次写入不会污染新状态。
+func (cb *CircuitBreaker) CloneForDomains(domains []string) *CircuitBreaker {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	failCount := make(map[string]int, len(cb.failCount))
-	for domain, n := range cb.failCount {
-		failCount[domain] = n
+	failCount := make(map[string]int)
+	for _, domain := range domains {
+		if n := cb.failCount[domain]; n > 0 {
+			failCount[domain] = n
+		}
 	}
 	return &CircuitBreaker{failCount: failCount, threshold: cb.threshold}
 }
@@ -63,7 +65,7 @@ func (cb *CircuitBreaker) RecordSuccess(domain string) {
 	if cb.failCount[domain] > 0 {
 		slog.Info("DNS 熔断解除", "domain", domain)
 	}
-	cb.failCount[domain] = 0
+	delete(cb.failCount, domain)
 }
 
 // RecordFailure 记录失败（已熔断时不再递增，半开探测失败维持熔断状态）

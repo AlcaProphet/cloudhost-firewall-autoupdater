@@ -20,7 +20,7 @@ var ErrUnknownCloudType = errors.New("不支持的云产品类型")
 type BreakerPolicy int
 
 const (
-	// BreakerPreserve 普通配置变更：复制当前 breaker，保留既有失败计数。
+	// BreakerPreserve 普通配置变更：只保留新配置域名的正数失败计数。
 	BreakerPreserve BreakerPolicy = iota
 	// BreakerReset 完整配置导入：新建 breaker，允许清空原失败计数。
 	BreakerReset
@@ -74,8 +74,12 @@ func BuildRuntimeState(
 	var breaker *dns.CircuitBreaker
 	switch {
 	case policy == BreakerPreserve && previous != nil && previous.Breaker != nil:
-		// 普通变更保留既有失败计数，只让新阈值线程安全地进入新状态
-		breaker = previous.Breaker.Clone()
+		// 按配置域名裁剪，而非本轮适用规则：暂停或暂时没有目标不清空保留域名。
+		domains := make([]string, len(published.DomainRules))
+		for i, rule := range published.DomainRules {
+			domains[i] = rule.Host
+		}
+		breaker = previous.Breaker.CloneForDomains(domains)
 		breaker.SetThreshold(published.DNSFailThreshold)
 	default:
 		// 完整导入或首次启动：新建 breaker（导入允许清空原计数）

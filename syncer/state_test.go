@@ -591,7 +591,7 @@ func TestBreakerPolicyPreserveVsReset(t *testing.T) {
 	old.RecordFailure("a.com")
 
 	prev := &RuntimeState{Config: config.RuntimeConfig{DNSFailThreshold: 3}, Breaker: old}
-	rc := config.RuntimeConfig{DNSFailThreshold: 3}
+	rc := config.RuntimeConfig{DNSFailThreshold: 3, DomainRules: []config.DomainRule{{Host: "a.com"}}}
 
 	preserved, err := BuildRuntimeState(prev, rc, BreakerPreserve)
 	if err != nil {
@@ -632,12 +632,55 @@ func TestBreakerPreserveAppliesNewThreshold(t *testing.T) {
 	old.RecordFailure("a.com")
 
 	prev := &RuntimeState{Config: config.RuntimeConfig{DNSFailThreshold: 5}, Breaker: old}
-	next, err := BuildRuntimeState(prev, config.RuntimeConfig{DNSFailThreshold: 2}, BreakerPreserve)
+	next, err := BuildRuntimeState(prev, config.RuntimeConfig{
+		DNSFailThreshold: 2, DomainRules: []config.DomainRule{{Host: "a.com"}},
+	}, BreakerPreserve)
 	if err != nil {
 		t.Fatalf("构造失败: %v", err)
 	}
 	if !next.Breaker.IsOpen("a.com") {
 		t.Errorf("新阈值 2 必须立即生效且保留既有 2 次失败计数")
+	}
+}
+
+// TestBreakerPreservePrunesConfiguredDomains 以配置域名为边界，暂停或零目标不清空保留域名。
+func TestBreakerPreservePrunesConfiguredDomains(t *testing.T) {
+	old := dns.NewCircuitBreaker(1)
+	old.RecordFailure("kept.example")
+	old.RecordFailure("removed.example")
+	prev := &RuntimeState{Breaker: old}
+	rc := config.RuntimeConfig{
+		DNSFailThreshold: 1, SyncEnabled: false,
+		DomainRules: []config.DomainRule{{Host: "kept.example"}, {Host: "kept.example"}},
+	}
+	next, err := BuildRuntimeState(prev, rc, BreakerPreserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !next.Breaker.IsOpen("kept.example") || next.Breaker.IsOpen("removed.example") {
+		t.Fatal("未保留配置域名，或未裁剪已删除域名")
+	}
+	// 旧轮次继续写入旧快照，不能恢复新状态中已删除的域名或解除新状态的熔断。
+	old.RecordFailure("removed.example")
+	old.RecordSuccess("kept.example")
+	if next.Breaker.IsOpen("removed.example") || !next.Breaker.IsOpen("kept.example") {
+		t.Fatal("旧轮次写入污染新快照")
+	}
+	rc.DomainRules = nil
+	empty, err := BuildRuntimeState(next, rc, BreakerPreserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Breaker.IsOpen("kept.example") {
+		t.Fatal("空规则配置仍保留历史计数")
+	}
+	rc.DomainRules = []config.DomainRule{{Host: "kept.example"}}
+	readded, err := BuildRuntimeState(empty, rc, BreakerPreserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readded.Breaker.IsOpen("kept.example") {
+		t.Fatal("重新添加域名继承已删除的失败进度")
 	}
 }
 
