@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -16,6 +19,9 @@ import (
 //
 // 非导出变量仅为测试接缝（Issue6 §六.4 F8）：默认值保持既有 10s 不变。
 var webhookTimeout = 10 * time.Second
+
+// webhookResponseLimit 限制第三方响应体大小；额外读一字节区分恰好上限和超限。
+const webhookResponseLimit = 16 * 1024
 
 // WebhookNotifier Webhook 告警（支持钉钉/飞书/Slack 格式）
 type WebhookNotifier struct {
@@ -121,10 +127,68 @@ func (n *WebhookNotifier) OnEvent(event Event) error {
 	if err != nil {
 		return fmt.Errorf("Webhook 发送失败: channel=%s category=%s", n.ChannelName(), webhookErrorCategory(err))
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("Webhook 响应体关闭失败", "channel", n.ChannelName(), "category", "response_close")
+		}
+	}()
 
-	if resp.StatusCode >= 300 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("Webhook 发送失败: channel=%s category=http_status status=%d", n.ChannelName(), resp.StatusCode)
+	}
+	response, err := io.ReadAll(io.LimitReader(resp.Body, webhookResponseLimit+1))
+	if err != nil {
+		return fmt.Errorf("Webhook 发送失败: channel=%s category=response_read", n.ChannelName())
+	}
+	if len(response) > webhookResponseLimit {
+		return fmt.Errorf("Webhook 发送失败: channel=%s category=response_too_large", n.ChannelName())
+	}
+	return validateWebhookResponse(n.ChannelName(), resp.StatusCode, response)
+}
+
+// validateWebhookResponse 仅把明确的渠道成功响应视为成功，不输出平台原文。
+func validateWebhookResponse(channel string, status int, body []byte) error {
+	invalid := func() error {
+		return fmt.Errorf("Webhook 发送失败: channel=%s category=invalid_response", channel)
+	}
+	if channel == "slack" {
+		if status == http.StatusOK && strings.TrimSpace(string(body)) == "ok" {
+			return nil
+		}
+		return invalid()
+	}
+	var keys []string
+	switch channel {
+	case "dingtalk":
+		keys = []string{"errcode"}
+	case "feishu":
+		// code 为当前字段，StatusCode 仅兼容历史响应；同时出现时必须全部为零。
+		keys = []string{"code", "StatusCode"}
+	default:
+		return invalid()
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return invalid()
+	}
+	found := false
+	for _, key := range keys {
+		raw, exists := fields[key]
+		if !exists {
+			continue
+		}
+		found = true
+		// 指针明确区分零值与 null，RawMessage 保留字段是否存在及精确字段名。
+		var code *int64
+		if err := json.Unmarshal(raw, &code); err != nil || code == nil {
+			return invalid()
+		}
+		if *code != 0 {
+			return fmt.Errorf("Webhook 发送失败: channel=%s category=business_response code=%d", channel, *code)
+		}
+	}
+	if !found {
+		return invalid()
 	}
 	return nil
 }

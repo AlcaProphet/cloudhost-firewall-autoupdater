@@ -194,6 +194,9 @@ func blockingWebhookServer(t *testing.T) (srv *httptest.Server, concurrent func(
 		<-release
 		cur.Add(-1)
 		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte(`{"errcode":0}`)); err != nil {
+			t.Errorf("本地响应写入: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv, max.Load, entered, release

@@ -24,7 +24,7 @@ func captureWebhook(t *testing.T, channel string) (*WebhookNotifier, *[]string) 
 		*bodies = append(*bodies, string(data))
 		return &http.Response{
 			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader(`{}`)),
+			Body:       io.NopCloser(strings.NewReader(map[string]string{"dingtalk": `{"errcode":0}`, "feishu": `{"code":0,"StatusCode":0}`, "slack": "ok"}[channel])),
 			Header:     make(http.Header),
 		}, nil
 	})}

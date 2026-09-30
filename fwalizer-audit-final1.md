@@ -19,6 +19,8 @@
 
 > **I-02 / P3-03 后续实施补记（2026-09-30）**：用户确认补强方案并授权执行；本轮基线 `main / 7acf303`（ahead 4，开始时干净）。仅修改 `internal/health/push.go`、既有 `push_test.go` 与审计/Build7 记录；P3-03 本地修复与门禁已完成，尚未提交、未推送。P2-04 已在本轮基线中提交为 `7acf303`，I-02 两项本地修复已收口。头部与 §14 的旧基线仍为历史复核记录；本轮证据见下方「P3-03 当前实施补记」，不外推真实 Uptime Kuma 或远端 CI/GHCR。
 
+> **I-05 / P2-05 后续实施补记（2026-09-30）**：本轮基线 main / c5cc79d（ahead 5，开始时干净）。按用户授权采用方案 A 完成 Webhook 响应校验与本地门禁，仅修改 notifier 源码/测试及本文；尚未提交、未推送。当前状态见 P2-05 本轮补记；真实 Webhook、产品浏览器和当前改动的远端 CI/GHCR 未执行，头部旧快照仍作历史保留。
+
 ## 0. 当前状态、执行索引与 TODOLIST
 
 ### 0.1 状态图例
@@ -47,7 +49,8 @@
 | P2-08、P2-09 | ✅ 已实施（Dashboard 只消费后端 outcome；Dry Run 以 `target_id` 为 key） | Issue7 Step 4 |
 | P2-04 | ✅ 已修复并提交为 `7acf303`；真实 Uptime Kuma 验收未执行 | RuntimeState 先发布再唤醒，判别性用例覆盖两条分支 |
 | P3-03 | ✅ 本地修复与门禁已完成，尚未提交；真实 Uptime Kuma 验收未执行 | 非空非法 URL 使用有下限的 timer/Wake/Stop 等待；见 P3-03 实施补记 |
-| P2-05～P2-07 | 🔵 未修复，且不构成 P1-01 前置 | 独立问题队列 |
+| P2-05 | ✅ 已按推荐方案 A 本地实施；门禁结果见 finding 补记，尚未提交；⏳ 真实 Webhook 未验收 | I-05 / P2-05 本轮实施补记 |
+| P2-06～P2-07 | 🔵 未修复，且不构成 P1-01 前置 | 独立问题队列 |
 | P3-25（同步路径） | ✅ 已实施（重复/未推进 token 立即 `snapshot_incomplete`，本 attempt 零删除） | Issue7 Step 1 |
 | P3-25（资源扫描路径） | 🔵 未修复（`provider/scan.go` 仍只判断空 token，未判断重复/未推进 token） | 独立低风险问题；不得把同步路径修复外推到扫描路径 |
 | P3-11、P3-22 与 Dry Run 相关 P3-16 | ✅ 已实施（目标级日志上抛写库错误；Dry Run 每目标一次快照；`RunTest.vue` 44px） | Issue7 Step 4 |
@@ -72,7 +75,7 @@
 - [x] **I-02｜P2-04 + P3-03**：两项本地修复已收口。P2-04 已提交为 `7acf303`；P3-03 本轮按独立授权修复非空非法 URL 的无限等待，并限制异常间隔（非正值 60s、正值不足 20s 按 20s）。定向 race、快速用例 20 轮 race、全量 12 包 race 连续 3 次、vet/build/前端 build 与格式/diff-check 均通过；P3-03 尚未提交、未推送，真实 Uptime Kuma 与远端 CI/GHCR 未执行。
 - [ ] **I-03｜P2-06**：告警页增加 loaded 守卫，防止加载失败后用默认值覆盖真实敏感配置。
 - [ ] **I-04｜P2-07**：目标与规则删除增加卡片式二次确认，满足 AGENTS 强要求。
-- [ ] **I-05｜P2-05**：Webhook 按渠道解析业务错误码；真实 Webhook 仍需单独验收。
+- [x] **I-05｜P2-05**：已按推荐方案 A 本地实施三渠道明确成功响应校验、16 KiB 有界读取与安全错误；门禁结果见 P2-05 补记，尚未提交；真实 Webhook 仍未验收。
 - [ ] **I-06｜P3-23、P3-24**：串行修复 ticker Reset 与 pause/resume 通知合并，不和 Issue7 状态机重构混做。
 - [ ] **I-07｜P3-12、P3-05、P3-14、P3-10、P3-13**：文件权限与 HTTP/error 一致性；P3-11 已由 Issue7 Step 4 修复，不再列入此队列。
 - [ ] **I-08｜P3-01、P3-21、P3-15**：资源与连接健壮性；P3-02 保留为已知弱语义，不在 Issue7 中扩张为隔离/降频重构。
@@ -532,16 +535,29 @@ FAIL
 
 ### P2-05｜Webhook "成功"仅看 HTTP 状态码，忽略响应体业务错误码 → 告警静默失效
 
-- **状态**：🔵 **问题真实存在，当前未修复，仍属于独立问题队列 I-05；本轮仅更新审计记录，未修改源码、测试或其他文档，未运行构建、测试或格式化。** 它与 Issue7/P1-01 主线正交，不能因 P1-01 Step 0～5 主体完成而关闭，也不能把已有 Uptime Kuma Push 的严格 `{"ok":true}` 判断外推到普通 Webhook。
-- **当前基线与工作树证据**：当前为 `main` / `34aa9b859c38904e701a19d672dcc4f65435b31c`，`main == origin/main`；本轮核验时工作树唯一已跟踪修改是本审计文档，源码与测试没有本轮修改。该状态是当前核验结论，不沿用历史快照中的 HEAD 或“工作树干净”措辞。
-- **生产缺陷链**：`EventBus.Publish` 异步调用 `WebhookNotifier.OnEvent`；`notifier/webhook.go:120-129` 发起 POST 后只关闭响应体，`notifier/webhook.go:126-128` 只判断 `resp.StatusCode >= 300`，从不读取或解析 `resp.Body`。因此所有 2xx 响应都返回 `nil`，即使响应体明确表示业务失败。EventBus 只有在 `OnEvent` 返回错误时才记录“事件处理失败”WARN，所以该路径既被当成发送成功，也不会产生告警日志。
-- **现有测试为何不能证明成功语义**：`notifier/webhook_content_test.go:19-29` 的假 transport 固定返回 `HTTP 200 + {}`，当前只验证正文、格式和确定性，没有 `200 + {"errcode":310000,...}` 的失败控制；`notifier/webhook_security_test.go:75-119` 等现有测试也没有覆盖 `errcode`、`errmsg` 或响应体业务状态，全仓未发现对应的判别性解析测试。故“测试通过”不能证明当前 Webhook 已正确接受消息。
+> **I-05 当前实施补记（2026-09-30，优先于下方研究历史）**：用户授权开始修复；实施前基线为 main / c5cc79d（ahead 5，工作树干净）。仅修改 notifier 响应处理、相关测试及本文；尚未提交、未推送。
+
+- **当前实现**：Webhook 先拒绝非 2xx，再通过 io.LimitReader 最多读取 16 KiB + 1 字节。超过 16 KiB、读取失败、空/未知/非法响应均失败；原有 HTTP 10 秒上限覆盖正文读取，在途名额保持到读取及关闭结束。
+- **渠道合同**：钉钉要求明确的整数 errcode=0；Slack 要求 HTTP 200 且 TrimSpace 后正文恰为 ok；飞书采用方案 A，接受 code=0 或只有旧 StatusCode=0 的响应，两个字段同时出现时必须全部合法且为零。map[string]json.RawMessage 配合整数指针区分缺失/null 与明确零，不以消息文本或默认零值判断成功。
+- **飞书规范补证**：研究验证阶段已通过浏览器读取[当前官方自定义机器人文档](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)（页面标注最后更新 2025-03-27），成功示例同时包含 code=0 与 StatusCode=0，并注明后者为历史兼容冗余字段、不建议使用；业务错误使用非零 code。此证据是规范核验，不是真实端点投递。
+- **错误安全**：业务错误仅保留安全渠道名、固定类别、整数业务码；读取/JSON/关闭错误不输出或包装原始错误与响应正文。业务失败沿既有 EventBus 产生安全 WARN；关闭错误单独记录固定 response_close WARN，平台已明确接受时不因关闭错误改判业务失败。
+- **回归覆盖**：新增 webhook_response_test.go，覆盖三渠道成功/业务失败、缺字段/null/类型错误、双字段冲突、空体/非法 JSON/尾随 JSON、响应体关闭及在途释放、16 KiB 边界与实际读取量、读取错误、三渠道 EventBus 安全 WARN、真实本地 HTTP 连续交替响应与生产默认 10 秒正文 deadline。正文与限流成功夹具改为对应渠道合法成功响应，保留原内容、在途上限和跨热重载断言。
+- **本地门禁**：定向响应测试 -race -count=20 已通过；notifier 整包 -race -count=3 已通过；go vet ./...、go build ./... 已通过。全量 12 包 go test ./... -race -count=1 -timeout=20m 与最终 git diff --check 均通过。三轮重复证据仅覆盖 notifier 包，不将单次全量绿色外推为全仓长期稳定绿色。
+- **外部边界**：真实钉钉/飞书/Slack 接收、产品浏览器与当前改动的远端 CI/GHCR 未执行；PT-B7-03 保持未执行/人工免除，非已通过。未增加重试、补发、持久化投递状态或健康联动；未改 EventBus、配置 API、SQLite、前端、Uptime Kuma Push 或生产 HTTP 超时。16 KiB 为本地工程上限，并非平台官方最大响应保证。
+
+以下保留修复前审计与研究记录，不能作为当前未修复结论。
+
+
+- **研究阶段状态（历史）**：当时问题真实存在、尚未修复，研究阶段只更新审计记录，没有修改代码或运行门禁。 它与 Issue7/P1-01 主线正交，不能因 P1-01 Step 0～5 主体完成而关闭，也不能把已有 Uptime Kuma Push 的严格 `{"ok":true}` 判断外推到普通 Webhook。
+- **研究阶段基线与工作树证据（历史）**：当前为 `main` / `34aa9b859c38904e701a19d672dcc4f65435b31c`，`main == origin/main`；本轮核验时工作树唯一已跟踪修改是本审计文档，源码与测试没有本轮修改。该状态是当前核验结论，不沿用历史快照中的 HEAD 或“工作树干净”措辞。
+- **修复前生产缺陷链（历史）**：`EventBus.Publish` 异步调用 `WebhookNotifier.OnEvent`；`notifier/webhook.go:120-129` 发起 POST 后只关闭响应体，`notifier/webhook.go:126-128` 只判断 `resp.StatusCode >= 300`，从不读取或解析 `resp.Body`。因此所有 2xx 响应都返回 `nil`，即使响应体明确表示业务失败。EventBus 只有在 `OnEvent` 返回错误时才记录“事件处理失败”WARN，所以该路径既被当成发送成功，也不会产生告警日志。
+- **修复前测试缺口（历史）**：`notifier/webhook_content_test.go:19-29` 的假 transport 固定返回 `HTTP 200 + {}`，当前只验证正文、格式和确定性，没有 `200 + {"errcode":310000,...}` 的失败控制；`notifier/webhook_security_test.go:75-119` 等现有测试也没有覆盖 `errcode`、`errmsg` 或响应体业务状态，全仓未发现对应的判别性解析测试。故“测试通过”不能证明当前 Webhook 已正确接受消息。
 - **外部协议依据与准确边界**：
   - 钉钉常见成功语义为 JSON `errcode == 0`；关键词、签名或 IP 白名单校验失败、Token 不存在、机器人停用等错误可以表现为 HTTP 200 但 `errcode != 0`，例如 `310000`、`300001`、`400102`。参考[阿里云钉钉通知错误码文档](https://www.alibabacloud.com/help/en/sls/error-codes)及[关于 HTTP 200 与 `errcode=310000` 的说明](https://www.alibabacloud.com/help/zh/cms/cloudmonitor-1-0/support/the-dingtalk-robot-that-sets-the-alarm-contact-reported-an-error-the-signature-sent-by-the-robot-does-not-match)。
   - Slack Incoming Webhook 的官方口径是成功通常返回 HTTP 200 且正文为纯文本 `ok`；其他正文，即使仍为 200，也不能按成功处理。HTTP 400/403/404/410/500 等则属于 HTTP 层失败。参考[Slack Incoming Webhooks](https://api.slack.com/messaging/webhooks)和[Slack 错误状态说明](https://api.slack.com/changelog/2016-05-17-changes-to-errors-for-incoming-webhooks)。
   - 飞书资料同时出现 `code/msg` 业务错误形态和 `StatusCode/StatusMessage` 成功形态；公开官方开发者社区示例展示了非零 `code`（如 `19001`、`19024`）等错误，但该页面不能单独作为当前接口唯一规范。实施前必须以当前飞书机器人文档或真实端点响应确认最终兼容范围，不能简单把钉钉的 `errcode` 规则套到飞书。
 - **实际影响**：钉钉等端点若返回 HTTP 200 业务失败，`OnEvent` 返回 nil，日志没有失败 WARN，用户会误以为告警已发送而实际未送达。这是告警静默失效，不是普通 HTTP 网络错误；现有 Webhook 错误安全测试只能约束传输错误时的敏感信息，不覆盖业务失败响应。
-- **最小后续设计（尚未实施）**：只修改 Webhook 响应处理和其判别性测试，不改变告警订阅、EventBus 异步模型、每渠道在途限流、配置契约、Webhook 重试策略或 Uptime Kuma Push。`OnEvent` 尾部应按“非 2xx → 有界读取响应体 → 按 channel 校验业务成功 → 明确成功才返回 nil”的顺序处理；建议增加包内私有 `validateWebhookResponse(channel string, status int, body []byte) error` 或等价 helper。响应体读取必须有小的上限，避免第三方返回异常大正文导致无界内存占用。
+- **研究方案（本轮已实施）**：只修改 Webhook 响应处理和其判别性测试，不改变告警订阅、EventBus 异步模型、每渠道在途限流、配置契约、Webhook 重试策略或 Uptime Kuma Push。`OnEvent` 尾部应按“非 2xx → 有界读取响应体 → 按 channel 校验业务成功 → 明确成功才返回 nil”的顺序处理；建议增加包内私有 `validateWebhookResponse(channel string, status int, body []byte) error` 或等价 helper。响应体读取必须有小的上限，避免第三方返回异常大正文导致无界内存占用。
   - 钉钉：要求 JSON 中存在 `errcode` 且为 `0` 才成功；非零返回安全错误，例如 `channel=dingtalk category=business_response code=310000`。
   - Slack：要求 HTTP 200 且 `strings.TrimSpace(body) == "ok"`；其他、空或无法确认的正文失败。
   - 飞书：推荐只接受已确认的显式成功形态，同时支持资料中已确认的 `code == 0` 与 `StatusCode == 0` 两种形式；已识别的非零 `code`/`StatusCode` 失败，空响应、非法 JSON、未知对象及只有 `msg` 没有状态码均失败。若产品只使用一种当前飞书形态，可在实施前选择更窄的单一合同。
@@ -553,7 +569,7 @@ FAIL
   3. Slack：`HTTP 200 + "ok"` 返回 nil；`HTTP 200 + "invalid_token"`、`HTTP 200 + "{}"`、HTTP 200 空正文均返回 error。
   4. 公共控制：非 2xx 仍返回安全 `http_status` 错误；业务失败经 EventBus 产生 WARN；WARN 只含安全渠道名、错误类别和必要业务码；既有 transport error 的 URL/token 不泄漏测试继续通过；三个渠道连续多次响应的判定保持稳定。
 - **验收层级与外部边界**：静态检查需证明 2xx 不再无条件成功且错误不带 URL/响应正文；`httptest` 或自定义 `RoundTripper` 覆盖三渠道成功、业务失败、空体、非法体和非 2xx；随后执行受影响包的 race/vet/build 等本地门禁，以证明响应读取没有引入回归。真实钉钉、飞书、Slack 端点和凭据仍需单独人工验收；当前没有任何证据可把真实 Webhook 写成已通过，`ProdTestList.md` 的 PT-B7-03 仍应保持未执行/按用户决定跳过的边界。Mock、本地测试、真实 SMTP、Uptime Kuma、真实云 API、浏览器和远端 CI/GHCR 均不能替代真实 Webhook 接收证据。
-- **用户决策选项（本轮不擅自裁决）**：
+- **研究阶段决策选项（历史，本轮采用 A）**：
 
   | 选项 | 飞书响应兼容范围 | 影响 |
   |---|---|---|
@@ -561,8 +577,8 @@ FAIL
   | B | 只接受当前实际使用的一种明确成功结构 | 逻辑更窄、误接受面更小，但可能拒绝项目现有端点的另一种合法响应；需用户确认当前实际形态 |
   | C | 所有 2xx 或任意 JSON 视为成功 | 保留现状的静默丢告警风险，无法满足 P2-05 修复目标，不推荐 |
 
-  钉钉的 `errcode == 0` 与 Slack 的正文 `ok` 检查是独立于该选择的固定修复方向；用户未选择飞书范围前，不应实施飞书兼容分支，也不应据此自行扩大或收窄产品合同。
-- **风险、相邻边界与停止条件**：主要风险是把渠道协议错误抽象为一个通用字段，或为了兼容而把任意 2xx 当成功，继续造成告警静默丢失；未知响应必须失败闭合，响应体读取必须有界。若实施时修改 EventBus 异步/限流/重试、告警配置 API、Uptime Kuma Push、生产 HTTP 超时，或把原始 URL、token、请求正文、响应正文/`errmsg`/`msg` 写入错误和 WARN，应立即停止并重新审查范围。未补齐三渠道判别性响应测试、未完成安全错误断言以及受影响包门禁前，保持 I-05/P2-05 未修复；不得以单次绿色运行或真实端点的 HTTP 200 代替业务层成功证据。
+  钉钉的 `errcode == 0` 与 Slack 的正文 `ok` 检查是独立于该选择的固定修复方向；本轮已按用户“按照你的推荐”及“开始修复”授权采用 A；两个状态字段同时存在时必须都合法且为零。
+- **研究阶段风险与停止条件（历史）**：主要风险是把渠道协议错误抽象为一个通用字段，或为了兼容而把任意 2xx 当成功，继续造成告警静默丢失；未知响应必须失败闭合，响应体读取必须有界。若实施时修改 EventBus 异步/限流/重试、告警配置 API、Uptime Kuma Push、生产 HTTP 超时，或把原始 URL、token、请求正文、响应正文/`errmsg`/`msg` 写入错误和 WARN，应立即停止并重新审查范围。未补齐三渠道判别性响应测试、未完成安全错误断言以及受影响包门禁前，保持 I-05/P2-05 未修复；不得以单次绿色运行或真实端点的 HTTP 200 代替业务层成功证据。
 - **是否与 AGENTS.md 冲突**：当前最小修复方向不冲突。AGENTS.md §9.1 已明确 Uptime Kuma Push 的 `{"ok":true}` 成功口径；P2-05 只是为普通 Webhook 渠道补齐各自协议的业务成功判断，不改变既有配置、异步投递或外部验收边界。
 
 ---
@@ -889,7 +905,7 @@ Step 0 已修正 `Design5.md` 当前 version 3 口径、Build7 状态与 `ProdTe
 | **配置事务与运行时发布** | **本项目最强的一环**：协调器 `锁 → 单事务 → 事务内快照 → 事务内构造候选 → commit → 无失败发布`；commit 后不读库不访问网络；`commit` 失败不 apply；`RuntimeState` 深拷贝 + 单锁替换；已证明**事务内无任何网络 I/O**（四个 SDK 工厂只做本地构造，无 IMDS/元数据/token 获取） | P2-04 已本地修复：ApplyState 先于 Wake | — | 本轮判别性测试证明两条分支唤醒时新快照可见 |
 | **同步调度** | 单一控制通道 + 4 处 `beginRound()` 硬门控（stop 门控与 enabled 门控**并列不合并**）；`Stop` 为吸收态且 `doneCh` 单所有者；`idle/failed/partial/success` 判定清晰 | P3-23 的无条件 Reset；P3-24 通知合并 | — | 仅 interval 实际变化时 Reset；`false → true` 保留恢复立即轮；按 Go 1.25 默认合同不加入 stale-tick drain，旧兼容模式另行裁决 |
 | **DNS/Provider** | 只使用**增量** API（已逐调用点验证，零全量覆盖 API）；TAG 精确匹配 + `Description` 匹配；熔断阈值随状态原子发布（普通变更 `Clone` 保留计数、导入重置）；`retrySyncDetailed` 每次 attempt 重新 `Describe → Diff → Create/Delete`；部分成功用 `PartialDeleteError` 如实累计 | P1-01 本地完整复核已收口但真实云未验收；P3-25 仅资源扫描路径仍未修复；`isRetryable` 依赖**字符串关键字兜底**（腾讯 SDK 错误类型无 `Unwrap`，属有据可查的妥协） | `retrySync` 死包装；`_txlock` 注释理由与驱动实现矛盾 | P0-01/P2-01/P2-02/P2-03 与同步路径 P3-25 已吸收；资源扫描分页继续按 I-19 独立处理，重构后重新证明再删 `retrySync` |
-| **告警** | 默认全关；`渠道开关 + 触发开关`同时开启才订阅；邮件与 Webhook **共用同一固定渲染器**（顺序稳定、不遍历 map）；4 在途 + 满载丢弃最新 + 安全 WARN；限流器跨热重载连续；`test-email` 8 字段契约两侧严格一致且不写库；P3-11 写库错误已能上抛 | P3-03 非空非法 URL 周期校验已本地修复（P2-04 时序亦已修复）；P2-05 Webhook 只看状态码；P3-15 丢弃日志逐条 WARN；P3-19/P3-20/P3-21 邮件与响应体细节 | — | 解析业务错误码；聚合丢弃日志；P3-03 已按独立授权补齐有下限的定时校验，真实 Uptime Kuma 仍待验收 |
+| **告警** | 默认全关；`渠道开关 + 触发开关`同时开启才订阅；邮件与 Webhook **共用同一固定渲染器**（顺序稳定、不遍历 map）；4 在途 + 满载丢弃最新 + 安全 WARN；限流器跨热重载连续；`test-email` 8 字段契约两侧严格一致且不写库；P3-11 写库错误已能上抛 | P3-03 非空非法 URL 周期校验已本地修复（P2-04 时序亦已修复）；P2-05 已补齐三渠道响应校验与有界读取，真实 Webhook 未验收；P3-15 丢弃日志逐条 WARN；P3-19/P3-20/P3-21 邮件与响应体细节 | — | P2-05 已本地实施；聚合丢弃日志；P3-03 已按独立授权补齐有下限的定时校验，真实 Uptime Kuma 仍待验收 |
 | **OperationalHealth** | **唯一计算源被三个消费者真实共用**（`supervisor` / `operational` 端点 / `pusher` 都走同一个 `*health.Checker`）；2s 非阻塞探活（`Store` 结构体**无互斥量**，不持应用锁）；`StartupGrace=10s` 三分支正确；`failed/partial` 直到被 `success/idle` 覆盖；原因稳定去重排序；30s 边沿监督器 | 判定输入来自三次独立 `Snapshot()`（`run.go:127-142`），注释自述"一致快照"但可能混用新旧 policy/interval → 30s 内一次瞬时误判，自愈 | `slices.Compact` 冗余 | 一次取 `*RuntimeState` 后派生 policy/interval |
 | **HTTP/SSE** | 严格解码齐全（未知字段/尾随/多顶层值/10 MiB/1 MiB/413）；路径 ID `strconv.Atoi` 且 >0；请求 DTO 不含 DB `id`；导出 GET 已删（实测 405）；两类 SSE 监听服务器级 `ShutdownCh` 且每次写出有 5s deadline | P3-05 缺 `no-store`；P3-14 400/503 语义；`GET /api/alerts` 4 次非事务读存在撕裂窗口（PUT 单事务写，读侧可能"新 policy + 旧 email"，前端整体回传即把旧值写回） | `fs.Sub` 静默降级 | 补 `no-store`；GET alerts 改只读事务取快照 |
 | **前端** | 8 字段测试邮件载荷两侧严格一致（历史上真实 bug 点，现有注释+类型双重防护）；无 `console.*`/存储/cookie 泄漏；密码与 Webhook/Push URL 用 `type="password"`；导出用 `fetch`+Blob 且 `revokeObjectURL`；EventSource 单实例且卸载关闭；无 `addEventListener` 泄漏 | **P2-06 / P2-07 / P2-08 / P2-09**；P3-04 SSE 重放；P3-16 一批 UI/状态偏离 | 前端重复实现后端校验 | 逐项按 P2/P3 收敛；**不建议**引入 Pinia/Vitest 等重型栈 |
@@ -1230,7 +1246,7 @@ FAIL
 
 ### 10.2 当前独立问题入口
 
-与 Issue7 正交的 P1-02/P3-08 已本地收口，P2-04 与 P3-03 亦已独立本地收口，剩余 P2-05～P2-07 与其余 P3 继续按第 0.4 节的 I-01～I-11 排队；P1-01 完整复核及后续研究形成的 R7-01～R7-07 对应 I-12～I-18。该编号只表示 backlog 顺序，不改变 finding 严重级别，也不构成代码实施授权。
+与 Issue7 正交的 P1-02/P3-08 已本地收口，P2-04 与 P3-03 亦已独立本地收口，P2-05 已按方案 A 本地实施，剩余 P2-06～P2-07 与其余 P3 继续按第 0.4 节的 I-01～I-11 排队；P1-01 完整复核及后续研究形成的 R7-01～R7-07 对应 I-12～I-18。该编号只表示 backlog 顺序，不改变 finding 严重级别，也不构成代码实施授权。
 
 ### 10.3 历史批次计划（与 Issue7 重叠部分已被取代）
 
