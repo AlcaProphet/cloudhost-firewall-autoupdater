@@ -43,7 +43,8 @@
 | P2-03 | ✅ 已实施（能力矩阵产出 `unsupported_*`，目标 `partial` 且冻结清理） | Issue7 Step 1；旧“仅 WARN/Dry Run、不计 skipped”决策仅作历史记录 |
 | P2-02 | ✅ 已实施；2026-09-30 在 `7aaa3f2` 基线定向 race 连续 3 次通过（每批 ≤100、部分成功与 S2 残留核验）；⏳ 真实 ECS 验收未执行 | Issue7 Step 3；本条当前实施补记；PT-I7-05 |
 | P2-08、P2-09 | ✅ 已实施（Dashboard 只消费后端 outcome；Dry Run 以 `target_id` 为 key） | Issue7 Step 4 |
-| P2-04～P2-07 | 🔵 未修复，且不构成 P1-01 前置 | 独立问题队列 |
+| P2-04 | ✅ 已本地修复（未提交）；真实 Uptime Kuma 验收未执行 | RuntimeState 先发布再唤醒，判别性用例覆盖两条分支 |
+| P2-05～P2-07 | 🔵 未修复，且不构成 P1-01 前置 | 独立问题队列 |
 | P3-25（同步路径） | ✅ 已实施（重复/未推进 token 立即 `snapshot_incomplete`，本 attempt 零删除） | Issue7 Step 1 |
 | P3-25（资源扫描路径） | 🔵 未修复（`provider/scan.go` 仍只判断空 token，未判断重复/未推进 token） | 独立低风险问题；不得把同步路径修复外推到扫描路径 |
 | P3-11、P3-22 与 Dry Run 相关 P3-16 | ✅ 已实施（目标级日志上抛写库错误；Dry Run 每目标一次快照；`RunTest.vue` 44px） | Issue7 Step 4 |
@@ -65,7 +66,7 @@
 以下顺序是整理后的 backlog，不表示已授权实施；每次仍应只处理一个问题并保留判别性测试。
 
 - [x] **I-01｜P1-02 + P3-08**：已以 `flock` 替换 PID 判活；残留 PID、真实内核锁屏障、GC、并发启动、SIGTERM/SIGKILL 后复用与 Linux/amd64 持久卷 Docker 回归均本地通过。源码、测试、README 和本文已更新，尚未提交；权限迁移仍留给 P3-12。
-- [ ] **I-02｜P2-04 + P3-03**：先发布 `RuntimeState`，再唤醒 Health/Push；同时收口首次 Push 失败后的重试/唤醒语义。AGENTS 目标顺序已在 Step 0 修订，当前剩余是代码与测试。
+- [ ] **I-02｜P2-04 + P3-03**：P2-04 已于 2026-09-30 按独立授权本地修复（未提交）：先发布 `RuntimeState`，再唤醒 Health/Push，并补充判别性测试。P3-03 的非法 URL 重试仍未修复，本次不合并，因此 I-02 整项保持未完成。
 - [ ] **I-03｜P2-06**：告警页增加 loaded 守卫，防止加载失败后用默认值覆盖真实敏感配置。
 - [ ] **I-04｜P2-07**：目标与规则删除增加卡片式二次确认，满足 AGENTS 强要求。
 - [ ] **I-05｜P2-05**：Webhook 按渠道解析业务错误码；真实 Webhook 仍需单独验收。
@@ -175,7 +176,7 @@
 | 候选 | 裁决与依据 |
 |---|---|
 | "`slog.TextHandler.Handle` 按 level 二次过滤 → WebUI 日志丢行" | **驳回**。Go 源码 `log/slog/handler.go` 中 `TextHandler.Handle` **不含任何 level 判断**（过滤只在 `commonHandler.enabled`）；且 `MultiHandler.Handle`（`app/logutil.go:30`）已按 `h.Enabled(ctx, r.Level)` 逐子 handler 正确门控。不存在双重过滤 |
-| "发布顺序与 AGENTS.md 相反" | **驳回（但引出真实缺陷）**。这是审计快照中的历史结论：当时 AGENTS.md:199 原文为"…监督器唤醒 → Uptime Kuma Push 唤醒 → `RuntimeState`"，与当时代码**顺序一致**；该分派误读了文档。真正的缺陷不是"不一致"，而是该顺序本身会引发 P2-04。2026-09-29 Step 0 已把当前强合同修订为先发布 `RuntimeState` 再唤醒，代码仍待独立实施 |
+| "发布顺序与 AGENTS.md 相反" | **驳回（但引出真实缺陷）**。这是审计快照中的历史结论：当时 AGENTS.md:199 原文为"…监督器唤醒 → Uptime Kuma Push 唤醒 → `RuntimeState`"，与当时代码**顺序一致**；该分派误读了文档。真正的缺陷不是"不一致"，而是该顺序本身会引发 P2-04。2026-09-29 Step 0 已把当前强合同修订为先发布 `RuntimeState` 再唤醒，代码已于 2026-09-30 独立修复（未提交），见 P2-04 实施补记 |
 | `SaveAlertEmailTx` / `SaveAlertWebhookTx` / `NormalizeResourceID` / `syncer/ratelimit.go` 无引用（"死代码"） | **驳回**。分别在 `config/store.go:1297`、`:1300`、`config/validate.go:84`、`syncer/syncer.go:813` 有**生产调用**。纯标识符 grep 对"仅包内自用"与"经 HTTP 路由驱动"的符号会产生假阳性 |
 | "SPA 深链 404（缺少 history fallback）" | **驳回**。`webui/frontend/src/main.ts:6` 使用 `createWebHashHistory()`，深链与刷新经 URL hash 正常工作 |
 
@@ -468,13 +469,13 @@ FAIL
 
 ### P2-04｜Push 心跳“唤醒”早于 `RuntimeState` 发布 → 启用后首条心跳可能被延后
 
-> **当前状态（2026-09-30）**：🔵 **问题真实存在，当前未修复；本轮仅更新本审计条目，未修改源码、测试或其他文档，也未运行构建、测试或格式化。** 本轮基线为 `main` / `34aa9b859c38904e701a19d672dcc4f65435b31c`，`main == origin/main`；工作树中已有的未提交修改仅涉及本报告。
+> **当前状态（2026-09-30）**：✅ **已按用户“开始执行修复”的独立授权本地修复，尚未提交。** 本轮实施基线为 `main / c23305e`，相对 `origin/main` ahead 3，开工时工作树干净。P3-03 未并入本次修复，真实 Uptime Kuma 与远端 CI/GHCR 仍未执行。以下缺陷分析保留修复前事实，实施结果见本节末尾补记。
 
-- **强合同与当前实现**：当前 [AGENTS.md](./AGENTS.md) 的 §十一要求 commit 后按“日志级别 → 告警集合 → `RuntimeState` → 运行健康监督器唤醒 → Uptime Kuma Push 唤醒”发布，并明确“唤醒时新运行时必须已可见”。但 `webui/api/deps.go` 的 `Deps.applyCandidate` 当前实际顺序仍是：日志级别 → 告警集合 → `Health.Wake()` → `Push.Wake()` → `Syncer.ApplyState()` / `Runtime.Apply()`；`ConfigCoordinator` 在 commit 后直接调用该 apply，没有额外屏障，`Syncer.ApplyState` 最终才替换 `RuntimeManager` 指针。
+- **强合同与修复前实现**：当前 [AGENTS.md](./AGENTS.md) 的 §十一要求 commit 后按“日志级别 → 告警集合 → `RuntimeState` → 运行健康监督器唤醒 → Uptime Kuma Push 唤醒”发布，并明确“唤醒时新运行时必须已可见”。但 `webui/api/deps.go` 的 `Deps.applyCandidate` 修复前实际顺序为：日志级别 → 告警集合 → `Health.Wake()` → `Push.Wake()` → `Syncer.ApplyState()` / `Runtime.Apply()`；`ConfigCoordinator` 在 commit 后直接调用该 apply，没有额外屏障，`Syncer.ApplyState` 最终才替换 `RuntimeManager` 指针。
 - **缺陷链**：`internal/health/push.go` 的 Pusher 循环每轮首先读取 `p.config()`（生产接线中来自同一个 `RuntimeManager` 的 `Snapshot()`）。如果配置由关闭改为启用时，Pusher 在 `ApplyState` 前被 `Push.Wake()` 唤醒，它可能读到旧的关闭配置；“未启用或 URL 为空”分支随后只等待 `wake/stop`，没有 interval 定时器。本次保存产生的 wake 已被旧配置路径消费后，新的启用状态可能要等下一次配置保存或重启才触发首条心跳。
 - **触发条件与影响**：只需在运行期间把 `uptime_kuma_push` 从关闭保存为启用，且 Pusher 恰好落在 `Wake → ApplyState` 窗口即可触发。影响是新配置不会按本次保存及时发出首个 Push；若 Uptime Kuma 侧已有监控状态，可能继续看到旧状态或误判 DOWN。该结论来自源码时序分析，不是“真实 Uptime Kuma 已复现”；真实 Push 的 DOWN/恢复通知仍未执行。已在途的旧配置 HTTP 请求不属于本项必须取消的对象。
 
-**后续设计与最小修复**
+**已采用的最小修复设计**
 
 - 只调整 `webui/api/deps.go` 的 `Deps.applyCandidate` 发布顺序：日志级别 → 告警集合 → **`Syncer.ApplyState` / `Runtime.Apply` 发布 `RuntimeState`** → `Health.Wake()` → `Push.Wake()`。
 - `Syncer.ApplyState` / `RuntimeManager.Apply` 是无网络、无数据库、无失败返回值的内存发布；提前发布不会改变“commit 后不重新读库、不构造 Provider、不访问网络”的协调器边界，也不需要新增 mutex、channel barrier、等待 Push 完成或让配置 API 等待外部 HTTP 请求。
@@ -501,20 +502,28 @@ FAIL
 
 **P3-03 是否与本项合并：选项、推荐与影响**
 
-- **A（推荐，独立处理）**：本项只修复 RuntimeState 先发布再 Wake；P3-03 另行裁决非法 URL/请求构造失败是否需要 interval 重试。当前正常 HTTP 状态错误、网络错误、超时和非 `ok` JSON 已按 interval 继续尝试，不能把 P3-03 泛化成“所有首次 Push 失败都静默”。优点是补丁和验收单一、不会改变生产超时或健康语义；代价是非法配置仍可能等待下一次配置唤醒，需在独立议题中明确接受或修复。
-- **B**：与本项同时为 `sendOnce` 返回 false 的非法 URL/请求构造失败增加周期性重试。影响是需要另行决定重试间隔、WARN 频率、是否在 operational health/UI 中暴露配置错误，以及如何避免脏数据库造成日志噪声；范围超出 P2-04 的最小时序修复，当前不推荐直接并入。
+- **A（推荐，独立处理）**：本项只修复 RuntimeState 先发布再 Wake；P3-03 另行处理 `buildPushURL` 失败后的 interval 重试。当前正常 HTTP 状态错误、网络错误、超时和非 `ok` JSON 已按 interval 继续尝试，不能把 P3-03 泛化成“所有首次 Push 失败都静默”。优点是补丁和验收单一、不会改变生产超时或健康语义；代价是非法配置仍可能等待下一次配置唤醒，需在独立议题中明确接受或修复。
+- **B**：与本项同时为 `sendOnce` 返回 false 的非法 URL 分支增加周期性重试。影响是需要另行决定重试间隔、WARN 频率、是否在 operational health/UI 中暴露配置错误，以及如何避免脏数据库造成日志噪声；范围超出 P2-04 的最小时序修复，当前不推荐直接并入。
 
 **风险、外部依赖与停止条件**
 
 - 风险较低但需保持边界：RuntimeState 提前发布是无失败内存操作；已经开始的旧 Health 检查或旧 Push HTTP 请求可以继续完成，本项不增加完成屏障，也不要求配置 API 等待网络请求。
 - 该问题可由共享 `RuntimeManager`、Wake 探针、webui/api 定向测试和本地 mock Push 完全证明，不依赖真实云账号或真实 Uptime Kuma。真实 Uptime Kuma HTTP Monitor、Push 的 DOWN/恢复通知、真实云 API、浏览器和远端 CI 仍是独立外部边界，当前均无通过结论。
-- 在判别性用例证明 Wake 时已经看到新配置、两条 apply 分支均通过、注释无旧顺序残留前，保持 P2-04/I-02 未修复；不得以仅检查 Wake 次数、最终状态或单次绿色运行替代时序断言。
+- 在判别性用例证明 Wake 时已经看到新配置、两条 apply 分支均通过、注释无旧顺序残留前，保持 P2-04 未修复；I-02 还须独立完成 P3-03 才能关闭；不得以仅检查 Wake 次数、最终状态或单次绿色运行替代时序断言。
 - 若修复引入等待 Push/Health 完成、数据库或网络操作，修改 `Pusher`/`Supervisor` 内部同步、改变 shutdown 语义、把 P3-03 重试语义混入，或无法证明生产接线共享同一 RuntimeManager，应停止并重新审查范围。
 
 **决策与合同关系**
 
-- 用户已有决策是采用“`ApplyState` 提到两次 `Wake()` 之前”的最小代码修复；这是后续实现方向，不等于本轮已授权修改源码。
-- 当前实现与 AGENTS.md §十一的发布顺序冲突；Issue7 已将 P2-04 登记为 P1-01 越界的独立问题。本条更新不把历史审计记录或该决策扩展为代码实施授权，也不顺带关闭 P3-03。
+- 用户在本轮明确授权“开始执行修复”，已采用“`ApplyState` 提到两次 `Wake()` 之前”的最小代码修复。
+- 修复后的代码已与 AGENTS.md §十一发布顺序一致。Issue7 中的 P1-01 越界记录仍为当时授权边界；本次是独立实施，不改写该历史记录，不顺带关闭 P3-03。
+
+**实施补记（2026-09-30）**
+
+- `Deps.applyCandidate` 的完整 RuntimeState 发布分支已移到 Health/Push 唤醒之前；仍保留 Syncer 优先、最小接线 `Runtime.Apply` 与原告警状态日志。协调器、服务器接线与测试注释同步新顺序；Build7 仅追加历史顺序纠正说明。
+- 新增 `TestApplyCandidatePublishesBeforeWake`、`TestAlertsAndImportPublishBeforeWake`：两条分支均在 Health/Push 的 Wake 内读取同一个 RuntimeManager，验证本次候选已可见、Health 先于 Push；PUT/import 与非法输入零发布零唤醒均覆盖。生产分支使用真实 Syncer，不以 stub 自行实现 ApplyState 制造假阳性。
+- 新增 `TestPutAlertsEnablesPushAfterPublication`：真实 Pusher + 临时 SQLite + PUT API + 本地 HTTP mock，用有界 channel 固定配置重读时序；初始关闭，保存启用并设置 `1h` interval，要求 2 秒内收到新 URL 的首条请求。健康状态采用受控夹具、Syncer 主循环不运行，本用例证明发布接线与 Push 首发，不代表完整进程或真实 Uptime Kuma 验收。
+- 负向控制：新增的三个正式用例在修改生产顺序之前全部失败，且 Runtime/Syncer 两个分支均明确读到旧状态；顺序修复后定向 `-race -count=20` 通过。最终门禁：`go test ./... -race -count=3 -timeout=10m`（12 包）、`go vet ./...`、`go build ./...`、前端 `npm run build`、gofmt 与 `git diff --check` 均通过。本次未执行 Docker、真实云、浏览器、真实 Uptime Kuma 或远端 CI/GHCR，代码与文档尚未提交。
+- 未修改 `internal/health/push.go`、Supervisor、RuntimeManager、Syncer 或启动接线；不等待消费者完成，不取消保存前已开始的旧检查/请求，不改变 HTTP 超时、健康、重试与 shutdown 语义。通知仍可合并，保证的是发布后唤醒触发新读取，不是每次保存对应一条独立心跳。
 
 ---
 
@@ -865,10 +874,10 @@ Step 0 已修正 `Design5.md` 当前 version 3 口径、Build7 状态与 `ProdTe
 | 子系统 | 稳定设计 | 脆弱点 | 不必要复杂度 | 推荐简化方向 |
 |---|---|---|---|---|
 | **startup/shutdown** | 启动顺序确定性化（`go s.Run()` → 有界等 `Started()` → 再启 `supervisor`/`pusher`）；信号在 HTTP 绑定**之前**注册；收尾顺序 `HTTP shutdown ‖ pusher→supervisor→syncer` 正确；`store.Close()` 在 `s.Wait()` 之后 | P1-02 已由 I-01 本地修复；`Server.Start` 失败后 `started` 保持 true 且 `waitDone` 永不关闭（重试被拒、`Wait()` 永久阻塞，**当前接线不可达**）；`supervisor.Stop`/`pusher.Stop` 在 `Run` 从未启动时永久阻塞（Syncer 有 `runGuard`，这两个没有） | — | P1-02 flock 已完成；与 Syncer 对齐给 supervisor/pusher 加 `started` 守卫 |
-| **配置事务与运行时发布** | **本项目最强的一环**：协调器 `锁 → 单事务 → 事务内快照 → 事务内构造候选 → commit → 无失败发布`；commit 后不读库不访问网络；`commit` 失败不 apply；`RuntimeState` 深拷贝 + 单锁替换；已证明**事务内无任何网络 I/O**（四个 SDK 工厂只做本地构造，无 IMDS/元数据/token 获取） | **P2-04 发布顺序**（Wake 早于 ApplyState） | — | 按 P2-04 决策调整顺序 + 同步修订 AGENTS.md:199 |
+| **配置事务与运行时发布** | **本项目最强的一环**：协调器 `锁 → 单事务 → 事务内快照 → 事务内构造候选 → commit → 无失败发布`；commit 后不读库不访问网络；`commit` 失败不 apply；`RuntimeState` 深拷贝 + 单锁替换；已证明**事务内无任何网络 I/O**（四个 SDK 工厂只做本地构造，无 IMDS/元数据/token 获取） | P2-04 已本地修复：ApplyState 先于 Wake | — | 本轮判别性测试证明两条分支唤醒时新快照可见 |
 | **同步调度** | 单一控制通道 + 4 处 `beginRound()` 硬门控（stop 门控与 enabled 门控**并列不合并**）；`Stop` 为吸收态且 `doneCh` 单所有者；`idle/failed/partial/success` 判定清晰 | P3-23 的无条件 Reset；P3-24 通知合并 | — | 仅 interval 实际变化时 Reset；`false → true` 保留恢复立即轮；按 Go 1.25 默认合同不加入 stale-tick drain，旧兼容模式另行裁决 |
 | **DNS/Provider** | 只使用**增量** API（已逐调用点验证，零全量覆盖 API）；TAG 精确匹配 + `Description` 匹配；熔断阈值随状态原子发布（普通变更 `Clone` 保留计数、导入重置）；`retrySyncDetailed` 每次 attempt 重新 `Describe → Diff → Create/Delete`；部分成功用 `PartialDeleteError` 如实累计 | P1-01 本地完整复核已收口但真实云未验收；P3-25 仅资源扫描路径仍未修复；`isRetryable` 依赖**字符串关键字兜底**（腾讯 SDK 错误类型无 `Unwrap`，属有据可查的妥协） | `retrySync` 死包装；`_txlock` 注释理由与驱动实现矛盾 | P0-01/P2-01/P2-02/P2-03 与同步路径 P3-25 已吸收；资源扫描分页继续按 I-19 独立处理，重构后重新证明再删 `retrySync` |
-| **告警** | 默认全关；`渠道开关 + 触发开关`同时开启才订阅；邮件与 Webhook **共用同一固定渲染器**（顺序稳定、不遍历 map）；4 在途 + 满载丢弃最新 + 安全 WARN；限流器跨热重载连续；`test-email` 8 字段契约两侧严格一致且不写库；P3-11 写库错误已能上抛 | **P2-04/P3-03 Push 时序与非法配置边界**；P2-05 Webhook 只看状态码；P3-15 丢弃日志逐条 WARN；P3-19/P3-20/P3-21 邮件与响应体细节 | — | 解析业务错误码；聚合丢弃日志；独立确认 P3-03 是否需要对非法 URL 增加定时重试 |
+| **告警** | 默认全关；`渠道开关 + 触发开关`同时开启才订阅；邮件与 Webhook **共用同一固定渲染器**（顺序稳定、不遍历 map）；4 在途 + 满载丢弃最新 + 安全 WARN；限流器跨热重载连续；`test-email` 8 字段契约两侧严格一致且不写库；P3-11 写库错误已能上抛 | **P3-03 Push 非法配置边界**（P2-04 时序已本地修复）；P2-05 Webhook 只看状态码；P3-15 丢弃日志逐条 WARN；P3-19/P3-20/P3-21 邮件与响应体细节 | — | 解析业务错误码；聚合丢弃日志；独立确认 P3-03 是否需要对非法 URL 增加定时重试 |
 | **OperationalHealth** | **唯一计算源被三个消费者真实共用**（`supervisor` / `operational` 端点 / `pusher` 都走同一个 `*health.Checker`）；2s 非阻塞探活（`Store` 结构体**无互斥量**，不持应用锁）；`StartupGrace=10s` 三分支正确；`failed/partial` 直到被 `success/idle` 覆盖；原因稳定去重排序；30s 边沿监督器 | 判定输入来自三次独立 `Snapshot()`（`run.go:127-142`），注释自述"一致快照"但可能混用新旧 policy/interval → 30s 内一次瞬时误判，自愈 | `slices.Compact` 冗余 | 一次取 `*RuntimeState` 后派生 policy/interval |
 | **HTTP/SSE** | 严格解码齐全（未知字段/尾随/多顶层值/10 MiB/1 MiB/413）；路径 ID `strconv.Atoi` 且 >0；请求 DTO 不含 DB `id`；导出 GET 已删（实测 405）；两类 SSE 监听服务器级 `ShutdownCh` 且每次写出有 5s deadline | P3-05 缺 `no-store`；P3-14 400/503 语义；`GET /api/alerts` 4 次非事务读存在撕裂窗口（PUT 单事务写，读侧可能"新 policy + 旧 email"，前端整体回传即把旧值写回） | `fs.Sub` 静默降级 | 补 `no-store`；GET alerts 改只读事务取快照 |
 | **前端** | 8 字段测试邮件载荷两侧严格一致（历史上真实 bug 点，现有注释+类型双重防护）；无 `console.*`/存储/cookie 泄漏；密码与 Webhook/Push URL 用 `type="password"`；导出用 `fetch`+Blob 且 `revokeObjectURL`；EventSource 单实例且卸载关闭；无 `addEventListener` 泄漏 | **P2-06 / P2-07 / P2-08 / P2-09**；P3-04 SSE 重放；P3-16 一批 UI/状态偏离 | 前端重复实现后端校验 | 逐项按 P2/P3 收敛；**不建议**引入 Pinia/Vitest 等重型栈 |
@@ -1179,7 +1188,7 @@ FAIL
 
 ## 9. 用户决策记录（决策不等于已实施）
 
-> 本表保留作出决策时的原始记录。当前实施状态统一看第 0 节：P2-04 的 AGENTS 目标顺序已在 Issue7 Step 0 修订，剩余为代码与测试；P2-03 原“只补 WARN/Dry Run、不计 skipped”的记录已被当前 AGENTS/Issue7 的 `unsupported → partial` 与清理冻结合同取代。保留旧记录是为了追溯，不得据此覆盖当前强要求。
+> 本表保留作出决策时的原始记录。当前实施状态统一看第 0 节：P2-04 的目标顺序已在 Issue7 Step 0 修订，代码与判别性测试已于 2026-09-30 独立完成（未提交）；P2-03 原“只补 WARN/Dry Run、不计 skipped”的记录已被当前 AGENTS/Issue7 的 `unsupported → partial` 与清理冻结合同取代。保留旧记录是为了追溯，不得据此覆盖当前强要求。
 
 | # | 议题 | 你的决策 | 实施要点 |
 |---|---|---|---|
@@ -1209,7 +1218,7 @@ FAIL
 
 ### 10.2 当前独立问题入口
 
-与 Issue7 正交的 P1-02/P3-08 已本地收口，其余 P2-04～P2-07 与 P3 继续按第 0.4 节的 I-01～I-11 排队；P1-01 完整复核及后续研究形成的 R7-01～R7-07 对应 I-12～I-18。该编号只表示 backlog 顺序，不改变 finding 严重级别，也不构成代码实施授权。
+与 Issue7 正交的 P1-02/P3-08 已本地收口，P2-04 亦已独立本地修复，剩余 P2-05～P2-07 与 P3 继续按第 0.4 节的 I-01～I-11 排队；P1-01 完整复核及后续研究形成的 R7-01～R7-07 对应 I-12～I-18。该编号只表示 backlog 顺序，不改变 finding 严重级别，也不构成代码实施授权。
 
 ### 10.3 历史批次计划（与 Issue7 重叠部分已被取代）
 
@@ -1239,7 +1248,7 @@ P3-05（`no-store`）、P3-10（忽略的 error）、P3-11（`StoreLogWriter` �
 
 Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7 个永不失败的测试；补字面量锚点；补构建契约测试；补 `pidfile` 单测；清理约 12 处 "version 2" 与 §4 文档漂移
 
-**依赖关系**：P1-01 的产品语义已确认，不再有配置形态决策前置。P3-25 **同步路径**已在自动清理前改为不完整快照硬失败；剩余的是不参与同步清理的资源扫描路径分页守卫，应独立验收。P2-04 代码需按 Step 0 已修订的 AGENTS 发布顺序独立落地；其余死代码与同文件清理应在 Issue7 Step 1～4 完成后再重新证明。
+**依赖关系**：P1-01 的产品语义已确认，不再有配置形态决策前置。P3-25 **同步路径**已在自动清理前改为不完整快照硬失败；剩余的是不参与同步清理的资源扫描路径分页守卫，应独立验收。P2-04 代码已按 Step 0 修订的 AGENTS 发布顺序独立落地（2026-09-30，未提交）；其余死代码与同文件清理应在 Issue7 Step 1～4 完成后再重新证明。
 
 ---
 
@@ -1323,7 +1332,7 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 | **真实收件箱投递**（含中文主题的 MTA 编码表现，P3-20） | **未执行**。用户已于 2026-09-27 决定跳过并自行处理 |
 | **真实 Webhook**（P2-05 的依据来自官方文档与公开同类报告，**非本项目实测**） | **未执行**。用户已决定跳过 |
 | **真实 Uptime Kuma HTTP Monitor** | **未执行** |
-| **真实 Uptime Kuma Push DOWN/恢复通知**（含 P2-04 的实际触发概率） | **未执行**。P2-04/P3-03 为代码与时序分析结论 |
+| **真实 Uptime Kuma Push DOWN/恢复通知**（含 P2-04 的实际触发概率） | **未执行**。P2-04 已取得本地判别性回归与 mock 首发证据，P3-03 仍为代码与时序分析结论；均不代表真实外部通知通过 |
 | **浏览器人工检查**（PT-B7-07、PT-I7-06；布局、按钮尺寸、Dry Run 卡片、重复 key 的实际 patch 行为、侧边栏高亮、SSE 重连表现） | **未执行**。本环境无浏览器工具；前端结论均为源码级 + 构建/框架源码取证 |
 | **Docker 容器运行** | 历史已执行（healthy / uid 1000 / ExitCode 0 / SIGKILL 后重启曾复现 P1-02）；I-01 已在 Linux/amd64 容器执行残留 PID、共享卷互斥、SIGKILL 后替换重启与正常 stop；真实负载下“完成当前轮次再退出”仍未验证 |
 | **远端 CI / GHCR** | **未执行**。既有 `v2.0.0`（run `36300428681`）结果属**更早 revision，不能证明当前改动** |

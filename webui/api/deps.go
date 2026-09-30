@@ -120,7 +120,7 @@ func (d *Deps) buildCandidate(snapshot *config.BusinessSnapshot, policy syncer.B
 }
 
 // applyCandidate 在 commit 之后按固定顺序执行无失败发布：
-// 日志级别 → 告警集合 → RuntimeState（Build6 §12.4 第 6 条）。
+// 日志级别 → 告警集合 → RuntimeState → 运行健康监督器唤醒 → Uptime Kuma Push 唤醒。
 //
 // 该函数不返回 error：commit 之后不得再存在可失败出口，否则会出现
 // “接口报错但数据库已经改变”（Build6 §3.5）。内部全部为无返回的 setter/锁内替换。
@@ -144,18 +144,7 @@ func (d *Deps) applyCandidate(candidate Candidate) {
 		d.Alerts.Apply(candidate.Alerts)
 	}
 
-	// 3) 运行健康监督配置：唤醒一次检查，使新策略（health_timeout 与第三开关）
-	//    立即生效，而不必等待最长 30 秒的周期（Build7 §7.3）。
-	if d.Health != nil {
-		d.Health.Wake()
-	}
-
-	// 4) Uptime Kuma Push 配置：唤醒心跳循环，使其按新 URL/interval 立即首发或停止。
-	if d.Push != nil {
-		d.Push.Wake()
-	}
-
-	// 5) 最后发布 RuntimeState
+	// 3) 先发布完整 RuntimeState，再唤醒读取共享快照的 Health/Push，避免消费旧配置。
 	if d.Syncer != nil {
 		// Syncer 在收到新状态后按固定顺序重新读取生效中的告警集合并输出安全日志
 		d.Syncer.ApplyState(candidate.State)
@@ -166,6 +155,17 @@ func (d *Deps) applyCandidate(candidate Candidate) {
 		if d.Alerts != nil {
 			d.Alerts.LogStatus("已更新")
 		}
+	}
+
+	// 4) 运行健康监督配置：唤醒一次检查，使新策略（health_timeout 与第三开关）
+	//    立即生效，而不必等待最长 30 秒的周期（Build7 §7.3）。
+	if d.Health != nil {
+		d.Health.Wake()
+	}
+
+	// 5) Uptime Kuma Push 配置：唤醒心跳循环，使其按新 URL/interval 立即首发或停止。
+	if d.Push != nil {
+		d.Push.Wake()
 	}
 }
 

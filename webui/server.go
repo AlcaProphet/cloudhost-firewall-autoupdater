@@ -102,7 +102,7 @@ func (s *Server) SetSyncer(sync api.Syncer, bus api.EventSubscriber) {
 // SetRuntimeWiring 注入运行时状态与告警管理器（Build6 Step 5）。
 //
 // 注入后，配置变更协调器即可在事务内构造候选完整运行时状态与候选告警集合，
-// 并在 commit 之后按「日志级别 → 告警集合 → RuntimeState」顺序无失败发布；
+// 并在 commit 之后按「日志级别 → 告警集合 → RuntimeState → Health/Push 唤醒」顺序无失败发布；
 // 连接测试与资源扫描也从同一 RuntimeManager 取一次完整快照。
 func (s *Server) SetRuntimeWiring(runtime *syncer.RuntimeManager, alerts *api.AlertManager) {
 	s.deps.SetRuntimeWiring(runtime, alerts)

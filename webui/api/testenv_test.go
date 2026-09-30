@@ -88,7 +88,7 @@ type testEnv struct {
 // newTestEnv 创建测试环境。
 //
 // 使用与生产相同的完整协调器路径：事务内读取业务快照 → 构造候选 RuntimeState
-// 与候选告警集合 → commit → 无失败发布（日志级别 → 告警集合 → RuntimeState）。
+// 与候选告警集合 → commit → 无失败发布（日志级别 → 告警集合 → RuntimeState → Health/Push 唤醒）。
 // applies 记录 apply 次数，供「非法输入零写入零 apply / 合法事务只 apply 一次」断言使用。
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()

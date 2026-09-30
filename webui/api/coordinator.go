@@ -48,7 +48,7 @@ type ConfigCoordinator struct {
 	buildCandidate func(snapshot *config.BusinessSnapshot, policy syncer.BreakerPolicy) (Candidate, error)
 
 	// apply 在 commit 之后按固定顺序执行无失败发布（Build7 §4.3、Step 7）：
-	// 日志级别 → 告警集合 → 运行健康监督器唤醒 → Uptime Kuma Push 唤醒 → RuntimeState。
+	// 日志级别 → 告警集合 → RuntimeState → 运行健康监督器唤醒 → Uptime Kuma Push 唤醒。
 	// **不得返回 error**：commit 之后不存在可失败出口，避免“接口报错但数据库已经改变”（Build6 §3.5）。
 	apply func(candidate Candidate)
 }
@@ -84,7 +84,7 @@ func (c *ConfigCoordinator) MutateImport(ctx context.Context, fn func(ctx contex
 //
 //	加协调器锁 → 开启写事务 → 执行 mutation → 同一事务内读取完整业务快照
 //	→ 构造候选 RuntimeState 与候选告警集合 → 提交事务
-//	→ 日志级别 → 告警集合 → 发布 RuntimeState → 返回成功
+//	→ 日志级别 → 告警集合 → 发布 RuntimeState → 唤醒 Health/Push → 返回成功
 //
 // mutation 或候选构造任一失败都完整回滚：数据库、旧 RuntimeState、旧日志级别、
 // 旧告警订阅与扫描缓存全部保持原样，且不产生部分 ID 映射。

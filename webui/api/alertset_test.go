@@ -12,6 +12,7 @@ import (
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/app"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/health"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 )
@@ -374,5 +375,69 @@ func TestAlertManagerApplyBoundaryInFlightAndNewSubscriptions(t *testing.T) {
 	// 安全日志元数据只含新收件人
 	if _, _, toAddr, _ := manager.enabledChannels(); toAddr != "new@example.com" {
 		t.Errorf("热重载后安全日志元数据未更新: %q", toAddr)
+	}
+}
+
+// runtimeWakeProbe 在唤醒调用内读取共享快照，确定性检查发布顺序。
+type runtimeWakeProbe struct{ fn func() }
+
+func (p runtimeWakeProbe) Wake() { p.fn() }
+func (p runtimeWakeProbe) Evaluate(context.Context) health.Result {
+	return health.Result{Healthy: true}
+}
+
+// TestApplyCandidatePublishesBeforeWake 覆盖真实 Syncer 与最小 Runtime 两条发布分支。
+func TestApplyCandidatePublishesBeforeWake(t *testing.T) {
+	for _, real := range []bool{false, true} {
+		name := "Runtime"
+		if real {
+			name = "Syncer"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Cleanup(func() { app.SetLogLevel("info") })
+			old := &syncer.RuntimeState{Config: config.RuntimeConfig{
+				LogLevel:       "info",
+				Policy:         config.DefaultAlertPolicy(),
+				UptimeKumaPush: config.DefaultUptimeKumaPush(),
+			}}
+			next := &syncer.RuntimeState{Config: config.RuntimeConfig{
+				LogLevel:       "info",
+				Policy:         config.AlertPolicyConfig{HealthTimeout: 7 * time.Minute, OperationalErrorEnabled: true},
+				UptimeKumaPush: config.UptimeKumaPushConfig{Enabled: true, URL: "http://127.0.0.1/api/push/new", Interval: time.Hour},
+			}}
+			rt := syncer.NewRuntimeManager(old)
+			d := &Deps{Runtime: rt}
+			if real {
+				s := syncer.New(rt)
+				d.Syncer = s
+				t.Cleanup(s.Stop)
+				if s.Runtime() != rt {
+					t.Fatal("manager mismatch")
+				}
+			}
+			order := []string{}
+			probe := func(label string) runtimeWakeProbe {
+				return runtimeWakeProbe{fn: func() {
+					order = append(order, label)
+					got := rt.Snapshot()
+					if got != next {
+						t.Errorf("%s Wake sees old state: enabled=%v timeout=%v", label, got.Config.UptimeKumaPush.Enabled, got.Config.Policy.HealthTimeout)
+					} else if !got.Config.UptimeKumaPush.Enabled || got.Config.UptimeKumaPush.URL != next.Config.UptimeKumaPush.URL ||
+						got.Config.UptimeKumaPush.Interval != time.Hour || got.Config.Policy.HealthTimeout != 7*time.Minute ||
+						!got.Config.Policy.OperationalErrorEnabled {
+						t.Error("candidate fields mismatch")
+					}
+				}}
+			}
+			d.Health = probe("Health")
+			d.Push = probe("Push")
+			d.applyCandidate(Candidate{State: next})
+			if len(order) != 2 || order[0] != "Health" || order[1] != "Push" {
+				t.Fatalf("order=%v", order)
+			}
+			if rt.Snapshot() != next {
+				t.Fatal("final publication missing")
+			}
+		})
 	}
 }

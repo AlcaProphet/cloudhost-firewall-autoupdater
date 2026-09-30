@@ -755,7 +755,9 @@ Push URL：空
 
 ### Step 5：外部监控接入（Uptime Kuma Push）
 
-**实施状态：** ✅ 已完成（2026-09-28）：`internal/health/push.go`（默认关闭、启用/URL 变化立即首发、覆盖 status/msg/ping 且保留 token 与未知 query、10 秒上限、单在途跳过、不排队不重试、2xx+`{"ok":true}` 才算成功、失败不改健康不自激、日志不含 URL/token、shutdown 取消在途）、协调器唤醒顺序「告警集合 → 监督器 → Push → RuntimeState」；判别性证据：`internal/health/push_test.go`（本地 `httptest`）、`webui/api/operational_test.go`、`main_test.go`（真实二进制 + 本地 mock 首发心跳）。
+**实施状态：** ✅ 已完成（2026-09-28）：`internal/health/push.go`（默认关闭、启用/URL 变化立即首发、覆盖 status/msg/ping 且保留 token 与未知 query、10 秒上限、单在途跳过、不排队不重试、2xx+`{"ok":true}` 才算成功、失败不改健康不自激、日志不含 URL/token、shutdown 取消在途）、协调器唤醒顺序「告警集合 → 监督器 → Push → RuntimeState」（当时实现顺序，已由下述 P2-04 后续修复纠正）；判别性证据：`internal/health/push_test.go`（本地 `httptest`）、`webui/api/operational_test.go`、`main_test.go`（真实二进制 + 本地 mock 首发心跳）。
+
+**后续纠正（2026-09-30，P2-04）：** 独立授权修复配置热更新发布时序，当前代码按「日志级别 → 告警集合 → RuntimeState → 监督器唤醒 → Push 唤醒」执行；新增两条发布分支的 Wake 可见性、PUT/import 与真实 Pusher 本地首发回归。该修复不修改启动顺序或 Push 内部机制，P3-03 与真实 Uptime Kuma DOWN/恢复验收仍独立未完成；本轮门禁详见 `fwalizer-audit-final1.md` P2-04 实施补记。
 
 - operational endpoint 已在 Step 4 实现，本 Step 只接入 Uptime Kuma Push 与配置热重载；
 - URL 脱敏、超时、无重试和无自激循环；
