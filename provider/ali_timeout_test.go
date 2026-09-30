@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,7 +23,8 @@ import (
 // aliBlockingServer 启动一个「接受连接但永不回包」的 TCP 服务，模拟连接成功后
 // 不返回 / TLS 或响应头挂起 / 网络黑洞。返回 host:port 与清理函数。
 //
-// 已接受的连接不加跟踪：客户端侧超时后会自行关闭，测试进程退出时全部回收。
+// 必须持有已接受连接的强引用直到 cleanup，避免 netFD finalizer 在客户端 deadline
+// 前提前关闭连接，把真实超时错误退化为 EOF/reset。
 func aliBlockingServer(t *testing.T) (addr string, cleanup func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -30,16 +32,38 @@ func aliBlockingServer(t *testing.T) (addr string, cleanup func()) {
 		t.Fatalf("启动阻塞服务失败: %v", err)
 	}
 
+	var (
+		connMu   sync.Mutex
+		conns    []net.Conn
+		acceptWG sync.WaitGroup
+	)
+	acceptWG.Add(1)
 	go func() {
+		defer acceptWG.Done()
 		for {
-			if _, err := ln.Accept(); err != nil {
+			conn, err := ln.Accept()
+			if err != nil {
 				return
 			}
 			// 不写任何字节：客户端会一直等待响应头，直到自身 deadline 生效
+			connMu.Lock()
+			conns = append(conns, conn)
+			connMu.Unlock()
 		}
 	}()
 
-	return ln.Addr().String(), func() { _ = ln.Close() }
+	return ln.Addr().String(), func() {
+		// 固定回收顺序：先停止 Accept，再等待 goroutine 退出，最后关闭已保存连接。
+		_ = ln.Close()
+		acceptWG.Wait()
+		connMu.Lock()
+		accepted := append([]net.Conn(nil), conns...)
+		conns = nil
+		connMu.Unlock()
+		for _, conn := range accepted {
+			_ = conn.Close()
+		}
+	}
 }
 
 // withAliTestEndpoint 把阿里云端点解析接缝指向本地阻塞服务，并缩短超时取值。

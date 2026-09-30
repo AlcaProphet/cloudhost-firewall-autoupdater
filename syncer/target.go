@@ -47,7 +47,6 @@ type targetResult struct {
 	unsupported       []provider.PlanIssue
 	cleanupCandidates int
 	cleanupDeleted    int
-	cleanupResolved   int
 	cleanupDeferred   int
 	durationMS        int64
 	err               error
@@ -63,6 +62,13 @@ type retryableCleanupError struct {
 
 func (e *retryableCleanupError) Error() string { return e.err.Error() }
 func (e *retryableCleanupError) Unwrap() error { return e.err }
+
+// cleanupResult 是一次清理尝试对外需要的最小结果：实际确认删除数与最终残留数。
+// Resolved 只属于 Provider 删除响应的中间语义，不再泄漏给调用方间接推导 S2 状态。
+type cleanupResult struct {
+	deleted  int
+	deferred int
+}
 
 // syncTarget 执行一个目标的完整同步：最多 maxRetries 次整目标 attempt。
 //
@@ -99,7 +105,6 @@ func (s *Syncer) syncTarget(state *RuntimeState, p provider.Provider, rules []co
 		res.cleanupCandidates = attemptRes.cleanupCandidates
 		res.cleanupDeleted += attemptRes.cleanupDeleted
 		res.cleanupDeferred = attemptRes.cleanupDeferred
-		res.cleanupResolved = attemptRes.cleanupResolved
 
 		if err == nil {
 			res.outcome = attemptRes.outcome
@@ -193,8 +198,8 @@ func (s *Syncer) runTargetAttempt(
 	})
 	res.unsupported = plan1.Unsupported
 	res.cleanupCandidates = len(plan1.CleanupCandidates)
-	// 失败 attempt 若已确认删除，其计数必须保留；残留由 resolved 推算。
-	res.cleanupDeferred = len(plan1.CleanupCandidates) - res.cleanupResolved
+	// 未执行可信 S2 前，S1 的全部候选都是保守残留。
+	res.cleanupDeferred = len(plan1.CleanupCandidates)
 	res.cleanupDeleted = 0
 
 	if len(plan1.ToAdd) > 0 {
@@ -212,11 +217,10 @@ func (s *Syncer) runTargetAttempt(
 
 	// 7) 条件清理：只有安全门全部满足（CleanupDeletable 非空）且 S1 覆盖已确认时才删除；
 	//    Add 或覆盖验证失败时上面的 return 已保证本 attempt 零删除。
-	cleanupDeleted, cleanupResolved, err := s.runTargetCleanup(state, p, rules, s1, plan1, resolved, dnsErrors)
-	res.cleanupDeleted = cleanupDeleted
-	res.deleted += cleanupDeleted
-	res.cleanupResolved = cleanupResolved
-	res.cleanupDeferred = len(plan1.CleanupCandidates) - cleanupResolved
+	cleanup, err := s.runTargetCleanup(state, p, rules, s1, plan1, resolved, dnsErrors)
+	res.cleanupDeleted = cleanup.deleted
+	res.deleted += cleanup.deleted
+	res.cleanupDeferred = cleanup.deferred
 	if err != nil {
 		return res, err
 	}
@@ -225,7 +229,8 @@ func (s *Syncer) runTargetAttempt(
 
 // runTargetCleanup 在清理安全门满足时执行条件删除，并在发生删除后强制 S2 覆盖验证。
 //
-// 返回「已处理完成的候选数」（= 删除 + 幂等已不存在），调用方据此计算残留候选。
+// 返回云端明确确认的实际删除数与最终残留候选数。成功取得并验证 S2 后，最终残留
+// 唯一取自 S2 planner；未取得可信 S2 时才使用 S1 与 Provider 确认进度的保守 fallback。
 //
 // 固定语义（Issue7 §4.6、§5.5）：
 //   - 删除前再次证明候选严格属于当前 TAG 且 key 不在完整 Desired；
@@ -240,9 +245,10 @@ func (s *Syncer) runTargetCleanup(
 	plan1 provider.TargetPlan,
 	resolvedIPs map[int][]dns.ResolvedIP,
 	dnsErrors map[int]string,
-) (int, int, error) {
+) (cleanupResult, error) {
+	fallback := cleanupResult{deferred: len(plan1.CleanupCandidates)}
 	if len(plan1.CleanupDeletable) == 0 {
-		return 0, 0, nil
+		return fallback, nil
 	}
 
 	desiredKeys := make(map[provider.FunctionalKey]bool, len(plan1.Desired))
@@ -275,42 +281,50 @@ func (s *Syncer) runTargetCleanup(
 		deletable = append(deletable, c)
 	}
 	if len(deletable) == 0 {
-		return 0, 0, nil
+		return fallback, nil
 	}
 
 	delRes, delErr := p.DeleteRules(s1, deletable)
-	resolved := delRes.Resolved
+	result := cleanupResult{
+		deleted:  delRes.Deleted,
+		deferred: len(plan1.CleanupCandidates) - delRes.Resolved,
+	}
 
 	switch {
 	case delErr == nil, isPartialDelete(delErr):
 		// 已确认删除或部分成功：必须取得 S2 并复算覆盖
-		if err := s.verifyCleanupResult(state, p, rules, s1.Revision, resolvedIPs, dnsErrors); err != nil {
-			return delRes.Deleted, resolved, err
+		finalDeferred, err := s.verifyCleanupResult(state, p, rules, s1.Revision, resolvedIPs, dnsErrors)
+		if err != nil {
+			return result, err
 		}
+		result.deferred = finalDeferred
 	case isIdempotentDelete(delErr):
 		// 「已不存在」视为清理成功但不计 Deleted；仍需 S2 确认覆盖
 		slog.Warn("清理候选已不存在，按幂等处理", "provider", p.Name())
-		if err := s.verifyCleanupResult(state, p, rules, s1.Revision, resolvedIPs, dnsErrors); err != nil {
-			return delRes.Deleted, resolved, err
+		finalDeferred, err := s.verifyCleanupResult(state, p, rules, s1.Revision, resolvedIPs, dnsErrors)
+		if err != nil {
+			return result, err
 		}
+		result.deferred = finalDeferred
 	case isVersionMismatch(delErr):
 		// 版本竞争：整目标重新 attempt（绝不无版本重发）
-		return delRes.Deleted, resolved, &retryableCleanupError{
+		return result, &retryableCleanupError{
 			err: fmt.Errorf("清理版本竞争，整目标重试: %w", delErr),
 		}
 	case isRetryable(delErr):
-		return delRes.Deleted, resolved, &retryableCleanupError{
+		return result, &retryableCleanupError{
 			err: fmt.Errorf("清理失败（可重试）：%w", delErr),
 		}
 	default:
 		// 其它清理失败：所需权限已由 S1 证明，结果仍为 success + deferred
 		slog.Warn("清理失败，保留残留并记为 cleanup_deferred", "provider", p.Name(), "error", delErr)
-		resolved = 0
+		result.deferred = len(plan1.CleanupCandidates)
 	}
-	return delRes.Deleted, resolved, nil
+	return result, nil
 }
 
-// verifyCleanupResult 取得 S2 并用同一 planner 复算覆盖：S2 失败或不再覆盖所需功能即 failed。
+// verifyCleanupResult 取得 S2 并用同一 planner 复算覆盖；验证成功后返回 S2 实际剩余的
+// 清理候选数。S2 失败或不再覆盖所需功能即 failed，调用方继续保留既有 fallback。
 func (s *Syncer) verifyCleanupResult(
 	state *RuntimeState,
 	p provider.Provider,
@@ -318,13 +332,13 @@ func (s *Syncer) verifyCleanupResult(
 	s1Revision string,
 	resolvedIPs map[int][]dns.ResolvedIP,
 	dnsErrors map[int]string,
-) error {
+) (int, error) {
 	s2, err := p.GetSnapshot()
 	if err != nil {
-		return fmt.Errorf("获取 S2 快照失败: %w", err)
+		return 0, fmt.Errorf("获取 S2 快照失败: %w", err)
 	}
 	if strings.TrimSpace(s2.Revision) == "" && strings.TrimSpace(s1Revision) != "" {
-		return fmt.Errorf("%w: S2 缺少版本号，无法证明清理后状态", provider.ErrSnapshotIncomplete)
+		return 0, fmt.Errorf("%w: S2 缺少版本号，无法证明清理后状态", provider.ErrSnapshotIncomplete)
 	}
 	plan2 := provider.PlanTarget(provider.TargetPlanInput{
 		CloudType: p.CloudType(),
@@ -335,9 +349,9 @@ func (s *Syncer) verifyCleanupResult(
 		Snapshot:  s2,
 	})
 	if len(plan2.ToAdd) > 0 {
-		return fmt.Errorf("S2 覆盖验证失败：清理后 %d 个期望功能不再被快照覆盖", len(plan2.ToAdd))
+		return 0, fmt.Errorf("S2 覆盖验证失败：清理后 %d 个期望功能不再被快照覆盖", len(plan2.ToAdd))
 	}
-	return nil
+	return len(plan2.CleanupCandidates), nil
 }
 
 // resolveTargetRules 按 host 去重解析，并维护熔断器与 DNS 失败事件。

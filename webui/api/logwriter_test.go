@@ -17,8 +17,9 @@ import (
 // logWriterChainProvider 构造 R7-02 的真实生产链场景：Desired 已存在，另有两条
 // 陈旧 Owned 规则；删除只确认一条，S2 仍保留另一条。
 type logWriterChainProvider struct {
-	mu    sync.Mutex
-	rules []config.RuleInfo
+	mu       sync.Mutex
+	rules    []config.RuleInfo
+	notFound bool
 }
 
 func (p *logWriterChainProvider) Name() string                { return "ali_ecs(sg-r702)" }
@@ -39,6 +40,19 @@ func (p *logWriterChainProvider) CreateRules(provider.RuleSnapshot, []config.Rul
 func (p *logWriterChainProvider) DeleteRules(_ provider.RuleSnapshot, rules []config.RuleInfo) (provider.DeleteResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.notFound {
+		if len(rules) != 1 {
+			return provider.DeleteResult{}, errors.New("NotFound 整链测试应收到一条清理候选")
+		}
+		// 模拟候选已被并发者删除，但本次调用只收到幂等 NotFound，不能虚增 Deleted。
+		for i, current := range p.rules {
+			if current.RuleID == rules[0].RuleID {
+				p.rules = append(p.rules[:i], p.rules[i+1:]...)
+				break
+			}
+		}
+		return provider.DeleteResult{}, errors.New("ResourceNotFound.FirewallRulesNotFound")
+	}
 	if len(rules) != 2 {
 		return provider.DeleteResult{}, errors.New("整链测试应收到两条清理候选")
 	}
@@ -272,6 +286,106 @@ func TestStoreLogWriter_ProductionChainPersistsCleanupCounts(t *testing.T) {
 			got.Target, got.Domain, got.Result, got.Deleted)
 	}
 	for _, want := range []string{"清理候选 2 条", "已确认清理 1 条", "延后 1 条"} {
+		if !strings.Contains(got.Error, want) {
+			t.Errorf("日志详情 = %q, want 包含 %q", got.Error, want)
+		}
+	}
+}
+
+// TestStoreLogWriter_ProductionChainPersistsNotFoundS2Convergence 覆盖 R7-04 的真实生产链：
+// S1 有一条候选，Delete 返回幂等 NotFound，S2 已证明候选消失；目标事件、整轮汇总与
+// SQLite 必须一致记录 1/0/0，且不得把“已不存在”虚报为本进程实际删除。
+func TestStoreLogWriter_ProductionChainPersistsNotFoundS2Convergence(t *testing.T) {
+	store, err := config.OpenStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("打开数据库失败: %v", err)
+	}
+	defer store.Close()
+
+	p := &logWriterChainProvider{notFound: true, rules: []config.RuleInfo{
+		{Protocol: "TCP", Port: "443", CidrBlock: "127.0.0.1/32", Action: "ACCEPT", Description: "[auto-dns]", RuleID: "desired"},
+		{Protocol: "TCP", Port: "9999", CidrBlock: "10.9.9.9/32", Action: "ACCEPT", Description: "[auto-dns]", RuleID: "stale"},
+	}}
+	runtimeState, err := syncer.BuildRuntimeState(nil, config.RuntimeConfig{
+		Tag: "auto-dns", Interval: time.Hour, DNS: "8.8.8.8", DNSTimeout: 2 * time.Second,
+		DNSFailThreshold: 5, LogLevel: "info", SyncEnabled: true, Theme: "light",
+		DomainRules: []config.DomainRule{{
+			ID: 1, Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Targets: []int{1},
+		}},
+	}, syncer.BreakerReset)
+	if err != nil {
+		t.Fatalf("构造运行时状态失败: %v", err)
+	}
+	runtimeState.Providers = []provider.Provider{p}
+	s := syncer.New(syncer.NewRuntimeManager(runtimeState))
+
+	writer := &StoreLogWriter{Store: store}
+	s.EventBus().Subscribe(notifier.EventTargetSyncComplete, writer)
+	targetEvents := make(chan notifier.Event, 1)
+	roundEvents := make(chan notifier.Event, 1)
+	s.EventBus().Subscribe(notifier.EventTargetSyncComplete, eventCapture{ch: targetEvents})
+	s.EventBus().Subscribe(notifier.EventSyncComplete, eventCapture{ch: roundEvents})
+
+	go s.Run()
+	t.Cleanup(func() {
+		s.Stop()
+		done := make(chan struct{})
+		go func() {
+			s.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("Syncer 未在限期内停止")
+		}
+	})
+
+	assertCounts := func(label string, event notifier.Event) {
+		t.Helper()
+		if event.Data["cleanup_candidates"] != 1 || event.Data["cleanup_deleted"] != 0 ||
+			event.Data["cleanup_deferred"] != 0 || event.Data["deleted"] != 0 {
+			t.Fatalf("%s 清理计数 = candidates:%v cleanup_deleted:%v deferred:%v deleted:%v, want 1/0/0/0",
+				label, event.Data["cleanup_candidates"], event.Data["cleanup_deleted"],
+				event.Data["cleanup_deferred"], event.Data["deleted"])
+		}
+	}
+	select {
+	case event := <-targetEvents:
+		assertCounts("目标事件", event)
+	case <-time.After(3 * time.Second):
+		t.Fatal("未收到目标完成事件")
+	}
+	select {
+	case event := <-roundEvents:
+		assertCounts("整轮事件", event)
+	case <-time.After(3 * time.Second):
+		t.Fatal("未收到整轮完成事件")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	var logs []config.SyncLog
+	for {
+		logs, err = store.GetSyncLogs(10)
+		if err != nil {
+			t.Fatalf("读取同步日志失败: %v", err)
+		}
+		if len(logs) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("目标事件已发布，但 SQLite 未在限期内出现同步日志")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("同步日志数量 = %d, want 1", len(logs))
+	}
+	got := logs[0]
+	if got.Result != "success" || got.Deleted != 0 {
+		t.Fatalf("日志主字段 = result:%q deleted:%d, want success/0", got.Result, got.Deleted)
+	}
+	for _, want := range []string{"清理候选 1 条", "已确认清理 0 条", "延后 0 条"} {
 		if !strings.Contains(got.Error, want) {
 			t.Errorf("日志详情 = %q, want 包含 %q", got.Error, want)
 		}

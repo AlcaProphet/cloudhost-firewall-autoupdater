@@ -67,6 +67,140 @@ func TestCleanup_LighthouseDeletesStaleOwnedAndVerifiesS2(t *testing.T) {
 	}
 }
 
+// TestCleanup_IdempotentNotFoundUsesS2FinalCandidates 验证幂等 NotFound 不虚增实际删除，
+// 且成功取得的 S2 planner 是最终残留的唯一来源，而不是继续用 S1-Resolved 间接推导。
+func TestCleanup_IdempotentNotFoundUsesS2FinalCandidates(t *testing.T) {
+	stale1 := staleRule("TCP", "9998", "10.9.9.8/32", "", "")
+	stale2 := staleRule("TCP", "9999", "10.9.9.9/32", "", "")
+	newStale1 := staleRule("TCP", "10001", "10.9.10.1/32", "", "")
+	newStale2 := staleRule("TCP", "10002", "10.9.10.2/32", "", "")
+
+	tests := []struct {
+		name         string
+		initialStale []config.RuleInfo
+		afterError   []config.RuleInfo
+		wantDeferred int
+	}{
+		{
+			name:         "单候选已被并发删除",
+			initialStale: []config.RuleInfo{stale1},
+			afterError:   []config.RuleInfo{},
+			wantDeferred: 0,
+		},
+		{
+			name:         "两候选仅剩一条",
+			initialStale: []config.RuleInfo{stale1, stale2},
+			afterError:   []config.RuleInfo{stale2},
+			wantDeferred: 1,
+		},
+		{
+			name:         "两候选均仍存在",
+			initialStale: []config.RuleInfo{stale1, stale2},
+			afterError:   []config.RuleInfo{stale1, stale2},
+			wantDeferred: 2,
+		},
+		{
+			name:         "S2 新发现两条并发残留",
+			initialStale: []config.RuleInfo{stale1},
+			afterError:   []config.RuleInfo{newStale1, newStale2},
+			wantDeferred: 2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newProbeProvider(config.CloudTCLighthouse, 1, tc.initialStale...)
+			p.deleteErr = errors.New("ResourceNotFound.FirewallRulesNotFound")
+			p.deleteErrorHook = func() {
+				// 保留 Create 后已由 S1 证明的期望规则，再模拟并发者改变陈旧规则集合。
+				kept := make([]config.RuleInfo, 0, 1+len(tc.afterError))
+				for _, r := range p.rules {
+					if r.Port == "443" {
+						kept = append(kept, r)
+					}
+				}
+				p.rules = append(kept, tc.afterError...)
+			}
+			rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+			s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+
+			s.syncAll()
+
+			snapshots, _, deletes := p.counts()
+			if snapshots != 3 || deletes != 1 {
+				t.Fatalf("snapshot/delete = %d/%d, want 3/1（NotFound 后仍必须取得 S2）", snapshots, deletes)
+			}
+			sum := s.Status().LastRound
+			if sum == nil || sum.Outcome != RoundSuccess {
+				t.Fatalf("幂等 NotFound 且 S2 覆盖成立必须 success: %+v", sum)
+			}
+			if sum.CleanupCandidates != len(tc.initialStale) || sum.CleanupDeleted != 0 ||
+				sum.Deleted != 0 || sum.CleanupDeferred != tc.wantDeferred {
+				t.Fatalf("清理计数 = candidates:%d cleanup_deleted:%d deleted:%d deferred:%d, want %d/0/0/%d",
+					sum.CleanupCandidates, sum.CleanupDeleted, sum.Deleted, sum.CleanupDeferred,
+					len(tc.initialStale), tc.wantDeferred)
+			}
+		})
+	}
+}
+
+// TestCleanup_IdempotentNotFoundStillFailsWhenS2Untrusted 验证幂等错误不能吞掉 S2
+// Describe/覆盖失败；失败时不得把不可信 S2 当成最终残留，继续保留 S1 fallback。
+func TestCleanup_IdempotentNotFoundStillFailsWhenS2Untrusted(t *testing.T) {
+	tests := []struct {
+		name          string
+		snapshotError error
+		removeDesired bool
+	}{
+		{name: "S2 Describe 失败", snapshotError: errors.New("模拟 S2 Describe 失败")},
+		{name: "S2 覆盖失败", removeDesired: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newProbeProvider(config.CloudTCLighthouse, 1,
+				staleRule("TCP", "9999", "10.9.9.9/32", "", ""))
+			p.deleteErr = errors.New("ResourceNotFound.FirewallRulesNotFound")
+			p.deleteErrorHook = func() {
+				if tc.removeDesired {
+					p.rules = nil
+					return
+				}
+				kept := p.rules[:0]
+				for _, r := range p.rules {
+					if r.Port == "443" {
+						kept = append(kept, r)
+					}
+				}
+				p.rules = kept
+			}
+			if tc.snapshotError != nil {
+				p.snapshotErrs = []error{nil, nil, tc.snapshotError}
+			}
+			rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+			s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+			errorEvents := make(chan notifier.Event, 1)
+			s.bus.Subscribe(notifier.EventSyncError, roundEventSink{ch: errorEvents})
+
+			s.syncAll()
+
+			sum := s.Status().LastRound
+			if sum == nil || sum.Outcome != RoundFailed || sum.Failed != 1 {
+				t.Fatalf("S2 不可信必须 failed: %+v", sum)
+			}
+			if sum.CleanupCandidates != 1 || sum.CleanupDeleted != 0 || sum.CleanupDeferred != 1 {
+				t.Fatalf("失败 fallback = candidates:%d deleted:%d deferred:%d, want 1/0/1",
+					sum.CleanupCandidates, sum.CleanupDeleted, sum.CleanupDeferred)
+			}
+			select {
+			case <-errorEvents:
+			case <-time.After(time.Second):
+				t.Fatal("S2 失败后未发布目标同步错误事件")
+			}
+		})
+	}
+}
+
 // TestCleanup_GateClosedKeepsCandidates 任一安全门未满足时删除调用必须为 0。
 func TestCleanup_GateClosedKeepsCandidates(t *testing.T) {
 	stale := staleRule("TCP", "9999", "10.9.9.9/32", "r-stale", "")

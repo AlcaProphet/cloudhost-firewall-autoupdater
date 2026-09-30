@@ -35,6 +35,7 @@ type targetProbeProvider struct {
 
 	deleteErr       error    // 非 nil 时删除调用直接失败
 	deleteErrs      []error  // 按 delete 调用序号（0 基）返回；用于验证清理重试收敛
+	deleteErrorHook func()   // 删除返回错误前的云端突变；调用时已持有 p.mu
 	deleteRevisions []string // 每次删除调用携带的快照版本（版本保护判别用）
 	deleteSizeLog   []int    // 每次删除调用的候选条数（分批判别用）
 	// partialDelete 非 nil 时模拟「部分批次成功」：返回该结果与 *PartialDeleteError
@@ -127,9 +128,15 @@ func (p *targetProbeProvider) DeleteRules(snapshot provider.RuleSnapshot, rules 
 	p.deleteSizeLog = append(p.deleteSizeLog, len(rules))
 	p.seq = append(p.seq, fmt.Sprintf("delete:%d", len(rules)))
 	if n < len(p.deleteErrs) && p.deleteErrs[n] != nil {
+		if p.deleteErrorHook != nil {
+			p.deleteErrorHook()
+		}
 		return provider.DeleteResult{}, p.deleteErrs[n]
 	}
 	if p.deleteErr != nil {
+		if p.deleteErrorHook != nil {
+			p.deleteErrorHook()
+		}
 		return provider.DeleteResult{}, p.deleteErr
 	}
 	if p.partialDelete != nil {

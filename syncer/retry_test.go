@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,12 +32,35 @@ func realHTTPTimeoutError(t *testing.T) error {
 	if err != nil {
 		t.Fatalf("启动阻塞服务失败: %v", err)
 	}
-	defer ln.Close()
+	var (
+		connMu   sync.Mutex
+		conns    []net.Conn
+		acceptWG sync.WaitGroup
+	)
+	acceptWG.Add(1)
 	go func() {
+		defer acceptWG.Done()
 		for {
-			if _, err := ln.Accept(); err != nil {
+			conn, err := ln.Accept()
+			if err != nil {
 				return
 			}
+			// 必须持有 accepted connection 的强引用，避免 netFD finalizer 在客户端
+			// deadline 前提前关闭连接，把真实超时错误退化为 EOF/reset。
+			connMu.Lock()
+			conns = append(conns, conn)
+			connMu.Unlock()
+		}
+	}()
+	defer func() {
+		_ = ln.Close()
+		acceptWG.Wait()
+		connMu.Lock()
+		accepted := append([]net.Conn(nil), conns...)
+		conns = nil
+		connMu.Unlock()
+		for _, conn := range accepted {
+			_ = conn.Close()
 		}
 	}()
 
