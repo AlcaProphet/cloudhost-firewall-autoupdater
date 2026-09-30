@@ -16,7 +16,7 @@
 >
 > **R7 修复进展（2026-09-29）：** R7-01 已提交为 `b80b1b0`，R7-02 已提交为 `eab4bea`，R7-03 已按用户裁决 A 修复并提交为 `297ccfe`：Dry Run 对所有已配置目标各返回一项；无适用规则目标只返回非 null 空数组骨架与 `coverage_ready=false`，不解析 DNS、不读取云快照、不进入 planner、不产生限速等待；前端以“无适用规则”卡片明确正式同步会跳过该目标；正式同步 `RoundSummary.Total` 仍只统计有适用规则目标。当前 `main` 相对 `origin/main` ahead 1、工作树干净，尚未推送。进一步研究确认 R7-04～R7-06 仍未完成，并新增 R7-07：R7-04 是 S2 已读取但未用于最终残留计数的可观测性偏差；R7-05 是数组非 null 测试证据失效；R7-06 与 R7-07 分别是 Syncer/阿里云真实超时用例丢弃已接受 TCP 连接导致的同根因 flaky。不得把任何后续单次全量绿色外推为稳定绿色。
 >
-> **R7 后续修复进展（2026-09-30）：** 按 §12.5.4 固定顺序，R7-06/R7-07 已仅在测试夹具中持有并有界回收 accepted `net.Conn`；R7-04 已以私有 `cleanupResult{deleted,deferred}` 删除 `cleanupResolved` 间接推导链，成功可信的 S2 planner 直接提供最终残留数，NotFound 不虚增实际删除，S2 失败继续使用保守 fallback 并保持 `failed`。新增目标级四种 S2 最终残留、两种 S2 失败及真实事件/整轮汇总/SQLite `1/0/0` 整链用例。压力门禁、定向 race、全量 race 连续 3 次、vet、build、前端 build 与 diff-check 均通过；改动尚未提交。R7-05 仍待处理，真实云/浏览器/远端 CI/GHCR 仍未执行。
+> **R7 后续修复进展（2026-09-30）：** R7-06/R7-07 与 R7-04 已按 §12.5.4 固定顺序修复并提交为 `b19d271`：两个测试夹具持有并有界回收 accepted `net.Conn`；私有 `cleanupResult{deleted,deferred}` 让成功可信的 S2 planner 直接提供最终残留数，NotFound 不虚增实际删除，S2 失败继续使用保守 fallback 并保持 `failed`。R7-05 已在当前工作树按测试-only 边界修复：以 `json.RawMessage` 两层检查顶层/目标级全部数组的存在、非 `null` 与 array 类型，覆盖三种真实成功形状，并逐字段加入 `null`、缺失、对象类型负向控制；未修改生产 DTO、planner、API 或前端。两个 GOGC 压力门禁、`syncer`/`provider` 包 `-race -count=20`（Syncer 使用 `-timeout=20m`）、全量 12 包 race 连续 3 次、vet、build、前端 build 与 diff-check 均通过；R7-05 与文档改动尚未提交。真实云/浏览器/远端 CI/GHCR 仍未执行。
 
 ---
 
@@ -850,6 +850,7 @@ git diff --check
 
 | 版本 | 日期 | 内容 |
 |---|---|---|
+| v1.11 | 2026-09-30 | R7-04/R7-06/R7-07 已提交为 `b19d271`；按方案 A 仅修改 `syncer/dryrun_test.go` 修复 R7-05 失效门禁，以 `json.RawMessage` 检查两层数组字段存在、非 null、类型为 array，覆盖有适用规则、无适用规则骨架、零结果三种真实输出，并对顶层与十个目标数组字段加入 null/缺失/对象负向控制；未发现生产 null，故未改 DTO/planner/API/前端。定向测试、两个 GOGC 压力门禁、两包 `-race -count=20`、全量 race 连续 3 次、vet/build/前端/diff-check 通过；Syncer 20 轮首次受 Go 默认 10m 总超时中止，保持次数不变并显式 `-timeout=20m` 后 892.213s 通过；R7-05 与文档改动未提交，外部验收未执行 |
 | v1.10 | 2026-09-30 | 按固定串行顺序本地修复 R7-06/R7-07 测试夹具与 R7-04 最终残留计数：两个阻塞 TCP helper 持有 accepted connection 并有界回收；清理结果改为直接传递 deleted/deferred，可信 S2 planner 成为最终残留唯一来源，NotFound 保持实际删除为 0，S2 失败保守回退并保持 failed；新增目标级计数矩阵与 EventBus/整轮/SQLite `1/0/0` 整链；压力、定向 race、全量 race 连续 3 次、vet/build/前端/diff-check 通过；未提交、未执行外部验收，R7-05 仍待处理 |
 | v1.9 | 2026-09-29 | 进一步研究 R7-03 后续未完成项：订正 R7-03 已提交为 `297ccfe`、当前 ahead 1/工作树干净的事实；细化 R7-04 的 S2 最终残留计数合同与 NotFound 不虚增删除数语义；细化 R7-05 的 `json.RawMessage` 判别方案与 null 负向控制；以 `GOGC=1` 判别性复现确认 R7-06 的阻塞 TCP 测试助手丢弃连接导致 `connection reset by peer`；新增 R7-07 追踪 `TestAliClientRequestIsBounded` 的同根因夹具缺陷；固定“先稳定门禁夹具，再修 R7-04/R7-05，最后多轮全量门禁与文档闭环”的串行顺序 |
 | v1.8 | 2026-09-29 | R7-03 按用户裁决 A 本地修复：Dry Run 覆盖所有已配置目标；无适用规则目标只返回未调度空骨架且零 DNS/云 API/planner/限速，前端明确显示跳过态；新增“两目标仅一目标适用”和“零规则仍返回全部目标”判别性用例；正式同步统计口径不变；定向 Syncer race、前端构建、vet/build/diff-check 通过，全量 race 因未改动的 `TestAliClientRequestIsBounded/扫描路径_scanAliECS` 提前返回而失败，隔离 `-count=5` 仍复现一次，不写成全量通过；R7-04～R7-06 未处理 |
@@ -984,17 +985,17 @@ git diff --check
 
 ### 12.5 完整核验未完成项独立追踪（2026-09-29）
 
-> **定位与授权边界：** 本节最初记录在 `HEAD 38bdc19` 上对 P1-01 实施改动进行三路独立只读复核后确认的问题，并作为逐项修复入口。R7-01～R7-03 已分别提交；2026-09-30 按固定顺序完成 R7-06/R7-07 测试夹具与 R7-04 计数链的本地修复，当前工作树尚未提交。R7-05 仍待实施，故不能外推为全部闭环。§12.3 主体实现、§12.4 F1/F5 与本节后续修复证据继续分层记录；真实云、浏览器与远端 CI/GHCR 仍未执行。
+> **定位与授权边界：** 本节最初记录在 `HEAD 38bdc19` 上对 P1-01 实施改动进行三路独立只读复核后确认的问题，并作为逐项修复入口。R7-01～R7-03 已分别提交，R7-04/R7-06/R7-07 已提交为 `b19d271`；R7-05 已于 2026-09-30 在当前工作树按测试-only 边界实施并完成本地门禁，尚未提交。至此 R7-01～R7-07 的本地核验项已收口；§12.3 主体实现、§12.4 F1/F5 与本节后续修复证据继续分层记录，真实云、浏览器与远端 CI/GHCR 仍未执行，不能外推为外部验收通过或无保留发布闭环。
 
 | ID | 级别 | 状态 | 内容 | 当前证据与后续验收合同 |
 |---|---|---|---|---|
 | R7-01 | **P1** | ✅ 已修复并提交（`b80b1b0`） | **可重试清理失败耗尽后的 outcome 已符合 AGENTS 强要求。** `syncer/target.go` 新增私有 `retryableCleanupError`，只标记本 attempt 已由 S1 确认覆盖、失败点仅为 version mismatch/限流/网络超时等可重试 Delete 错误；前两次仍完整重试，第三次耗尽后保留残留并返回 `success + cleanup_deferred`。DNS/Describe/Add/S1/S2 失败仍走 `failed`，未修改 Provider、`isRetryable` 或 OperationalHealth。 | 红灯→绿灯：`TestCleanup_RetryableFailureExhaustedKeepsSuccessAndDefers` 覆盖限流与版本竞争，断言 3 次 attempt、每次重读快照、每次使用当次 S1 revision、最终 success/healthy 与 deferred=1；`TestCleanup_RetryableFailureThenSuccessKeepsWholeTargetRetry` 证明第三次成功仍删除并执行 S2。定向 `syncer` race、`internal/health` 回归、`go vet ./...`、`go build ./...`、`git diff --check` 通过；全量 race 曾复现 R7-06，故不得记为稳定绿。 |
 | R7-02 | **P2** | ✅ 已修复并提交（`eab4bea`） | **目标事件与真实 sync_logs 清理详情已统一。** `publishTargetResult` 对完成/失败事件统一发布 `cleanup_deleted`、目标全生命周期 `duration_ms` 与非 null canonical `[]provider.PlanIssue` `unsupported`；`runTargetAttempt` 在 S0 规划后即保留 unsupported，故后续 Add 失败仍不会丢失能力限制；`StoreLogWriter` 删除 `skipped_details` 双源并直接消费 canonical 结构。 | 红灯→绿灯：`TestTargetSyncCompleteCarriesUnsupported`、`TestSyncErrorRetainsUnsupportedAfterAddFailure` 覆盖完成/失败公共字段与结构化能力限制；`TestStoreLogWriter_ProductionChainPersistsCleanupCounts` 通过真实 `Syncer.Run → syncTarget → publisher → EventBus → StoreLogWriter → SQLite` 证明候选/已清理/延后 `2/1/1` 与落库详情一致，并验证 `duration_ms`、非 null 空 `unsupported`。`go test ./internal/tag ./provider ./syncer ./webui/api -race -count=1`、`go test ./... -race -count=1`（本次 12 包）、`go vet ./...`、`go build ./...`、`git diff --check` 通过；R7-06 的既有 flaky 仍未修复，不外推稳定性。 |
 | R7-03 | **P2** | ✅ 已修复并提交（`297ccfe`） | **Dry Run 已按“所有已配置目标各一项”统一。** 无适用规则目标返回非 null 空数组骨架、`coverage_ready=false`、空 `error`；不解析 DNS、不 Describe、不进入 planner、不限速等待，页面以“无适用规则”卡片明确正式同步会跳过。 | `TestDryRun_IncludesTargetsWithoutApplicableRules` 覆盖两个目标、规则只引用一个目标，断言另一目标仍返回且零 DNS/云 API；`TestDryRun_NoRulesReturnsAllConfiguredTargets` 覆盖零规则仍返回全部配置目标并保留全局 warning。正式同步 `RoundSummary.Total` 及 idle/health 口径未修改，仍只统计有适用规则目标。定向 Syncer race、前端构建、vet/build/diff-check 通过；全量 race 因未改动的 Provider 超时用例提前返回失败，隔离复现，未在本项越界修改。 |
-| R7-04 | **P3 / 可观测性** | ✅ 已本地修复（未提交） | **最终残留已由可信 S2 planner 直接决定。** `targetResult.cleanupResolved` 已删除；私有 `cleanupResult` 直接传递实际删除与最终 deferred。正常删除、部分删除或幂等 NotFound 后，只有成功取得 S2 且 Desired 覆盖成立时才采用 `len(plan2.CleanupCandidates)`；否则保留 S1 与 Provider 确认进度的 fallback。NotFound 始终不增加 `deleted/cleanup_deleted`，S2 Describe/覆盖失败仍为 `failed`。 | `TestCleanup_IdempotentNotFoundUsesS2FinalCandidates` 覆盖 `1/0/0`、`2/0/1`、`2/0/2` 及 S2 新增残留导致 deferred 大于 candidates；`TestCleanup_IdempotentNotFoundStillFailsWhenS2Untrusted` 覆盖 Describe/覆盖失败与错误事件；`TestStoreLogWriter_ProductionChainPersistsNotFoundS2Convergence` 证明目标事件、整轮事件和 SQLite 一致记录 `1/0/0`。既有正常删除、R7-01 重试、ECS 部分删除控制与全量门禁继续通过。 |
-| R7-05 | **P3 / 测试缺口** | 🔵 待修复（方案已细化） | **`TestDryRun_ArraysNeverNull` 没有判别力。** 测试字段名已经包含引号，断言又重复拼接引号，实际搜索 `""results"":null`，即使 DTO 数组退化为 `null` 也不会失败。当前 `emptyDryRunResult` 与 R7-03 未调度骨架仍显式构造非 nil slice，因此这是证据失效，不是已确认的生产序列化缺陷。 | 禁止继续依赖脆弱字符串搜索；解码为 `map[string]json.RawMessage`，检查顶层 `results`/`warnings` 与每个目标的全部数组字段确为 JSON array 且非 null。检查 helper 应返回 error，并用人工构造的 null JSON 负向样本证明旧断言会漏报而新断言会拒绝；若新测试未发现真实 null，不修改 DTO 或生产实现。 |
-| R7-06 | **门禁可靠性** | ✅ 已本地修复（未提交） | `realHTTPTimeoutError` 现保存全部 accepted `net.Conn` 强引用，并在 cleanup 中按“关闭 listener → 等待 Accept goroutine → 关闭连接”回收；真实 `*url.Error`、awaiting-headers 文本与生产 `isRetryable` 均未放宽。 | `GOGC=1 go test ./syncer -run '^TestIsRetryable_RealWorldShapes$' -count=50` 与包含全部清理用例的 `-race -count=20` 通过；未修改生产重试集合。 |
-| R7-07 | **门禁可靠性 / 新增** | ✅ 已本地修复（未提交） | `aliBlockingServer` 以包内 mutex/WaitGroup 保存并有界回收 accepted connections；四条真实 HTTP 构造路径、150ms 下限和生产 10s/30s 默认值均未修改。 | `GOGC=1 go test ./provider -run '^TestAliClientRequestIsBounded$' -count=20` 与同用例 `-race -count=20` 通过；未修改 Provider 或生产超时。 |
+| R7-04 | **P3 / 可观测性** | ✅ 已修复并提交（`b19d271`） | **最终残留已由可信 S2 planner 直接决定。** `targetResult.cleanupResolved` 已删除；私有 `cleanupResult` 直接传递实际删除与最终 deferred。正常删除、部分删除或幂等 NotFound 后，只有成功取得 S2 且 Desired 覆盖成立时才采用 `len(plan2.CleanupCandidates)`；否则保留 S1 与 Provider 确认进度的 fallback。NotFound 始终不增加 `deleted/cleanup_deleted`，S2 Describe/覆盖失败仍为 `failed`。 | `TestCleanup_IdempotentNotFoundUsesS2FinalCandidates` 覆盖 `1/0/0`、`2/0/1`、`2/0/2` 及 S2 新增残留导致 deferred 大于 candidates；`TestCleanup_IdempotentNotFoundStillFailsWhenS2Untrusted` 覆盖 Describe/覆盖失败与错误事件；`TestStoreLogWriter_ProductionChainPersistsNotFoundS2Convergence` 证明目标事件、整轮事件和 SQLite 一致记录 `1/0/0`。既有正常删除、R7-01 重试、ECS 部分删除控制与全量门禁继续通过。 |
+| R7-05 | **P3 / 测试缺口** | ✅ 已本地修复（未提交） | **失效字符串断言已替换为结构化 JSON 合同检查。** `validateDryRunArrayJSON` 与 `requireJSONArray` 使用 `map[string]json.RawMessage` 区分字段缺失、`null`、`[]` 与错误类型；检查顶层 `results`/`warnings` 及每个目标的十个数组字段。当前三种真实输出均满足合同，未发现生产 `null`，因此未修改 DTO、planner、API 或前端。 | `TestDryRun_ArraysNeverNull` 覆盖有适用规则、R7-03 无适用规则骨架、零目标/零结果；`TestValidateDryRunArrayJSON_RejectsInvalidShapes` 对两个顶层字段与十个目标字段逐一注入 `null`、缺失、对象类型，并拒绝 `null` 目标项。定向测试、Syncer 单包 race、两包 20 轮 race、全量 race 连续 3 次及静态/前端门禁均通过。 |
+| R7-06 | **门禁可靠性** | ✅ 已修复并提交（`b19d271`） | `realHTTPTimeoutError` 现保存全部 accepted `net.Conn` 强引用，并在 cleanup 中按“关闭 listener → 等待 Accept goroutine → 关闭连接”回收；真实 `*url.Error`、awaiting-headers 文本与生产 `isRetryable` 均未放宽。 | `GOGC=1 go test ./syncer -run '^TestIsRetryable_RealWorldShapes$' -count=50` 与包含全部清理用例的 `-race -count=20` 通过；未修改生产重试集合。 |
+| R7-07 | **门禁可靠性 / 新增** | ✅ 已修复并提交（`b19d271`） | `aliBlockingServer` 以包内 mutex/WaitGroup 保存并有界回收 accepted connections；四条真实 HTTP 构造路径、150ms 下限和生产 10s/30s 默认值均未修改。 | `GOGC=1 go test ./provider -run '^TestAliClientRequestIsBounded$' -count=20` 与同用例 `-race -count=20` 通过；未修改 Provider 或生产超时。 |
 
 #### 12.5.1 R7-04 固定计数语义
 
@@ -1012,6 +1013,8 @@ R7-04 实施时必须同时满足以下口径，避免为了让三个数字表�
 
 测试至少覆盖有适用规则目标、R7-03 无适用规则骨架、零目标/零结果三种成功形状。检查 helper 应返回 error，并用人工构造的 null JSON 负向样本证明旧断言会漏报而新断言会拒绝；不能只证明当前成功输出能通过。当前生产构造仍显式初始化非 nil slice，因此若新测试没有发现真实 null，不得借 R7-05 修改 DTO 或生产实现。
 
+**实施结果（2026-09-30）：** `requireJSONArray`/`validateDryRunArrayJSON` 已按上述合同落地；除合同要求的代表性负向样本外，还对两个顶层字段与十个目标数组字段逐一覆盖 `null`、缺失、对象类型，并拒绝 `results` 中的 `null` 目标项。三种真实成功形状均通过且未发现生产 `null`，故生产 DTO、planner、API 与前端保持不变。
+
 #### 12.5.3 R7-06/R7-07 共用根因与修复边界
 
 两项都属于测试夹具生命周期错误，不是当前已确认的生产超时或重试回归。根因链固定为：`Accept` 成功 → 返回的 `net.Conn` 未保存 → 连接对象可达性丢失 → GC/finalizer 关闭底层 fd → 客户端提前收到 reset/EOF。修复只能稳定测试服务端生命周期，不得改生产重试集合、阿里云超时、Provider 调用链或断言阈值。
@@ -1022,9 +1025,9 @@ R7-04 实施时必须同时满足以下口径，避免为了让三个数字表�
 
 1. **R7-06 + R7-07 已完成：** 只修两个测试夹具并恢复可信门禁，未改变生产错误分类或超时。
 2. **R7-04 已完成：** 以 S2 planner 校正最终残留，只改清理结果传递和判别性测试，未改 Provider 删除安全与外部 Schema。
-3. **下一项 R7-05：** 替换失效字符串断言，加入 null 负向控制；没有真实 null 时不改生产 DTO。
-4. **统一本地收口：** 依次运行 `GOGC=1 go test ./syncer -run '^TestIsRetryable_RealWorldShapes$' -count=50`、`GOGC=1 go test ./provider -run '^TestAliClientRequestIsBounded$' -count=20`、两个包的 `-race -count=20` 稳定性门禁、`go test ./... -race -count=1` 连续至少 3 次、`go vet ./...`、`go build ./...`、前端 `npm run build` 与 `git diff --check`。
-5. **最后文档闭环：** 按实际提交/门禁结果更新本节、`AGENTS.md` 与审核报告；真实云、浏览器、远端 CI/GHCR 未执行的边界继续保留，不得由本地稳定性门禁替代。
+3. **R7-05 已完成：** 失效字符串断言已替换为两层 `json.RawMessage` 检查并加入逐字段 null/缺失/错误类型负向控制；真实输出未发现 null，生产 DTO 未改。
+4. **统一本地收口已完成：** 两个 GOGC 压力用例、两个包的 `-race -count=20`、`go test ./... -race -count=1` 连续 3 次、`go vet ./...`、`go build ./...`、前端 `npm run build` 与 `git diff --check` 均通过。Syncer 20 轮首次因 Go 默认 10m 总超时中止，保持次数不变并显式设置 `-timeout=20m` 后完整通过。
+5. **文档闭环已完成但尚未提交：** 已按实际结果更新本节、`AGENTS.md` 与审核报告；真实云、浏览器、远端 CI/GHCR 未执行的边界继续保留，不得由本地稳定性门禁替代。
 
 **实施停止条件：** 任一修复通过放宽业务断言、降低超时下限、扩大 `isRetryable`、虚增幂等删除计数、跳过 S2，或把一次全量绿色写成稳定绿色时，立即停止该批次；若 S2 最终候选口径与 §5.4/§5.5 出现新的不可调和冲突，也必须暂停并交由用户裁决。
 

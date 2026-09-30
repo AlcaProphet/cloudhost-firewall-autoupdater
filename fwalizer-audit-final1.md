@@ -35,7 +35,7 @@
 | 范围 | 当前状态 | 当前入口 |
 |---|---|---|
 | P0-01 | ✅ 已由 `108e528` 修复；原证据与回归必须保留 | Issue7 Step 1 重构 functional key 时保持绿色回归 |
-| P1-01 | 🟠 主体已实施（Step 1～5 提交 `28559ed`；F1/F5 补强提交 `38bdc19`；R7-01～R7-03 已分别提交），但完整复核仍有 R7-04～R7-07 未完成；真实云/浏览器/远端 CI 仍未执行 | [Issue7.md](./Issue7.md) §12.3 实施证据、§12.4 已提交补强、§12.5 未完成项与推荐串行顺序 |
+| P1-01 | 🟠 本地主体与 R7-01～R7-07 完整复核项均已实施（R7-01～R7-04/R7-06/R7-07 已提交，R7-05 当前工作树未提交）；真实云/浏览器/远端 CI 仍未执行 | [Issue7.md](./Issue7.md) §12.3 实施证据、§12.4 已提交补强、§12.5 R7 修复与本地门禁 |
 | P1-02 | 🔵 真实存在；已决定采用 `flock`，当前仍未实施 | 独立高优先级队列 I-01；同时收口 P3-08；本轮仅更新审计记录 |
 | P2-01 | ✅ 已实施（canonical family/协议归一化，IPv6 ICMP 与云端协议别名收敛） | Issue7 Step 1；保留原审计红灯作为正向控制 |
 | P2-03 | ✅ 已实施（能力矩阵产出 `unsupported_*`，目标 `partial` 且冻结清理） | Issue7 Step 1；旧“仅 WARN/Dry Run、不计 skipped”决策仅作历史记录 |
@@ -53,7 +53,7 @@
 - [x] **Step 1｜纯规划器与失败先行用例**：已完成（严格 TAG 所有权、唯一 `FunctionalKey`、能力矩阵、目标级纯 planner、快照 revision、ECS token 保护）。
 - [x] **Step 2｜目标级先增后验**：已完成（`S0 → Add(S0 版本) → S1 → 覆盖验证`；Add/验证失败时删除调用恒为 0）。
 - [x] **Step 3｜四平台条件清理**：已完成（Lighthouse→CVM→SWAS→ECS 串行；安全门 + S1 定位 + S2 强制 + 残留计数）。
-- [x] **Step 4｜Dry Run、事件、日志、Dashboard 与健康口径**：主体已实施；R7-02 已提交为 `eab4bea`，R7-03 已按用户裁决 A 修复并提交为 `297ccfe`——所有已配置目标各返回一项，无适用规则目标以零 DNS/云 API/planner 的未调度空骨架展示。R7-04～R7-07 仍按 Issue7 §12.5 独立处理，不回退 Step 4 主体状态。
+- [x] **Step 4｜Dry Run、事件、日志、Dashboard 与健康口径**：主体已实施；R7-02 已提交为 `eab4bea`，R7-03 已提交为 `297ccfe`，R7-04/R7-06/R7-07 已提交为 `b19d271`，R7-05 已按测试-only 边界在当前工作树修复。真实外部验收仍按 Issue7/ProdTestList 独立保留。
 - [x] **Step 5｜完整门禁与真实云验收**：本地部分已完成（`go test -race`/vet/build/gofmt/前端/compose/docker build/真实二进制/容器验收与文档闭环）；独立核验补强后复跑门禁为 12/12 包 ok，但 `go test ./... -race -count=1` 存在一个与本项无关的既有 flaky 用例（`TestIsRetryable_RealWorldShapes`，见 Issue7 §12.4 F2），不得把单次绿色外推为稳定绿色；**真实云与浏览器仍待人工执行**（PT-I7-01～07）。
 
 **主线停止条件**：必须逐 Step 实施和验收；任一 Step 未满足 [Issue7.md](./Issue7.md) 的停止条件时，不进入下一 Step。不得把 mock、单测、本地进程或 Docker 结果外推为真实云验收。
@@ -91,27 +91,27 @@
   **用户决策记录：** 当前 AGENTS.md、Issue7 §5.4、§5.5、§12.5.1 对本项没有直接冲突，不需要用户裁决。唯一边界选项是：A（推荐）按现合同允许 S2 发现的新 Owned 残留使 `cleanup_deferred > cleanup_candidates`，因为两字段分别来自 S1 与成功 S2；B 新增 `deferred <= candidates` 约束，但会掩盖 S2 的新残留并改变既定字段语义。推荐 A，影响是实现与验收必须断言“最终 S2 候选数”而不能用 S1 候选数作上限；若用户要求 B，应在实施前停止并重新修订 Issue7 §12.5.1、计数合同和测试矩阵。
 
   **停止条件：** 未完成上述判别性测试和定向门禁前，保持 I-15 未修复；不得把一次绿色运行写成稳定绿色。若修复通过修改 Provider 的 `DeleteResult.Resolved` 定义、扩大 `isIdempotentDelete`、跳过 S2、把 NotFound 计入 `cleanup_deleted`、把 S2 不完整结果当最终计数、改变 `success + cleanup_deferred`/OperationalHealth 语义，或牵连 R7-06/R7-07、真实云验收范围，应立即停止并重新审查合同。
-- [ ] **I-16｜Issue7 R7-05（P3）**：🔵 **问题真实存在，当前仍未修复；本轮仅完成审计记录更新，未修改源码、测试或运行门禁。** 这是数组非 `null` 测试门禁失效，不是当前已确认的生产 `null` 序列化缺陷。
+- [x] **I-16｜Issue7 R7-05（P3）**：✅ **已于 2026-09-30 按测试-only 边界本地修复，尚未提交。** 失效的数组非 `null` 字符串门禁已替换为结构化 JSON 合同检查；实际 Dry Run 输出未发现生产 `null`，故未修改生产 DTO、planner、API 或前端。
 
-  **当前状态与证据：** 当前基线为 HEAD `34aa9b859c38904e701a19d672dcc4f65435b31c`，`main == origin/main`；工作树原有未提交修改仅涉及本报告，源码与测试没有本轮改动，本轮未运行构建、测试、格式化或其他写入性门禁。`syncer/dryrun_test.go:209-233` 的 `TestDryRun_ArraysNeverNull` 字段列表已经包含引号（如 `"results"`），但断言再次拼接 `"`，实际搜索 `""results"":null`，无法匹配合法 JSON 的 `"results":null`。因此即使响应退化为 `{"results":null}`，当前测试也会通过。该测试同时只做原始字符串搜索，不检查字段存在、JSON 类型或目标结果内部数组。
+  **修复前证据：** 基线 `syncer/dryrun_test.go:209-233` 的 `TestDryRun_ArraysNeverNull` 字段列表已经包含引号（如 `"results"`），但断言再次拼接 `"`，实际搜索 `""results"":null`，无法匹配合法 JSON 的 `"results":null`。因此即使响应退化为 `{"results":null}`，旧测试也会通过；它同时不检查字段存在、JSON 类型或目标结果内部数组。
 
-  **生产侧正向证据与准确结论：** 当前源码仍有较充分的非空初始化：`syncer/syncer.go:602-617` 的 `emptyDryRunResult` 初始化目标级全部数组，`:630-631` 初始化 `DryRunResponse.Results`/`Warnings`，`:646-653` 对无适用规则目标返回该骨架；`syncer/target.go:455-467` 的 `ruleHosts` 使用 `make`；`provider/plan.go:434-447` 初始化规划结果数组。故目前尚未发现已确认的生产 `null` 输出，但这些静态初始化不能弥补失效断言；数组非 `null` 的自动化证据仍不成立。另有 `assertUnscheduledDryRunResult` 的内存级 nil 检查，但它不能证明最终 JSON 序列化形状。
+  **生产侧正向证据与准确结论：** 当前源码有充分的非空初始化：`syncer/syncer.go:602-617` 的 `emptyDryRunResult` 初始化目标级全部数组，`:630-631` 初始化 `DryRunResponse.Results`/`Warnings`，`:646-653` 对无适用规则目标返回该骨架；`syncer/target.go:455-467` 的 `ruleHosts` 使用 `make`；`provider/plan.go:434-447` 初始化规划结果数组。修复前这些静态初始化与内存级 nil 检查不能证明最终 JSON 形状；本轮新增结构化序列化测试后，三种真实输出的数组非 `null` 自动化证据已成立，且未发现生产缺陷。
 
-  **最小修复设计：** 仅修改 `syncer/dryrun_test.go`。删除重复引号字符串搜索，增加仅供测试使用且返回 `error` 的结构化 helper：先将响应解码为 `map[string]json.RawMessage`，检查顶层 `results`、`warnings` 的字段存在、非 `null` 且为 JSON array；再逐个解码 `results` 目标对象，检查 `domains`、`desired`、`satisfied_by_owned`、`satisfied_by_external`、`to_add`、`cleanup_candidates`、`cleanup_deferred`、`dns_errors`、`unsupported`、`conflicts` 的字段存在、非 `null` 且为 JSON array。不能只解码为 `DryRunResponse`/`DryRunResult`，因为类型化解码无法区分字段缺失、`null` 与 `[]`。保留现有正向场景并补齐三种序列化形状：有适用规则目标、R7-03 无适用规则目标骨架、零目标/零结果；加入人工构造的顶层 `results:null`、目标内 `domains:null`、缺失字段、非数组字段等负向样本，证明 helper 具备判别力。若结构化测试实际发现生产响应为 `null`，必须停止并重新审查 DTO 构造路径，不能借本项扩大生产修改范围。
+  **实际修复：** 仅修改 `syncer/dryrun_test.go`。`requireJSONArray` 与 `validateDryRunArrayJSON` 使用 `map[string]json.RawMessage` 检查顶层 `results`、`warnings` 及每个目标的 `domains`、`desired`、`satisfied_by_owned`、`satisfied_by_external`、`to_add`、`cleanup_candidates`、`cleanup_deferred`、`dns_errors`、`unsupported`、`conflicts`：字段必须存在、非 `null` 且为 JSON array。正向覆盖有适用规则目标、R7-03 无适用规则骨架、零目标/零结果；负向对两个顶层字段和十个目标数组字段逐一注入 `null`、缺失、对象类型，并拒绝 `null` 目标项。结构化测试未发现生产响应为 `null`。
 
-  **受影响文件与明确排除：** 预计只影响 `syncer/dryrun_test.go` 的 imports、现有 `TestDryRun_ArraysNeverNull`、测试 helper、成功形状与负向控制。不得修改 `syncer/syncer.go` 的 `DryRunResponse`/`DryRunResult`/`emptyDryRunResult`、`provider/plan.go` 的 `TargetPlan`/`PlanTarget`、WebUI API、前端 Dry Run 页面、R7-04 清理计数逻辑、R7-06/R7-07 测试夹具或生产超时参数。
+  **受影响文件与明确排除：** 实际只修改 `syncer/dryrun_test.go` 的 imports、`TestDryRun_ArraysNeverNull`、测试 helper、成功形状与负向控制。未修改 `syncer/syncer.go`、`provider/plan.go`、WebUI API、前端 Dry Run 页面、R7-04 清理计数逻辑、R7-06/R7-07 测试夹具或生产超时参数。
 
-  **判别性验收：** 修复后必须证明：①有适用规则目标的实际 `DryRun()` JSON 顶层数组和目标级数组均存在、为 array 且非 `null`；②R7-03 无适用规则目标仍出现在 `results`，其全部目标级数组序列化为 `[]`；③零目标/零结果的 `results` 仍为 `[]`；④顶层 `results:null`、目标内 `domains:null`、缺失字段、`results:{}`、目标数组字段为对象等人工 JSON 均被 helper 拒绝。先执行 `go test ./syncer` 及其 `-race` 定向门禁；再按 Issue7 §12.5.4 在 R7-06/R7-07、R7-04 完成后进行多轮全量 race、vet、build、前端与 diff-check。以上命令本轮均未执行，不能预先写成通过，也不得以单次绿色外推为稳定绿色。
+  **判别性验收结果：** 三种真实 `DryRun()` JSON 成功形状与逐字段负向控制均通过；`go test ./syncer -race -count=1` 通过。R7-06/R7-07 的两个 GOGC 压力门禁通过；`go test ./syncer -race -count=20 -timeout=20m` 以 892.213s 通过（首次未加 `-timeout` 时因 Go 默认 10m 总超时中止，不记为通过），`go test ./provider -race -count=20 -timeout=20m` 以 42.256s 通过；全量 12 包 race 连续 3 次、vet、build、前端 build 与 diff-check 均通过。
 
   **风险、外部依赖与范围边界：** 主要风险是继续把无判别力的测试当作数组序列化合同，导致未来 `null`、缺失或错误类型回归无法被门禁发现；反向样本必须保留，且必须使用 `json.RawMessage` 保留结构差异。R7-05 本身可由本地源码与 JSON 测试完全证明，不依赖真实腾讯云/阿里云、浏览器、SMTP、Webhook、Uptime Kuma 或远端 CI/GHCR；但这不改变 P1-01 的整体边界，PT-I7-01～07 及真实外部验收仍未执行，本项本地证据不得外推为真实云或浏览器通过。
 
-  **用户决策记录：** 当前 AGENTS.md、Issue7 §12.5.2 与现有源码边界一致，没有需要用户裁决的冲突。实施选项为：A（推荐）仅修复 `syncer/dryrun_test.go`，使用 `json.RawMessage` 做两层结构化数组检查并加入真实 `null`/缺失/非数组负向控制，保持生产 DTO 与序列化逻辑不变；B 直接修改生产 DTO 或 API 以“保证”非空，但会在尚未证明生产输出为 `null` 时扩大范围并混淆测试证据与生产修复，故不推荐。若新测试发现真实生产 `null` 或用户要求选择 B，应在实施前停止，重新审查并明确生产修复边界。
+  **用户决策记录：** 用户授权按推荐选项 A 实施：仅修复 `syncer/dryrun_test.go`，使用 `json.RawMessage` 做两层结构化数组检查并加入真实 `null`/缺失/非数组负向控制，保持生产 DTO 与序列化逻辑不变。实际测试未发现生产 `null`，因此未进入选项 B 的生产修复边界。
 
-  **停止条件：** 未完成上述结构化成功形状、负向控制和定向 race 门禁前，保持 I-16 未修复；不得把修复测试本身写成生产缺陷已修复。若修改任何生产 DTO、planner、API、前端、序列化逻辑或其他 R7 项，若删除 `null` 负向控制、只保留字符串搜索/内存级 nil 检查，若把缺失字段或非数组误判为通过，或以单次绿色运行宣称稳定通过，应立即停止并重新审查合同。
+  **停止条件核对：** 已完成结构化成功形状、逐字段负向控制、定向 race 与多轮稳定性门禁；未修改生产 DTO、planner、API、前端、序列化逻辑或其他 R7 项，也未把测试修复写成生产缺陷修复。I-16 可按本地测试证据关闭，但外部验收边界不变。
 - [ ] **I-17｜Issue7 R7-06（门禁可靠性）**：🔵 **当前仍未修复，问题真实存在于测试夹具而非生产重试逻辑。** 精确受影响文件/符号为 `syncer/retry_test.go` 的 `realHTTPTimeoutError`，及其调用者 `TestIsRetryable_RealWorldShapes`、`TestRetrySync_RealTimeoutTriggersSecondFullAttempt`、`TestRetrySync_ExhaustsThreeAttempts`：`Accept()` 成功返回的 `net.Conn` 被直接丢弃，失去强引用后可能由 Go 的 `netFD` finalizer 提前关闭，客户端于是得到 `connection reset by peer`/EOF，而不是等待真实 `http.Client.Timeout` 的 awaiting-headers 超时。最小修复仅稳定本地测试服务器生命周期：保存全部 accepted connections，cleanup 依次关闭 listener、等待 Accept goroutine 退出，再逐个关闭并清空保存的连接；必要时使用 mutex + `acceptDone`/`WaitGroup` 保证并发访问与回收有界。判别性门禁为 `GOGC=1 go test ./syncer -run '^TestIsRetryable_RealWorldShapes$' -count=50`，并保留真实 `*url.Error`、`Client.Timeout exceeded while awaiting headers` 与 `isRetryable=true` 断言；随后再做 `syncer` 定向 race/稳定性门禁。验收仅覆盖本地测试夹具、真实标准库 HTTP 超时形状与生产重试分类的门禁可靠性；无真实云、浏览器、SMTP/Webhook/Uptime Kuma 或远端 CI/GHCR 外部依赖，也不得以这些层次替代本项本地证据。停止条件：若修改生产 `isRetryable`、把 `connection reset by peer` 加入可重试集合、降低/放宽真实超时断言、修改生产 10s/30s 超时，或以单次绿色宣称稳定通过，立即停止；本项修复完成后仍须保持 I-17 未与 R7-07 混成单一证据。
 - [ ] **I-18｜Issue7 R7-07（门禁可靠性）**：🔵 **当前仍未修复，问题真实存在于测试夹具而非生产阿里云超时配置或调用链。** 精确受影响文件/符号为 `provider/ali_timeout_test.go` 的 `aliBlockingServer`，以及其驱动的 `TestAliClientRequestIsBounded`：`Accept()` 成功返回的 `net.Conn` 当前被直接丢弃，失去强引用后可能由 Go 的 `netFD` finalizer 在毫秒级提前关闭，四条构造路径因此可能得到 EOF/`connection reset by peer`，而不是稳定阻塞到应用层 timeout。研究与修复范围仅限本地 TCP 测试夹具：保存全部 accepted `net.Conn`，cleanup 按“关闭 listener → 等待 Accept goroutine 退出 → 逐一关闭并清空已保存连接”的顺序回收；必要时用 mutex + `acceptDone`/`WaitGroup` 保证并发访问与回收有界。
 
-  **2026-09-30 实施补记（优先于 I-15/I-17/I-18 的上述研究快照）：** I-17/R7-06 与 I-18/R7-07 已按固定顺序仅修复包内测试夹具，accepted connections 均持有至 cleanup 并有界回收；I-15/R7-04 已按方案 A 删除 `cleanupResolved` 间接推导，以私有 `cleanupResult` 直接传递实际删除与最终残留，可信 S2 planner 成为 `cleanup_deferred` 唯一最终来源。新增目标级 `1/0/0`、`2/0/1`、`2/0/2`、S2 新增残留、S2 失败 fallback 与真实目标事件/整轮事件/SQLite `1/0/0` 整链用例。两个 GOGC 压力门禁、定向 `-race -count=20`、全量 race 连续 3 次、vet、build、前端 build、diff-check 均本地通过；改动未提交。I-16/R7-05 仍未完成，真实云、浏览器与远端 CI/GHCR 仍未执行。
+  **2026-09-30 实施补记（优先于 I-15/I-17/I-18 的上述研究快照）：** I-17/R7-06、I-18/R7-07 与 I-15/R7-04 已提交为 `b19d271`：accepted connections 均持有至 cleanup 并有界回收；私有 `cleanupResult` 直接传递实际删除与最终残留，可信 S2 planner 成为 `cleanup_deferred` 唯一最终来源。I-16/R7-05 已在当前工作树按测试-only 边界修复，结构化数组合同与逐字段负向控制均成立，未修改生产代码。两个 GOGC 压力门禁、两包 `-race -count=20`、全量 race 连续 3 次、vet、build、前端 build、diff-check 均本地通过；R7-05 与文档改动尚未提交。真实云、浏览器与远端 CI/GHCR 仍未执行。
 
   必须保留四条阿里云构造路径、150ms 下限、`assertAliTimeout` 应用层 timeout 断言，以及生产 `newAliOpenAPIConfig` 的 10s `ConnectTimeout` / 30s `ReadTimeout` 正向默认值控制；不得修改生产超时、SDK、请求调用链或超时分类。验收仅为本地自动门禁，外部依赖为零；当前状态仍为待修复，完成前不得写成通过。风险是夹具继续把连接生命周期错误误报为已满足有界超时，导致门禁对 EOF/reset 假通过或间歇失败。停止条件：若修改生产超时/`isRetryable` 或其他生产分类逻辑、降低或放宽 150ms/应用层 timeout 断言、删减四条路径或以单次绿色宣称稳定通过，立即停止。本项与 R7-06（`syncer/retry_test.go` 的 `realHTTPTimeoutError`）同属 accepted connection 生命周期根因，但必须保持独立文件、符号、断言与证据，不能合并成单一结论。
 - [ ] **I-19｜P3-25（资源扫描路径）**：🔵 **问题真实存在，当前仍未修复；已修复的只是同步路径，不能外推到资源扫描路径。** 当前基线为 HEAD `34aa9b859c38904e701a19d672dcc4f65435b31c`、`main == origin/main`；本轮只更新本报告，源码与测试未改动，未运行构建、测试或格式化。`provider/scan.go:172-214` 的 `scanAliECS` 以 `nextToken` 驱动 `DescribeSecurityGroups` 分页，只在 `body.NextToken == nil` 或空字符串时结束，非空 token 直接继续请求；当前没有 `seenTokens`、当前 token 未推进检测、页数上限或 `snapshot_incomplete` 失败路径。因此当第 1 页返回 `T`、第 2 页仍返回 `T` 时，会持续发送相同 token，形成无界扫描循环。
@@ -130,12 +130,12 @@
 
   **停止条件：** 在 `scanAliECS` 实际加入 token 保护、三类判别性用例通过并取得受影响包门禁前，保持 I-19 未修复；不得把同步路径的绿色测试、正常真实云扫描或单次本地绿色运行写成该 finding 已关闭或稳定通过。若修改同步路径、HTTP/API 契约、缓存 schema、前端、SDK，加入未经合同支持的页数上限，返回半截资源，混入空响应语义，或把真实云正常分页当作重复 token 异常分支证据，应立即停止并重新审查范围。
 
-**I-15～I-19 推荐串行顺序：** 先合并处理 I-17+I-18，恢复可信门禁；再处理 I-15 的 S2 计数；再处理 I-16 的测试证据；随后单独处理 I-19 的资源扫描分页；最后执行压力用例、两个包的多轮 race、全仓 race 连续至少 3 次、vet/build/前端/diff-check，并按实际结果回写文档。不同 finding 仍须逐项串行，只有 R7-06/R7-07 因同根因可在同一串行批次中连续处理；该顺序是研究/实施入口，不代表本次已授权或已经修复。
+**I-15～I-19 串行状态：** I-17+I-18、I-15、I-16 已按顺序完成，统一压力/race/vet/build/前端/diff-check 门禁亦已完成；下一独立项为 I-19 的资源扫描分页。不同 finding 仍须逐项串行，R7-06/R7-07 仅因同根因在同一批次连续处理；本次 R7-05 授权不包含 I-19。
 
 ### 0.5 真实外部与人工验收
 
 - [ ] **PT-B7-01～09（9 项）**：仍未执行；真实 SMTP、收件箱、Webhook、Uptime Kuma、浏览器、当前 revision 的远端 CI/GHCR、SWAS Remark 上限均不得写成已通过。PT-B7-02/03 沿用人工免除决定，但仍无真实通过结论。
-- [ ] **PT-I7-01～07（7 项）**：Issue7 Step 1～4 主体已本地实施，真实清单已具备执行条件但仍**未执行**；四云写入/删除安全、异常分页零删除、目标级 Dry Run 与浏览器回归均需真实或人工证据（PT-I7-07 为本轮新增的残留/收敛观察项）。本地 R7-04～R7-07 仍按 Issue7 §12.5 独立收口，不能由真实验收替代。
+- [ ] **PT-I7-01～07（7 项）**：Issue7 Step 1～4 主体与 R7-01～R7-07 本地核验项已实施，真实清单仍**未执行**；四云写入/删除安全、异常分页零删除、目标级 Dry Run 与浏览器回归均需真实或人工证据（PT-I7-07 为残留/收敛观察项）。本地通过不能替代真实验收。
 - **外部/人工验收登记合计：16 项（PT-B7 9 + PT-I7 7），均不可表述为当前通过。**
 - [ ] P3-06 的 CVM 配额方向、P3-19/P3-20 的真实 SMTP/MTA 表现继续保留为外部不确定性。
 
@@ -149,9 +149,9 @@
 | **P1** | **2** |
 | **P2** | **9** |
 | **P3** | **25** |
-| **当前状态补记（2026-09-30）** | P0-01 已于 `108e528` 修复并加回归；R7-01～R7-03 已完成，R7-04～R7-07 未完成；P3-11/P3-22 已修复；P3-25 仅同步路径已修复，资源扫描路径仍未修复。上述 P0/P1/P2/P3 数量仍是审计当时的发现统计，不等于当前未修复数 |
+| **当前状态补记（2026-09-30）** | P0-01 已于 `108e528` 修复并加回归；R7-01～R7-07 本地核验项已完成（R7-05 尚未提交）；P3-11/P3-22 已修复；P3-25 仅同步路径已修复，资源扫描路径仍未修复。上述 P0/P1/P2/P3 数量仍是审计当时的发现统计，不等于当前未修复数 |
 | 会实际破坏云端防火墙规则的问题 | **有，已实测复现**（P0-01、P1-01、P2-01） |
-| 🟠 **P1-01 主体已实施（本地）** | 2026-09-29 定为“目标级完整期望集 + TAG 所有权 + comment 纯可读 + 先增后验 + 平台化条件删除 + 可接受残留”；Step 0～5 主体提交 `28559ed`，F1/F5 补强提交 `38bdc19`，R7-01～R7-03 已分别提交；完整复核仍有 R7-04～R7-07 未完成，见 Issue7 §12.5；**真实云/浏览器/远端 CI 仍未执行** |
+| 🟠 **P1-01 本地核验项已实施** | 2026-09-29 定为“目标级完整期望集 + TAG 所有权 + comment 纯可读 + 先增后验 + 平台化条件删除 + 可接受残留”；Step 0～5 主体提交 `28559ed`，F1/F5 补强提交 `38bdc19`，R7-01～R7-04/R7-06/R7-07 已提交，R7-05 已在当前工作树修复；**真实云/浏览器/远端 CI 仍未执行** |
 | ⏳ **未执行的外部/人工验收** | **16 项登记边界：PT-B7-01～09（9 项）+ PT-I7-01～07（7 项）**；其中 PT-B7-02/03 为人工免除但仍无真实通过结论 |
 | Goroutine / 连接 / 订阅泄漏 | **未发现** |
 | 无界内存 | 仅 DNS 熔断器域名 map（P3-01；增长受"曾用域名数"约束） |
@@ -161,11 +161,11 @@
 
 ### 一句话结论
 
-审计当时确认两条会每轮重复删改生产防火墙规则的路径：P0-01 已于 `108e528` 修复；P1-01 Step 1～5 主体已提交为 `28559ed`，F1/F5 补强已提交为 `38bdc19`，R7-01～R7-03 已分别完成并提交；当前仍有 R7-04～R7-07 未完成，不能无保留关闭；P3-25 只完成同步路径，资源扫描路径仍未修复；真实云/浏览器/远端 CI 仍未执行。当前入口见 [Issue7.md](./Issue7.md) §12.3～§12.5。
+审计当时确认两条会每轮重复删改生产防火墙规则的路径：P0-01 已于 `108e528` 修复；P1-01 Step 1～5 主体已提交为 `28559ed`，F1/F5 补强已提交为 `38bdc19`，R7-01～R7-04/R7-06/R7-07 已提交，R7-05 已在当前工作树修复；本地核验项已收口，但真实云/浏览器/远端 CI 仍未执行，不能写成外部验收或发布闭环；P3-25 只完成同步路径，资源扫描路径仍未修复。当前入口见 [Issue7.md](./Issue7.md) §12.3～§12.5。
 
 > ⚠️ **可立即执行与待决的区分**：
 > - **P0-01（阿里云端口 key 不对称）已修复**：提交 `108e528`，回归 `TestDiff_AliyunPortRoundTripConverges`；Issue7 Step 1 的新规划器已保持该绿色回归。
-> - **P1-01 主体已实施（Step 1～5，本地）**：严格 TAG 命名空间、canonical `FunctionalKey`、目标级 planner、先增后验状态机与四平台条件清理主线已落地；核验补强修复了 Lighthouse 多端口展开与 SWAS 分页上限缺口并提交为 `38bdc19`，R7-01～R7-03 已分别提交。R7-04～R7-07 仍待按 Issue7 §12.5.4 串行处理；真实四云/浏览器/远端 CI 仍待人工执行。
+> - **P1-01 本地核验项已实施**：严格 TAG 命名空间、canonical `FunctionalKey`、目标级 planner、先增后验状态机与四平台条件清理主线已落地；核验补强提交为 `38bdc19`，R7-01～R7-04/R7-06/R7-07 已提交，R7-05 已在当前工作树修复。真实四云/浏览器/远端 CI 仍待人工执行。
 > - **P1-02（容器 pidfile 崩溃循环）仍为独立未修复项**：源码仍使用 PID 判活，方案已定为 `flock`；本轮只更新本报告，不赋予代码实施授权，也没有取得当前 Docker/进程门禁证据。
 
 ### 本次审核中被驳回的候选（**请勿据其动手**）
@@ -319,7 +319,7 @@ FAIL
 | **旧规则迁移** | ✅ **仍然有效** | 用户已确认**无历史兼容负担**，因此任何最终方案都**不需要** orphan 清理入口 / 迁移脚本 / 旧格式 WARN。此结论与身份形态无关，独立成立 |
 | **TAG 上限收紧（48→32）** | 🔶 **已撤回** | 该收紧**仅为配合方案 A** 而提出。`AGENTS.md:162` 未修改，`maxTagRunes` 仍为 **48**（`config/validate.go:34`） |
 
-**📚 历史授权边界（2026-09-29 Step 0 时）：** 当时尚未获得后续代码实施授权，故不得进入 Step 1。该句不代表当前状态；后续一次性授权已在本地完成 Step 1～5，当前仍有 R7-04～R7-07 待收口。TAG 上限 48 与 Lighthouse/SWAS 描述容量仍会挤压 comment 的可读长度，但不再影响功能身份或 P1-01 已实施的主线。
+**📚 历史授权边界（2026-09-29 Step 0 时）：** 当时尚未获得后续代码实施授权，故不得进入 Step 1。该句不代表当前状态；后续授权已在本地完成 Step 1～5 与 R7-01～R7-07 本地核验项。TAG 上限 48 与 Lighthouse/SWAS 描述容量仍会挤压 comment 的可读长度，但不再影响功能身份或 P1-01 已实施的主线。
 
 **跨方案共通的前提**（无论最终选哪个方案都成立）：
 
@@ -863,7 +863,7 @@ Step 0 已修正 `Design5.md` 当前 version 3 口径、Build7 状态与 `ProdTe
 | **startup/shutdown** | 启动顺序确定性化（`go s.Run()` → 有界等 `Started()` → 再启 `supervisor`/`pusher`）；信号在 HTTP 绑定**之前**注册；收尾顺序 `HTTP shutdown ‖ pusher→supervisor→syncer` 正确；`store.Close()` 在 `s.Wait()` 之后 | **P1-02 容器崩溃循环**；`Server.Start` 失败后 `started` 保持 true 且 `waitDone` 永不关闭（重试被拒、`Wait()` 永久阻塞，**当前接线不可达**）；`supervisor.Stop`/`pusher.Stop` 在 `Run` 从未启动时永久阻塞（Syncer 有 `runGuard`，这两个没有） | — | 按 P1-02 换 flock；与 Syncer 对齐给 supervisor/pusher 加 `started` 守卫 |
 | **配置事务与运行时发布** | **本项目最强的一环**：协调器 `锁 → 单事务 → 事务内快照 → 事务内构造候选 → commit → 无失败发布`；commit 后不读库不访问网络；`commit` 失败不 apply；`RuntimeState` 深拷贝 + 单锁替换；已证明**事务内无任何网络 I/O**（四个 SDK 工厂只做本地构造，无 IMDS/元数据/token 获取） | **P2-04 发布顺序**（Wake 早于 ApplyState） | — | 按 P2-04 决策调整顺序 + 同步修订 AGENTS.md:199 |
 | **同步调度** | 单一控制通道 + 4 处 `beginRound()` 硬门控（stop 门控与 enabled 门控**并列不合并**）；`Stop` 为吸收态且 `doneCh` 单所有者；`idle/failed/partial/success` 判定清晰 | P3-23 的无条件 Reset；P3-24 通知合并 | — | 仅 interval 实际变化时 Reset；`false → true` 保留恢复立即轮；按 Go 1.25 默认合同不加入 stale-tick drain，旧兼容模式另行裁决 |
-| **DNS/Provider** | 只使用**增量** API（已逐调用点验证，零全量覆盖 API）；TAG 精确匹配 + `Description` 匹配；熔断阈值随状态原子发布（普通变更 `Clone` 保留计数、导入重置）；`retrySyncDetailed` 每次 attempt 重新 `Describe → Diff → Create/Delete`；部分成功用 `PartialDeleteError` 如实累计 | **P1-01 完整复核 R7-04～R7-07**；P3-25 仅资源扫描路径仍未修复；`isRetryable` 依赖**字符串关键字兜底**（腾讯 SDK 错误类型无 `Unwrap`，属有据可查的妥协） | `retrySync` 死包装；`_txlock` 注释理由与驱动实现矛盾 | P0-01/P2-01/P2-02/P2-03 与同步路径 P3-25 已吸收；按 Issue7 §12.5 及独立队列逐项处理，重构后重新证明再删 `retrySync` |
+| **DNS/Provider** | 只使用**增量** API（已逐调用点验证，零全量覆盖 API）；TAG 精确匹配 + `Description` 匹配；熔断阈值随状态原子发布（普通变更 `Clone` 保留计数、导入重置）；`retrySyncDetailed` 每次 attempt 重新 `Describe → Diff → Create/Delete`；部分成功用 `PartialDeleteError` 如实累计 | P1-01 本地完整复核已收口但真实云未验收；P3-25 仅资源扫描路径仍未修复；`isRetryable` 依赖**字符串关键字兜底**（腾讯 SDK 错误类型无 `Unwrap`，属有据可查的妥协） | `retrySync` 死包装；`_txlock` 注释理由与驱动实现矛盾 | P0-01/P2-01/P2-02/P2-03 与同步路径 P3-25 已吸收；资源扫描分页继续按 I-19 独立处理，重构后重新证明再删 `retrySync` |
 | **告警** | 默认全关；`渠道开关 + 触发开关`同时开启才订阅；邮件与 Webhook **共用同一固定渲染器**（顺序稳定、不遍历 map）；4 在途 + 满载丢弃最新 + 安全 WARN；限流器跨热重载连续；`test-email` 8 字段契约两侧严格一致且不写库；P3-11 写库错误已能上抛 | **P2-04/P3-03 Push 时序与非法配置边界**；P2-05 Webhook 只看状态码；P3-15 丢弃日志逐条 WARN；P3-19/P3-20/P3-21 邮件与响应体细节 | — | 解析业务错误码；聚合丢弃日志；独立确认 P3-03 是否需要对非法 URL 增加定时重试 |
 | **OperationalHealth** | **唯一计算源被三个消费者真实共用**（`supervisor` / `operational` 端点 / `pusher` 都走同一个 `*health.Checker`）；2s 非阻塞探活（`Store` 结构体**无互斥量**，不持应用锁）；`StartupGrace=10s` 三分支正确；`failed/partial` 直到被 `success/idle` 覆盖；原因稳定去重排序；30s 边沿监督器 | 判定输入来自三次独立 `Snapshot()`（`run.go:127-142`），注释自述"一致快照"但可能混用新旧 policy/interval → 30s 内一次瞬时误判，自愈 | `slices.Compact` 冗余 | 一次取 `*RuntimeState` 后派生 policy/interval |
 | **HTTP/SSE** | 严格解码齐全（未知字段/尾随/多顶层值/10 MiB/1 MiB/413）；路径 ID `strconv.Atoi` 且 >0；请求 DTO 不含 DB `id`；导出 GET 已删（实测 405）；两类 SSE 监听服务器级 `ShutdownCh` 且每次写出有 5s deadline | P3-05 缺 `no-store`；P3-14 400/503 语义；`GET /api/alerts` 4 次非事务读存在撕裂窗口（PUT 单事务写，读侧可能"新 policy + 旧 email"，前端整体回传即把旧值写回） | `fs.Sub` 静默降级 | 补 `no-store`；GET alerts 改只读事务取快照 |
@@ -951,7 +951,7 @@ Step 0 已修正 `Design5.md` 当前 version 3 口径、Build7 状态与 `ProdTe
 
 > **本章是 P1-01 及其全部关联内容的唯一集中位置。**
 >
-> **状态（2026-09-29）**：用户已定案“目标级完整期望集 + TAG 所有权 + comment 纯可读 + 先增后验 + 平台化条件删除 + 无法证明安全时保留残留”，Step 1～5 主体已提交为 `28559ed`；Lighthouse 多端口与 SWAS 分页上限补强已提交为 `38bdc19`（Issue7 §12.4）；R7-01～R7-03 已分别提交为 `b80b1b0`、`eab4bea`、`297ccfe`。完整复核确认核心 planner/TAG/四平台安全主线成立，但 R7-04～R7-07 仍未完成，不能把 P1-01 无保留标记为全部闭环（Issue7 §12.5）。**真实四云、浏览器回归与远端 CI/GHCR 仍未执行**（PT-I7-01～07）。`maxTagRunes` 仍为 48。
+> **状态（2026-09-30）**：用户已定案“目标级完整期望集 + TAG 所有权 + comment 纯可读 + 先增后验 + 平台化条件删除 + 无法证明安全时保留残留”，Step 1～5 主体已提交为 `28559ed`；Lighthouse 多端口与 SWAS 分页上限补强已提交为 `38bdc19`；R7-01～R7-04/R7-06/R7-07 已提交，R7-05 已在当前工作树修复。核心 planner/TAG/四平台安全主线与本地 R7 核验项已收口，但**真实四云、浏览器回归与远端 CI/GHCR 仍未执行**（PT-I7-01～07），故不能写成外部验收或发布闭环。`maxTagRunes` 仍为 48。
 
 ### 8.0 最终方案（取代本节后续的历史候选状态）
 
@@ -1199,7 +1199,7 @@ FAIL
 2. ✅ Step 2 实现目标级 Add → Describe → coverage verification 与安全门，Step 3 起门开即条件删除。
 3. ✅ Step 3 按 Lighthouse/CVM/SWAS/ECS 逐平台开启条件清理，同时吸收 P2-02。
 4. ✅ Step 4 主体已落地；R7-02 已提交为 `eab4bea`，R7-03 已按裁决 A 修复并提交为 `297ccfe`，Dry Run 展示所有已配置目标且无适用规则目标零云调用；Dashboard/健康主线与 P2-08/P2-09 修复保持成立。
-5. ◧ Step 5 本地二进制/Docker 与主体门禁证据已取得，F1/F5 补强已提交；R7-04～R7-07 及 **PT-I7 四云/浏览器真实验收**仍未完成。
+5. ◧ Step 5 本地二进制/Docker 与主体门禁证据已取得，F1/F5 补强已提交，R7-01～R7-07 本地核验项已收口；**PT-I7 四云/浏览器真实验收**仍未完成。
 
 > P0-01 与 P2-01 均是必保留的绿色回归；P2-01 已在唯一 canonical functional key 中修复，不再是失败先行项。P1-02/flock 仍是可独立实施的高优先级项，但不是 P1-01 的前置。
 
@@ -1367,8 +1367,8 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 | 更正表述 | P0-01 影响由"每轮全量替换/净规则丢失"更正为"同一条规则被删+建，**非净丢失**；净丢失需与 IP 变更叠加" |
 | 方法学更正 | P1-02 首次测试（`--volumes-from`）未能复现，改用持久命名卷后确认；已在正文如实记录 |
 | 纳入决策 | 用户 7 项决策写入第 9 节与相应 finding |
-| P1-01 状态继续更新 | 2026-09-28 的“待决策/已冻结”已于 2026-09-29 被第 8 节最终方案取代；Step 0～5 主体提交为 `28559ed`，F1/F5 补强提交为 `38bdc19`，R7-01～R7-03 已分别提交；完整复核未完成项与串行顺序见 Issue7 §12.5 R7-04～R7-07；`maxTagRunes` 仍为 48，SWAS `Remark` 上限仍登记为 PT-B7-09 |
-| 当前复核状态（2026-09-30） | 当前 HEAD 为 `34aa9b8` 且 `main == origin/main`；R7-01～R7-03 完成、R7-04～R7-07 未完成；P3-11/P3-22 已修复；P3-25 拆分为同步路径已修复、资源扫描路径未修复；外部/人工验收登记为 PT-B7 9 项 + PT-I7 7 项，均未执行/不得写成通过 |
+| P1-01 状态继续更新 | 2026-09-28 的“待决策/已冻结”已于 2026-09-29 被第 8 节最终方案取代；Step 0～5 主体提交为 `28559ed`，F1/F5 补强提交为 `38bdc19`，R7-01～R7-04/R7-06/R7-07 已提交，R7-05 当前工作树已修复；`maxTagRunes` 仍为 48，SWAS `Remark` 上限仍登记为 PT-B7-09 |
+| 当前复核状态（2026-09-30） | 当前 HEAD 为 `b19d271`，`main` 相对 `origin/main` ahead 1；R7-01～R7-07 本地核验项完成，R7-05 与文档改动未提交；P3-11/P3-22 已修复；P3-25 拆分为同步路径已修复、资源扫描路径未修复；外部/人工验收登记为 PT-B7 9 项 + PT-I7 7 项，均未执行/不得写成通过 |
 
 ## 附录 B：规则身份专题（已移至正文第 8 节）
 

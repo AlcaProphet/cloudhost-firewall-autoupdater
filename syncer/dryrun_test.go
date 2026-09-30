@@ -1,8 +1,9 @@
 package syncer
 
 import (
+	"bytes"
 	"encoding/json"
-	"strings"
+	"fmt"
 	"testing"
 	"time"
 
@@ -206,30 +207,194 @@ func assertUnscheduledDryRunResult(t *testing.T, result DryRunResult) {
 	}
 }
 
-// TestDryRun_ArraysNeverNull 所有数组字段必须序列化为 []，不得为 null。
-func TestDryRun_ArraysNeverNull(t *testing.T) {
-	p := newProbeProvider(config.CloudTCLighthouse, 1)
-	rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
-	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+var dryRunResultArrayFields = []string{
+	"domains",
+	"desired",
+	"satisfied_by_owned",
+	"satisfied_by_external",
+	"to_add",
+	"cleanup_candidates",
+	"cleanup_deferred",
+	"dns_errors",
+	"unsupported",
+	"conflicts",
+}
 
-	resp, err := s.DryRun()
-	if err != nil {
-		t.Fatalf("DryRun 失败: %v", err)
+// requireJSONArray 检查字段存在且 JSON 值是非 null 数组，并返回数组元素供上层继续检查。
+func requireJSONArray(obj map[string]json.RawMessage, field string) ([]json.RawMessage, error) {
+	raw, ok := obj[field]
+	if !ok {
+		return nil, fmt.Errorf("缺少字段 %q", field)
 	}
-	raw, err := json.Marshal(resp)
-	if err != nil {
-		t.Fatalf("序列化失败: %v", err)
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, fmt.Errorf("字段 %q 不得为 null", field)
 	}
-	body := string(raw)
-	for _, field := range []string{
-		`"results"`, `"warnings"`, `"domains"`, `"desired"`, `"satisfied_by_owned"`,
-		`"satisfied_by_external"`, `"to_add"`, `"cleanup_candidates"`, `"cleanup_deferred"`,
-		`"dns_errors"`, `"unsupported"`, `"conflicts"`,
-	} {
-		if strings.Contains(body, `"`+field+`":null`) {
-			t.Errorf("字段 %s 不得为 null: %s", field, body)
+
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, fmt.Errorf("字段 %q 必须是数组: %w", field, err)
+	}
+	if items == nil {
+		return nil, fmt.Errorf("字段 %q 不得解码为 nil 数组", field)
+	}
+	return items, nil
+}
+
+// validateDryRunArrayJSON 对 Dry Run JSON 的顶层与目标层数组合同做结构化检查。
+// 使用 RawMessage 保留字段缺失、null、[] 与错误 JSON 类型之间的差异。
+func validateDryRunArrayJSON(raw []byte) error {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return fmt.Errorf("解码 Dry Run 响应: %w", err)
+	}
+	if top == nil {
+		return fmt.Errorf("Dry Run 响应必须是 JSON 对象")
+	}
+
+	results, err := requireJSONArray(top, "results")
+	if err != nil {
+		return err
+	}
+	if _, err := requireJSONArray(top, "warnings"); err != nil {
+		return err
+	}
+
+	for i, rawResult := range results {
+		var result map[string]json.RawMessage
+		if err := json.Unmarshal(rawResult, &result); err != nil {
+			return fmt.Errorf("results[%d] 必须是对象: %w", i, err)
+		}
+		if result == nil {
+			return fmt.Errorf("results[%d] 必须是非 null 对象", i)
+		}
+		for _, field := range dryRunResultArrayFields {
+			if _, err := requireJSONArray(result, field); err != nil {
+				return fmt.Errorf("results[%d]: %w", i, err)
+			}
 		}
 	}
+	return nil
+}
+
+func assertDryRunArraysJSON(t *testing.T, resp DryRunResponse) {
+	t.Helper()
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("序列化 Dry Run 响应失败: %v", err)
+	}
+	if err := validateDryRunArrayJSON(raw); err != nil {
+		t.Fatalf("Dry Run 数组 JSON 合同不满足: %v; body=%s", err, raw)
+	}
+}
+
+// TestDryRun_ArraysNeverNull 所有数组字段必须存在、序列化为 JSON array，且不得为 null。
+func TestDryRun_ArraysNeverNull(t *testing.T) {
+	t.Run("有适用规则目标", func(t *testing.T) {
+		p := newProbeProvider(config.CloudTCLighthouse, 1)
+		rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+		s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+
+		resp, err := s.DryRun()
+		if err != nil {
+			t.Fatalf("DryRun 失败: %v", err)
+		}
+		assertDryRunArraysJSON(t, resp)
+	})
+
+	t.Run("无适用规则目标骨架", func(t *testing.T) {
+		p := newProbeProvider(config.CloudTCCVM, 2)
+		rule := staticRule(1, "a.example.com", "TCP", "443")
+		rule.Targets = []int{1}
+		s := newTargetSyncer(t, []provider.Provider{p}, []config.DomainRule{rule}, nil)
+
+		resp, err := s.DryRun()
+		if err != nil {
+			t.Fatalf("DryRun 失败: %v", err)
+		}
+		if len(resp.Results) != 1 {
+			t.Fatalf("结果数量 = %d, want 1", len(resp.Results))
+		}
+		assertUnscheduledDryRunResult(t, resp.Results[0])
+		assertDryRunArraysJSON(t, resp)
+	})
+
+	t.Run("零目标零结果", func(t *testing.T) {
+		s := newTargetSyncer(t, nil, nil, nil)
+		resp, err := s.DryRun()
+		if err != nil {
+			t.Fatalf("DryRun 失败: %v", err)
+		}
+		if len(resp.Results) != 0 {
+			t.Fatalf("结果数量 = %d, want 0", len(resp.Results))
+		}
+		assertDryRunArraysJSON(t, resp)
+	})
+}
+
+// TestValidateDryRunArrayJSON_RejectsInvalidShapes 负向控制证明检查器能拒绝旧字符串断言会漏掉的
+// null、字段缺失与错误类型，而不是只让当前正确输出通过。
+func TestValidateDryRunArrayJSON_RejectsInvalidShapes(t *testing.T) {
+	validTarget := func() map[string]any {
+		result := make(map[string]any, len(dryRunResultArrayFields))
+		for _, field := range dryRunResultArrayFields {
+			result[field] = []any{}
+		}
+		return result
+	}
+	marshal := func(t *testing.T, value any) []byte {
+		t.Helper()
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("构造负向 JSON 失败: %v", err)
+		}
+		return raw
+	}
+
+	for _, field := range []string{"results", "warnings"} {
+		for _, mutation := range []struct {
+			name  string
+			apply func(map[string]any)
+		}{
+			{name: "null", apply: func(obj map[string]any) { obj[field] = nil }},
+			{name: "缺失", apply: func(obj map[string]any) { delete(obj, field) }},
+			{name: "对象", apply: func(obj map[string]any) { obj[field] = map[string]any{} }},
+		} {
+			t.Run("顶层_"+field+"_"+mutation.name, func(t *testing.T) {
+				response := map[string]any{"results": []any{validTarget()}, "warnings": []any{}}
+				mutation.apply(response)
+				if err := validateDryRunArrayJSON(marshal(t, response)); err == nil {
+					t.Fatalf("字段 %s 为%s时必须拒绝", field, mutation.name)
+				}
+			})
+		}
+	}
+
+	for _, field := range dryRunResultArrayFields {
+		for _, mutation := range []struct {
+			name  string
+			apply func(map[string]any)
+		}{
+			{name: "null", apply: func(obj map[string]any) { obj[field] = nil }},
+			{name: "缺失", apply: func(obj map[string]any) { delete(obj, field) }},
+			{name: "对象", apply: func(obj map[string]any) { obj[field] = map[string]any{} }},
+		} {
+			t.Run("目标层_"+field+"_"+mutation.name, func(t *testing.T) {
+				target := validTarget()
+				mutation.apply(target)
+				response := map[string]any{"results": []any{target}, "warnings": []any{}}
+				if err := validateDryRunArrayJSON(marshal(t, response)); err == nil {
+					t.Fatalf("字段 %s 为%s时必须拒绝", field, mutation.name)
+				}
+			})
+		}
+	}
+
+	t.Run("目标项为null", func(t *testing.T) {
+		response := map[string]any{"results": []any{nil}, "warnings": []any{}}
+		if err := validateDryRunArrayJSON(marshal(t, response)); err == nil {
+			t.Fatal("results 中的 null 目标项必须拒绝")
+		}
+	})
 }
 
 // TestDryRun_PublishesNoEvents Dry Run 绝不发布事件（含 DNS 失败事件）。
