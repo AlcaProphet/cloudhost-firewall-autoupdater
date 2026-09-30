@@ -48,6 +48,26 @@ const push = ref<AlertUptimeKumaPushConfig>({
 })
 
 const saving = ref(false)
+// 只有完整配置成功加载后才能覆盖保存；默认表单仍可用于独立测试邮件。
+const loadState = ref<'loading' | 'ready' | 'error'>('loading')
+
+// 响应泛型不提供运行时校验；先检查全部字段，避免部分真实配置混入默认表单。
+function isAlertsData(value: unknown): value is AlertsData {
+  function hasFields(value: unknown, booleans: string[], strings: string[]): boolean {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+    const fields = value as Record<string, unknown>
+    return booleans.every((key) => typeof fields[key] === 'boolean')
+      && strings.every((key) => typeof fields[key] === 'string')
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const data = value as Record<string, unknown>
+  return hasFields(data.policy,
+    ['dns_failed_enabled', 'sync_error_enabled', 'operational_error_enabled'], ['health_timeout'])
+    && hasFields(data.email, ['enabled'],
+      ['host', 'port', 'username', 'password', 'from_addr', 'to_addr', 'subject', 'body'])
+    && hasFields(data.webhook, ['enabled'], ['url', 'channel'])
+    && hasFields(data.uptime_kuma_push, ['enabled'], ['url', 'interval'])
+}
 
 // 测试发送状态（Build7 §5.3）：
 // 结果只存在于本组件内存中，刷新页面即消失；不新增查询 API、SSE、轮询或发送历史。
@@ -95,13 +115,17 @@ async function testSend() {
 }
 
 async function load() {
+  loadState.value = 'loading'
   try {
-    const data = await request<AlertsData>('/api/alerts')
-    if (data.policy) policy.value = data.policy
-    if (data.email) email.value = data.email
-    if (data.webhook) webhook.value = data.webhook
-    if (data.uptime_kuma_push) push.value = data.uptime_kuma_push
+    const data = await request<unknown>('/api/alerts')
+    if (!isAlertsData(data)) throw new Error('告警配置响应不完整或字段类型错误')
+    policy.value = data.policy
+    email.value = data.email
+    webhook.value = data.webhook
+    push.value = data.uptime_kuma_push
+    loadState.value = 'ready'
   } catch (e: any) {
+    loadState.value = 'error'
     message.error(`加载告警配置失败: ${e.message}`)
   }
 }
@@ -109,6 +133,11 @@ async function load() {
 onMounted(load)
 
 async function save() {
+  if (loadState.value !== 'ready') {
+    message.error('告警配置尚未成功加载，无法保存')
+    return
+  }
+  if (saving.value) return
   saving.value = true
   try {
     await request('/api/alerts', {
@@ -133,6 +162,13 @@ async function save() {
 <template>
   <div>
     <h2>告警配置</h2>
+
+    <NAlert v-if="loadState === 'loading'" type="info" style="margin-bottom: 16px">
+      正在加载告警配置，加载完成前无法保存。
+    </NAlert>
+    <NAlert v-else-if="loadState === 'error'" type="error" style="margin-bottom: 16px">
+      告警配置未成功加载，保存已禁用，请刷新页面重试。
+    </NAlert>
 
     <NCard title="触发条件" size="small" style="margin-bottom: 16px">
       <NForm :model="policy" label-placement="left" label-width="180">
@@ -254,6 +290,6 @@ async function save() {
       </NText>
     </NCard>
 
-    <NButton type="primary" size="large" :loading="saving" @click="save">保存配置</NButton>
+    <NButton type="primary" size="large" :loading="saving" :disabled="saving || loadState !== 'ready'" @click="save">保存配置</NButton>
   </div>
 </template>
