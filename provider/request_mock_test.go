@@ -1,10 +1,12 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -637,57 +639,210 @@ func TestRequest_CVMDeleteIsSingleRequest(t *testing.T) {
 	}
 }
 
-// TestRequest_CVMRuleLimitStopsAt100 安全组规则总数（含新增）超过 100 条时必须停止新增。
-func TestRequest_CVMRuleLimitStopsAt100(t *testing.T) {
-	statisticsReply := func(total int) string {
-		return `{"Response":{"SecurityGroupPolicySet":{"PolicyStatistics":{` +
-			`"IngressIPv4TotalCount":` + strconv.Itoa(total) + `,"IngressIPv6TotalCount":0,` +
-			`"EgressIPv4TotalCount":0,"EgressIPv6TotalCount":0}},"RequestId":"mock"}}`
+// TestRequest_CVMIngressCapacity 通过真实腾讯 SDK 和本地 HTTP 验证入站配额。
+func TestRequest_CVMIngressCapacity(t *testing.T) {
+	policies := func(n int) []any {
+		p := make([]any, n)
+		for i := range p {
+			p[i] = map[string]any{"PolicyIndex": i, "Protocol": "TCP", "Port": "443", "CidrBlock": "192.0.2.1/32", "Action": "ACCEPT"}
+		}
+		return p
 	}
+	templates := func(n int) []any {
+		p := make([]any, n)
+		for i := range p {
+			p[i] = map[string]any{"PolicyIndex": i, "AddressTemplate": map[string]any{"AddressGroupId": "ipmg-test"}, "ServiceTemplate": map[string]any{"ServiceId": "ppm-test"}, "Action": "ACCEPT"}
+		}
+		return p
+	}
+	stats := func(i4, i6, e4, e6 int) map[string]any {
+		return map[string]any{"IngressIPv4TotalCount": i4, "IngressIPv6TotalCount": i6, "EgressIPv4TotalCount": e4, "EgressIPv6TotalCount": e6}
+	}
+	cases := []struct {
+		name       string
+		ps         any
+		raw        string
+		add        int
+		allow      bool
+		incomplete bool
+	}{
+		{name: "统计_出站100不阻塞入站80加1", ps: map[string]any{"PolicyStatistics": stats(60, 20, 90, 10)}, add: 1, allow: true},
+		{name: "统计_入站99加1恰好100", ps: map[string]any{"PolicyStatistics": stats(79, 20, 100, 0)}, add: 1, allow: true},
+		{name: "统计_入站100加1拒绝", ps: map[string]any{"PolicyStatistics": stats(80, 20, 0, 0)}, add: 1},
+		{name: "统计_入站95加6拒绝整批", ps: map[string]any{"PolicyStatistics": stats(75, 20, 0, 0)}, add: 6},
+		{name: "统计_纯IPv6入站100加1拒绝", ps: map[string]any{"PolicyStatistics": stats(0, 100, 0, 0)}, add: 1},
+		{name: "数组_出站100不阻塞入站80加1", ps: map[string]any{"Ingress": policies(80), "Egress": policies(100)}, add: 1, allow: true},
+		{name: "数组_入站99加1恰好100", ps: map[string]any{"Ingress": policies(99), "Egress": policies(100)}, add: 1, allow: true},
+		{name: "数组_入站100加1拒绝", ps: map[string]any{"Ingress": policies(100)}, add: 1},
+		{name: "数组_有效空入站可新增", ps: map[string]any{"Ingress": policies(0), "Egress": policies(100)}, add: 1, allow: true},
+		{name: "部分统计_回退完整入站数组100拒绝", ps: map[string]any{"Ingress": policies(100), "PolicyStatistics": map[string]any{"IngressIPv4TotalCount": 0}}, add: 1},
+		{name: "部分统计_回退完整入站数组80放行", ps: map[string]any{"Ingress": policies(80), "PolicyStatistics": map[string]any{"IngressIPv4TotalCount": 0}}, add: 1, allow: true},
+		{name: "完整统计零不遗漏模板等入站条目", ps: map[string]any{"Ingress": templates(100), "PolicyStatistics": stats(0, 0, 0, 0)}, add: 1},
+		{name: "只返回完整入站统计仍可新增", ps: map[string]any{"PolicyStatistics": map[string]any{"IngressIPv4TotalCount": 60, "IngressIPv6TotalCount": 20}}, add: 1, allow: true},
+		{name: "完整入站零统计允许省略数组", ps: map[string]any{"PolicyStatistics": stats(0, 0, 100, 0)}, add: 1, allow: true},
+		{name: "入站数组为空不能压低100统计", ps: map[string]any{"Ingress": policies(0), "PolicyStatistics": stats(100, 0, 0, 0)}, add: 1},
+		{name: "完整统计允许null入站数组", ps: map[string]any{"Ingress": nil, "PolicyStatistics": stats(80, 0, 0, 0)}, add: 1, allow: true},
+		{name: "缺IPv4统计且无数组拒绝", ps: map[string]any{"PolicyStatistics": map[string]any{"IngressIPv6TotalCount": 0}}, add: 1, incomplete: true},
+		{name: "nullIPv6统计且无数组拒绝", ps: map[string]any{"PolicyStatistics": map[string]any{"IngressIPv4TotalCount": 0, "IngressIPv6TotalCount": nil}}, add: 1, incomplete: true},
+		{name: "nullIPv6统计有数组允许回退", ps: map[string]any{"Ingress": policies(80), "PolicyStatistics": map[string]any{"IngressIPv4TotalCount": 0, "IngressIPv6TotalCount": nil}}, add: 1, allow: true},
+		{name: "null统计回退100数组拒绝", ps: map[string]any{"Ingress": policies(100), "PolicyStatistics": nil}, add: 1},
+		{name: "缺失统计和入站集合拒绝", ps: map[string]any{}, add: 1, incomplete: true},
+		{name: "部分统计且无数组拒绝", ps: map[string]any{"PolicyStatistics": map[string]any{"IngressIPv4TotalCount": 0}}, add: 1, incomplete: true},
+		{name: "null入站且无统计拒绝", ps: map[string]any{"Ingress": nil}, add: 1, incomplete: true},
+		{name: "缺失policySet拒绝", raw: `{"Response":{"RequestId":"mock"}}`, add: 1, incomplete: true},
+		{name: "nullpolicySet拒绝", raw: `{"Response":{"SecurityGroupPolicySet":null,"RequestId":"mock"}}`, add: 1, incomplete: true},
+		{name: "nullResponse拒绝不panic", raw: `{"Response":null}`, add: 1, incomplete: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock, host := newMockCloudAPI(t)
+			reply := tc.raw
+			if reply == "" {
+				tc.ps.(map[string]any)["Version"] = "999"
+				b, err := json.Marshal(map[string]any{"Response": map[string]any{"SecurityGroupPolicySet": tc.ps, "RequestId": "mock"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				reply = string(b)
+			}
+			mock.reply = func(_ int, r recordedRequest) (int, string) {
+				if r.action() == "DescribeSecurityGroupPolicies" {
+					return http.StatusOK, reply
+				}
+				return http.StatusOK, `{"Response":{"RequestId":"mock"}}`
+			}
+			p := mockCVM(t, host)
+			defer func() {
+				if v := recover(); v != nil {
+					t.Errorf("配额响应不可导致panic: %v", v)
+				}
+			}()
+			desired := makeRules(tc.add)
+			for i := range desired {
+				desired[i].CidrBlock = fmt.Sprintf("198.51.100.%d/32", i+1)
+			}
+			result, err := p.CreateRules(mockSnapshot(), desired)
+			creates := requestsWithAction(t, mock.recorded(), "CreateSecurityGroupPolicies")
+			if got := len(requestsWithAction(t, mock.recorded(), "DescribeSecurityGroupPolicies")); got != 1 {
+				t.Fatalf("配额只读请求次数 = %d, want 1", got)
+			}
+			if tc.allow {
+				if err != nil {
+					t.Fatalf("入站未超限应允许: %v", err)
+				}
+				if len(creates) != 1 || result.Written != tc.add || result.Skipped != 0 {
+					t.Fatalf("创建次数/结果错误: %d %+v", len(creates), result)
+				}
+				set := objField(t, bodyJSON(t, creates[0]), "SecurityGroupPolicySet")
+				if v, _ := strField(set, "Version"); v != "7" {
+					t.Fatalf("必须保留S0版本7，不采用配额重读版本999: %q", v)
+				}
+				if _, ok := set["Egress"]; ok {
+					t.Fatal("禁止写出站")
+				}
+			} else {
+				if err == nil {
+					t.Errorf("应拒绝新增，实际创建次数%d", len(creates))
+				}
+				if len(creates) != 0 || result.Written != 0 || result.Skipped != 0 {
+					t.Errorf("失败必须零写入零跳过: %d %+v", len(creates), result)
+				}
+				if tc.incomplete && !errors.Is(err, ErrSnapshotIncomplete) {
+					t.Errorf("应明确返回ErrSnapshotIncomplete，实际%v", err)
+				}
+			}
+			if got := len(requestsWithAction(t, mock.recorded(), "DeleteSecurityGroupPolicies")); got != 0 {
+				t.Fatalf("禁止先删腾位: %d", got)
+			}
+		})
+	}
+}
 
-	t.Run("超过上限必须报错且不发送创建请求", func(t *testing.T) {
-		mock, host := newMockCloudAPI(t)
-		mock.defaultReply = statisticsReply(95)
-		p := mockCVM(t, host)
+func TestRequest_CVMNoAddNoNetwork(t *testing.T) {
+	mock, host := newMockCloudAPI(t)
+	p := mockCVM(t, host)
+	result, err := p.CreateRules(mockSnapshot(), nil)
+	if err != nil || result.Written != 0 || len(mock.recorded()) != 0 {
+		t.Fatalf("无新增不得调用云API: %+v %v %d", result, err, len(mock.recorded()))
+	}
+}
 
-		_, err := p.CreateRules(mockSnapshot(), makeRules(6))
-		if err == nil {
-			t.Fatal("95 + 6 > 100 必须返回错误")
-		}
-		if !strings.Contains(err.Error(), "上限 100") {
-			t.Errorf("错误文案应说明上限: %v", err)
-		}
-		if got := len(requestsWithAction(t, mock.recorded(), "CreateSecurityGroupPolicies")); got != 0 {
-			t.Errorf("超过上限时不得发送创建请求，实际 %d", got)
-		}
-	})
+// TestRequest_CVMCapacityWarnings 精确区分90/91/100/101阈值。
+func TestRequest_CVMCapacityWarnings(t *testing.T) {
+	for _, tc := range []struct {
+		after int
+		warn  bool
+		deny  bool
+	}{{90, false, false}, {91, true, false}, {100, true, false}, {101, false, true}} {
+		t.Run(strconv.Itoa(tc.after), func(t *testing.T) {
+			var logs bytes.Buffer
+			originalLogger := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+			defer slog.SetDefault(originalLogger)
+			mock, host := newMockCloudAPI(t)
+			mock.reply = func(_ int, r recordedRequest) (int, string) {
+				if r.action() == "DescribeSecurityGroupPolicies" {
+					return http.StatusOK, fmt.Sprintf(`{"Response":{"SecurityGroupPolicySet":{"PolicyStatistics":{"IngressIPv4TotalCount":%d,"IngressIPv6TotalCount":0}}}}`, tc.after-1)
+				}
+				return http.StatusOK, `{"Response":{"RequestId":"mock"}}`
+			}
+			result, err := mockCVM(t, host).CreateRules(mockSnapshot(), makeRules(1))
+			if (err != nil) != tc.deny {
+				t.Fatalf("阈值%d返回错误%v", tc.after, err)
+			}
+			if tc.deny && (result.Written != 0 || len(requestsWithAction(t, mock.recorded(), "CreateSecurityGroupPolicies")) != 0) {
+				t.Fatal("超限不得创建")
+			}
+			if logs.Len() == 0 {
+				if tc.warn {
+					t.Fatal("接近上限必须WARN")
+				}
+				return
+			}
+			if !tc.warn {
+				t.Fatalf("不应产生告警: %s", logs.String())
+			}
+			var event map[string]any
+			if err := json.Unmarshal(logs.Bytes(), &event); err != nil {
+				t.Fatal(err)
+			}
+			if event["level"] != "WARN" || event["msg"] != "安全组入站规则接近上限" || event["当前"] != float64(tc.after-1) || event["新增"] != float64(1) || event["上限"] != float64(100) {
+				t.Fatalf("告警字段不正确: %+v", event)
+			}
+		})
+	}
+}
 
-	t.Run("接近上限仅告警仍允许新增", func(t *testing.T) {
-		mock, host := newMockCloudAPI(t)
-		mock.defaultReply = statisticsReply(85)
-		p := mockCVM(t, host)
-
-		if _, err := p.CreateRules(mockSnapshot(), makeRules(6)); err != nil {
-			t.Fatalf("85 + 6 = 91 未超上限，应允许（仅 WARN）: %v", err)
-		}
-		if got := len(requestsWithAction(t, mock.recorded(), "CreateSecurityGroupPolicies")); got != 1 {
-			t.Errorf("创建请求数 = %d, want 1", got)
-		}
-	})
-
-	t.Run("无 PolicyStatistics 时回退为手动计数", func(t *testing.T) {
-		mock, host := newMockCloudAPI(t)
-		ingress := strings.TrimSuffix(strings.Repeat(`{"PolicyIndex":1},`, 100), ",")
-		mock.defaultReply = `{"Response":{"SecurityGroupPolicySet":{"Ingress":[` + ingress + `]},"RequestId":"mock"}}`
-		p := mockCVM(t, host)
-
-		if _, err := p.CreateRules(mockSnapshot(), makeRules(1)); err == nil {
-			t.Fatal("手动计数 100 + 1 > 100 必须返回错误")
-		}
-		if got := len(requestsWithAction(t, mock.recorded(), "CreateSecurityGroupPolicies")); got != 0 {
-			t.Errorf("超过上限时不得发送创建请求，实际 %d", got)
-		}
-	})
+// TestRequest_CVMCapacityCloudErrors 真实SDK错误必须保留，失败不计写入。
+func TestRequest_CVMCapacityCloudErrors(t *testing.T) {
+	for _, tc := range []struct{ action, code string }{{"DescribeSecurityGroupPolicies", "UnauthorizedOperation"}, {"CreateSecurityGroupPolicies", "LimitExceeded.SecurityGroupPolicySet"}, {"CreateSecurityGroupPolicies", "UnsupportedOperation.VersionMismatch"}} {
+		t.Run(tc.action+"_"+tc.code, func(t *testing.T) {
+			mock, host := newMockCloudAPI(t)
+			mock.reply = func(_ int, r recordedRequest) (int, string) {
+				if r.action() == tc.action {
+					return http.StatusOK, fmt.Sprintf(`{"Response":{"Error":{"Code":%q,"Message":"mock"},"RequestId":"mock"}}`, tc.code)
+				}
+				return http.StatusOK, emptyPolicyReply
+			}
+			result, err := mockCVM(t, host).CreateRules(mockSnapshot(), makeRules(1))
+			if err == nil || !strings.Contains(err.Error(), tc.code) || result.Written != 0 || result.Skipped != 0 {
+				t.Fatalf("必须保留云错误且零计数: %+v %v", result, err)
+			}
+			wantCreates := 1
+			if tc.action == "DescribeSecurityGroupPolicies" {
+				wantCreates = 0
+			}
+			creates := requestsWithAction(t, mock.recorded(), "CreateSecurityGroupPolicies")
+			if len(creates) != wantCreates {
+				t.Fatalf("创建请求%d,want%d", len(creates), wantCreates)
+			}
+			if wantCreates == 1 {
+				if v, _ := strField(objField(t, bodyJSON(t, creates[0]), "SecurityGroupPolicySet"), "Version"); v != "7" {
+					t.Fatal("云端错误前请求必须携带S0版本")
+				}
+			}
+		})
+	}
 }
 
 // makeRules 构造 n 条合法 TCP 规则

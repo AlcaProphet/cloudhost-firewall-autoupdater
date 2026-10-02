@@ -549,3 +549,49 @@ func TestRoundSummary_TargetLevelUnits(t *testing.T) {
 		t.Fatalf("无适用规则的目标不得获取快照，实际 %d", snapshots)
 	}
 }
+
+// TestTargetRound_CVMCapacityReject：配额失败经当前正式目标链必须失败、不重试、不先删除旧规则。
+func TestTargetRound_CVMCapacityReject(t *testing.T) {
+	for _, err := range []error{
+		errors.New("安全组入站规则数将达 101（上限 100），停止新增"),
+		fmt.Errorf("%w: CVM 配额检查缺少可用的入站计数", provider.ErrSnapshotIncomplete),
+		errors.New("[TencentCloudSDKError] Code=LimitExceeded.SecurityGroupPolicySet, Message=limit exceeded"),
+	} {
+		t.Run(err.Error(), func(t *testing.T) {
+			old := config.RuleInfo{Protocol: "TCP", Port: "9999", CidrBlock: "192.0.2.5/32", Action: "ACCEPT", Description: "[auto-dns]", PolicyIndex: "0"}
+			p := newProbeProvider(config.CloudTCCVM, 1, old)
+			p.createErrs = []error{err}
+			rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+			s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+			s.syncAll()
+			snapshots, creates, deletes := p.counts()
+			if snapshots != 1 || creates != 1 || deletes != 0 {
+				t.Fatalf("必须单attempt零删除: %d %d %d", snapshots, creates, deletes)
+			}
+			if !p.hasRule("192.0.2.5/32", "9999") {
+				t.Fatal("旧规则必须保留")
+			}
+			sum := s.Status().LastRound
+			if sum == nil || sum.Outcome != RoundFailed || sum.Failed != 1 || sum.Added != 0 || sum.Deleted != 0 {
+				t.Fatalf("应failed且零增删: %+v", sum)
+			}
+		})
+	}
+}
+
+// TestTargetRound_CVMCreateVersionMismatch 云端版本竞争仍整目标重试。
+func TestTargetRound_CVMCreateVersionMismatch(t *testing.T) {
+	p := newProbeProvider(config.CloudTCCVM, 1)
+	p.createErrs = []error{errors.New("UnsupportedOperation.VersionMismatch")}
+	rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+	s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+	resolves := 0
+	base := s.resolveHostFn
+	s.resolveHostFn = func(host string) ([]dns.ResolvedIP, error) { resolves++; return base(host) }
+	s.syncAll()
+	snapshots, creates, deletes := p.counts()
+	sum := s.Status().LastRound
+	if snapshots != 3 || creates != 2 || deletes != 0 || resolves != 2 || sum == nil || sum.Outcome != RoundSuccess || sum.Added != 1 {
+		t.Fatalf("CVM版本竞争必须整目标重试: snapshots=%d creates=%d deletes=%d resolves=%d round=%+v", snapshots, creates, deletes, resolves, sum)
+	}
+}

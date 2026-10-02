@@ -135,7 +135,7 @@ func (s *Syncer) retrySyncDetailed(p provider.Provider, rule config.DomainRule, 
 // 语义：腾讯 SDK 的网络类错误（含超时）进入重试；判定顺序与幂等优先级不变
 // （幂等「已存在/已不存在」先于本函数判定，且不计数不重试）。
 // 放宽带宽后仍不得让有意不可重试的错误变成可重试——CVM 规则上限
-// （tc_cvm.go checkRuleLimit 的「安全组规则总数将达 N（上限 100），停止新增」）
+// （tc_cvm.go checkRuleLimit 的「安全组入站规则数将达 N（上限 100），停止新增」）
 // 不含任何下列关键字，因此保持不可重试。
 func isRetryable(err error) bool {
 	if err == nil {

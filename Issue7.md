@@ -454,7 +454,7 @@ total == ok + changed + failed + skipped
 - Create 使用 S0 Version；Delete 使用 S1 Version；version mismatch 整目标重试；
 - 删除候选按 `PolicyIndex` 去重并放在**同一个** `DeleteSecurityGroupPolicies` 请求的 Ingress 数组中，同时携带 S1 Version，避免逐条删除引发索引漂移；
 - 任一候选缺 PolicyIndex、索引解析失败、重复索引映射到不同规则或 S1 Version 为空，候选 deferred，禁止无版本/按值降级删除；
-- 现有 `checkRuleLimit` 的配额口径 P3-06 不是本项修复范围；真实账号确认前保持当前偏保守行为，但 Create 的额外 Describe 不得被误当成 S0/S1；
+- P3-06 原属初始 Issue7 实施范围之外；2026-10-02 已按独立授权方案 B 本地修复 `checkRuleLimit`：入站本地保护上限 100，出站不占额度；完整入站统计与 Ingress 条目数取较大值，统计不完整则回退明确数组，无计数依据返回 `ErrSnapshotIncomplete`。Create 的额外 Describe 仅用于配额保护，不得替代 S0 Version 或 S1 删除定位；满额轮换不得先删腾位。真实返回形态仍待 PT-I7-03；
 - `PolicyIndex + Version` 都来自同一 S1，禁止排序后逐请求复用已经变化的 Version。
 
 ### 6.3 Aliyun SWAS
@@ -580,7 +580,7 @@ DNS 失败继续发布 `EventDNSFailed`，但相同目标/host 一轮最多一�
 | 审计项 | 排序决定 |
 |---|---|
 | P3-02 熔断器 | Issue7 初始实施不扩张熔断；后按 2026-10-02 独立授权方案 B 修复，每 attempt 正常解析 + 已熔断域名每轮半开探测例外，详见 §12.6 |
-| P3-06 CVM 100 条口径 | 真实账号确认前保留偏保守实现，不阻塞目标级所有权 |
+| P3-06 CVM 入站 100 条本地保护 | 2026-10-02 独立按 B 本地修复；官方默认入站/出站各 100，计数完整性和数组下界见 §6.2，不改目标级所有权/版本/删除主线；真实响应、模板统计与提额情况待 PT-I7-03 |
 | P3-07 `retrySync` 死包装 | Step 1～4 后重新证明生产零引用再删除 |
 | P3-10 忽略 error | Step 2～4 触及路径当场修；其余点仍独立 |
 | P3-16 前端偏移 | 仅 Dry Run 相关子项并入 Step 4 |

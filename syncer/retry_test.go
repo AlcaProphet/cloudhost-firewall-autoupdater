@@ -151,7 +151,7 @@ func TestIsRetryable_RealWorldShapes(t *testing.T) {
 		{
 			// 有意不可重试：CVM 规则上限（Issue6 A12「必须保持」）
 			name: "CVM 安全组规则上限（有意不可重试）",
-			err:  errors.New("安全组规则总数将达 101（上限 100），停止新增"),
+			err:  errors.New("安全组入站规则数将达 101（上限 100），停止新增"),
 			want: false,
 		},
 		{
@@ -264,7 +264,7 @@ func TestRetrySync_TencentNetworkErrorRetries(t *testing.T) {
 
 // TestRetrySync_NonRetryableStopsImmediately 有意不可重试的错误必须立即返回、不重试。
 func TestRetrySync_NonRetryableStopsImmediately(t *testing.T) {
-	limitErr := fmt.Errorf("安全组规则总数将达 101（上限 100），停止新增")
+	limitErr := fmt.Errorf("安全组入站规则数将达 101（上限 100），停止新增")
 	p := &retryProbeProvider{
 		cloudType:    config.CloudTCCVM,
 		getRulesErrs: []error{limitErr},

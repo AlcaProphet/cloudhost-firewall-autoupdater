@@ -125,14 +125,14 @@ func (p *TCCVM) GetRules() ([]config.RuleInfo, error) {
 
 // CreateRules 增量添加入站规则。
 //
-// CVM 的 100 条规则上限是**硬错误**（不属 skipped，也不可重试），因此超出上限时
+// CVM 的 100 条入站规则本地保护上限是**硬错误**（不属 skipped，也不可重试），因此超出上限时
 // 返回空结果与错误；成功时恒为 {len(rules), 0}（Issue6 A11）。
 func (p *TCCVM) CreateRules(snapshot RuleSnapshot, rules []config.RuleAction) (CreateResult, error) {
 	if len(rules) == 0 {
 		return CreateResult{}, nil
 	}
 
-	// 检查规则总数是否接近上限（100 条）
+	// 检查入站规则数是否接近本地保护上限（100 条）
 	if err := p.checkRuleLimit(len(rules)); err != nil {
 		return CreateResult{}, err
 	}
@@ -240,7 +240,7 @@ func (p *TCCVM) ConvertPorts(port string) []string {
 	return ExpandPorts(config.CloudTCCVM, port)
 }
 
-// checkRuleLimit 检查安全组规则总数是否接近上限
+// checkRuleLimit 检查安全组入站规则数；额外 Describe 仅用于配额保护。
 func (p *TCCVM) checkRuleLimit(toAdd int) error {
 	req := vpc.NewDescribeSecurityGroupPoliciesRequest()
 	req.SecurityGroupId = common.StringPtr(p.securityGroupID)
@@ -250,33 +250,27 @@ func (p *TCCVM) checkRuleLimit(toAdd int) error {
 		return fmt.Errorf("查询规则数量失败: %w", err)
 	}
 
-	ps := resp.Response.SecurityGroupPolicySet
-	if ps == nil {
-		return nil
+	if resp == nil || resp.Response == nil || resp.Response.SecurityGroupPolicySet == nil {
+		return fmt.Errorf("%w: CVM 配额检查未返回安全组规则集合", ErrSnapshotIncomplete)
 	}
+	ps := resp.Response.SecurityGroupPolicySet
 
-	// 计算总规则数（优先使用 PolicyStatistics 精确计数，fallback 到手动计数）
-	var total int
-	if ps.PolicyStatistics != nil {
-		stats := ps.PolicyStatistics
-		total = int(uint64Val(stats.IngressIPv4TotalCount) + uint64Val(stats.IngressIPv6TotalCount) +
-			uint64Val(stats.EgressIPv4TotalCount) + uint64Val(stats.EgressIPv6TotalCount))
-	} else {
-		total = len(ps.Ingress) + len(ps.Egress)
+	// 只检查入站；两个入站统计必须都存在，不能将缺失字段视作零。
+	stats := ps.PolicyStatistics
+	completeStats := stats != nil && stats.IngressIPv4TotalCount != nil && stats.IngressIPv6TotalCount != nil
+	if !completeStats && ps.Ingress == nil {
+		return fmt.Errorf("%w: CVM 配额检查缺少可用的入站计数", ErrSnapshotIncomplete)
+	}
+	// 入站数组条目数作为下界，避免地址族统计遗漏模板等条目。
+	total := len(ps.Ingress)
+	if completeStats {
+		total = max(total, int(*stats.IngressIPv4TotalCount+*stats.IngressIPv6TotalCount))
 	}
 	if total+toAdd > 100 {
-		return fmt.Errorf("安全组规则总数将达 %d（上限 100），停止新增", total+toAdd)
+		return fmt.Errorf("安全组入站规则数将达 %d（上限 100），停止新增", total+toAdd)
 	}
 	if total+toAdd > 90 {
-		slog.Warn("安全组规则接近上限", "当前", total, "新增", toAdd, "上限", 100)
+		slog.Warn("安全组入站规则接近上限", "当前", total, "新增", toAdd, "上限", 100)
 	}
 	return nil
-}
-
-// uint64Val 安全获取 uint64 指针值
-func uint64Val(p *uint64) uint64 {
-	if p == nil {
-		return 0
-	}
-	return *p
 }
