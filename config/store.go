@@ -115,15 +115,25 @@ func OpenStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("打开数据库失败: %w", err)
 	}
 
+	return openStoreDB(db)
+}
+
+// openStoreDB 在初始化失败时关闭数据库，成功时将所有权交给 Store。
+func openStoreDB(db *sql.DB) (_ *Store, err error) {
+	defer func() {
+		if err != nil {
+			if closeErr := db.Close(); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("初始化失败后关闭数据库失败: %w", closeErr))
+			}
+		}
+	}()
 	// WAL 模式：按契约只在打开后设置一次（每条连接重复切换没有必要）
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
 		return nil, fmt.Errorf("设置 WAL 模式失败: %w", err)
 	}
 
 	s := &Store{db: db}
 	if err := s.initTables(); err != nil {
-		db.Close()
 		return nil, err
 	}
 	return s, nil

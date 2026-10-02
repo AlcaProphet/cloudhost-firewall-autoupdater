@@ -5,15 +5,24 @@
 | 仓库 | `/Users/kyle/Desktop/Repo/cloudhost-firewall-autoupdater` |
 | 审计快照分支 / HEAD | `main` / `11918fb945fe9dfe2a86ead5bc833b14dd156a68` |
 | 审计快照开始前工作树 | **干净**（0 tracked 改动、0 非忽略未跟踪文件）；这是历史审计快照，不表示当前工作树状态 |
-| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-10-02 P3-09 SQLite 写事务）」** |
+| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-10-03 P3-10 剩余错误处理）」** |
 | 审核性质 | 原始全量代码审核为**只读**；2026-09-30 批次只静态核验既有修复并更新本文与 `Issue7.md`，未修改代码，未运行构建、测试或格式化（属该批次记录） |
 | 审核方式 | 8 路并行子代理分模块审核 + 主代理亲自覆盖超时范围 + 判别性探针独立复现 + 交叉复核裁决 |
 | 审核范围（审计快照值） | 快照 `11918fb` 口径：233 个 tracked 文件；**53/53 生产 Go 文件**（10,890 行）；62 个测试文件（20,457 行）；18 个前端源文件（2,212 行）；6 个构建/部署/CI 文件；8 份合同文档。**当前值为 244 tracked / 55 生产 Go（12,606 行）/ 69 测试文件（24,896 行）/ 18 前端源（2,361 行）/ 同样 6 个构建文件与 8 份合同文档**（新增 `provider/plan.go`、`syncer/target.go`） |
 | 报告版本 | final1（已剔除全部被驳回/误报项，并纳入用户 7 项决策） |
 
-> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-10-02 P3-09 SQLite 写事务）」小节为准**。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
+> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-10-03 P3-10 剩余错误处理）」小节为准**。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
 
-### 最近实施基线（2026-10-02 P3-09 SQLite 写事务）
+### 最近实施基线（2026-10-03 P3-10 剩余错误处理）
+
+- **实施前基线**：`main / f6b3757a49b6db4846dc0126f80b297c919ce9d4`，本地 `origin/main / c08f2e18985f1edca2c8ad01641531afae745c7a`，ahead 2；工作树与暂存区干净。前序 P3-09 已提交 `f6b3757`。本轮未 fetch、未提交、未推送，本地跟踪引用不保证远端现时状态。
+- **授权与范围**：用户确认本聊天的研究推荐并授权正式修复及文档同步。固定九文件：生产 `config/store.go`、`webui/api/logstream.go`、`webui/api/sync.go`、`webui/server.go`；新增 Store/SSE/health 三份回归；本文与 AGENTS。不修改 pidfile、权限、MultiHandler、事件/前端协议、健康模型、SQLite schema/事务策略、Provider、DNS、目标同步或依赖。
+- **正式门禁**：新回归与既有日志格式/回放/缓存控制 `-race -count=20`、外部渲染 writer 故障注入 `-race -count=20`、受影响三包完整 race 已通过；十类正式 overlay 负向控制均由行为断言变红，全量 12 包 race 一轮（含既有真实产品二进制进程回归）、vet/build、受影响 Go 文件 gofmt 与 diff-check 通过。完整结果见 P3-10 当前实施补记，研究候选结果不冒充本轮正式结果。
+- **证据边界**：Go `1.26.6 darwin/arm64`，使用既有 ignored 前端 dist；未执行 Go 1.25/Linux、前端构建、P3-10 专门进程级故障验收/浏览器、Docker/compose、真实云/SMTP/Webhook/Uptime Kuma 或远端 CI/GHCR。不外推长期稳定或外部通过，源码/测试/文档尚未提交。
+
+### 前序实施基线（2026-10-02 P3-09 SQLite 写事务，历史批次）
+
+> 该批次其后已提交为 `f6b3757`；以下保留当时实施记录。
 
 - **实施前基线**：`main / ba822928e7b5c8d7300df36519185d637a6c36f6`，本地 `origin/main / c08f2e1`，ahead 1；工作树与暂存区干净。前序 P3-07 已提交为 `ba82292`。本轮未 fetch、未提交、未推送，本地跟踪引用不保证远端现时状态。
 - **授权与范围**：用户在本聊天确认推荐方案 A 并授权正式修复与同步文档。固定 7 文件：唯一生产文件 `config/store.go`；DSN 测试、新增 `config/store_txlock_test.go`、协调器测试；AGENTS、本文、Issue6。生产仅新增独立 DSN 参数 `_txlock=immediate` 与注释，不改变协调器、schema/API、前端、依赖、连接池上限或 5000ms busy_timeout。
@@ -153,7 +162,8 @@
 | P3-11、P3-22 与 Dry Run 相关 P3-16 | ✅ 已实施（目标级日志上抛写库错误；Dry Run 每目标一次快照；`RunTest.vue` 44px 已修复） | Issue7 Step 4 |
 | P3-04 | ✅ 已按 B 本地修复并提交为 `ebf8f19`；日志 ID/游标续传/reset 与前端去重 | I-10；实施补记；真实浏览器待 PT-AUDIT-01 |
 | P3-05 | ✅ 已按本次方案 B 实施普通 JSON 响应统一 `no-store`；本地门禁记录见实施补记，已提交为 `82ad2dc` | I-07 仅本子项收口；settings 凭据回显与独立响应边界保持 |
-| P3-09 | ✅ 已按 A 本地修复，尚未提交；写事务 immediate，ReadOnly 仍 deferred | I-10 仅本子项收口；正式回归、负向控制与保留边界见 P3-09 当前实施补记 |
+| P3-09 | ✅ 已按 A 本地修复并提交为 `f6b3757`；写事务 immediate，ReadOnly 仍 deferred | I-10 仅本子项收口；正式回归、负向控制与保留边界见 P3-09 当前实施补记 |
+| P3-10 | ✅ 已按细化 A 本地修复四类剩余错误处理，正式门禁通过；尚未提交 | I-07 仅本子项；正式回归/安全元数据/故障注入与负向控制见 P3-10 当前实施补记 |
 | P3-16 其余子项 | 🔵 未修复（侧边栏高亮、保存 in-flight 守卫、`theme` 双写、清空扫描误报成功、前端正则过严） | 独立问题队列 I-10 |
 | 其余 P3 | 🔵/⏳ 未修复、文档清理或待真实验证 | 按 0.4 的独立队列处理 |
 
@@ -178,10 +188,10 @@
 - [x] **I-04｜P2-07**：目标与规则删除已增加卡片式确认、四阶段状态/对象快照、列表请求顺序保护与焦点恢复；20 项组件回归、前端构建与真实二进制/浏览器/API/临时 SQLite 联合验收通过，尚未提交。详见 P2-07。
 - [x] **I-05｜P2-05**：已按推荐方案 A 本地实施三渠道明确成功响应校验、16 KiB 有界读取与安全错误；门禁结果见 P2-05 补记，已提交为 `93e0e4b`；真实 Webhook 仍未验收。
 - [ ] **I-06｜P3-23、P3-24**：串行修复 ticker Reset 与 pause/resume 通知合并，不和 Issue7 状态机重构混做。
-- [ ] **I-07｜P3-12、P3-14、P3-10、P3-13**：文件权限与 HTTP/error 一致性；P3-05 已按本次方案 B 本地修复并独立收口，见实施补记；P3-11 已由 Issue7 Step 4 修复。其余子项未修复，I-07 整体保持未完成。
+- [ ] **I-07｜P3-12、P3-14、P3-10、P3-13**：文件权限与 HTTP/error 一致性；P3-05 已按本次方案 B 本地修复并独立收口，见实施补记；P3-11 已由 Issue7 Step 4 修复；P3-10 已按细化 A 本地修复并收口，见当前实施补记。P3-12/P3-14/P3-13 未修复，I-07 整体保持未完成。
 - [ ] **I-08｜P3-01、P3-02、P3-21、P3-15**：P3-01 已提交 `ac0ee62`；P3-02 按后续独立授权 B 已提交 `88154cd`，详见实施补记；P3-21/P3-15 继续独立追踪，不由本批次关闭。
 - [x] **I-09｜P3-07**：2026-10-02 按独立授权方案 B 本地收口：再次证明现生产入口不调用旧链，删除 `retrySync` / `retrySyncDetailed` / `truncateDesc`，迁移有效回归并清理过期测试与夹具；正式门禁及六类负向控制通过，已提交 `ba82292`。详见 P3-07 当前实施补记与 Issue6 §7.9 / Issue7 §12.7；独立残留计数观察不由本项关闭。
-- [ ] **I-10｜其余独立 P3**：P3-04 已按 B 本地修复并提交 `ebf8f19`，真实浏览器仍待 PT-AUDIT-01；P3-06 已独立按 B 本地修复并提交 `c08f2e1`，真实响应、模板统计与提额情况待 PT-I7-03；P3-09 已按 A 本地修复（尚未提交）；P3-16 非 Dry Run 子项、P3-19、P3-20 继续独立追踪，I-10 整体保持未完成。
+- [ ] **I-10｜其余独立 P3**：P3-04 已按 B 本地修复并提交 `ebf8f19`，真实浏览器仍待 PT-AUDIT-01；P3-06 已独立按 B 本地修复并提交 `c08f2e1`，真实响应、模板统计与提额情况待 PT-I7-03；P3-09 已按 A 本地修复并提交为 `f6b3757`；P3-16 非 Dry Run 子项、P3-19、P3-20 继续独立追踪，I-10 整体保持未完成。
 - [ ] **I-11｜P3-17、P3-18**：仅做文档/注释闭环；不得与业务语义修改混在同一批次。
 - [x] **I-12｜Issue7 R7-01（P1）**：已修复并提交为 `b80b1b0`；可重试清理失败耗尽后保持 S1 已覆盖的 success + cleanup_deferred 强语义与每 attempt 重读快照。
 - [x] **I-13｜Issue7 R7-02（P2）**：已修复并提交为 `eab4bea`；补全目标事件 `cleanup_deleted`/`duration_ms`/canonical `unsupported`，并以真实 publisher/EventBus/SQLite 整链证明清理 `2/1/1` 落库一致。
@@ -785,9 +795,10 @@ FAIL
 | P3-06（历史订正） | **📚 已由 2026-10-02 官方正文与用户决策替代，以下保留当时判断，不再作为当前合同。🔵 结论已订正（2026-09-30 第二轮核验）：原"实际配额为每方向 100"不成立，"只统计入站"的修法已撤销——现有合计判定与合同及官方定义一致，不属过度保守** | `provider/tc_cvm.go:262-268` 的 `checkRuleLimit` 把 `IngressIPv4+IngressIPv6+EgressIPv4+EgressIPv6` 相加与 100 比较（原引 `:234-241` 为快照行号）。**`AGENTS.md:85` 强要求写"腾讯云 CVM 安全组规则上限 **100 条**"，无方向限定词**；`PlatformAPIDocs/TencentCVMAPIGuide/查询用户安全组配额.md:58-63` 的 `SecurityGroupLimitSet` 只有**单一** `"SecurityGroupPolicyLimit": 100`，无任何方向字段；官方 API 定义该字段为 "Maximum number of rules under the security group"（**安全组内规则上限**，非每方向）。仓内所有"单个方向"表述（`安全组添加规则.md:18`、`删除安全组规则.md:36`、`批量修改安全组规则.md:6`、`替换单条安全组规则.md:6`）均为**请求形态**约束（一次请求只能操作一个方向），**不是配额口径**；`创建安全组和规则.md:19` 还明确"请求中可以同时指定入站和出站" | **订正结论**：合计判定与 `AGENTS.md:85` 及官方定义**一致**，不是过度保守；**撤销"修法：只统计入站计数"**——按原建议改动会使安全组规则总数可能超过云端 100 上限并被 API 拒绝。**残余未知**：若腾讯另存在**叠加**于安全组级上限之外的每方向上限，则可放行更多入站；该口径由 **PT-I7-03**（真实账号）确认。**未取得"每方向 100"的官方依据**：官方"使用限制/配额"叙述页在本环境 DNS 不可达（`cloud.tencent.com`/`www.tencentcloud.com`/`intl.cloud.tencent.com` 等均解析到非公网 IP），本轮仅取得可检索的官方 API 字段定义；**未确认前不改 CVM 代码** |
 | P3-07 | **✅ 已按 B 本地清理（2026-10-02）**：删除不可达旧流程，回归迁入生产链 | `retrySync`、`retrySyncDetailed`、`truncateDesc` 与专属 imports 已删除；三份旧测试删除 15 项旧入口回归和专属夹具，12 个目标链场景及共享描述回归正式落地。保留现用重试判定/超时夹具/GetRules/旧 Diff | 当前正式链为 `syncAll → runRound → syncTarget → runTargetAttempt / runTargetCleanup`；机械替换方案已改为按现生产语义迁移。完整对照见 Issue6 §7.9，门禁与负向控制见下方补记；I-09 本地收口，尚未提交 |
 | P3-08 | ✅ 已随 P1-02/I-01 修复并提交为 `7aaa3f2` | 原 PID 判活的身份误判与 TOCTOU 已由同一文件上的非阻塞独占 `flock` 取代；真实内核锁屏障、GC、并发、SIGKILL/重启均有判别证据 | 详细实现、重复门禁和 Linux/amd64 Docker 证据见 P1-02 实施补记 | 网络文件系统、旧 PID-only 版本混跑不保证；已有文件/目录/DB 权限迁移仍属 P3-12 |
-| P3-09 | **✅ 已按 A 本地修复（2026-10-02），尚未提交**：DSN 独立 `_txlock=immediate`，在读之前预留写事务 | 当前驱动对 `ReadOnly=true` 跳过 beginMode；正式 Store/协调器先读后写、真实日志/扫描写入、只读并行快照与取消回收均覆盖 | 保持单一 busy_timeout PRAGMA、一次性 WAL、现有发布顺序；5 秒写锁超时仍可能 BUSY，重试不保证成功；见下方当前实施补记 |
+| P3-09 | **✅ 已按 A 本地修复（2026-10-02），已提交为 `f6b3757`**：DSN 独立 `_txlock=immediate`，在读之前预留写事务 | 当前驱动对 `ReadOnly=true` 跳过 beginMode；正式 Store/协调器先读后写、真实日志/扫描写入、只读并行快照与取消回收均覆盖 | 保持单一 busy_timeout PRAGMA、一次性 WAL、现有发布顺序；5 秒写锁超时仍可能 BUSY，重试不保证成功；见下方当前实施补记 |
 | P3-09（历史证据，已由下方实施补记替代修法/状态） | SQLite 写事务为 deferred，先读后写存在 WAL read→write 升级（`SQLITE_BUSY_SNAPSHOT`，`busy_timeout` 不生效）；且注释理由与驱动实现矛盾 | `config/store.go:32-34` `BeginTx(ctx,nil)`；`:77-78` 注释以"会让只读事务申请写锁"为由拒绝 `_txlock`；**但驱动 `modernc.org/sqlite@v1.54.0/tx.go:23` 为 `if !opts.ReadOnly && c.beginMode != ""`——只读事务根本不加 beginMode，该理由不成立** | 影响仅"偶发 500、重试即成功、不损坏数据"。修法：DSN 加 `_txlock=immediate`（`ReadOnly` 事务不受影响），并同步修正注释与 `config/store_dsn_test.go:142` 的断言 |
-| P3-10 | **问题真实存在，当前仍未修复；属于独立队列 I-07，不能标记完成。** 原为五类问题、六处返回值处理缺口；I-01 已替换 pidfile 删除并处理 Close 错误，当前剩余四类、五处，不是“均不可失败”或已被其他修复覆盖 | pidfile 子项已由 I-01 收口；`config/store.go:118/124` 两处失败收尾的 `db.Close()` 未检查；`webui/api/logstream.go:97` `_ = h.Handle(...)`；`webui/api/sync.go:127-130` `json.Marshal` 失败静默跳过事件；`webui/server.go:298` 静态 `/api/health` 的 `w.Write` 忽略 | 与 AGENTS §十一“所有 error 必须处理”冲突。SSE 序列化失败会静默丢事件，是影响最实质的一项；其余缺口通常低概率或当前 writer 实际少失败，但仍须补齐可观测错误处理 |
+| P3-10 | **✅ 已按细化后的 A 本地修复（2026-10-03），尚未提交** | Store 初始化失败统一关闭并合并关闭错误；日志渲染错误向 Handler 返回，失败不更新缓存/序号/投递；同步 SSE 安全 WARN 后跳过坏事件、继续连接；静态 health 写失败 Debug | 四个生产文件、三份新增回归及本文/AGENTS。`bytes.Buffer.Write` 的 error 保证为 nil，渲染是规范性补齐；不将返回 Handler 错误写成自动告警。正式门禁与负向控制见下方实施补记，I-07 其他子项独立追踪 |
+| P3-10（修复前历史证据） | **历史记录（由 2026-10-03 当前实施补记替代当前状态）。** **问题真实存在，当前仍未修复；属于独立队列 I-07，不能标记完成。** 原为五类问题、六处返回值处理缺口；I-01 已替换 pidfile 删除并处理 Close 错误，当前剩余四类、五处，不是“均不可失败”或已被其他修复覆盖 | pidfile 子项已由 I-01 收口；`config/store.go:118/124` 两处失败收尾的 `db.Close()` 未检查；`webui/api/logstream.go:97` `_ = h.Handle(...)`；`webui/api/sync.go:127-130` `json.Marshal` 失败静默跳过事件；`webui/server.go:298` 静态 `/api/health` 的 `w.Write` 忽略 | 与 AGENTS §十一“所有 error 必须处理”冲突。SSE 序列化失败会静默丢事件，是影响最实质的一项；其余缺口通常低概率或当前 writer 实际少失败，但仍须补齐可观测错误处理 |
 | P3-11 | `StoreLogWriter.OnEvent` 吞掉写库失败（审计快照） | `webui/api/logwriter.go:83-86` 记 WARN 后 `return nil` → `notifier/bus.go:114` 的"事件处理失败"路径**永不可达** | ✅ 已由 Issue7 Step 4 修复：`AddSyncLog` 错误直接返回给 EventBus；保留原行作为历史红灯，不再列入剩余队列 |
 | P3-12 | **真实存在，当前未修复；状态保持“未完成/待独立处理”，对应 I-07。** 数据目录、SQLite DB 及 pidfile 没有应用层权限收敛，不能把既有启动/Docker 证据外推为权限验收通过 | `run.go:41` 使用 `os.MkdirAll(..., 0755)` 且无后续 `Chmod`；I-01 新建锁文件已请求 `0600`，但已有文件未 `Chmod`；`config/store.go:111-128` 直接 `sql.Open`，没有预创建/显式 `Chmod` DB；DB 明文保存云 AK/SK、SMTP 凭据、Webhook URL、Uptime Kuma Push URL。当前仍无已有文件/目录权限迁移；新建锁文件 `0600` 不足以关闭本项 | 同机其他非特权用户可能遍历数据目录或读取明文敏感配置。**既有用户决策仍固定为数据目录 `0700`、数据库和 pidfile/lock 文件 `0600`**；对已存在目录/文件必须显式 `Chmod`，`MkdirAll`/`WriteFile` 的请求模式不能替代迁移收敛。本轮只更新审计记录，未修改源码、测试或其他文档，未构建、未运行测试或格式化 |
 | P3-13 | **问题真实存在，当前未修复；继续归入独立队列 I-07。** 本轮仅完成只读核验与本审计条目更新，未修改源码、测试或其他文件，未构建、未运行测试或格式化；不可标记完成。 | **当前基线与精确缺陷链：** HEAD 为 `34aa9b859c38904e701a19d672dcc4f65435b31c`，`main == origin/main`；工作树已有唯一 tracked 修改为本报告。`app/logutil.go:28-37` 的 `MultiHandler.Handle` 按顺序处理子 Handler，但 `:31-33` 在第一个启用 Handler 返回错误时立即 `return`，不会继续分发。生产组装顺序由 `run.go:99-100` 与 `app/logutil.go:85-88` 固定为 `stdout TextHandler → WebUI LogBroadcaster`；因此 stdout 写入失败（例如管道断裂）时，WebUI broadcaster、日志环形缓冲与 SSE 订阅者不会收到同一条日志，形成静默丢行。当前 `app/logutil_test.go` 只有日志级别和初始化测试，没有错误注入、继续分发、多错误聚合或 Disabled Handler 语义测试。已修复/不存在核对未发现收口证据；`Issue7.md:584-591` 明确本项是越界的正交问题，AGENTS §十一的 error 处理要求与 MultiHandler 文件归属也不构成已修复证据。另需注意 Go `slog.Logger` 会丢弃底层 Handler 返回的错误，故核心验收必须直接调用 `MultiHandler.Handle`，不能只通过 `slog.Logger` 观察返回值。 | **后续设计与用户决策（尚未授权实施）：** 影响生产代码仅限 `app/logutil.go` 的 `MultiHandler.Handle`，测试限于 `app/logutil_test.go`；`run.go` 的组装顺序、`webui/api/logstream.go`、SSE 协议、前端、日志格式和同步业务均明确不改。**A（推荐）**：继续遍历全部启用 Handler，收集错误；零错误返回 nil，单个错误原样返回，多个错误用标准库 `errors.Join` 返回，以保留单错误身份并让 `errors.Is/errors.As` 识别全部错误；保持现有顺序、`Enabled` 过滤、同步串行、`WithAttrs`/`WithGroup` 行为，不重试、不异步、不在错误路径再次写日志，避免 stdout 失败时递归。**B**：继续调用后续 Handler，但多个错误只返回第一个；实现更小，但丢失后续错误信息和 `errors.Is` 可观测性，不推荐。**C**：继续分发并吞掉/另行记录 Handler 错误；会削弱现有 error 处理契约，且可能形成日志递归，不推荐。当前仅记录 A 为推荐，不擅自替用户裁决或实施。 | **判别性验收、风险、外部边界与停止条件：** L0 静态确认不再在单个 Handler 出错后提前返回，所有启用 Handler 均尝试，多个错误经 `errors.Join` 聚合，未新增递归日志，顺序仍为 stdout 后 WebUI。L1 直接调用 `MultiHandler.Handle` 至少覆盖：前一 Handler 返回 sentinel 错误而后一 Handler 仍被调用并收到原始 Record；两个 Handler 出错且返回值可分别 `errors.Is`；中间 Handler 出错不阻断后续成功 Handler；Disabled Handler 的 `Handle` 不调用且不贡献错误；全成功及全 Disabled 控制组返回 nil。修复授权后再执行 `go test ./app`、`go test ./app -race`，随后按项目门禁执行全量 race、vet、build 与 `git diff --check`；本轮这些命令均未执行，不能预先写成通过。L3 可选用受控 stdout 管道断裂补充进程级证明，但不是必要前置。风险低：`errors.Join` 可能改变多错误 `Error()` 文本；不保留单错误原值会改变兼容性，故 A 原样返回单错误；继续串行调用不解决 Handler 阻塞，也不处理 panic。无需真实腾讯云、阿里云、DNS、SMTP、Webhook、Uptime Kuma、浏览器、Docker 或远端 CI/GHCR，本地 fake `slog.Handler` 已足以证明根因修复；真实 stdout 管道仅是补充边界。若实现改变 Handler 顺序、SSE/前端协议、日志格式、同步业务，加入重试/异步队列，修改 `slog` 递归错误路径，或把本地通过外推为外部链路通过，应立即停止并回到方案审查；在用户决策、判别性测试、受影响门禁和文档闭环完成前，保持 P3-13/I-07 未修复。 |
@@ -905,7 +916,21 @@ FAIL
 
 - **证据边界：** Go `1.26.4 darwin/arm64`；未执行 Go 1.25/Linux、前端构建、浏览器、Docker/compose、真实云、SMTP/Webhook/Uptime Kuma 或远端 CI/GHCR。本项不依赖这些外部链路，本地通过不外推其已验收或全仓长期稳定绿色。I-08 仅本项收口，其他子项保持各自状态。
 
+**P3-10 当前实施补记（2026-10-03，细化后的方案 A）：**
+
+- **授权与当前核对：** 用户确认前轮研究推荐并授权本轮正式修复及同步文档；基线 `main / f6b3757`、本地 `origin/main / c08f2e1`、ahead 2，开始时工作树与暂存区干净。再次确认 I-01 已取消 pidfile 删除且 Close 错误已 WARN；剩余四类、五个位置仍存在。本轮不恢复锁文件删除，也不改权限或 MultiHandler。源码/测试/文档尚未提交，未 fetch/push。
+- **数据库失败收尾：** `OpenStore` 保留 DSN/sql.Open，包内 `openStoreDB(*sql.DB)` 在失败返回时统一 defer Close；只有关闭也失败才 `errors.Join(primary, wrappedClose)`，主错误在前且 `errors.Is`/`errors.As` 保留，成功初始化保持 DB 可读写。沿用真实 `database/sql` 驱动接口注入错误，不替换全局工厂，不引入新数据库接口；WAL、迁移回滚、`_txlock=immediate`、ReadOnly、busy_timeout、连接池及 schema 保持。
+- **日志渲染与历史说明订正：** `renderLine` 返回 `(string,error)`，检查 TextHandler.Handle，广播器在锁/序号/ring/订阅投递前返回错误，不递归记录。标准库 [bytes.Buffer.Write](https://pkg.go.dev/bytes#Buffer.Write) 保证 error 为 nil，取代历史“通常不失败/实际少失败”的表述；当前固定 buffer 路径没有返回 error 的生产复现，本改动是符合 AGENTS 的规范性补齐。另据 [slog.Handler](https://pkg.go.dev/log/slog#Handler)，Logger 丢弃 Handler 返回错误，不能将向上传播表述成应用自动告警，P3-13 仍独立追踪。
+- **SSE 采用 A 并细化日志安全：** 序列化失败固定 WARN，只含事件 `type` 和 `error_type`（`fmt.Sprintf("%T", err)`）；不输出 Data、不调用序列化错误的 Error()，因为自定义 MarshalJSON/MarshalText 错误可含敏感内容（正式两类负向控制证明）。跳过该事件、继续连接，后续正常帧可收到；坏事件没有帧，不写成已发送。帧格式、既有写 deadline、shutdown/context 和退订保持；不新增自定义错误事件、回放、发布端预序列化、重试或队列。多个 SSE 客户端可能各记录诊断，满 channel 丢弃边界保持，不承诺无损流。
+- **静态 health：** Write 失败只记录 Debug，不补写 500、不重试；正常静态 200、`{"status":"ok"}`、Content-Type 与无 Cache-Control 的既有边界保持，不改 operational health 或 Docker 探针。默认 info 不展示 Debug，避免正常客户端断开噪声。
+- **正式新增回归：** `config/store_open_error_test.go` 的 `TestOpenStoreFailurePreservesCloseError` 覆盖 WAL/Begin/Schema 三阶段 × Close 成功/失败六组合，验证主错误与关闭错误、错误类型/顺序、关闭一次、Schema 失败回滚和失败 DB 不可用；`TestOpenStoreSuccessKeepsDBOpen` 用真实临时 SQLite 验证初始化后业务读写。`webui/api/sync_marshal_test.go` 的 `TestSyncEventsMarshalFailureContinues` 用真实 EventBus.Publish + handler 覆盖 function/channel/NaN/cycle/自定义 MarshalJSON/map-key MarshalText/非法时间七类坏输入，随后正常帧结构化解码通过、安全 WARN 恰一次、坏事件零帧、连接保留、取消后恰好退订一次。`webui/server_health_write_test.go` 的 `TestStaticHealthWriteFailureDebug` 覆盖立即失败 writer、一次 Write/零补写状态码、恰一 Debug 及正常响应/头/零日志控制。
+- **正式故障注入与负向控制：** 只在仓库外 overlay 将渲染 writer 替换为返回 `io.ErrClosedPipe` 的夹具；正式实现 `TestRenderFailureNoPublish` race 20 轮通过，证明原错误返回、零序号/ring/投递更新、无递归日志，不给生产增加测试 hook。十类负向控制分别为：Store 丢弃 Close、关闭错误覆盖主错误、误关成功 DB；SSE 静默跳过、原样记录错误、断连接；health 忽略 Write、将 Debug 升为 Warn；renderLine 丢弃错误、广播器丢弃渲染错误。全部按对应正式行为断言变红，退出码 1 均是预期控制；检查无 build failure，不以编译失败充当判别力。正式测试基于修正后的 struct map-key Marshaler 夹具，前轮 string key 未触发 MarshalText 的研究夹具错误不冒充通过。
+- **本轮门禁：** `go test ./config ./webui/api ./webui -run 'TestOpenStoreFailurePreservesCloseError|TestOpenStoreSuccessKeepsDBOpen|TestSyncEventsMarshalFailureContinues|TestStaticHealthWriteFailureDebug|TestLogBroadcaster_(Format|Replay|RingOverflow)' -race -count=20 -timeout=5m` 通过；受影响三包完整 `-race -count=1 -timeout=5m` 通过（config 14.085s / api 15.691s / webui 8.188s）。全量 12 包 `go test ./... -race -count=1 -timeout=20m` 全部 ok；其中根包 TestMain 通过 `go build -o` 构建真实产品二进制，既有进程级启动/退出/SSE/导入导出/本地 mock Push 回归随全量执行通过，不将其描述为本轮未执行真实二进制；`go vet ./...`、`go build ./...`、受影响 Go 文件 `gofmt -l`（无输出）及 `git diff --check` 均通过。单次全量绿色不外推全仓长期稳定。完整外部注入与负向控制记录保存于本轮临时实施目录；研究候选测试不冒充正式门禁。
+- **状态与证据边界：** 生产固定四文件，新增三份测试，文档仅本文/AGENTS，共九文件。Go `1.26.6 darwin/arm64`；未执行 Go 1.25/Linux、前端构建、P3-10 专门进程级故障验收/浏览器、Docker/compose、真实云/SMTP/Webhook/Uptime Kuma 或远端 CI/GHCR。P3-10 依据本地错误注入与自动化验收收口，不外推全仓长期稳定或真实外部通过；I-07 的 P3-12/P3-14/P3-13 继续未完成。
+
 **P3-10 独立追踪与后续设计（以下为 I-01 前的历史研究）：**
+
+> **2026-10-03 当前状态更正：** 以下原始缺陷链、方案与判别性验收设计保留为历史记录；用户已选择细化 A 并授权实施，当前代码、验证与边界以上方补记为准。旧 PID-only/删除锁文件、将错误原文直接写日志及“buffer 通常不失败”均不是本轮合同。
 
 > 2026-09-30 I-01 补记：下述第①项的 `os.Remove` 已随 flock 改造移除，cleanup 的 `Close` 错误已记录 WARN。后续 P3-10 仅处理剩余②～⑤，不得恢复 PID-only 判活或删除锁文件；本项整体仍未完成。
 
@@ -1406,7 +1431,7 @@ P3-01（熔断器淘汰已本地修复）、P3-23（ticker Reset）、P3-24（�
 
 **历史批次 4 — 状态一致性与错误处理（原始排序，当前状态以 0.2/0.4 为准）**
 
-P3-05（普通 JSON 统一 `no-store`，已本地修复）、P3-10（忽略的 error）、P3-11（`StoreLogWriter` 返回错误，已由 Issue7 修复）、P3-13（MultiHandler 收集全部错误）、P3-14（400→503）、P3-21（drain + 字节上限）
+P3-05（普通 JSON 统一 `no-store`，已本地修复）、P3-10（忽略的 error，已按细化 A 本地修复，见当前补记）、P3-11（`StoreLogWriter` 返回错误，已由 Issue7 修复）、P3-13（MultiHandler 收集全部错误）、P3-14（400→503）、P3-21（drain + 字节上限）
 
 **历史批次 5 — 死代码与重复实现**
 

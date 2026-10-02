@@ -295,7 +295,9 @@ func (s *Server) registerRoutes() {
 	// 健康检查
 	s.mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.Write([]byte(`{"status":"ok"}`))
+		if _, err := w.Write([]byte(`{"status":"ok"}`)); err != nil {
+			slog.Debug("静态健康响应写出失败", "error", err)
+		}
 	})
 	// 所有业务 API 端点
 	s.deps.Register(s.mux)

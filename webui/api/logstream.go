@@ -118,15 +118,20 @@ func (b *LogBroadcaster) Enabled(_ context.Context, level slog.Level) bool {
 
 // renderLine 用 slog.TextHandler 渲染单行（与 stdout 格式完全一致）
 // TextHandler 输出形如：time=2026-08-02T10:00:00.000+08:00 level=INFO msg=同步完成 provider=...
-func renderLine(level slog.Level, r slog.Record) string {
+func renderLine(level slog.Level, r slog.Record) (string, error) {
 	var buf bytes.Buffer
 	h := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: level})
-	_ = h.Handle(context.Background(), r)
-	return buf.String()
+	if err := h.Handle(context.Background(), r); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
 
 func (b *LogBroadcaster) Handle(_ context.Context, r slog.Record) error {
-	line := renderLine(b.level.Level(), r)
+	line, err := renderLine(b.level.Level(), r)
+	if err != nil {
+		return err
+	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()

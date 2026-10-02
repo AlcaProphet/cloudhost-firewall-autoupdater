@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -126,6 +127,8 @@ func (d *Deps) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 			}
 			data, err := json.Marshal(ev)
 			if err != nil {
+				// 自定义序列化错误可能含敏感数据，只记录类型，不输出错误原文或负载。
+				slog.Warn("同步事件 SSE 序列化失败，跳过事件", "type", ev.Type, "error_type", fmt.Sprintf("%T", err))
 				continue
 			}
 			if err := writeSSE(w, "data: %s\n\n", data); err != nil {
