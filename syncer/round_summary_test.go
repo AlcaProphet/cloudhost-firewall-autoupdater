@@ -101,7 +101,10 @@ func TestSyncErrorCarriesConfirmedCounts(t *testing.T) {
 	events := make(chan notifier.Event, 1)
 	s.bus.Subscribe(notifier.EventSyncError, roundEventSink{ch: events})
 
-	res := s.syncTarget(s.runtime.Snapshot(), p, rules)
+	state := s.runtime.Snapshot()
+	round := newDNSRound(state)
+	res := s.syncTarget(state, p, rules, round)
+	round.finish()
 	if res.outcome != TargetFailed || res.added != 1 || res.deleted != 0 {
 		t.Fatalf("targetResult = %+v, want outcome=failed added=1 deleted=0", res)
 	}
@@ -333,7 +336,10 @@ func TestTargetSyncCompleteCarriesUnsupported(t *testing.T) {
 	events := make(chan notifier.Event, 1)
 	s.bus.Subscribe(notifier.EventTargetSyncComplete, roundEventSink{ch: events})
 
-	res := s.syncTarget(s.runtime.Snapshot(), p, rules)
+	state := s.runtime.Snapshot()
+	round := newDNSRound(state)
+	res := s.syncTarget(state, p, rules, round)
+	round.finish()
 	if res.outcome != TargetPartial {
 		t.Fatalf("SWAS + DROP 必须为 partial，实际 %q", res.outcome)
 	}
@@ -377,7 +383,10 @@ func TestSyncErrorRetainsUnsupportedAfterAddFailure(t *testing.T) {
 	events := make(chan notifier.Event, 1)
 	s.bus.Subscribe(notifier.EventSyncError, roundEventSink{ch: events})
 
-	res := s.syncTarget(s.runtime.Snapshot(), p, rules)
+	state := s.runtime.Snapshot()
+	round := newDNSRound(state)
+	res := s.syncTarget(state, p, rules, round)
+	round.finish()
 	if res.outcome != TargetFailed {
 		t.Fatalf("Add 失败必须得到 failed，实际 %q", res.outcome)
 	}

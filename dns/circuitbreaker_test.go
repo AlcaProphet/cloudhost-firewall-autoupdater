@@ -11,14 +11,14 @@ import (
 func TestCircuitBreaker_CloneForDomains(t *testing.T) {
 	cb := NewCircuitBreaker(5)
 	// 零值条目模拟旧版本遗留状态，过滤复制不能把它带入新实例。
-	cb.failCount = map[string]int{"active.example": 2, "removed.example": 4, "zero.example": 0, "Case.Example": 3}
+	cb.failCount = map[string]int{"active.example": 2, "removed.example": 4, "zero.example": 0, "case.example": 3}
 	for _, tt := range []struct {
 		name    string
 		domains []string
 		want    map[string]int
 	}{
-		{"保留和裁剪", []string{"active.example", "active.example", "zero.example", "new.example", "Case.Example"}, map[string]int{"active.example": 2, "Case.Example": 3}},
-		{"域名原值", []string{"case.example"}, map[string]int{}},
+		{"保留和裁剪", []string{"active.example", "active.example", "zero.example", "new.example", "Case.Example"}, map[string]int{"active.example": 2, "case.example": 3}},
+		{"域名统一身份", []string{"CASE.EXAMPLE"}, map[string]int{"case.example": 3}},
 		{"空集合", []string{}, map[string]int{}},
 		{"nil集合", nil, map[string]int{}},
 	} {
@@ -253,5 +253,22 @@ func TestCircuitBreaker_SetThresholdConcurrent(t *testing.T) {
 	// 计数上限为最后一次设置的阈值以内的合理值，只要求不 panic/不竞态
 	if got := failCountOf(cb, "example.com"); got < 0 {
 		t.Errorf("失败计数异常: %d", got)
+	}
+}
+
+// TestCircuitBreaker_DomainIdentity 验证规范化覆盖全部公开计数入口与配置裁剪。
+func TestCircuitBreaker_DomainIdentity(t *testing.T) {
+	cb := NewCircuitBreaker(1)
+	cb.RecordFailure(" A.Test ")
+	if !cb.IsOpen("a.test") || len(cb.failCount) != 1 || cb.failCount["a.test"] != 1 {
+		t.Fatal("大小写与空白别名没有共享规范化计数")
+	}
+	clone := cb.CloneForDomains([]string{" A.TEST ", "a.test"})
+	if !clone.IsOpen("a.test") || len(clone.failCount) != 1 {
+		t.Fatal("配置裁剪丢失或重复了别名计数")
+	}
+	cb.RecordSuccess(" A.TEST ")
+	if len(cb.failCount) != 0 || !clone.IsOpen("a.test") {
+		t.Fatal("别名成功未清理计数，或污染了已复制实例")
 	}
 }

@@ -5,15 +5,23 @@
 | 仓库 | `/Users/kyle/Desktop/Repo/cloudhost-firewall-autoupdater` |
 | 审计快照分支 / HEAD | `main` / `11918fb945fe9dfe2a86ead5bc833b14dd156a68` |
 | 审计快照开始前工作树 | **干净**（0 tracked 改动、0 非忽略未跟踪文件）；这是历史审计快照，不表示当前工作树状态 |
-| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-09-30 P3-01 熔断器淘汰）」** |
+| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-10-02 P3-02 每轮半开探测）」** |
 | 审核性质 | 原始全量代码审核为**只读**；2026-09-30 批次只静态核验既有修复并更新本文与 `Issue7.md`，未修改代码，未运行构建、测试或格式化（属该批次记录） |
 | 审核方式 | 8 路并行子代理分模块审核 + 主代理亲自覆盖超时范围 + 判别性探针独立复现 + 交叉复核裁决 |
 | 审核范围（审计快照值） | 快照 `11918fb` 口径：233 个 tracked 文件；**53/53 生产 Go 文件**（10,890 行）；62 个测试文件（20,457 行）；18 个前端源文件（2,212 行）；6 个构建/部署/CI 文件；8 份合同文档。**当前值为 244 tracked / 55 生产 Go（12,606 行）/ 69 测试文件（24,896 行）/ 18 前端源（2,361 行）/ 同样 6 个构建文件与 8 份合同文档**（新增 `provider/plan.go`、`syncer/target.go`） |
 | 报告版本 | final1（已剔除全部被驳回/误报项，并纳入用户 7 项决策） |
 
-> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-09-30 P3-01 熔断器淘汰）」小节为准**。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
+> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-10-02 P3-02 每轮半开探测）」小节为准**。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
 
-### 最近实施基线（2026-09-30 P3-01 熔断器淘汰）
+### 最近实施基线（2026-10-02 P3-02 每轮半开探测）
+
+- **实施前基线**：`main == origin/main == ac0ee62fe62166641c9cf1ef8e8043231545e577`，工作树与暂存区干净。未 fetch、未提交、未推送；本地跟踪引用不代表远端最新状态。
+- **授权与范围**：用户确认 B，完成仓库外候选/旧实现对照后授权正式修复与文档回写。生产为 `dns/circuitbreaker.go`、`syncer/dns_round.go`、`syncer/target.go`、`syncer/syncer.go`；测试新增轮次回归并调整两个既有测试文件；文档更新本文、AGENTS 与 Issue7。P3-01 已提交为 `ac0ee62`，本轮 P3-02 尚未提交。
+- **证据边界**：本机 Go `1.26.6 darwin/arm64`；本轮门禁见 P3-02 实施补记。未执行 Go 1.25/Linux、前端、浏览器、Docker/compose、真实云、SMTP/Webhook/Uptime Kuma 或远端 CI/GHCR。不外推长期稳定绿色或外部验收。
+
+### 前序实施基线（2026-09-30 P3-01 熔断器淘汰，历史批次）
+
+> 该批次其后已提交为 `ac0ee62`；以下保留当时实施记录。原值身份与不改变半开探测的历史边界已由后续 P3-02 授权替代。
 
 - **实施前基线**：`main / 901d642`、本地 `origin/main / 7ff37b1`、ahead 3，工作树与暂存区干净。本轮未 fetch、未提交、未推送；本地跟踪引用不代表远端最新状态。
 - **授权与范围**：用户确认细化后的 A 并授权实施。生产改动仅 `dns/circuitbreaker.go` 与 `syncer/state.go`；回归修改两个对应测试文件及既有 API 导入测试夹具；文档回写本文与 AGENTS。实现和门禁见 P3-01 实施补记。
@@ -87,7 +95,8 @@
 | P2-02 | ✅ 已实施；2026-09-30 在 `7aaa3f2` 基线定向 race 连续 3 次通过（每批 ≤100、部分成功与 S2 残留核验）；⏳ 真实 ECS 验收未执行 | Issue7 Step 3；本条当前实施补记；PT-I7-05 |
 | P2-08、P2-09 | ✅ 已实施（Dashboard 只消费后端 outcome；Dry Run 以 `target_id` 为 key） | Issue7 Step 4 |
 | P2-04 | ✅ 已修复并提交为 `7acf303`；真实 Uptime Kuma 验收未执行 | RuntimeState 先发布再唤醒，判别性用例覆盖两条分支 |
-| P3-01 | ✅ 已按细化后的 A 本地修复，尚未提交；判别性回归与门禁见实施补记 | I-08 仅本项收口，P3-21/P3-15 继续独立追踪 |
+| P3-01 | ✅ 已提交为 `ac0ee62`；淘汰与裁剪继续保留，域名身份由后续 P3-02 统一 | I-08；历史实施补记保留 |
+| P3-02 | ✅ 已按 B 本地修复，尚未提交；正常 attempt 新解析、已熔断域名每轮协调半开探测、失败按轮计数 | 后续独立授权，实施补记与 Issue7 §12.6 |
 | P3-03 | ✅ 已修复并**提交为 `c5cc79d`**；真实 Uptime Kuma 验收未执行 | 非空非法 URL 使用有下限的 timer/Wake/Stop 等待；见 P3-03 实施补记 |
 | P2-05 | ✅ 已按推荐方案 A 本地实施；门禁结果见 finding 补记，已提交为 `93e0e4b`；⏳ 真实 Webhook 未验收 | I-05 / P2-05 本轮实施补记 |
 | P2-06 | ✅ 已按完善后的方案 A 本地修复并取得组件、浏览器/API 与 SQLite 联合证据；已提交为 `064b794` | I-03 / P2-06 实施补记；不外推 PT-B7-07 全项或外部验收 |
@@ -122,7 +131,7 @@
 - [x] **I-05｜P2-05**：已按推荐方案 A 本地实施三渠道明确成功响应校验、16 KiB 有界读取与安全错误；门禁结果见 P2-05 补记，已提交为 `93e0e4b`；真实 Webhook 仍未验收。
 - [ ] **I-06｜P3-23、P3-24**：串行修复 ticker Reset 与 pause/resume 通知合并，不和 Issue7 状态机重构混做。
 - [ ] **I-07｜P3-12、P3-05、P3-14、P3-10、P3-13**：文件权限与 HTTP/error 一致性；P3-11 已由 Issue7 Step 4 修复，不再列入此队列。
-- [ ] **I-08｜P3-01、P3-21、P3-15**：P3-01 已本地修复；其余资源与连接健壮性子项继续独立追踪；P3-02 保留为已知弱语义，不在 Issue7 中扩张为隔离/降频重构。
+- [ ] **I-08｜P3-01、P3-02、P3-21、P3-15**：P3-01 已提交 `ac0ee62`；P3-02 按后续独立授权 B 已本地修复，尚未提交，详见实施补记；P3-21/P3-15 继续独立追踪，不由本批次关闭。
 - [ ] **I-09｜P3-07**：Issue7 Step 1～4 完成后重新证明生产零引用，再清理旧同步包装与关联测试。
 - [ ] **I-10｜其余独立 P3**：P3-04、P3-06、P3-09、P3-16 非 Dry Run 子项、P3-19、P3-20，按各 finding 的前置与真实环境边界逐项处理。
 - [ ] **I-11｜P3-17、P3-18**：仅做文档/注释闭环；不得与业务语义修改混在同一批次。
@@ -718,8 +727,8 @@ FAIL
 
 | ID | 结论 | 关键证据 | 备注 |
 |---|---|---|---|
-| P3-01 | **✅ 已本地修复，尚未提交**：成功即删除，普通发布按新配置域名复制正数计数 | RecordSuccess 使用 delete；CloneForDomains 遍历新配置域名原值，重建新 map 且不按历史大小预分配；BuildRuntimeState 从 published.DomainRules 提取域名；导入保持 Reset | 成功清理、配置裁剪、阈值与快照隔离、并发回归均覆盖；详见下方 **P3-01 实施补记** |
-| P3-02 | 熔断器 `IsOpen` **不改变任何控制流**，仅影响日志分支 | `syncer/syncer.go:861-881`：解析照做、轮次照跑；全仓 `IsOpen` 唯一读取点 `:865` | "熔断"无隔离/降频效果；多 provider 共享同一域名时阈值按单元累加、由任一成功清零，"连续失败轮数"语义被扭曲。AGENTS §四字面满足（每轮本就只探测一次）。建议接受现状并在注释/文档写明语义 |
+| P3-01 | **✅ 已提交 `ac0ee62`**：成功即删除，普通发布按新配置域名复制正数计数 | RecordSuccess 使用 delete；CloneForDomains 遍历配置域名并用 DomainKey 查找正数计数，重建新 map 且不按历史大小预分配；BuildRuntimeState 从 published.DomainRules 提取域名；导入保持 Reset | 成功清理、配置裁剪、阈值与快照隔离、并发回归均覆盖；详见下方 **P3-01 实施补记** |
+| P3-02 | **✅ 已按 B 本地修复，尚未提交**：轮初已熔断域名每轮协调一次半开探测 | dnsRound 与 DomainKey；正常 attempt 新解析，失败原始错误只在本轮复用；轮末全失败域名加一次 | 计数不随目标/重试数放大，顺序无关；恢复新解析、DNS 失败/零删除与 Dry Run 独立均覆盖，详见下方实施补记 |
 | P3-03 | **✅ 已按用户确认的补强方案修复并提交为 `c5cc79d`（2026-09-30）**。历史缺陷：启用且非空 URL 的 `buildPushURL` 失败后，`sendOnce=false` 导致 Run 保持未激活并只等 Wake/Stop，丢失周期检查。普通网络/HTTP/响应失败原本仍按周期继续，不能泛化为全部失败无限静默 | `Pusher.Run` 的失败分支新增 timer/Wake/Stop；timer 到期直接回循环顶部重读配置。`invalidURLRetryInterval` 对非正值回退 60s、正值不足 20s 按 20s，有效长间隔保持原值。真实 timer 用例同时验证周期校验与下限；旧等待逻辑及删除下限的两个 overlay 负向控制均精确失败，修复版通过 | 生产修改仅限 `internal/health/push.go`，测试扩展既有 `push_test.go`；不改 Store、发布顺序、健康/告警、正常发送周期、HTTP 超时或生命周期。定向 race、快速用例 20 轮 race、全量 race 连续 3 轮、vet/build/前端 build 与格式/diff-check 已通过，详情见下方实施补记。关闭/空 URL 保持纯等待；timer 不自动读 SQLite；持续非法地址不会自动变为合法；频繁 Wake 不受全局 WARN 限流。真实 Uptime Kuma DOWN/恢复及远端 CI/GHCR 均未执行 |
 | P3-04 | **SSE 断线重连重复回放最多 1000 行**，挤掉真实新日志 | `webui/frontend/src/views/Logs.vue:45-50` 无去重、无 `onerror`；`webui/api/logstream.go:52-88` 每次订阅都回放环形缓冲；`webui/api/sse.go:22` 无 `id:` 字段 | 后端重启/网络切换/休眠后浏览器自动重连即触发。修法：加 `id:` 序号+前端丢弃已见，或回放用独立 event 名 |
 | P3-05 | **问题真实存在，当前未修复；继续保留在独立队列 I-07。** 已修复/不存在结论均不成立。本轮仅更新审计记录，未修改源码、测试或依赖，未运行构建、测试或格式化 | **当前基线**：HEAD `34aa9b859c38904e701a19d672dcc4f65435b31c`（**历史基线，非当前 HEAD；当前见头部「最近核验基线」小节**），`main == origin/main`；工作树原有修改仅涉及本报告。`webui/api/deps.go:213-220` 注册 `GET /api/settings`；`webui/api/settings.go:15-20` 定义并在 `:33-50` 复制 `tc_access_id`、`tc_access_key`、`ali_access_id`、`ali_access_key` 到响应，再经 `writeJSON` 返回；`webui/api/deps.go:229-240` 的 `writeJSON` 只设置 `Content-Type`，不设置 `Cache-Control`。全仓生产代码中 `no-store` 仅见于 operational health、alerts、config export 等其他端点，未发现为 settings 补头的全局 middleware。现有 `webui/api/settings_alerts_test.go:13-52` 验证键集合/默认值/凭据回显，`redact_test.go:98-110` 验证既有脱敏契约，但均未判定缓存头。Issue7 已将本项留在 I-07，且 2026-09-29 用户裁决确认本轮越界不修复 | **后续设计与决策项（尚未授权实施）**：**A（推荐）**：仅在 `webui/api/settings.go` 的 `handleGetSettings` 入口设置 `w.Header().Set("Cache-Control", "no-store")`，使成功和数据库读取失败响应都保持禁缓存语义；新增/扩展本地 HTTP 测试精确断言该值。保持四个凭据字段的既有回显契约，不修改通用 `writeJSON`，避免扩大所有 JSON API 的缓存策略；不改前端、存储、配置导入导出或认证边界。**B**：接受现状，依赖浏览器/中间件配置或后续统一 HTTP 缓存策略；不建议，因为当前没有全局补头证据，敏感设置响应仍可能被缓存。是否授权单独处理 I-07/P3-05 需用户决策，本记录不擅自裁决。**影响文件**：实施时必改 `webui/api/settings.go`；建议改 `webui/api/settings_alerts_test.go`（或新增同包测试）。明确不改 `webui/api/deps.go` 的通用 `writeJSON`/路由、`Settings.vue`、数据库 schema、Provider、DNS、告警和配置包逻辑 | **判别性验收**：L0 静态确认 `no-store` 只加在 settings handler，未改变通用 JSON 响应策略、凭据字段或导入导出行为；L1 本地 HTTP 用例同时断言 `GET /api/settings` 为 200、JSON `Content-Type` 不变、四个凭据 sentinel 仍按既有契约返回，且 `Cache-Control` **恰为** `no-store`，并保留失败响应也带该头的控制；L2 运行受影响包测试，随后按项目门禁执行 race、vet、build 与 `git diff --check`；L3 可选地用真实本地二进制 `curl -i /api/settings` 核对最终响应头。当前所有实施/门禁命令均未执行，不得提前写成通过 | **风险、外部边界与停止条件**：风险低，改变仅影响浏览器和中间缓存，可能增加设置页重新请求，但不会移除响应中的凭据、清理 Vue 内存/DevTools/服务端日志，也不替代认证或脱敏。无需真实云、DNS、SMTP、Webhook、Uptime Kuma、浏览器或远端 CI/GHCR；本地 handler/HTTP 测试足以证明本项，浏览器 DevTools 只能补充，不能替代判别性测试。不要额外加入 `Pragma`/`Expires`、移除 GET 凭据回显、统一重构所有敏感 API 或引入认证。如果修复扩大到通用 `writeJSON`、凭据产品契约、认证/会话、配置导入导出或其他 I-07 项，停止并重新确认范围；在用户裁决、判别性 HTTP 回归测试及受影响门禁完成前，保持 P3-05/I-07 未修复，不得把本地通过外推为外部链路通过。 |
@@ -757,7 +766,21 @@ FAIL
 - **本轮门禁**：新增相关用例定向 `-race -count=1` 通过；六个快速新增用例（排除两个真实 20s 等待用例）`-race -count=20` 通过；`go test ./... -race -count=1 -timeout=5m` 全量 12 包连续三轮通过；`go vet ./...`、`go build ./...`、前端 `npm run build`、gofmt 与 `git diff --check` 通过。两个真实等待用例随定向测试及三轮全量各执行一次。执行工具链为本机 Go 1.26.4，未另行运行 Go 1.25。
 - **证据边界**：I-02 两项本地修复已收口，P2-04 已在基线提交为 `7acf303`，**P3-03 已提交为 `c5cc79d`**。真实 Uptime Kuma HTTP Monitor/Push DOWN 与恢复通知、真实云、SMTP/Webhook、浏览器、Docker 和当前 revision 远端 CI/GHCR 本轮均未执行。关闭或空 URL 的纯等待保持原样；timer 只重读 RuntimeState，不自动读 SQLite；持续非法地址仍需用户修正；定时 WARN 有周期下限，但没有新增对频繁 Wake 的全局日志限流。
 
-**P3-01 实施补记（2026-09-30，细化后的 A）：**
+**P3-02 实施补记（2026-10-02，方案 B）：**
+
+- **原问题与更正：** 实施前 `resolveTargetRules` 在调用 Resolver 后才读取 IsOpen，只影响日志与计数，不改变解析控制流。多个目标与三个 attempt 可在一轮触发阈值；同轮先失败后成功与先成功后失败给出不同 breaker 状态；解析缓存按 Lower+TrimSpace 去重而计数按原值，身份不一致。原表中“每轮本就只探测一次、AGENTS 字面满足”不适用于 Issue7 目标级重试现状，撤销该判断与接受弱语义的旧建议。用户确认 B 并授权实施。
+- **实现合同：** 正式 runRound 创建独立 dnsRound，轮初捕获已熔断状态并显式传至全部目标。一个调用负责半开探测，等待不持锁；失败原始错误仅本轮复用、下一轮重试，成功立即清空计数且不共享成功 IP。正常域名、成功等待者及后续 attempt 新解析；恢复后不重新开启本轮失败缓存。全轮有成功非空解析就不加失败计数，全轮尝试过且均失败才轮末加一次，未解析不变；阈值表示连续无成功解析轮数。原始空结果不解除熔断，单条规则 IPv6 过滤导致的空结果仍交由 planner 判定。
+- **身份与快照：** DomainKey 固定 Lower+TrimSpace，配置裁剪/计数/解析去重统一身份，保留展示原值，不扩张尾点/IDNA。P3-01 成功淘汰、紧凑复制、删除裁剪、新旧独立和导入 Reset 保留。轮末只写本轮旧 breaker，不将候选发布后晚到计数合并到新实例；这是已有快照边界，也意味着配置发布时尚未提交的旧轮失败计数不会进入新状态。
+- **目标与通知边界：** 不提前跳过目标、不使用旧 IP、不修改 isRetryable、生产 DNS/SDK 超时、Provider、schema/API/前端或事件粒度。其他域名仍可新增；DNS 失败目标保持 failed，删除继续受完整期望与 DNS 安全门约束。某处成功清空 breaker 不掩盖其他失败目标/运行健康；每目标每 host 每轮仍最多一个 DNS 事件。Dry Run 独立解析，不参与探测名额、计数或事件。
+- **回归：** TestDNSRound_TargetFlow 覆盖五目标各三 attempt 的五轮阈值、第六轮一次探测、事件粒度、两种成功/失败顺序、跨云探测与并发 Dry Run、混合域名可新增且零删除、恢复后版本竞争重新读取变化 IP、统一身份/复制隔离/Reset、idle 不改变状态。TestDNSRound_ConcurrentProbe 用 32 个并发调用检查失败一次探测与原始超时保留、成功独立 IP、等待者释放。TestDNSRound_FailureExpiresAndLatePublishIsIsolated 覆盖失败不跨轮、下一轮恢复、旧轮末写入隔离；TestDNSRound_EmptyResultDoesNotRecover 覆盖空解析不能清零/零写入；TestDNSRound_FilteredIPv6DoesNotCountFailure 验证上游成功但规则过滤 IPv6 后目标仍 failed、breaker 清空且不发 DNS 失败事件；TestCircuitBreaker_DomainIdentity 精确检查大小写/空白别名共享计数、裁剪与成功清理。既有三个目标事件回归只显式传入并结束轮次对象；P3-01 测试更新大小写身份夹具与精确 map 预期，不削弱裁剪或隔离检查。
+- **真实本地网络：** TestDNSRound_RealUDP 使用生产 Resolver 与只接收不响应的 loopback UDP 上游，两个目标三次 attempt、150ms 整体超时。候选研究中旧实现实际 12 个 UDP 包、约 910ms，候选为 A/AAAA 合计 2 包、约 152～153ms；正式测试要求 2 包且两个目标均 failed，耗时仅记录不作阈值断言。重试/厂商间隔通过既有测试接缝免除实际等待，结果不外推生产整轮时延。
+- **正式负向控制：** 仓库外 overlay 只移除目标解析中的 round.resolve，TestDNSRound_RealUDP 精确因 12 个 UDP 包（预期 2）变红，记录约 909ms；另一 overlay 让后来的失败清除本轮已成功标记，mixed_order 子用例精确因先成功后失败导致计数错误变红。未改变仓库文件；两项退出码 1 均为预期负向控制，不是正式实现失败。研究阶段另以旧实现验证了阈值/身份等用例的判别力，详见此前研究结果，正式批次不冒充重跑全部旧实现对照。
+- **本轮门禁：** 正式 breaker/轮次/目标流程定向 `go test ./dns ./syncer -run 'TestDNSRound|TestCircuitBreaker|TestBreakerPolicy|TestBreakerPreserve|TestTargetRound_' -race -count=20 -timeout=10m` 通过；全量 12 包 `go test ./... -race -count=1 -timeout=10m` 共执行三轮全部 ok（最后一轮包含新增空结果/IPv6 过滤/别名边界测试）；`go vet ./...`、`go build ./...`、受影响 Go 文件 `gofmt -l`（无输出）与 `git diff --check` 均通过。定向重复证据与多轮全量证据不外推全仓长期稳定绿色。
+- **状态与证据边界：** 本机 Go 1.26.6 darwin/arm64；源码/测试/本轮文档尚未提交。未执行 Go 1.25/Linux、前端、浏览器、Docker/compose、真实云、SMTP/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR。半开失败后即使本轮中途恢复也需等下一轮或手动同步再探测；不新增冷却时间、TTL/LRU、长期 IP 缓存、持久化或通知限流。不外推全仓长期稳定绿色或外部验收，I-08 其他子项不随之关闭。
+
+**P3-01 实施补记（2026-09-30，细化后的 A，历史批次）：**
+
+> 该批次其后已提交为 `ac0ee62`；以下保留当时记录。原值身份、不改变半开探测的历史条款由后续 P3-02 方案 B 替代，成功淘汰与生命周期裁剪继续成立。
 
 - **状态与原问题：** 用户确认研究后授权实施，基线 `901d642`，开始时工作树干净。P3-01 已本地修复，源码/测试/本轮文档尚未提交。历史基线 `34aa9b8` 至本轮实施前，RecordSuccess 写入零值、Clone 全量复制历史 map，成功域名及删除/改名后的正数计数永久残留，随曾访问的不同域名数累积并增加普通配置事务的复制成本；删除后重新添加同名域名可能继承旧失败进度。
 
@@ -1238,7 +1261,7 @@ FAIL
 | 3 | P2-04 唤醒顺序 | **改代码：`ApplyState` 提到两次 `Wake()` 之前，并同步修订 AGENTS.md:216** | 见 P2-04 章节；`coordinator.go:50-53` 注释同步 |
 | 4 | P2-07 删除确认 | **补卡片式二次确认，满足 AGENTS §十一** | 已按定型方案实施两页卡片确认、四阶段状态、列表顺序保护和焦点恢复；本地联合验收通过、尚未提交；**不改强要求文档** |
 | 5 | P2-03 静默跳过 | 📚 **审计快照中的旧决策：先只补 WARN 日志 + Dry Run 展示，不计入 skipped** | **已被当前强合同取代**：能力限制进入结构化 `unsupported`，目标结论为 `partial` 并冻结清理；见 P2-03 当前实施补记与 Issue7 Step 1。此行仅用于追溯，不得据此实施 |
-| 6 | P3-01 熔断器淘汰 | **细化后的 A 已本地实施，尚未提交** | 成功删除、普通发布按配置域名原值复制正数计数并重建紧凑 map、新旧快照独立、导入 Reset；C 单独裁剪已可阻止历史累积，但缺少成功即时清理，原评价已订正 |
+| 6 | P3-01 熔断器淘汰 | **细化后的 A 已提交 `ac0ee62`，后由 P3-02 统一域名身份** | 成功删除、普通发布按配置域名复制正数计数并重建紧凑 map（后由 P3-02 统一身份）、新旧快照独立、导入 Reset；C 单独裁剪已可阻止历史累积，但缺少成功即时清理，原评价已订正 |
 | 7 | P3-12 文件权限 | **收敛为 0700/0600** | 数据目录 `os.MkdirAll(dir, 0700)`；建库后 `os.Chmod(dbPath, 0600)`；pidfile/lock 文件 `0600`。注意：**对已存在的目录/文件需显式 Chmod**（`MkdirAll` 不改变既有权限） |
 
 ---

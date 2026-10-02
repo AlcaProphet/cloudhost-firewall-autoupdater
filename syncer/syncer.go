@@ -655,7 +655,7 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 		}
 
 		// 每目标按 host 去重解析一次（report=false：不写熔断器、不发 DNS 事件）
-		resolved, dnsErrors, _ := s.resolveTargetRules(state, rules, nil, false)
+		resolved, dnsErrors, _ := s.resolveTargetRules(state, rules, nil, false, nil)
 
 		snapshot, err := p.GetSnapshot()
 		if err != nil {
@@ -854,6 +854,8 @@ func outcomeOf(s RoundSummary) RoundOutcome {
 // 本轮开始时只取一次运行时快照：TAG、规则、Provider、Resolver 与熔断器全部
 // 来自该快照，下游函数一律显式接收参数，不再回读运行时状态。
 func (s *Syncer) runRound(state *RuntimeState, total int) RoundSummary {
+	round := newDNSRound(state)
+	defer round.finish()
 	var (
 		ok, changed, failed, skipped                                       atomic.Int32
 		added, deleted, cleanupCandidates, cleanupDeleted, cleanupDeferred atomic.Int32
@@ -872,7 +874,7 @@ func (s *Syncer) runRound(state *RuntimeState, total int) RoundSummary {
 					// 无适用规则的目标不构成统计单元，也不访问云 API
 					continue
 				}
-				res := s.syncTarget(state, p, rules)
+				res := s.syncTarget(state, p, rules, round)
 				switch res.outcome {
 				case TargetFailed:
 					failed.Add(1)

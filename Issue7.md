@@ -382,8 +382,9 @@ Evaluate cleanup gate
 
 - 最多 3 次，退避保持 1s、2s；
 - 可重试的 DNS/Describe/Create/version mismatch/网络错误进入下一整个目标 attempt；
-- 每个 attempt 都重新 Resolve、S0、Plan；不得只重试最后一个 HTTP 请求；
+- 每个 attempt 都重新解析正常域名、取 S0、Plan；轮初已熔断域名适用下述半开探测例外；不得只重试最后一个 HTTP 请求；
 - **Resolve 粒度裁决（2026-09-29 用户裁决）：** 「每个 attempt 重新 Resolve」优先于「每轮只解析一次」——每次 attempt 开始时按标准化 host 去重重新解析，同一 attempt 内同一 host 最多调用 Resolver 一次。Step 2 红灯 5 的「每目标每 host 每轮只 Resolve 一次」断言只针对单 attempt（无重试）成功轮；
+- **P3-02 后续独立裁决（2026-10-02，优先于上一条的无例外表述）：** 正常域名继续每 attempt 新解析；轮初已熔断域名跨目标协调一次半开探测，失败结论只在本轮复用，探测成功后等待者与后续 attempt 重新解析；成功 IP 不共享。详见 §12.6。目标 attempt 次数、S0/S1/S2、版本保护、DNS 失败结果与事件粒度不变。
 - 已经确认写入的 Added/Deleted 计数跨 attempt 保留，但再次规划后不得重复计数；
 - 写入提交状态未知时不猜测成功；下一 attempt 通过新快照确认；
 - Lighthouse/CVM version mismatch 必须显式识别为可重试，不允许去掉版本重发；
@@ -578,7 +579,7 @@ DNS 失败继续发布 `EventDNSFailed`，但相同目标/host 一轮最多一�
 
 | 审计项 | 排序决定 |
 |---|---|
-| P3-02 熔断器 | 本项只固定每目标每 host 每轮最多解析一次，不扩张为熔断重构 |
+| P3-02 熔断器 | Issue7 初始实施不扩张熔断；后按 2026-10-02 独立授权方案 B 修复，每 attempt 正常解析 + 已熔断域名每轮半开探测例外，详见 §12.6 |
 | P3-06 CVM 100 条口径 | 真实账号确认前保留偏保守实现，不阻塞目标级所有权 |
 | P3-07 `retrySync` 死包装 | Step 1～4 后重新证明生产零引用再删除 |
 | P3-10 忽略 error | Step 2～4 触及路径当场修；其余点仍独立 |
@@ -657,7 +658,7 @@ git diff --check
 2. Add 失败/状态未知、S1 Describe 失败、S1 缺覆盖时旧规则全保留且目标 failed；
 3. External 精确满足时零 Create；
 4. version mismatch 重新 Resolve/Get S0/Plan，不沿用旧 snapshot；
-5. 每目标每 host 每轮只 Resolve 一次，每目标每 attempt 只取规定的 S0/S1；
+5. 正常路径每目标每 host 每 attempt 最多 Resolve 一次（单 attempt 成功轮即每轮一次），轮初已熔断域名按 §12.6 半开探测例外；每目标每 attempt 只取规定的 S0/S1；
 6. 三次重试与 1s/2s 退避可用测试时钟/接缝验证，不让单测真实等待；
 7. 幂等已存在必须经 S1 才确认，不虚增 Added。
 
@@ -1049,3 +1050,18 @@ R7-04 实施时必须同时满足以下口径，避免为了让三个数字表�
 - 本轮只读复核的定向命令包括 `go test ./internal/tag ./provider ./syncer -race -count=1`、Provider snapshot/request 用例、Syncer target/cleanup 用例、`go vet ./provider ./internal/tag` 与 `git diff --check 3ce40fe..HEAD`；核心定向门禁通过，但 F2 在包含 `syncer` 的另一轮 race 运行中再次复现。
 - 2026-09-29 后续研究在 `HEAD 297ccfe`、本地 `go1.26.6 darwin/arm64`（模块合同仍为 Go 1.25）上取得两条判别证据：`GOGC=1 go test ./syncer -run '^TestIsRetryable_RealWorldShapes$' -count=50` 以 `connection reset by peer` 失败；`go test ./provider -run '^TestAliClientRequestIsBounded$' -count=50` 在 `scanAliSWAS` 约 2.37ms 提前返回。这些证据证明夹具不稳定，不等于 Go 1.25 远端 CI 已验证，也不证明生产超时回归。
 - 真实四云、Lighthouse 多端口真机收敛、真实版本竞争/删除定位、真实浏览器、真实 SMTP/Webhook/Uptime Kuma、当前 revision 的远端 CI/GHCR 仍未执行；继续以 `ProdTestList.md` PT-I7-01～07、PT-B7-01～09 为准，不得用本节的源码/单测证据替代。
+
+
+### 12.6 P3-02 后续独立修复（2026-10-02，方案 B）
+
+用户先确认 B 方向，再确认仓库外候选研究结果并授权正式修复与文档回写。实施前基线为 `main == origin/main == ac0ee62`，工作树干净。该批次替代 §5.2 的无例外重新 Resolve 表述，不把熔断改动混入 Issue7 Step 0～5 的历史实施记录。源码/测试/文档尚未提交。
+
+- `runRound` 创建只存活本轮的 `dnsRound`，轮初按配置域名捕获 breaker 状态，各目标显式共享。网络解析与探测等待均不持协调锁或 breaker 锁，不增加后台协程。
+- 正常域名仍每 attempt 重新解析。轮初已熔断域名只有一个调用半开探测：失败原始错误只在本轮复用，下一轮重新探测；成功立即解除，探测者使用自己的结果，等待者和后续 attempt 各自新解析。恢复后不重新启用本轮失败缓存。
+- 失败计数改为每规范化域名每轮最多一次：全轮尝试过且无成功非空解析才加一；任一成功立即删除计数并阻止轮末加一，未解析不变。阈值表示连续无成功解析的轮数，不按目标数、规则数或重试数累加。原始空解析视为失败；成功结果因单条规则禁用 IPv6 而过滤为空，仍交由 planner 判定目标的 `dns_empty`，不误记为 DNS 上游失败。
+- DomainKey 为 `Lower + TrimSpace`，配置发布裁剪、计数与解析去重统一身份；配置/展示原值保留，不增加尾点或 IDNA 规范化。保留成功淘汰、配置生命周期裁剪、普通变更独立复制和导入 Reset。轮末只更新捕获的旧 breaker，不合并候选发布后旧轮次晚到的更新，沿用快照隔离边界。
+- 不提前跳过整目标、不复用旧 IP。既有目标重试与 Provider 版本保护保持原样；DNS 失败仍为 failed，其他域名可新增，删除必须继续通过全目标安全门。同轮某处 DNS 成功不改写失败目标或运行健康。DNS 事件仍每目标每 host 每轮最多一次，Dry Run 独立解析，不参与正式探测/计数/事件。
+
+回归入口为 `TestDNSRound_TargetFlow`、`TestDNSRound_ConcurrentProbe`、`TestDNSRound_RealUDP`、`TestDNSRound_FailureExpiresAndLatePublishIsIsolated`、`TestDNSRound_EmptyResultDoesNotRecover` 与 `TestDNSRound_FilteredIPv6DoesNotCountFailure`，并保留版本竞争、删除安全、breaker 裁剪与 API 导入 Reset 既有回归。真实本地 UDP 证明生产 Resolver 的 A/AAAA 请求被合并；负向控制分别移除探测协调、让失败覆盖本轮成功标记，必须使对应测试变红。完整实施门禁与证据边界见 [审计报告 P3-02 实施补记](./fwalizer-audit-final1.md)。
+
+半开失败后如果域名在本轮中途恢复，须等下一轮或下一次手动同步重新探测，这是已确认的隔离取舍。成功计数与目标运行健康独立；不新增冷却时间、TTL、长期 IP 缓存、持久化或日志/通知限流。真实云、浏览器、Docker、通知链路、Go 1.25/Linux 与当前 revision 远端 CI/GHCR 未执行，本地证据不外推为外部验收。

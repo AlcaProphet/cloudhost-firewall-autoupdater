@@ -2,13 +2,14 @@ package dns
 
 import (
 	"log/slog"
+	"strings"
 	"sync"
 )
 
 // CircuitBreaker 每个域名独立的熔断器
 type CircuitBreaker struct {
 	mu        sync.Mutex
-	failCount map[string]int // 域名 → 连续失败次数
+	failCount map[string]int // 规范化域名 → 连续无成功解析的轮数
 	threshold int            // 熔断阈值
 }
 
@@ -36,7 +37,7 @@ func (cb *CircuitBreaker) SetThreshold(threshold int) {
 
 // CloneForDomains 为新配置复制熔断器，只保留配置域名的正数失败计数。
 //
-// 使用域名原值查找，重复域名不增加条目；不按历史 map 大小预分配，
+// 使用 DomainKey 统一身份，重复域名不增加条目；不按历史 map 大小预分配，
 // 使新 map 的存储随实际保留的计数增长。新旧实例独立，旧轮次写入不会污染新状态。
 func (cb *CircuitBreaker) CloneForDomains(domains []string) *CircuitBreaker {
 	cb.mu.Lock()
@@ -44,6 +45,7 @@ func (cb *CircuitBreaker) CloneForDomains(domains []string) *CircuitBreaker {
 
 	failCount := make(map[string]int)
 	for _, domain := range domains {
+		domain = DomainKey(domain)
 		if n := cb.failCount[domain]; n > 0 {
 			failCount[domain] = n
 		}
@@ -53,6 +55,7 @@ func (cb *CircuitBreaker) CloneForDomains(domains []string) *CircuitBreaker {
 
 // IsOpen 判断域名是否已熔断
 func (cb *CircuitBreaker) IsOpen(domain string) bool {
+	domain = DomainKey(domain)
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 	return cb.failCount[domain] >= cb.threshold
@@ -60,6 +63,7 @@ func (cb *CircuitBreaker) IsOpen(domain string) bool {
 
 // RecordSuccess 记录成功，解除熔断
 func (cb *CircuitBreaker) RecordSuccess(domain string) {
+	domain = DomainKey(domain)
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 	if cb.failCount[domain] > 0 {
@@ -70,14 +74,18 @@ func (cb *CircuitBreaker) RecordSuccess(domain string) {
 
 // RecordFailure 记录失败（已熔断时不再递增，半开探测失败维持熔断状态）
 func (cb *CircuitBreaker) RecordFailure(domain string) {
+	domain = DomainKey(domain)
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
-	// 已熔断时跳过递增（符合 Build1.md 12.7 节约定）
+	// 已熔断时维持阈值；正式同步只在整轮无成功解析时调用一次。
 	if cb.failCount[domain] >= cb.threshold {
 		return
 	}
 	cb.failCount[domain]++
 	if cb.failCount[domain] == cb.threshold {
-		slog.Error("DNS 熔断触发", "domain", domain, "连续失败", cb.failCount[domain])
+		slog.Error("DNS 熔断触发", "domain", domain, "连续失败轮数", cb.failCount[domain])
 	}
 }
+
+// DomainKey 与目标解析去重使用同一域名身份。
+func DomainKey(host string) string { return strings.ToLower(strings.TrimSpace(host)) }

@@ -26,7 +26,11 @@
 
 **P3-26 / P3-25 资源扫描后续修复状态（2026-09-30）**：用户确认研究与临时副本验证方案后授权实施，基线 `ec82d10`。ECS 资源扫描严格区分结构异常与有效空数组：响应/Body/集合缺失、null 元素、缺失/空资源 ID 返回 `ErrSnapshotIncomplete` 且不带回半截资源；有效空数组仍按返回 token 分页；历史 token 集合同时拒绝未推进与环路。实际 SDK/API/临时 SQLite 回归证明异常保留旧缓存、完整结果覆盖、合法零结果清空对应地域，原生 nil 响应单独覆盖。定向新回归 race 20 轮、全量 12 包 race 1 轮及 vet/build/diff-check 本地通过，源码/测试/文档尚未提交。生产改动仅 ECS 扫描路径，未改防火墙同步、API 契约、schema、前端、SDK 或超时。缺失/null 集合失败为用户确认的保守兼容策略，真实云零资源是否省略集合未确认；未执行前端构建、浏览器、Docker、Go 1.25/Linux 或真实云/远端 CI，不外推稳定绿色或外部验收。证据与边界见审计报告 P3-26 和 I-19。
 
-**P3-01 熔断器淘汰后续修复状态（2026-09-30）**：用户确认细化后的 A 并授权实施，基线 `901d642`。成功解析删除域名计数；普通发布从新配置 DomainRules 提取原值域名，CloneForDomains 仅复制正数计数到紧凑的新 map，排除历史零值与已删除域名，暂停/零目标下保留仍配置域名的进度。新旧快照独立，空规则清空、删除后重加从零开始，完整导入继续 Reset。生产仅 dns/circuitbreaker.go 与 syncer/state.go；测试为两个对应文件及既有 API 导入测试夹具（补齐 probe.test 配置，导入仍含同域名以独立证明 Reset），不改变半开探测、IsOpen、schema/API/Provider 或健康告警。两个新增回归在旧实现上变红，修复后定向 race 20 轮通过；API 导入策略定向 race 20 轮通过；补齐夹具后全量 12 包 race 1 轮、vet、build、受影响 Go 文件 gofmt 检查与 diff-check 本地通过。源码/测试/文档尚未提交。Go 1.26.4 darwin/arm64；未执行 Go 1.25/Linux、前端构建、浏览器、Docker、真实云/通知链路与远端 CI，不外推长期稳定绿色或外部验收。详见审计报告 P3-01 实施补记。
+**P3-01 熔断器淘汰后续修复状态（2026-09-30，历史批次，后已提交 `ac0ee62`）**：用户确认细化后的 A 并授权实施，基线 `901d642`。成功解析删除域名计数；普通发布从新配置 DomainRules 提取原值域名，CloneForDomains 仅复制正数计数到紧凑的新 map，排除历史零值与已删除域名，暂停/零目标下保留仍配置域名的进度。新旧快照独立，空规则清空、删除后重加从零开始，完整导入继续 Reset。生产仅 dns/circuitbreaker.go 与 syncer/state.go；测试为两个对应文件及既有 API 导入测试夹具（补齐 probe.test 配置，导入仍含同域名以独立证明 Reset），不改变半开探测、IsOpen、schema/API/Provider 或健康告警。两个新增回归在旧实现上变红，修复后定向 race 20 轮通过；API 导入策略定向 race 20 轮通过；补齐夹具后全量 12 包 race 1 轮、vet、build、受影响 Go 文件 gofmt 检查与 diff-check 本地通过。源码/测试/文档尚未提交。Go 1.26.4 darwin/arm64；未执行 Go 1.25/Linux、前端构建、浏览器、Docker、真实云/通知链路与远端 CI，不外推长期稳定绿色或外部验收。详见审计报告 P3-01 实施补记。
+
+**P3-02 每轮半开探测后续修复状态（2026-10-02，方案 B）**：用户确认 B、完成仓库外候选与旧实现对照后授权正式修复，实施前基线 `main == origin/main == ac0ee62`、工作树干净。正式同步每轮创建独立 `dnsRound`，按轮初状态协调已熔断域名：一个调用负责半开探测，失败结果仅本轮复用；成功立即清空计数、等待者与后续 attempt 重新解析，不共享成功 IP。正常域名仍每 attempt 新解析；轮末只有尝试过且全轮无成功非空解析的域名加一次计数，未解析不变，阈值表示连续无成功解析的轮数。同轮任一成功优先与目标失败/运行健康相互独立，失败目标仍为 failed。DomainKey 固定 `Lower + TrimSpace`，配置裁剪、计数与解析去重统一身份，保留 P3-01 的成功淘汰、新旧快照独立及导入 Reset；**本段替代 P3-01 历史记录中的原值身份与不改变半开探测边界**。生产只改 breaker、目标同步与轮次传递，新增轮内协调文件；不修改 Provider、isRetryable、DNS 生产超时、schema/API/前端或事件粒度。源码/测试/文档尚未提交。本轮门禁与负向控制见审计报告 P3-02 实施补记；真实云、通知链路、浏览器、Docker、Go 1.25/Linux 与远端 CI/GHCR 未执行，不外推长期稳定绿色或外部验收。
+
+---
 
 ## 二、核心编码原则
 
@@ -101,7 +105,10 @@
 - IPv6 → `Ipv6CidrBlock` 字段（格式 `2001:db8::1/128`）
 - 域名解析失败：记录 WARN 日志，保留现有规则不变（不删除）
 - 超时默认为 **10s**（连接 + 整体，由 SQLite `dns_timeout` 业务设置配置）
-- 渐进式熔断：连续失败达阈值后熔断，半开状态每轮探测一次，成功后解除
+- 渐进式熔断：阈值为同一规范化域名连续无成功解析的轮数；本轮尝试过且全轮无成功非空解析才在轮末加一，本轮任一成功立即清空计数，未解析不变
+- 轮初已熔断域名在正式同步中协调一次半开探测：失败结论仅本轮复用，下一轮重新探测；成功后立即解除，等待者与后续 attempt 重新解析，不共享成功 IP；正常域名每 attempt 新解析，同 attempt 内去重
+- 域名身份统一使用 `dns.DomainKey`（`Lower + TrimSpace`），不修改配置/展示原值，不新增尾点或 IDNA 规范化；Dry Run 独立解析、不参与正式轮次的探测名额/计数/事件
+- DNS 熔断不提前跳过整目标，不改变目标重试、事件粒度或删除安全门；同轮其他目标解析成功不掩盖失败目标及运行健康异常
 - ⚠️ 仅支持单台服务器场景（少量 IP），不支持 CDN 等返回大量 IP 的域名
 
 ---
@@ -221,7 +228,7 @@
 - 普通 API 最小校验边界：固定结构请求与配置导入统一走 `webui/api/decode.go` 的 `decodeJSONStrict`（拒绝未知字段/尾随 JSON/多个顶层值，超限 413；普通请求 1 MiB、配置导入 10 MiB），路径 ID 用 `strconv.Atoi` 严格解析且必须大于 0；请求 DTO 不含数据库 `id`；更新/删除按 `RowsAffected` 返回 404；规则请求的 `targets` 必须显式提供（省略返回 400），空数组仍表示适用于全部目标
 - 配置变更协调器：目标、规则、settings、alerts、pause/resume、reset 与配置导入的写入口统一经 `webui/api/ConfigCoordinator` 串行化（锁 → 单事务 → 事务内完整业务快照 → 事务内构造候选 `RuntimeState` 与候选告警集合 → commit → 无失败发布：日志级别 → 告警集合 → `RuntimeState` → 运行健康监督器唤醒 → Uptime Kuma Push 唤醒）；唤醒时新运行时必须已可见；非法输入零写入零 apply，commit 之后不重新读库、不构造 Provider、不访问网络
 - Provider 凭据为不可变值 `provider.Credentials`，由 `ClientPool` 在创建时持有且无 setter；已删除进程级全局凭据与 `provider.SetCredentials`，连接测试、资源扫描、正式同步与 Dry Run 共用同一显式凭据模型和一次快照
-- 运行时设置动态生效：日志级别使用 `app.LogLevelVar`（`slog.LevelVar`）与 `LogBroadcaster.SetLevel`；DNS 熔断阈值随完整 `RuntimeState` 原子发布（普通变更经 `dns.CircuitBreaker.CloneForDomains` + `SetThreshold` 仅保留新配置域名原值的正数失败计数；成功解析立即删除条目，新旧 breaker 独立且不按历史 map 大小预分配；完整导入**确定**新建 breaker 并清空计数）
+- 运行时设置动态生效：日志级别使用 `app.LogLevelVar`（`slog.LevelVar`）与 `LogBroadcaster.SetLevel`；DNS 熔断阈值随完整 `RuntimeState` 原子发布（普通变更经 `dns.CircuitBreaker.CloneForDomains` + `SetThreshold` 仅保留新配置规范化域名身份的正数失败轮计数；成功解析立即删除条目，新旧 breaker 独立且不按历史 map 大小预分配；完整导入**确定**新建 breaker 并清空计数）
 - 前端 UI 规范：全局字号 16px、页面级操作按钮统一 `size="large"`（44px，`App.vue` themeOverrides 按分尺寸变量覆盖）；表格内操作按钮（编辑/删除）保持小号；所有二次确认使用 `NModal preset="card"` 卡片式弹窗（危险操作确认按钮 `type="error"`）
 - 资源 ID 输入提示：按云类型区分文案（轻量云=实例 ID，CVM/ECS=安全组 ID），由 `constants.ts` 的 `resourceIdHint()` 统一承载（仅 placeholder，不引入额外说明块）
 

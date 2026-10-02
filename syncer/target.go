@@ -72,9 +72,9 @@ type cleanupResult struct {
 
 // syncTarget 执行一个目标的完整同步：最多 maxRetries 次整目标 attempt。
 //
-// 每个 attempt 都重新 Resolve、取 S0、规划；已由云端确认的写入跨 attempt 保留，
-// 但再次规划后不会重复计数（已生效规则不会再次出现在 ToAdd 中）。
-func (s *Syncer) syncTarget(state *RuntimeState, p provider.Provider, rules []config.DomainRule) targetResult {
+// 每个 attempt 都重新解析正常域名、取 S0、规划；轮初已熔断域名的失败探测只在本轮复用。
+// 已确认的写入跨 attempt 保留，再次规划后不会重复计数（已生效规则不再出现在 ToAdd 中）。
+func (s *Syncer) syncTarget(state *RuntimeState, p provider.Provider, rules []config.DomainRule, round *dnsRound) targetResult {
 	started := time.Now()
 	res := targetResult{
 		targetID: p.TargetIndex(),
@@ -98,7 +98,7 @@ func (s *Syncer) syncTarget(state *RuntimeState, p provider.Provider, rules []co
 			s.sleep(backoff)
 		}
 
-		attemptRes, err := s.runTargetAttempt(state, p, rules, dnsFailedHosts)
+		attemptRes, err := s.runTargetAttempt(state, p, rules, dnsFailedHosts, round)
 		res.added += attemptRes.added
 		res.deleted += attemptRes.deleted
 		res.unsupported = attemptRes.unsupported
@@ -138,6 +138,7 @@ func (s *Syncer) runTargetAttempt(
 	p provider.Provider,
 	rules []config.DomainRule,
 	dnsFailedHosts map[string]bool,
+	round *dnsRound,
 ) (targetResult, error) {
 	res := targetResult{
 		targetID: p.TargetIndex(),
@@ -146,8 +147,8 @@ func (s *Syncer) runTargetAttempt(
 		outcome:  TargetSuccess,
 	}
 
-	// 1) 按 host 去重解析（每次 attempt 重新解析；attempt 内同一 host 只解析一次）
-	resolved, dnsErrors, dnsErrValues := s.resolveTargetRules(state, rules, dnsFailedHosts, true)
+	// 1) 按 host 去重解析；正常路径每个 attempt 重新解析，熔断探测由本轮协调。
+	resolved, dnsErrors, dnsErrValues := s.resolveTargetRules(state, rules, dnsFailedHosts, true, round)
 
 	// 2) S0：本次 attempt 的完整快照（含腾讯版本号）
 	s0, err := p.GetSnapshot()
@@ -354,15 +355,16 @@ func (s *Syncer) verifyCleanupResult(
 	return len(plan2.CleanupCandidates), nil
 }
 
-// resolveTargetRules 按 host 去重解析，并维护熔断器与 DNS 失败事件。
+// resolveTargetRules 按 host 去重解析，正式同步通过轮次协调对象维护熔断器。
 //
 // 返回：本地 rule ID → 解析结果；本地 rule ID → 稳定错误文案；本地 rule ID → 原始错误。
-// 解析成功但结果为空时两者都不写入，由规划器归类为 dns_empty。
+// 正式同步的空解析结果视为 DNS 失败；Dry Run 保持由规划器归类为 dns_empty。
 func (s *Syncer) resolveTargetRules(
 	state *RuntimeState,
 	rules []config.DomainRule,
 	dnsFailedHosts map[string]bool,
 	report bool,
+	round *dnsRound,
 ) (map[int][]dns.ResolvedIP, map[int]string, map[int]error) {
 	type hostResolution struct {
 		ips []dns.ResolvedIP
@@ -374,24 +376,27 @@ func (s *Syncer) resolveTargetRules(
 	rawErrors := make(map[int]error)
 
 	for _, rule := range rules {
-		hostKey := strings.ToLower(strings.TrimSpace(rule.Host))
+		hostKey := dns.DomainKey(rule.Host)
 		hr, cached := cache[hostKey]
 		if !cached {
-			ips, err := s.resolveHost(state, rule.Host)
+			var ips []dns.ResolvedIP
+			var err error
+			if report {
+				ips, err = round.resolve(rule.Host, func() ([]dns.ResolvedIP, error) {
+					return s.resolveHost(state, rule.Host)
+				})
+			} else {
+				// Dry Run 只读解析，不参与正式轮次的探测、计数或事件。
+				ips, err = s.resolveHost(state, rule.Host)
+			}
 			hr = hostResolution{ips: ips, err: err}
 			cache[hostKey] = hr
-			if !report {
-				// Dry Run：只读解析，不改熔断器、不发事件
-			} else if err != nil {
+			if report && err != nil {
 				if state.Breaker.IsOpen(rule.Host) {
-					// 半开探测失败：维持熔断（熔断中已停止计数）
 					slog.Debug("域名半开探测失败，维持熔断", "domain", rule.Host, "error", err)
 				} else {
-					state.Breaker.RecordFailure(rule.Host)
 					slog.Warn("DNS 解析失败，保留现有规则", "domain", rule.Host, "error", err)
 				}
-			} else {
-				state.Breaker.RecordSuccess(rule.Host)
 			}
 		}
 
