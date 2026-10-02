@@ -226,12 +226,13 @@ func (d *Deps) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/alerts/test-email", d.handleTestEmail)
 }
 
-// writeJSON 写入 JSON 响应。
+// writeJSON 写入 JSON 响应；普通 JSON API 的成功与错误响应统一禁止 HTTP 缓存。
 //
 // Issue6 A14：Encode 的返回值必须处理。响应头与状态码此时已发出，**不得**再伪造
 // 第二个 HTTP 错误响应（参照 export.go 的既有先例），只记录安全日志——错误文本
 // 可能包含响应内容片段，因此只记错误本身，不记 data。
 func writeJSON(w http.ResponseWriter, status int, data any) {
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
