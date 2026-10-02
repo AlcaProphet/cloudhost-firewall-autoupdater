@@ -28,7 +28,8 @@ type DBTX interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// BeginTx 开启写事务（配置变更协调器与配置导入共用）
+// BeginTx 开启写事务（配置变更协调器与配置导入共用）。
+// DSN 的 _txlock=immediate 在读取前预留写锁，避免 WAL 读快照过期后无法升级。
 func (s *Store) BeginTx(ctx context.Context) (*sql.Tx, error) {
 	return s.db.BeginTx(ctx, nil)
 }
@@ -75,7 +76,8 @@ type ScannedResource struct {
 //     （修复前 `/data/a?b.db` 会被静默打开成 `/data/a`）。
 //
 // 刻意**不**把 `journal_mode(WAL)` 放进 _pragma：WAL 按契约只在打开后设置一次，
-// 每条连接重复切换没有必要；也不使用 `_txlock`（会让导出/启动的只读事务申请写锁）。
+// 每条连接重复切换没有必要。P3-09 使用独立参数 `_txlock=immediate` 预留写事务；
+// 当前驱动对 ReadOnly=true 跳过该参数，导出与启动加载仍使用普通读事务。
 func sqliteDSN(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -97,7 +99,7 @@ func sqliteDSN(path string) (string, error) {
 			b.WriteRune(r)
 		}
 	}
-	b.WriteString("?_pragma=busy_timeout(5000)")
+	b.WriteString("?_pragma=busy_timeout(5000)&_txlock=immediate")
 	return b.String(), nil
 }
 

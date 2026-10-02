@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"database/sql"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -124,7 +125,7 @@ func TestOpenStoreRelativePathUsesAbsFileURI(t *testing.T) {
 	}
 }
 
-// TestSQLiteDSNShape DSN 形状固定：file: 前缀 + 仅 busy_timeout 一个 _pragma。
+// TestSQLiteDSNShape 保持 file URI 与单一 busy_timeout PRAGMA，独立设置写事务模式。
 func TestSQLiteDSNShape(t *testing.T) {
 	dsn, err := sqliteDSN(filepath.Join(t.TempDir(), "a?b#c.db"))
 	if err != nil {
@@ -133,16 +134,17 @@ func TestSQLiteDSNShape(t *testing.T) {
 	if !strings.HasPrefix(dsn, "file:") {
 		t.Errorf("DSN 必须以 file: 开头，实际 %q", dsn)
 	}
-	if strings.Count(dsn, "_pragma=") != 1 {
-		t.Errorf("_pragma 只能出现一次，实际 %q", dsn)
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("解析 DSN 失败: %v", err)
 	}
-	if !strings.Contains(dsn, "_pragma=busy_timeout(5000)") {
-		t.Errorf("_pragma 必须只承载 busy_timeout(5000)，实际 %q", dsn)
+	q, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		t.Fatalf("解析 DSN 参数失败: %v", err)
 	}
-	for _, forbidden := range []string{"journal_mode", "_txlock", "_pragma=busy_timeout(5000)&"} {
-		if strings.Contains(dsn, forbidden) {
-			t.Errorf("DSN 不得包含 %q：%q", forbidden, dsn)
-		}
+	if len(q) != 2 || len(q["_pragma"]) != 1 || q.Get("_pragma") != "busy_timeout(5000)" ||
+		len(q["_txlock"]) != 1 || q.Get("_txlock") != "immediate" {
+		t.Fatalf("DSN 必须恰含一个 busy_timeout PRAGMA 与独立 immediate 参数: %q", dsn)
 	}
 	// 路径里的特殊字符必须被转义（否则会被 URI 解析成 authority/fragment）
 	if strings.Contains(dsn, "a?b#c.db") {
