@@ -7,6 +7,7 @@ import (
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/tag"
 )
 
 // 本文件是 Issue7 Step 1 的目标级纯规划器判别性用例。
@@ -600,5 +601,74 @@ func TestPlan_LighthouseCommaPortsExpandPerKey(t *testing.T) {
 	}
 	if len(plan.CleanupCandidates) != 0 {
 		t.Fatalf("任一 key 属于 Desired 的规则不得成为候选: %+v", plan.CleanupCandidates)
+	}
+}
+
+// P3-07：描述边界直接覆盖共享实现，保留旧同步测试的回归意图。
+// TestTruncateDescription_TagPrefixPreserved 描述截断保持既有语义：按云厂商上限截断且 [TAG] 前缀完整
+func TestTruncateDescription_TagPrefixPreserved(t *testing.T) {
+	long := "[auto-dns] " + strings.Repeat("很", 60)
+
+	swas := TruncateDescription(config.CloudAliSWAS, long)
+	if n := len([]rune(swas)); n != 50 {
+		t.Errorf("SWAS 截断长度 = %d, want 50", n)
+	}
+	if !strings.HasPrefix(swas, "[auto-dns]") {
+		t.Errorf("SWAS 截断后 TAG 前缀不完整: %q", swas)
+	}
+
+	lighthouse := TruncateDescription(config.CloudTCLighthouse, long)
+	if n := len([]rune(lighthouse)); n != 64 {
+		t.Errorf("Lighthouse 截断长度 = %d, want 64", n)
+	}
+	if !strings.HasPrefix(lighthouse, "[auto-dns]") {
+		t.Errorf("Lighthouse 截断后 TAG 前缀不完整: %q", lighthouse)
+	}
+
+	if got := TruncateDescription(config.CloudTCCVM, long); got != long {
+		t.Errorf("CVM 不应截断: got %q", got)
+	}
+	short := "[auto-dns] 短描述"
+	if got := TruncateDescription(config.CloudAliSWAS, short); got != short {
+		t.Errorf("未超长描述不应截断: got %q", got)
+	}
+}
+
+// TestTruncateDescription_ECSUntruncatedAndMaxTagBoundary Step 7「描述字段长度」「48 Unicode 字符 TAG」：
+//
+//   - ECS 走 default 分支，不做截断（AuthorizeSecurityGroup Description ≤512）；
+//   - TAG 取满 48 个 Unicode 字符时，"[TAG]" 恰好 50 个 rune，SWAS 截断后
+//     必须保留完整闭合方括号，绝不能截断 TAG 本身。
+func TestTruncateDescription_ECSUntruncatedAndMaxTagBoundary(t *testing.T) {
+	long := "[auto-dns] " + strings.Repeat("很", 60)
+	if got := TruncateDescription(config.CloudAliECS, long); got != long {
+		t.Errorf("ECS 不应截断描述: got %q", got)
+	}
+
+	maxTag := strings.Repeat("测", 48) // config.NormalizeTag 允许的最大长度
+	desc := tag.Format(maxTag, "x")
+	if n := len([]rune(desc)); n != 52 {
+		t.Fatalf("前置条件：48 rune TAG + 单字符 comment 应为 52 rune，实际 %d", n)
+	}
+	swas := TruncateDescription(config.CloudAliSWAS, desc)
+	if n := len([]rune(swas)); n != 50 {
+		t.Errorf("SWAS 截断长度 = %d, want 50", n)
+	}
+	if swas != tag.Format(maxTag, "") {
+		t.Errorf("48 rune TAG 截断后必须完整保留 [TAG]：got %q, want %q", swas, tag.Format(maxTag, ""))
+	}
+	if !strings.HasSuffix(swas, "]") {
+		t.Errorf("截断不得丢失闭合方括号: %q", swas)
+	}
+}
+
+// TestRenderDescription_EmptyComment 空备注只写 [TAG]，不带尾随空格。
+func TestRenderDescription_EmptyComment(t *testing.T) {
+	for _, ct := range []config.CloudType{config.CloudTCLighthouse, config.CloudTCCVM, config.CloudAliSWAS, config.CloudAliECS} {
+		t.Run(string(ct), func(t *testing.T) {
+			if got := RenderDescription(ct, "auto-dns", ""); got != "[auto-dns]" {
+				t.Fatalf("空 comment 描述 = %q, want [auto-dns]", got)
+			}
+		})
 	}
 }

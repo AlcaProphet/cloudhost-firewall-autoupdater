@@ -581,7 +581,7 @@ DNS 失败继续发布 `EventDNSFailed`，但相同目标/host 一轮最多一�
 |---|---|
 | P3-02 熔断器 | Issue7 初始实施不扩张熔断；后按 2026-10-02 独立授权方案 B 修复，每 attempt 正常解析 + 已熔断域名每轮半开探测例外，详见 §12.6 |
 | P3-06 CVM 入站 100 条本地保护 | 2026-10-02 独立按 B 本地修复；官方默认入站/出站各 100，计数完整性和数组下界见 §6.2，不改目标级所有权/版本/删除主线；真实响应、模板统计与提额情况待 PT-I7-03 |
-| P3-07 `retrySync` 死包装 | Step 1～4 后重新证明生产零引用再删除 |
+| P3-07 旧逐规则流程与描述包装 | 2026-10-02 按独立授权 B 删除 `retrySync` / `retrySyncDetailed` / `truncateDesc`，有效回归迁入生产目标链；保留现用错误判定、GetRules 与旧 Diff 回归，详见 §12.7 |
 | P3-10 忽略 error | Step 2～4 触及路径当场修；其余点仍独立 |
 | P3-16 前端偏移 | 仅 Dry Run 相关子项并入 Step 4 |
 | P3-23/P3-24 | ticker/reset 与 pause/resume 语义正交，不与目标状态机同时改 |
@@ -636,7 +636,7 @@ DNS 失败继续发布 `EventDNSFailed`，但相同目标/host 一轮最多一�
 - `provider/provider.go` snapshot/revision 与 plan DTO；
 - 四 Provider 的完整 snapshot，先只读不接正式写入；
 - ECS token 进度保护；
-- 旧 `Diff/buildDesired` 可暂留适配测试，但新主线不得继续扩展它们。
+- 旧 `Diff/buildDesired` 可暂留适配测试，但新主线不得继续扩展它们。2026-10-02 P3-07 清理已删除旧 Syncer 流程；这些 Provider 适配与 P0-01 回归仍保留，`GetRules` 仍由连接测试生产 API 使用。
 
 **定向门禁：**
 
@@ -1065,3 +1065,16 @@ R7-04 实施时必须同时满足以下口径，避免为了让三个数字表�
 回归入口为 `TestDNSRound_TargetFlow`、`TestDNSRound_ConcurrentProbe`、`TestDNSRound_RealUDP`、`TestDNSRound_FailureExpiresAndLatePublishIsIsolated`、`TestDNSRound_EmptyResultDoesNotRecover` 与 `TestDNSRound_FilteredIPv6DoesNotCountFailure`，并保留版本竞争、删除安全、breaker 裁剪与 API 导入 Reset 既有回归。真实本地 UDP 证明生产 Resolver 的 A/AAAA 请求被合并；负向控制分别移除探测协调、让失败覆盖本轮成功标记，必须使对应测试变红。完整实施门禁与证据边界见 [审计报告 P3-02 实施补记](./fwalizer-audit-final1.md)。
 
 半开失败后如果域名在本轮中途恢复，须等下一轮或下一次手动同步重新探测，这是已确认的隔离取舍。成功计数与目标运行健康独立；不新增冷却时间、TTL、长期 IP 缓存、持久化或日志/通知限流。真实云、浏览器、Docker、通知链路、Go 1.25/Linux 与当前 revision 远端 CI/GHCR 未执行，本地证据不外推为外部验收。
+
+
+### 12.7 P3-07 后续独立清理（2026-10-02，方案 B）
+
+实施前 `main == origin/main == c08f2e1`，工作树干净。用户根据引用研究聊天的结论授权再次检查并修复、同步回写文档；采用 B：删除不可达流程，按现生产语义迁移回归，复用已有判别性覆盖。A 的机械替换会保留写后快照不推进的夹具与不符合当前合同的断言，C 的 Provider Diff/GetRules 清理超出本次范围。
+
+- 删除 `syncer/retry.go` 的 `retrySync`、`retrySyncDetailed`、`truncateDesc` 与专属 imports；保留 `maxRetries`、`isRetryable`、`isPartialDelete`、`isVersionMismatch`、`isIdempotentCreate/Delete`。不在 `_test.go` 中保留第二套同步流程。
+- 三份旧测试文件删除 15 项旧入口测试及其 5 种专属 Provider 夹具、localhost 解析辅助与无消费者的夹具字段/方法。原本已走 `syncAll` 的 TAG 重试快照用例保留为 `TestSyncRound_TagSnapshotAcrossRetry`，并更正当前目标链和清理候选注释。
+- 新增 `syncer/target_retry_test.go` 的 12 个目标链场景：真实超时/腾讯错误整目标重试、不可重试/耗尽、Written 与请求数区分、部分创建后失败与重试进度、unsupported 最终 attempt、幂等新增无覆盖失败、部分删除后 S2 失败的恢复/耗尽确认计数。
+- 描述边界归位共享实现所在的 `provider/plan_test.go`，直接测试 `RenderDescription` / `TruncateDescription`；Lighthouse 仅更正一处描述渲染注释。完整旧→新对照见 Issue6 §7.9，正式门禁和负向控制见审计报告 P3-07 当前实施补记。
+- 生产目标链仍为 `Run → syncAll → runRound → syncTarget → runTargetAttempt / runTargetCleanup`；`GetRules` 仍用于连接测试，旧 Diff/buildDesired 与 P0-01、planner 端口收敛、TAG/Provider 快照与 R7-06/R7-07 夹具继续保留。未修改目标状态机、Provider 增删、DNS、健康、API/schema、前端或 SDK。
+
+本项只关闭 P3-07/I-09 的本地不可达代码与测试迁移问题，不新增 ProdTestList 人工要求，不改变 PT-I7/PT-B7/PT-AUDIT 的未执行/免除边界。部分删除后 S2 失败且后续 S0 耗尽时，前次残留被空 attempt 覆盖为 0 的观察独立记录、尚未定语义，本次不修复也不把 0 固定为正确值。Go 1.26.6 / macOS arm64；源码/测试/文档尚未提交，未 fetch/push。未执行 Go 1.25/Linux、前端构建、产品真实二进制/浏览器、Docker、真实云/通知链路或当前 revision 远端 CI/GHCR，不外推长期稳定或外部验收。

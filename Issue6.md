@@ -2,11 +2,13 @@
 
 > **文档定位：** 本文是 Build6 完成后的当前问题记录与后续修复合同。它只描述问题、已确认的产品语义、建议实施边界和验收要求；除明确标记为“已修复”的条目外，不代表代码已经修改或外部链路已经验收。
 >
-> **当前基线：** 2026-09-27，分支 `main`，全文规范化提交 HEAD `0d9e2d678f86520a5e688d4ad1b57a6483968d18`（其父为整理前 HEAD `1392ab9b675d0cf79a04f5f4a0f2f5cd966dec36`），相对 `origin/main` ahead 2；`git diff 1fafb172307652912a621eaebf4bf942cbd2c33f..HEAD` 只包含 `Issue6.md`，源码零变化，因此下列源码结论与最终合同仍适用于当前实现。本轮裁决并入后，工作树唯一的未提交改动就是本文（不涉及任何源码、测试、依赖或配置）。
+> **历史基线（2026-09-27 批次）：** 2026-09-27，分支 `main`，全文规范化提交 HEAD `0d9e2d678f86520a5e688d4ad1b57a6483968d18`（其父为整理前 HEAD `1392ab9b675d0cf79a04f5f4a0f2f5cd966dec36`），相对 `origin/main` ahead 2；`git diff 1fafb172307652912a621eaebf4bf942cbd2c33f..HEAD` 只包含 `Issue6.md`，源码零变化，因此该批次下列源码结论与最终合同适用于当时实现；当前同步链路已由 Issue7 替代，见下方 P3-07 更正与 §7.9。本轮裁决并入后，工作树唯一的未提交改动就是本文（不涉及任何源码、测试、依赖或配置）。
 >
-> **授权边界：** 2026-09-27 已完成全量只读复核与用户裁决；本次只把裁决结果并入本文，不修改设计、源码、测试、依赖、配置或其他文档，也不开始任何修复。§2.2 各批次的可实施性由用户后续一次性授权决定。
+> **历史授权边界（2026-09-27 批次）：** 2026-09-27 已完成全量只读复核与用户裁决；本次只把裁决结果并入本文，不修改设计、源码、测试、依赖、配置或其他文档，也不开始任何修复。§2.2 各批次的可实施性由用户后续一次性授权决定。
 >
 > **Build7（2026-09-28）：** 当前构建方案为 [Build7.md](./Build7.md)（告警与运行健康）；Build7 **Step 0～6 已全部实施完成，Step 7（核验缺陷修复）亦已完成**（逐步证据见 Build7 第八节 Step 7 与 §十一 v1.3；本轮核验发现与处置见本文 §7.8）。§6.5 第 10 项（SMTP 多收件人未逐项 Trim）已由 Build7 合同显式接管并**随 Build7 Step 3 实施完成**：`notifier/email.go` 对 `To` 逐项 `TrimSpace` 并跳过空项，判别性用例见 `notifier/email_test.go:TestEmailRecipientsAreTrimmed`；§6.5 其余候选保持不变，继续不授权实施。
+
+> **P3-07 当前链路更正（2026-10-02）：** 本文上述基线与下文 A1/A11/A18、§6.5、§7.2 的 `syncDomain → retrySync` / `retrySyncDetailed` 和逐域计数均为 Build6 当时的历史实现。当前正式同步由 `Run → syncAll → runRound → syncTarget → runTargetAttempt / runTargetCleanup` 执行；Issue7 已改为目标级先增后验。P3-07 按本次独立授权方案 B 删除旧函数并迁移有效回归，不重写过去的实施事实；当前入口与迁移对照见 §7.9，当前强要求继续以 AGENTS 为准。
 
 ## 一、使用规则
 
@@ -57,7 +59,7 @@
 
 - **状态与判定：** 确认存在，置信度高。正式 SWAS/ECS Provider 和两条扫描构造路径均未配置有限 deadline。
 - **当前证据：** `provider/ali_swas.go:33-37`、`provider/ali_ecs.go:32-36`、`provider/scan.go:133-137`（`scanAliSWAS`）、`provider/scan.go:181-185`（`scanAliECS`）创建的 `openapi.Config` 只设置凭据与 Endpoint。当前依赖在零值下使连接、响应头和 HTTP client 超时均为 0：`darabonba-openapi/v2` 的 `ReadTimeout/ConnectTimeout`（`client.go:34-35`、`:127-128`）经 `tea/dara` 生效为 `http.Client.Timeout=Connect+Read`（`core.go:354`）、`Transport.ResponseHeaderTimeout=Read`（`core.go:535`）、`net.Dialer.Timeout=Connect`（`core.go:736-742`），三者全 0 即完全无界；`tea/dara/retry.go:274-281` 在未设 `RetryOptions` 时只尝试一次。SWAS v3 SDK 没有 `WithContext` 变体（`ListFirewallRules`/`CreateFirewallRules`/`DeleteFirewallRules`/`ListInstances` 均无 ctx 版本），ECS v7 虽有但生产未使用。腾讯 SDK 默认单次请求 60s（`profile/http_profile.go:45`），不属于本项。
-- **调用链与影响：** 正式同步（`run.go:131` → `syncer.go:457` → `syncDomain` → `retrySync`）、Dry Run（`syncer.go:404`）、连接测试（`targets.go:169-175`）、资源扫描（`scan.go:49` → `:130/:178`）共用这些客户端；四条路径均无上游 deadline（云调用传 `context.Background()`）。连接成功后不返回、TLS/响应头挂起或网络黑洞可使 handler、同步轮次及 `s.Wait()` 长期停滞。该风险已在 localhost 阻塞端点隔离复现，但不等于真实阿里云事故。
+- **调用链与影响（Build6 当时链路，当前入口见 §7.9）：** 正式同步（`run.go:131` → `syncer.go:457` → `syncDomain` → `retrySync`）、Dry Run（`syncer.go:404`）、连接测试（`targets.go:169-175`）、资源扫描（`scan.go:49` → `:130/:178`）共用这些客户端；四条路径均无上游 deadline（云调用传 `context.Background()`）。连接成功后不返回、TLS/响应头挂起或网络黑洞可使 handler、同步轮次及 `s.Wait()` 长期停滞。该风险已在 localhost 阻塞端点隔离复现，但不等于真实阿里云事故。
 - **最终方案：** 在 `provider` 包集中定义 `ConnectTimeout=10_000ms`、`ReadTimeout=30_000ms`，应用到 SWAS/ECS 正式 Provider及两条扫描路径。不新增 SQLite 设置或环境变量，不改 Provider 接口，不用不可取消的 goroutine + select 伪造超时，不改腾讯云 60s 行为。
 - **必须保持：** 单轮只使用一个不可变运行时快照；重试仍完整执行 Describe → Diff → Create/Delete；不改变增量添加与精确删除契约；**四处超时值必须完全一致**——正式 Provider 与扫描路径共用同一 `ClientPool` 缓存键（`ali_swas.go:30` 与 `scan.go:132`；`ali_ecs.go:29` 与 `scan.go:180`，先创建者胜出），取值不同会让实际行为取决于调用顺序。
 - **数值语义（实施记录用）：** `Connect=10s / Read=30s` 在该 SDK 下等价于「拨号上限 10s、响应头上限 30s、单次请求整体上限 40s」，不是 30s；文档与实施记录不得写成「单次 30s」。
@@ -737,3 +739,26 @@ git diff --check
 - 统一门禁：`gofmt -l` 无输出、`go build ./...`、`go vet ./...`、`go test ./... -race -count=1`（12 包全绿）、前端 `npm run build` 与两条 `npm audit`（0 漏洞）、`docker build` + 容器非 root（uid 1000）/`HEALTHCHECK` 仍指 `/api/health`/`healthy`/`docker stop` 有界且退出码 0。
 
 **证据边界（不得写成通过）：** 本地假 SMTP/本地 HTTP mock 不等于真实 SMTP 收件箱、真实 Webhook 或真实 Uptime Kuma；浏览器人工交互回归（ProdTestList PT-B7-07）仍未执行；真实云 API 与远端 CI/GHCR 未执行。契约同步见 `AGENTS.md` §9.1（启动宽限、两渠道共用详情块与「原因」行）与 `Build7.md` §4.4/§7.2/§7.3/Step 7。
+
+
+### 7.9 P3-07 旧逐规则同步清理与回归迁移（2026-10-02，方案 B）
+
+用户已授权按引用研究聊天的推荐方案再次核对范围、修复并同步更新文档。正式实施前 `main == origin/main == c08f2e1`，工作树干净；研究阶段的 ahead 4 已是历史快照。旧 `retrySync` 的 15 个调用全部来自测试；`retrySyncDetailed` 只有旧 wrapper 和一个测试调用，`truncateDesc` 只有旧链与测试调用。现生产入口不可达旧流程，因此删除不会改变当前目标状态机。
+
+正式同步继续使用 `Run → syncAll → runRound → syncTarget → runTargetAttempt / runTargetCleanup`：每 attempt 解析/取 S0/规划，先 Add，再 S1 证明覆盖，经安全门 Delete，必要时 S2。旧链的先删后加、空快照写入与空 DNS 仍清理等断言已不符合当前合同，应随旧实现删除。确认写入跨 attempt 保留，幂等错误仍须由覆盖快照证明；Provider.Skipped 不代表访问权限已满足。
+
+| 原回归（历史测试） | 当前承接与验收 |
+|---|---|
+| `TestRetrySync_RealTimeoutTriggersSecondFullAttempt`、`TestRetrySync_TencentNetworkErrorRetries`、`TestRetrySync_NonRetryableStopsImmediately`、`TestRetrySync_ExhaustsThreeAttempts` | `TestTargetRetry_SnapshotFailures`：真实 HTTP 超时、腾讯 SDK 网络错误、不可重试与三次耗尽；断言 DNS/快照/写入次数与 1s/2s 退避 |
+| `TestRetrySync_Counts`、`TestRetrySync_AddedFollowsProviderWritten`、`TestRetrySync_AddedCountsOnlyWritten`、`TestRetrySync_CreateResultWithErrorKeepsWritten` | `TestTargetRetry_WriteAccounting`：确认部分写入后重试/停止、0 Written 且无覆盖失败、外部满足但当前调用 0 Written 成功；已有 `TestRoundSummary_ChangedCountsAsChanged` 保留正常整轮计数 |
+| `TestRetrySync_PartialWriteCounting`、`TestRetrySync_NonRetryableErrorKeepsConfirmedDeleteProgress`、`TestRetrySync_ExhaustedRetriesKeepConfirmedProgress` | 前者改由 `TestTargetRound_AddFailureKeepsOldRules` 证明先增失败零删除；后两者由 `TestCleanup_PartialDeleteKeepsConfirmedAndDefersRest` 与 `TestTargetRetry_DeleteProgressAcrossAttempts` 证明覆盖后的确认删除/跨 attempt 进度；失败事件与汇总继续由 `TestSyncErrorCarriesConfirmedCounts`、`TestRoundSummary_FailedUnitKeepsConfirmedCounts` 承接 |
+| `TestRetrySyncDetailedUsesSuccessfulAttemptDetails`、`TestRetrySync_SkippedCountsDryRunSkipsWithoutToAdd` | `TestTargetRetry_UnsupportedFinalAttempt`、`TestRoundSummary_OnlySkippedIsPartial`、`TestTargetSyncCompleteCarriesUnsupported`、`TestSyncErrorRetainsUnsupportedAfterAddFailure` 与既有 Dry Run/能力矩阵用例；只取最终 attempt 的明细 |
+| `TestRetrySync_IdempotentErrorsNotCounted` | `TestTargetRound_IdempotentCreateConfirmedByS1` + `TestTargetRetry_IdempotentCreateRequiresCoverage`；删除用 `TestCleanup_IdempotentNotFoundUsesS2FinalCandidates` / `TestCleanup_IdempotentNotFoundStillFailsWhenS2Untrusted`，幂等不虚增计数 |
+| `TestRetrySync_EmptyCommentDesc`、两项 `TestTruncateDesc_*` | `provider/plan_test.go` 的 `TestRenderDescription_EmptyComment` 与两项 `TestTruncateDescription_*`，直接覆盖共享实现，四平台空备注、中文截断、CVM/ECS 不截断与 48 rune TAG 保留 |
+| `TestRetrySync_TagSnapshotAcrossRetry`（本来已走 syncAll，并非旧入口测试） | 完整保留，仅更名为 `TestSyncRound_TagSnapshotAcrossRetry` 并更正目标链注释；其他 TAG/Provider 单轮快照测试不删除 |
+
+正式范围为 11 文件，详见审计报告 P3-07 补记；现用 `maxRetries` / 错误判定、R7-06 的真实超时连接夹具、连接测试所需 `GetRules`、旧 Diff/P0-01 和 planner 收敛回归保留。生产同步状态机、Provider 增删、DNS、健康、API/schema、前端和 SDK 均未修改。正式门禁与六类负向控制的结果以审计报告本次记录为准，源码/测试/文档尚未提交。
+
+独立观察：部分删除后 S2 失败，随后 S0 重试耗尽，确认 added/deleted/cleanup_deleted 保留，但 cleanup_candidates/deferred 会被后续空 attempt 覆盖为 0。应保留上次残留还是表达“未知”尚未定案；本次测试仅判定失败路径确认计数，不把残留 0 固定为正确语义，不扩大本项生产修复范围。
+
+本机 Go 1.26.6 / macOS arm64；未执行 Go 1.25/Linux、前端构建、产品真实二进制/浏览器、Docker、真实云/通知链路或当前 revision 远端 CI/GHCR；既有人工清单不新增项目，亦无新增外部通过结论。

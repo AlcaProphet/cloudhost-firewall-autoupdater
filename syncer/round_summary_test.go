@@ -2,14 +2,12 @@ package syncer
 
 import (
 	"errors"
-	"net"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
@@ -457,94 +455,6 @@ func TestRoundSummary_InvariantAcrossMixedUnits(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("未收到 sync:complete 事件")
-	}
-}
-
-// TestRetrySync_AddedCountsOnlyWritten added 必须只累计 Provider 报告的 Written。
-//
-// 判别 A11：修复前 retrySync 以 len(diff.ToAdd) 累加，Provider 明确跳过的期望规则
-// （SWAS 无法表达 DROP）会被虚增为「新增成功」，且每轮重复出现、永不收敛。
-func TestRetrySync_AddedCountsOnlyWritten(t *testing.T) {
-	p := &roundFakeProvider{
-		cloudType: config.CloudTCCVM,
-		// 期望 2 条：1 条真实写入、1 条明确跳过
-		createResult: provider.CreateResult{Written: 1, Skipped: 1},
-	}
-	s := &Syncer{}
-
-	added, deleted, skipped, err := s.retrySync(p, config.DomainRule{
-		Host: "example.com", Protocol: "TCP", Ports: "443", Action: "ACCEPT",
-	}, nil, "auto-dns")
-	if err != nil {
-		t.Fatalf("retrySync 失败: %v", err)
-	}
-	// 注意：本用例的假 Provider 的 GetRules 返回空，Diff 不产生 to_add，因此
-	// CreateRules 根本不会被调用（added/skipped 均为 0）。这本身就说明
-	// 「added 只在真的发起写入时累计」；下面的断言覆盖显式跳过与真实写入两条路径。
-	if added != 0 {
-		t.Errorf("added = %d, want 0（必须跟随 Provider 的 Written，而不是 diff.ToAdd 长度）", added)
-	}
-	if skipped != 0 {
-		t.Errorf("skipped = %d, want 0（没有 to_add 时不得凭空产生跳过计数）", skipped)
-	}
-	if deleted != 0 {
-		t.Errorf("deleted = %d, want 0", deleted)
-	}
-
-	// 真正触发写入：假 Provider 返回空规则集 + 期望 1 条 → to_add=1
-	// 此时 added 必须等于 Provider 报告的 Written（0），而不是 diff.ToAdd 长度（1）
-	s = &Syncer{}
-	p2 := &roundFakeProvider{
-		cloudType:    config.CloudTCCVM,
-		createResult: provider.CreateResult{Written: 0, Skipped: 1},
-	}
-	added, deleted, skipped, err = s.retrySync(p2, config.DomainRule{
-		Host: "example.com", Protocol: "TCP", Ports: "443", Action: "ACCEPT",
-	}, []dns.ResolvedIP{{IP: net.ParseIP("1.2.3.4")}}, "auto-dns")
-	if err != nil {
-		t.Fatalf("retrySync 失败: %v", err)
-	}
-	if p2.createNum.Load() == 0 {
-		t.Fatal("用例前提：必须真正调用过 CreateRules")
-	}
-	if added != 0 {
-		t.Errorf("added = %d, want 0（必须跟随 Provider 的 Written，而不是 len(diff.ToAdd)）", added)
-	}
-	if skipped != 1 {
-		t.Errorf("skipped = %d, want 1", skipped)
-	}
-	if deleted != 0 {
-		t.Errorf("deleted = %d, want 0", deleted)
-	}
-}
-
-// TestRetrySync_SkippedCountsDryRunSkipsWithoutToAdd 全部规则都无法实施时 skipped 仍必须报告。
-//
-// 判别 A11（批次 6 收尾）：SWAS DROP 规则在 Diff 阶段就被识别为 skipped，
-// 因此 diff.ToAdd 为空、CreateRules 根本不会被调用；修复前这种「全 DROP」场景
-// 的返回值既不是 added 也无法表达 skipped，计数只能靠 Provider 内部，外部不可见。
-func TestRetrySync_SkippedCountsDryRunSkipsWithoutToAdd(t *testing.T) {
-	p := &roundFakeProvider{cloudType: config.CloudAliSWAS}
-	s := &Syncer{}
-
-	// SWAS + DROP：期望规则无法表达，进入 diff.Skipped 而不是 to_add
-	added, deleted, skipped, err := s.retrySync(p, config.DomainRule{
-		Host: "example.com", Protocol: "TCP", Ports: "443", Action: "DROP",
-	}, []dns.ResolvedIP{{IP: net.ParseIP("1.2.3.4")}}, "auto-dns")
-	if err != nil {
-		t.Fatalf("retrySync 失败: %v", err)
-	}
-	if added != 0 {
-		t.Errorf("added = %d, want 0（DROP 无法实施，绝不计作新增）", added)
-	}
-	if skipped != 1 {
-		t.Errorf("skipped = %d, want 1（Diff 阶段识别的无法实施规则必须计入）", skipped)
-	}
-	if deleted != 0 {
-		t.Errorf("deleted = %d, want 0", deleted)
-	}
-	if p.createNum.Load() != 0 {
-		t.Errorf("全部规则都无法实施时不得调用 CreateRules，实际 %d 次", p.createNum.Load())
 	}
 }
 

@@ -147,7 +147,7 @@ func (p *TCLighthouse) CreateRules(snapshot RuleSnapshot, rules []config.RuleAct
 	for _, r := range rules {
 		fwRule := &lighthouse.FirewallRule{
 			Action:                  common.StringPtr(r.Action),
-			FirewallRuleDescription: common.StringPtr(r.Description), // 已由 Syncer 层 truncateDesc 截断
+			FirewallRuleDescription: common.StringPtr(r.Description), // 已由目标 planner 的 RenderDescription 统一渲染与截断
 		}
 
 		// 协议处理：IPv6 + ICMP 需用 ICMPv6

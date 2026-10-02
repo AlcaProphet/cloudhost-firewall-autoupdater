@@ -5,15 +5,24 @@
 | 仓库 | `/Users/kyle/Desktop/Repo/cloudhost-firewall-autoupdater` |
 | 审计快照分支 / HEAD | `main` / `11918fb945fe9dfe2a86ead5bc833b14dd156a68` |
 | 审计快照开始前工作树 | **干净**（0 tracked 改动、0 非忽略未跟踪文件）；这是历史审计快照，不表示当前工作树状态 |
-| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-10-02 P3-06 CVM 入站配额）」** |
+| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-10-02 P3-07 旧同步流程清理）」** |
 | 审核性质 | 原始全量代码审核为**只读**；2026-09-30 批次只静态核验既有修复并更新本文与 `Issue7.md`，未修改代码，未运行构建、测试或格式化（属该批次记录） |
 | 审核方式 | 8 路并行子代理分模块审核 + 主代理亲自覆盖超时范围 + 判别性探针独立复现 + 交叉复核裁决 |
 | 审核范围（审计快照值） | 快照 `11918fb` 口径：233 个 tracked 文件；**53/53 生产 Go 文件**（10,890 行）；62 个测试文件（20,457 行）；18 个前端源文件（2,212 行）；6 个构建/部署/CI 文件；8 份合同文档。**当前值为 244 tracked / 55 生产 Go（12,606 行）/ 69 测试文件（24,896 行）/ 18 前端源（2,361 行）/ 同样 6 个构建文件与 8 份合同文档**（新增 `provider/plan.go`、`syncer/target.go`） |
 | 报告版本 | final1（已剔除全部被驳回/误报项，并纳入用户 7 项决策） |
 
-> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-10-02 P3-06 CVM 入站配额）」小节为准**。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
+> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-10-02 P3-07 旧同步流程清理）」小节为准**。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
 
-### 最近实施基线（2026-10-02 P3-06 CVM 入站配额）
+### 最近实施基线（2026-10-02 P3-07 旧同步流程清理）
+
+- **实施前基线**：`main == origin/main == c08f2e18985f1edca2c8ad01641531afae745c7a`，工作树与暂存区干净。引用研究聊天的 `ahead 4` 已是历史状态；本轮未 fetch、未提交、未推送，本地跟踪引用不保证远端现时状态。P3-06 已提交为 `c08f2e1`。
+- **授权与范围**：用户依据引用聊天「研究并修复 P3-07」的结论与推荐授权再次检查、正式修复并同步文档。方案 B 固定 11 文件：`syncer/retry.go` 删除不可达流程；三份旧测试与新 `syncer/target_retry_test.go`；`provider/plan_test.go` 的描述回归；`provider/tc_lighthouse.go` 仅注释；AGENTS、本文、Issue6、Issue7。现生产状态机与 Provider 写入、DNS、健康、API/schema、前端和 SDK 零改动。
+- **正式门禁**：12 个新目标链场景及迁移的共享描述回归 `-race -count=20` 通过；六类正式 overlay 负向控制均由对应断言变红；受影响两包 race 一轮、全量 12 包 race 一轮、vet/build、受影响 Go 文件 gofmt 与 diff-check 通过，详见 P3-07 当前实施补记。源码/测试/文档尚未提交。
+- **证据边界**：本机 Go `1.26.6 darwin/arm64`，使用既有 ignored 前端 dist；本轮未执行 Go 1.25/Linux、前端构建、产品真实二进制/浏览器、Docker/compose、真实云/SMTP/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR，不外推长期稳定或外部验收。
+
+### 前序实施基线（2026-10-02 P3-06 CVM 入站配额，历史批次）
+
+> 该批次其后已提交为 `c08f2e1`；以下保留当时实施记录。
 
 - **实施前基线**：`main / 82ad2dc20cd78664880e12f0beff7e32e8245372`，本地 `origin/main / ac0ee62fe62166641c9cf1ef8e8043231545e577`，ahead 3；工作树与暂存区干净。本轮未 fetch、未提交、未推送；本地跟踪引用不代表远端最新状态。前序 P3-05 已提交为 `82ad2dc`。
 - **授权与范围**：用户已在「研究并修复 P3-06」聊天选择并定型 B，本聊天进一步检查候选内容后按明确授权正式实施并回写文档。范围固定 9 文件：唯一生产逻辑 `provider/tc_cvm.go`；`syncer/retry.go` 仅注释；测试 `provider/request_mock_test.go`、`syncer/retry_test.go`、`syncer/target_test.go`；文档本文、AGENTS、Issue7、ProdTestList。I-10 仅本地 P3-06 子项收口，其他事项继续独立追踪。
@@ -127,7 +136,8 @@
 | P2-05 | ✅ 已按推荐方案 A 本地实施；门禁结果见 finding 补记，已提交为 `93e0e4b`；⏳ 真实 Webhook 未验收 | I-05 / P2-05 本轮实施补记 |
 | P2-06 | ✅ 已按完善后的方案 A 本地修复并取得组件、浏览器/API 与 SQLite 联合证据；已提交为 `064b794` | I-03 / P2-06 实施补记；不外推 PT-B7-07 全项或外部验收 |
 | P2-07 | ✅ 按定型方案本地修复，组件与真实二进制/浏览器/API/临时 SQLite 联合验收通过；已提交为 `ec82d10` | I-04 / P2-07 实施补记；不外推其他页面、真实云或远端验收 |
-| P3-06 | ✅ 已按独立授权方案 B 本地修复：入站计数、完整性判断与数组下界；旧“四方向合计不是过度保守”的判断已被官方配额正文更正 | 见 P3-06 当前实施补记；尚未提交；真实响应/模板统计/提额情况待 PT-I7-03 |
+| P3-06 | ✅ 已按独立授权方案 B 本地修复：入站计数、完整性判断与数组下界；旧“四方向合计不是过度保守”的判断已被官方配额正文更正 | 见 P3-06 当前实施补记；已提交 `c08f2e1`；真实响应/模板统计/提额情况待 PT-I7-03 |
+| P3-07 | ✅ 已按 B 删除三个不可达旧函数，有效回归迁到现生产目标链，旧专属测试/夹具已清理 | I-09 本地收口；12 个目标场景、描述回归、六类负向控制与正式门禁见补记；尚未提交 |
 | P3-25（同步路径） | ✅ 已实施（重复/未推进 token 立即 `snapshot_incomplete`，本 attempt 零删除） | Issue7 Step 1 |
 | P3-25（资源扫描路径） | ✅ 已本地修复，尚未提交；重复/未推进/环路返回 ErrSnapshotIncomplete，不返回半截资源 | I-19；TestScanECSTokenProgress 与 API 缓存回归 |
 | P3-26（新增，资源扫描分页中途空响应） | ✅ 已本地修复，尚未提交；结构异常失败并保留缓存，有效空数组按 token 分页 | 见 P3-26 实施补记；独立于 P3-25 |
@@ -160,8 +170,8 @@
 - [ ] **I-06｜P3-23、P3-24**：串行修复 ticker Reset 与 pause/resume 通知合并，不和 Issue7 状态机重构混做。
 - [ ] **I-07｜P3-12、P3-14、P3-10、P3-13**：文件权限与 HTTP/error 一致性；P3-05 已按本次方案 B 本地修复并独立收口，见实施补记；P3-11 已由 Issue7 Step 4 修复。其余子项未修复，I-07 整体保持未完成。
 - [ ] **I-08｜P3-01、P3-02、P3-21、P3-15**：P3-01 已提交 `ac0ee62`；P3-02 按后续独立授权 B 已提交 `88154cd`，详见实施补记；P3-21/P3-15 继续独立追踪，不由本批次关闭。
-- [ ] **I-09｜P3-07**：Issue7 Step 1～4 完成后重新证明生产零引用，再清理旧同步包装与关联测试。
-- [ ] **I-10｜其余独立 P3**：P3-04 已按 B 本地修复并提交 `ebf8f19`，真实浏览器仍待 PT-AUDIT-01；P3-06 已独立按 B 本地修复（尚未提交），真实响应、模板统计与提额情况待 PT-I7-03；P3-09、P3-16 非 Dry Run 子项、P3-19、P3-20 继续独立追踪，I-10 整体保持未完成。
+- [x] **I-09｜P3-07**：2026-10-02 按独立授权方案 B 本地收口：再次证明现生产入口不调用旧链，删除 `retrySync` / `retrySyncDetailed` / `truncateDesc`，迁移有效回归并清理过期测试与夹具；正式门禁及六类负向控制通过，尚未提交。详见 P3-07 当前实施补记与 Issue6 §7.9 / Issue7 §12.7；独立残留计数观察不由本项关闭。
+- [ ] **I-10｜其余独立 P3**：P3-04 已按 B 本地修复并提交 `ebf8f19`，真实浏览器仍待 PT-AUDIT-01；P3-06 已独立按 B 本地修复并提交 `c08f2e1`，真实响应、模板统计与提额情况待 PT-I7-03；P3-09、P3-16 非 Dry Run 子项、P3-19、P3-20 继续独立追踪，I-10 整体保持未完成。
 - [ ] **I-11｜P3-17、P3-18**：仅做文档/注释闭环；不得与业务语义修改混在同一批次。
 - [x] **I-12｜Issue7 R7-01（P1）**：已修复并提交为 `b80b1b0`；可重试清理失败耗尽后保持 S1 已覆盖的 success + cleanup_deferred 强语义与每 attempt 重读快照。
 - [x] **I-13｜Issue7 R7-02（P2）**：已修复并提交为 `eab4bea`；补全目标事件 `cleanup_deleted`/`duration_ms`/canonical `unsupported`，并以真实 publisher/EventBus/SQLite 整链证明清理 `2/1/1` 落库一致。
@@ -763,7 +773,7 @@ FAIL
 | P3-05（历史研究） | **历史只读研究记录（已由 2026-10-02 本次方案 B 实施替代）**：当时问题真实存在、未修复，继续保留在 I-07。 已修复/不存在结论均不成立。本轮仅更新审计记录，未修改源码、测试或依赖，未运行构建、测试或格式化 | **当前基线**：HEAD `34aa9b859c38904e701a19d672dcc4f65435b31c`（**历史基线，非当前 HEAD；当前见头部「最近核验基线」小节**），`main == origin/main`；工作树原有修改仅涉及本报告。`webui/api/deps.go:213-220` 注册 `GET /api/settings`；`webui/api/settings.go:15-20` 定义并在 `:33-50` 复制 `tc_access_id`、`tc_access_key`、`ali_access_id`、`ali_access_key` 到响应，再经 `writeJSON` 返回；`webui/api/deps.go:229-240` 的 `writeJSON` 只设置 `Content-Type`，不设置 `Cache-Control`。全仓生产代码中 `no-store` 仅见于 operational health、alerts、config export 等其他端点，未发现为 settings 补头的全局 middleware。现有 `webui/api/settings_alerts_test.go:13-52` 验证键集合/默认值/凭据回显，`redact_test.go:98-110` 验证既有脱敏契约，但均未判定缓存头。Issue7 已将本项留在 I-07，且 2026-09-29 用户裁决确认本轮越界不修复 | **后续设计与决策项（尚未授权实施）**：**A（推荐）**：仅在 `webui/api/settings.go` 的 `handleGetSettings` 入口设置 `w.Header().Set("Cache-Control", "no-store")`，使成功和数据库读取失败响应都保持禁缓存语义；新增/扩展本地 HTTP 测试精确断言该值。保持四个凭据字段的既有回显契约，不修改通用 `writeJSON`，避免扩大所有 JSON API 的缓存策略；不改前端、存储、配置导入导出或认证边界。**B**：接受现状，依赖浏览器/中间件配置或后续统一 HTTP 缓存策略；不建议，因为当前没有全局补头证据，敏感设置响应仍可能被缓存。是否授权单独处理 I-07/P3-05 需用户决策，本记录不擅自裁决。**影响文件**：实施时必改 `webui/api/settings.go`；建议改 `webui/api/settings_alerts_test.go`（或新增同包测试）。明确不改 `webui/api/deps.go` 的通用 `writeJSON`/路由、`Settings.vue`、数据库 schema、Provider、DNS、告警和配置包逻辑 | **判别性验收**：L0 静态确认 `no-store` 只加在 settings handler，未改变通用 JSON 响应策略、凭据字段或导入导出行为；L1 本地 HTTP 用例同时断言 `GET /api/settings` 为 200、JSON `Content-Type` 不变、四个凭据 sentinel 仍按既有契约返回，且 `Cache-Control` **恰为** `no-store`，并保留失败响应也带该头的控制；L2 运行受影响包测试，随后按项目门禁执行 race、vet、build 与 `git diff --check`；L3 可选地用真实本地二进制 `curl -i /api/settings` 核对最终响应头。当前所有实施/门禁命令均未执行，不得提前写成通过 | **风险、外部边界与停止条件**：风险低，改变仅影响浏览器和中间缓存，可能增加设置页重新请求，但不会移除响应中的凭据、清理 Vue 内存/DevTools/服务端日志，也不替代认证或脱敏。无需真实云、DNS、SMTP、Webhook、Uptime Kuma、浏览器或远端 CI/GHCR；本地 handler/HTTP 测试足以证明本项，浏览器 DevTools 只能补充，不能替代判别性测试。不要额外加入 `Pragma`/`Expires`、移除 GET 凭据回显、统一重构所有敏感 API 或引入认证。如果修复扩大到通用 `writeJSON`、凭据产品契约、认证/会话、配置导入导出或其他 I-07 项，停止并重新确认范围；在用户裁决、判别性 HTTP 回归测试及受影响门禁完成前，保持 P3-05/I-07 未修复，不得把本地通过外推为外部链路通过。 |
 | P3-06 | **✅ 已按 B 本地修复（2026-10-02）**：出站不占入站额度，缺失计数停止新增 | `checkRuleLimit` 仅用两个完整入站统计，取其合计与 Ingress 条目数的较大值；不完整统计回退明确数组；无可用计数或缺失响应返回 `ErrSnapshotIncomplete`。官方默认入站/出站各 100 条，见下方补记 | 90 无 WARN、91～100 WARN 且允许、超过 100 整批拒绝；保持 S0 创建版本、S1 删除定位与先增后验。正式 SDK/目标链回归及负向控制见补记；真实云未执行，尚未提交 |
 | P3-06（历史订正） | **📚 已由 2026-10-02 官方正文与用户决策替代，以下保留当时判断，不再作为当前合同。🔵 结论已订正（2026-09-30 第二轮核验）：原"实际配额为每方向 100"不成立，"只统计入站"的修法已撤销——现有合计判定与合同及官方定义一致，不属过度保守** | `provider/tc_cvm.go:262-268` 的 `checkRuleLimit` 把 `IngressIPv4+IngressIPv6+EgressIPv4+EgressIPv6` 相加与 100 比较（原引 `:234-241` 为快照行号）。**`AGENTS.md:85` 强要求写"腾讯云 CVM 安全组规则上限 **100 条**"，无方向限定词**；`PlatformAPIDocs/TencentCVMAPIGuide/查询用户安全组配额.md:58-63` 的 `SecurityGroupLimitSet` 只有**单一** `"SecurityGroupPolicyLimit": 100`，无任何方向字段；官方 API 定义该字段为 "Maximum number of rules under the security group"（**安全组内规则上限**，非每方向）。仓内所有"单个方向"表述（`安全组添加规则.md:18`、`删除安全组规则.md:36`、`批量修改安全组规则.md:6`、`替换单条安全组规则.md:6`）均为**请求形态**约束（一次请求只能操作一个方向），**不是配额口径**；`创建安全组和规则.md:19` 还明确"请求中可以同时指定入站和出站" | **订正结论**：合计判定与 `AGENTS.md:85` 及官方定义**一致**，不是过度保守；**撤销"修法：只统计入站计数"**——按原建议改动会使安全组规则总数可能超过云端 100 上限并被 API 拒绝。**残余未知**：若腾讯另存在**叠加**于安全组级上限之外的每方向上限，则可放行更多入站；该口径由 **PT-I7-03**（真实账号）确认。**未取得"每方向 100"的官方依据**：官方"使用限制/配额"叙述页在本环境 DNS 不可达（`cloud.tencent.com`/`www.tencentcloud.com`/`intl.cloud.tencent.com` 等均解析到非公网 IP），本轮仅取得可检索的官方 API 字段定义；**未确认前不改 CVM 代码** |
-| P3-07 | **死代码：`retrySync` 零生产调用方**（核验后**死代码集合扩大**） | `syncer/retry.go:26` 仅被 3 个测试文件调用，**`retrySync(` 调用点恰 15 处**（`syncer/retry_test.go`、`syncer/syncer_test.go`、`syncer/round_summary_test.go`），生产调用 **0**。**`retrySyncDetailed`（`syncer/retry.go:33`）同样生产零调用**（唯一调用者是 `retrySync` 自身 `:27` 与 `retry_test.go:368`），`truncateDesc`（`:219`，现为 `provider.TruncateDescription` 的兼容包装）亦同 | 生产链**不是** `retrySyncDetailed`（原引 `syncer/syncer.go:905` 位于 `RoundSummary` 字面量内部）：实际为 `syncer/syncer.go:875` `syncTarget` → `syncer/target.go:77/101`；`syncDomain` 在生产代码中已不存在（仅测试注释）。建议机械改测试调用点后删除 `retrySync` + `retrySyncDetailed` + `truncateDesc`，并同步更新 `Issue6.md:60/581/607`（仍把 `syncDomain → retrySync` 写在正式同步链上） |
+| P3-07 | **✅ 已按 B 本地清理（2026-10-02）**：删除不可达旧流程，回归迁入生产链 | `retrySync`、`retrySyncDetailed`、`truncateDesc` 与专属 imports 已删除；三份旧测试删除 15 项旧入口回归和专属夹具，12 个目标链场景及共享描述回归正式落地。保留现用重试判定/超时夹具/GetRules/旧 Diff | 当前正式链为 `syncAll → runRound → syncTarget → runTargetAttempt / runTargetCleanup`；机械替换方案已改为按现生产语义迁移。完整对照见 Issue6 §7.9，门禁与负向控制见下方补记；I-09 本地收口，尚未提交 |
 | P3-08 | ✅ 已随 P1-02/I-01 修复并提交为 `7aaa3f2` | 原 PID 判活的身份误判与 TOCTOU 已由同一文件上的非阻塞独占 `flock` 取代；真实内核锁屏障、GC、并发、SIGKILL/重启均有判别证据 | 详细实现、重复门禁和 Linux/amd64 Docker 证据见 P1-02 实施补记 | 网络文件系统、旧 PID-only 版本混跑不保证；已有文件/目录/DB 权限迁移仍属 P3-12 |
 | P3-09 | SQLite 写事务为 deferred，先读后写存在 WAL read→write 升级（`SQLITE_BUSY_SNAPSHOT`，`busy_timeout` 不生效）；且注释理由与驱动实现矛盾 | `config/store.go:32-34` `BeginTx(ctx,nil)`；`:77-78` 注释以"会让只读事务申请写锁"为由拒绝 `_txlock`；**但驱动 `modernc.org/sqlite@v1.54.0/tx.go:23` 为 `if !opts.ReadOnly && c.beginMode != ""`——只读事务根本不加 beginMode，该理由不成立** | 影响仅"偶发 500、重试即成功、不损坏数据"。修法：DSN 加 `_txlock=immediate`（`ReadOnly` 事务不受影响），并同步修正注释与 `config/store_dsn_test.go:142` 的断言 |
 | P3-10 | **问题真实存在，当前仍未修复；属于独立队列 I-07，不能标记完成。** 原为五类问题、六处返回值处理缺口；I-01 已替换 pidfile 删除并处理 Close 错误，当前剩余四类、五处，不是“均不可失败”或已被其他修复覆盖 | pidfile 子项已由 I-01 收口；`config/store.go:118/124` 两处失败收尾的 `db.Close()` 未检查；`webui/api/logstream.go:97` `_ = h.Handle(...)`；`webui/api/sync.go:127-130` `json.Marshal` 失败静默跳过事件；`webui/server.go:298` 静态 `/api/health` 的 `w.Write` 忽略 | 与 AGENTS §十一“所有 error 必须处理”冲突。SSE 序列化失败会静默丢事件，是影响最实质的一项；其余缺口通常低概率或当前 writer 实际少失败，但仍须补齐可观测错误处理 |
@@ -786,6 +796,18 @@ FAIL
 | **P3-26（新增）** | ECS 扫描结构异常被当成功并覆盖缓存 | 原缺失集合 break 返回半截列表；首屏缺失也可清空旧缓存 | ✅ 已本地修复，尚未提交；decodeECSScanPage + 实际 API/SQLite 回归，兼容性边界见 P3-26 |
 
 > 说明：第 9 节的决策表使用 #1..#7 编号（你实际决策的 7 项）；本 P3 表使用 P3-nn 编号，两套编号相互独立。P3-08 已合并原先拆分的两类 pidfile 失效（TOCTOU 漏判 / PID 复用误判），实施时由 flock 一次解决。
+
+**P3-07 当前实施补记（2026-10-02，方案 B：删除旧流程并按现生产语义迁移回归）：**
+
+- **原问题与再次核验**：基线 `c08f2e1`。旧 `retrySync` 的 15 个调用全部来自三份测试文件；`retrySyncDetailed` 只有旧 wrapper 与一个测试调用，`truncateDesc` 只有旧链/测试调用。现生产链从 Run 经 syncAll/runRound 进入 syncTarget，Dry Run 使用 PlanTarget，不执行旧流程。旧实现确实包含先删后加、空 RuleSnapshot 写入与缺少 S1/S2 验证，但这些不是当前生产行为；本项解决维护和测试可信度。
+- **方案更正与实施**：审计原建议“机械替换测试调用”升级为研究推荐 B，依当前合同迁移回归并复用既有覆盖。唯一可执行生产源码变更为删除 `retry.go` 的三个不可达函数；`provider/tc_lighthouse.go` 仅更正描述注释。旧算法没有搬入 `_test.go`，没有新增 adapter、框架或依赖。正式范围固定 11 文件，与头部清单一致。
+- **测试取舍**：三份旧测试删除 15 项旧入口测试、5 种专属 Provider 夹具、localhost 解析辅助及无消费者的夹具字段/方法。过期的空 DNS 清理、先删后加、仅凭 Provider.Skipped 认定成功和所有 Delete 失败均 failed 等断言不迁移。原本走 syncAll 的 TAG 重试快照测试保留为 `TestSyncRound_TagSnapshotAcrossRetry`；有效意图逐项迁移/复用矩阵见 Issue6 §7.9。
+- **新正式回归**：`syncer/target_retry_test.go` 中五个函数共 12 场景。SnapshotFailures 的四类错误断言重新 DNS、S0/S1 次数、写入、最终 outcome 与 1s/2s 退避；WriteAccounting 的四场景刻意拉开请求数与 Written，覆盖部分创建后重试/停止、Provider 跳过但 S1 无覆盖的 failed，以及外部满足但当前 Written=0 的 success；UnsupportedFinalAttempt 只保留最终 attempt 一条 canonical 平台限制；IdempotentCreateRequiresCoverage 证明已存在错误不能替代 S1；DeleteProgressAcrossAttempts 两场景证明部分删除/S2 失败后恢复或 S0 耗尽仍保留确认增删数。
+- **共享描述与保留控制**：原两项截断回归归位 `provider/plan_test.go` 的 `TestTruncateDescription_*`，新增四平台 `TestRenderDescription_EmptyComment`，覆盖中文/上限/短描述、CVM/ECS 不截断及 48 rune TAG 完整前缀。`maxRetries` 与现用错误判定函数逐字保留；R7-06 的真实 HTTP 超时/强引用连接回收、R7-07 夹具、GetRules（`webui/api/targets.go` 连接测试调用）、旧 Diff/P0-01、planner 端口收敛、目标安全门、幂等 NotFound/S2 与 TAG/Provider 快照回归继续保留。
+- **六类正式负向控制**：使用正式路径的 `go test -overlay`，分别把 Written 换为请求数、覆盖前序 added、覆盖前序 deleted、跨 attempt 追加 unsupported、跳过 S1 覆盖判定、不再重试。对应 WriteAccounting（含 partial_then_retry）、DeleteProgressAcrossAttempts/s2_fail_then_recover、UnsupportedFinalAttempt、IdempotentCreateRequiresCoverage、SnapshotFailures/real_http_timeout 都按预期产生行为断言失败；未以编译失败充当判别力。overlay 只在仓库外生效，`target.go` 正式源码未修改。
+- **正式门禁**：`go test ./syncer ./provider -race -count=20 -run '^(TestTargetRetry_|TestTruncateDescription_|TestRenderDescription_)' -timeout=5m` 通过；随后受影响两包完整 race 一轮（syncer 36.007s）、全量 12 包 `go test ./... -race -count=1 -timeout=10m` 全部 ok、`go vet ./...`、`go build ./...`、受影响 Go 文件 gofmt 与 `git diff --check` 通过。六类负向控制全部通过判别力核验。受影响整包/全量/静态门禁与负向控制日志位于仓库外的 `/private/var/folders/1x/ngps27d54l1791wzj_qlqv980000gn/T/fwalizer-p3-07-implementation-rebi22fq` 目录；本轮没有修改依赖或重建前端 dist。
+- **独立观察（未定案，不并入 P3-07）**：部分删除 1 条后 S2 返回可重试错误，后两次 S0 同样失败，最终 failed 仍保留 added=1/deleted=1/cleanup_deleted=1；但 `syncTarget` 后续空 attempt 覆盖前次 `cleanup_candidates/deferred`，最终两者为 0。应保留前次可信残留还是表达“未知”尚需独立裁决。新回归对失败路径只断言确认累计数，不把残留 0 固定为正确语义；生产状态机零改动。
+- **状态与边界**：P3-07 / I-09 本地收口，源码/测试/本轮文档尚未提交，未 fetch/push。Go `1.26.6 darwin/arm64`；既有 ignored dist 供 embed 使用。未执行 Go 1.25/Linux、前端构建、产品真实二进制/浏览器、Docker/compose、真实腾讯云/阿里云、SMTP/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR，不外推长期稳定或外部通过。不可达代码清理不新增 ProdTestList 人工项目，现有未执行/免除边界继续保留。
 
 **P3-06 当前实施补记（2026-10-02，方案 B：CVM 入站计数与完整性判断）：**
 
@@ -951,7 +973,7 @@ FAIL
 
 | 目标 | 位置 | 引用结果 |
 |---|---|---|
-| `retrySync` | `syncer/retry.go:26` | 生产 **0**；约 15 处测试调用。建议机械改测试调用点后删除，并同步更新 `Issue6.md` A1 段 |
+| `retrySync` / `retrySyncDetailed` / `truncateDesc` | 原 `syncer/retry.go`（历史位置） | **2026-10-02 P3-07 已按 B 删除**；实施前现生产入口不可达，retrySync 的 15 个调用均来自测试；有效回归已迁移，见 Issue6 §7.9 |
 | `PusherDeps.bus` + 相应断言 | `internal/health/push.go:60/91`、`push_test.go:443-462` | 只赋值不读；该断言**永真**（该包任何路径都不 Publish）→ 删字段或改为真正可失败的守卫 |
 | `useDryRun.error` / `useSettings` 多余导出 | `webui/frontend/src/composables/useDryRun.ts:32`、`useSettings.ts:70` | 写而不读 / 导出未解构 |
 | 仅测试使用的导出 | `Store.SetSetting`（`store.go:363`）、`SaveAlertEmail`（`:777`）/`SaveAlertWebhook`（`:826`，非 Tx 版）、`GetSettingsTx`（`:962`）、`TargetExistsTx`/`RuleExistsTx`（`:619-627`）、`SetBeforeRoundHook`（`syncer.go:466`）、`AlertManager.Current`（`alertset.go:148`）、`Server.ServeStarted`（`server.go:135`）、`Pusher.InFlight`（`push.go:180`）、`InFlightLimiter.InFlight`（`inflight.go:48`）、`ErrNoSnapshotLoader`（`coordinator.go:57`，全仓无 `errors.Is` 比较） | 生产 0（或仅声明处） | 建议改非导出而非删除——其中 `stop_gate_test.go` 依赖 `SetBeforeRoundHook` 做 A20 stop 门控回归，**有判别价值** |
@@ -1000,7 +1022,7 @@ Step 0 已修正 `Design5.md` 当前 version 3 口径、Build7 状态与 `ProdTe
 | **startup/shutdown** | 启动顺序确定性化（`go s.Run()` → 有界等 `Started()` → 再启 `supervisor`/`pusher`）；信号在 HTTP 绑定**之前**注册；收尾顺序 `HTTP shutdown ‖ pusher→supervisor→syncer` 正确；`store.Close()` 在 `s.Wait()` 之后 | P1-02 已由 I-01 本地修复；`Server.Start` 失败后 `started` 保持 true 且 `waitDone` 永不关闭（重试被拒、`Wait()` 永久阻塞，**当前接线不可达**）；`supervisor.Stop`/`pusher.Stop` 在 `Run` 从未启动时永久阻塞（Syncer 有 `runGuard`，这两个没有） | — | P1-02 flock 已完成；与 Syncer 对齐给 supervisor/pusher 加 `started` 守卫 |
 | **配置事务与运行时发布** | **本项目最强的一环**：协调器 `锁 → 单事务 → 事务内快照 → 事务内构造候选 → commit → 无失败发布`；commit 后不读库不访问网络；`commit` 失败不 apply；`RuntimeState` 深拷贝 + 单锁替换；已证明**事务内无任何网络 I/O**（四个 SDK 工厂只做本地构造，无 IMDS/元数据/token 获取） | P2-04 已本地修复：ApplyState 先于 Wake | — | 本轮判别性测试证明两条分支唤醒时新快照可见 |
 | **同步调度** | 单一控制通道 + 4 处 `beginRound()` 硬门控（stop 门控与 enabled 门控**并列不合并**）；`Stop` 为吸收态且 `doneCh` 单所有者；`idle/failed/partial/success` 判定清晰 | P3-23 的无条件 Reset；P3-24 通知合并 | — | 仅 interval 实际变化时 Reset；`false → true` 保留恢复立即轮；按 Go 1.25 默认合同不加入 stale-tick drain，旧兼容模式另行裁决 |
-| **DNS/Provider** | 只使用**增量** API（已逐调用点验证，零全量覆盖 API）；TAG 精确匹配 + `Description` 匹配；熔断阈值随状态原子发布（普通变更 `CloneForDomains` 保留配置域名正数计数、导入重置）；`retrySyncDetailed` 每次 attempt 重新 `Describe → Diff → Create/Delete`；部分成功用 `PartialDeleteError` 如实累计 | P1-01 本地完整复核已收口但真实云未验收；P3-25 资源扫描路径本轮已本地修复（见 I-19）；`isRetryable` 依赖**字符串关键字兜底**（腾讯 SDK 错误类型无 `Unwrap`，属有据可查的妥协） | **`retrySync` 与 `retrySyncDetailed` 均为死包装（生产调用各为 0）**，`truncateDesc` 亦同（现为 `provider.TruncateDescription` 的兼容包装）；`syncDomain`/`syncDomainInternal` 在生产代码中已不存在（仅测试注释）；`_txlock` 注释理由与驱动实现矛盾 | P0-01/P2-01/P2-02/P2-03 与同步路径 P3-25 已吸收；资源扫描分页已按 I-19 独立本地修复，重构后重新证明再删 `retrySync` |
+| **DNS/Provider** | 仅增量 API；严格 TAG 所有权与 canonical FunctionalKey（comment 不参与身份）；普通配置发布裁剪 breaker、导入 Reset；正式 `syncTarget` 每 attempt 重新 S0/规划/Add/S1/验证/条件清理，确认进度跨 attempt 累计 | P1-01 本地核验已收口但真实云未验收；`isRetryable` 保留腾讯 SDK 无 Unwrap 所需字符串兜底；失败重试后的残留计数独立观察见 P3-07 补记 | P3-07 三个不可达旧函数已删除；`_txlock` 注释理由与驱动实现问题继续独立追踪 | I-09 本地收口；GetRules 有连接测试生产消费者，旧 Diff/P0-01 回归保留，不扩大清理 |
 | **告警** | 默认全关；`渠道开关 + 触发开关`同时开启才订阅；邮件与 Webhook **共用同一固定渲染器**（顺序稳定、不遍历 map）；4 在途 + 满载丢弃最新 + 安全 WARN；限流器跨热重载连续；`test-email` 8 字段契约两侧严格一致且不写库；P3-11 写库错误已能上抛 | P3-03 非空非法 URL 周期校验已本地修复（P2-04 时序亦已修复）；P2-05 已补齐三渠道响应校验与有界读取，真实 Webhook 未验收；P3-15 丢弃日志逐条 WARN；P3-19/P3-20/P3-21 邮件与响应体细节 | — | P2-05 已本地实施；聚合丢弃日志；P3-03 已按独立授权补齐有下限的定时校验，真实 Uptime Kuma 仍待验收 |
 | **OperationalHealth** | **唯一计算源被三个消费者真实共用**（`supervisor` / `operational` 端点 / `pusher` 都走同一个 `*health.Checker`）；2s 非阻塞探活（`Store` 结构体**无互斥量**，不持应用锁）；`StartupGrace=10s` 三分支正确；`failed/partial` 直到被 `success/idle` 覆盖；原因稳定去重排序；30s 边沿监督器 | 判定输入来自三次独立 `Snapshot()`（`run.go:127-142`），注释自述"一致快照"但可能混用新旧 policy/interval → 30s 内一次瞬时误判，自愈 | `slices.Compact` 冗余 | 一次取 `*RuntimeState` 后派生 policy/interval |
 | **HTTP/SSE** | 严格解码齐全（未知字段/尾随/多顶层值/10 MiB/1 MiB/413）；路径 ID `strconv.Atoi` 且 >0；请求 DTO 不含 DB `id`；导出 GET 已删（实测 405）；两类 SSE 监听服务器级 `ShutdownCh` 且每次写出有 5s deadline；P3-05 已实施普通 JSON 成功/错误统一 `no-store` | P3-14 400/503 语义；`GET /api/alerts` 4 次非事务读存在撕裂窗口（PUT 单事务写，读侧可能"新 policy + 旧 email"，前端整体回传即把旧值写回） | `fs.Sub` 静默降级 | 普通 JSON 禁缓存已由 P3-05 收口；GET alerts 改只读事务取快照 |

@@ -1,18 +1,14 @@
 package syncer
 
 import (
-	"context"
 	"errors"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/portconv"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/tag"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
 
@@ -297,59 +293,12 @@ func TestIsEnabled(t *testing.T) {
 	}
 }
 
-// ─── Build4 Step 1：计数链路测试 ───
-
-// countingProvider 测试用 Provider：记录 CreateRules/DeleteRules 成功收到的规则数量
-// （内嵌 stubProvider 继承 Name/CloudType/TargetIndex/GetRules/ConvertPorts）
-type countingProvider struct {
-	*stubProvider
-	created atomic.Int32
-	deleted atomic.Int32
-}
-
-func (m *countingProvider) CreateRules(_ provider.RuleSnapshot, rules []config.RuleAction) (provider.CreateResult, error) {
-	m.created.Add(int32(len(rules)))
-	return provider.CreateResult{Written: len(rules)}, nil
-}
-
-func (m *countingProvider) DeleteRules(_ provider.RuleSnapshot, rules []config.RuleInfo) (provider.DeleteResult, error) {
-	m.deleted.Add(int32(len(rules)))
-	return provider.DeleteResult{Deleted: len(rules), Resolved: len(rules)}, nil
-}
-
-// TestRetrySync_Counts 空云端规则 + 单域名规则 → 全部新增，added=1 deleted=0
-func TestRetrySync_Counts(t *testing.T) {
-	p := &countingProvider{stubProvider: &stubProvider{cloudType: config.CloudTCCVM, targetIndex: 0}}
-	cfg := &config.Config{Tag: "auto-dns"}
-	s := newSyncer(t, cfg, []provider.Provider{p})
-
-	resolved, err := s.runtime.Snapshot().Resolver.Resolve(context.Background(), "localhost")
-	if err != nil {
-		t.Fatalf("解析失败: %v", err)
-	}
-	resolved = filterIPv4(resolved) // 与 syncDomain 实际执行路径一致（LookupIPAddr 对 localhost 同时返回 127.0.0.1 与 ::1，过滤后恒为 1 条 IPv4）
-	added, deleted, _, err := s.retrySync(p, config.DomainRule{
-		Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Targets: []int{0},
-	}, resolved, cfg.Tag)
-	if err != nil {
-		t.Fatalf("retrySync 失败: %v", err)
-	}
-	if added != 1 || deleted != 0 {
-		t.Errorf("计数 = added:%d deleted:%d, want 1/0", added, deleted)
-	}
-	if p.created.Load() != 1 || p.deleted.Load() != 0 {
-		t.Errorf("Provider 调用 = created:%d deleted:%d, want 1/0", p.created.Load(), p.deleted.Load())
-	}
-}
-
 // ─── Step 1（R5-03）：同步轮次 TAG 快照测试 ───
 //
-// 固定口径（Build6 Step 1）：syncAll 捕获本轮 TAG 并沿
-// syncAll → syncDomain → syncDomainInternal → retrySync 显式传参；
-// 一轮同步的 OwnedRules 筛选、描述生成与全部重试只使用本轮快照 TAG，新 TAG 从下一轮开始生效。
+// 当前目标链：syncAll 捕获完整 RuntimeState，沿 runRound → syncTarget 传递；
+// planner 的 TAG 所有权、描述生成与全部重试都使用本轮快照，新 TAG 从下一轮生效。
 //
-// 交错说明：当前生产 Run 循环同步执行 syncAll（Reload 为阻塞式 channel 发送），
-// 因此"轮次进行中替换配置"由测试构造：Run 循环作为真实写入方，轮次在独立 goroutine 中显式调用。
+// 交错说明：测试在独立 goroutine 中调用 syncAll，同时由配置写入方发布新 RuntimeState。
 
 // fakeTagProvider 测试用 Provider：
 // 可控云端规则列表、受控 GetRules 阻塞点、可让指定次数 CreateRules 返回可重试错误，并记录写入
@@ -370,9 +319,6 @@ type fakeTagProvider struct {
 	deleteCalls  atomic.Int32
 	failCreateOn int32 // >0 时第 N 次 CreateRules 返回可重试错误
 
-	// 幂等错误注入（规则已存在 / 已不存在）：返回错误但不应计数、不应重试
-	idempotentCreateErr error
-	idempotentDeleteErr error
 }
 
 func (m *fakeTagProvider) GetRules() ([]config.RuleInfo, error) {
@@ -394,9 +340,6 @@ func (m *fakeTagProvider) GetSnapshot() (provider.RuleSnapshot, error) {
 
 func (m *fakeTagProvider) CreateRules(_ provider.RuleSnapshot, rules []config.RuleAction) (provider.CreateResult, error) {
 	n := m.createCalls.Add(1)
-	if m.idempotentCreateErr != nil {
-		return provider.CreateResult{}, m.idempotentCreateErr
-	}
 	m.mu.Lock()
 	for _, r := range rules {
 		m.created = append(m.created, r.Description)
@@ -412,9 +355,6 @@ func (m *fakeTagProvider) DeleteRules(_ provider.RuleSnapshot, rules []config.Ru
 	m.deleteCalls.Add(1)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.idempotentDeleteErr != nil {
-		return provider.DeleteResult{}, m.idempotentDeleteErr
-	}
 	for _, r := range rules {
 		m.deleted = append(m.deleted, r.Description)
 		// 模拟云端状态推进：删除成功的规则从云端列表移除
@@ -438,12 +378,6 @@ func (m *fakeTagProvider) createdDescs() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]string(nil), m.created...)
-}
-
-func (m *fakeTagProvider) deletedDescs() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]string(nil), m.deleted...)
 }
 
 // testRuntimeConfig 把测试用 Config 映射为完整运行时配置（补齐同步所需的默认值）
@@ -582,7 +516,7 @@ func TestSyncRound_TagSnapshotDuringReload(t *testing.T) {
 	close(p.release)
 	waitSignal(t, roundDone, "同步轮次未结束")
 
-	// Step 2 起正式同步不再自动删除：TAG 归属改由「该规则是否成为清理候选」观察。
+	// 夹具缺少可删除定位，使用清理候选数观察 TAG 归属。
 	// 若本轮误用新 TAG，这条 [auto-dns] 规则会被判为 External，候选数将变为 0。
 	if sum := s.Status().LastRound; sum == nil || sum.CleanupCandidates != 1 {
 		t.Errorf("本轮清理候选 = %+v, want 1（OwnedRules 必须使用本轮旧 TAG）", sum)
@@ -592,9 +526,9 @@ func TestSyncRound_TagSnapshotDuringReload(t *testing.T) {
 	}
 }
 
-// TestRetrySync_TagSnapshotAcrossRetry 首次写入返回可重试错误，在受控重试边界（第二次 Describe 阻塞）替换 TAG：
+// TestSyncRound_TagSnapshotAcrossRetry 首次写入返回可重试错误，在受控重试边界（第二次 Describe 阻塞）替换 TAG：
 // 重试轮的 OwnedRules 与描述必须仍使用本轮旧 TAG
-func TestRetrySync_TagSnapshotAcrossRetry(t *testing.T) {
+func TestSyncRound_TagSnapshotAcrossRetry(t *testing.T) {
 	p := &fakeTagProvider{
 		stubProvider: &stubProvider{cloudType: config.CloudTCCVM, targetIndex: 0},
 		blockOn:      2, // 第 1 次 Describe 正常返回，重试轮 Describe 阻塞
@@ -615,7 +549,7 @@ func TestRetrySync_TagSnapshotAcrossRetry(t *testing.T) {
 	waitSignal(t, p.blocked, "重试轮未进入 Describe")
 	applyStateAndWait(t, s, newRoundConfig("new-tag"))
 
-	// 模拟云端出现旧 TAG 规则：重试轮若使用旧 TAG 必须识别并按描述精确删除
+	// 模拟云端出现旧 TAG 陈旧规则：重试必须按 TAG 归属识别为清理候选
 	p.setRules([]config.RuleInfo{
 		{Protocol: "TCP", Port: "443", CidrBlock: "10.0.0.1/32", Action: "ACCEPT", Description: "[auto-dns] 测试"},
 	})
@@ -632,7 +566,7 @@ func TestRetrySync_TagSnapshotAcrossRetry(t *testing.T) {
 			t.Errorf("第 %d 次新增描述 = %q, want %q（重试必须使用本轮旧 TAG）", i+1, desc, "[auto-dns] 测试")
 		}
 	}
-	// Step 2 起不再自动删除：以清理候选数证明重试轮仍使用本轮旧 TAG。
+	// 夹具缺少可删除定位，以清理候选数证明重试轮仍使用本轮旧 TAG。
 	if sum := s.Status().LastRound; sum == nil || sum.CleanupCandidates != 1 {
 		t.Errorf("重试轮清理候选 = %+v, want 1（重试必须使用本轮旧 TAG）", sum)
 	}
@@ -686,136 +620,7 @@ func TestSyncRound_ConcurrentReloadStress(t *testing.T) {
 	wg.Wait()
 }
 
-// ─── Step 1（R5-03）：既有语义不退化测试（显式传入本轮 TAG） ───
-
-// resolveLocalhostIPv4 解析 localhost 并过滤 IPv6（与 syncDomain 实际执行路径一致）
-func resolveLocalhostIPv4(t *testing.T, s *Syncer) []dns.ResolvedIP {
-	t.Helper()
-	resolved, err := s.runtime.Snapshot().Resolver.Resolve(context.Background(), "localhost")
-	if err != nil {
-		t.Fatalf("解析失败: %v", err)
-	}
-	return filterIPv4(resolved)
-}
-
-// TestRetrySync_IdempotentErrorsNotCounted 幂等错误（规则已存在 / 已不存在）视为成功：不计数、不重试
-func TestRetrySync_IdempotentErrorsNotCounted(t *testing.T) {
-	p := &fakeTagProvider{
-		stubProvider: &stubProvider{cloudType: config.CloudTCCVM, targetIndex: 0},
-		rules: []config.RuleInfo{
-			{Protocol: "TCP", Port: "443", CidrBlock: "10.0.0.1/32", Action: "ACCEPT", Description: "[auto-dns] 测试"},
-		},
-		idempotentCreateErr: errors.New("FirewallRulesExist: 规则已存在"),
-		idempotentDeleteErr: errors.New("FirewallRulesNotFound: 规则已不存在"),
-	}
-	s := newTagSnapshotSyncer(t, "auto-dns", p)
-
-	added, deleted, _, err := s.retrySync(p, config.DomainRule{
-		Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Comment: "测试", Targets: []int{0},
-	}, resolveLocalhostIPv4(t, s), "auto-dns")
-	if err != nil {
-		t.Fatalf("幂等错误不应返回失败: %v", err)
-	}
-	if added != 0 || deleted != 0 {
-		t.Errorf("幂等跳过不应计数 = added:%d deleted:%d, want 0/0", added, deleted)
-	}
-	if p.createCalls.Load() != 1 || p.deleteCalls.Load() != 1 {
-		t.Errorf("幂等错误不应触发重试 = create:%d delete:%d, want 1/1", p.createCalls.Load(), p.deleteCalls.Load())
-	}
-}
-
-// TestRetrySync_EmptyCommentDesc 空 comment 的描述沿用既有语义：仅 "[TAG]"，无尾随空格
-func TestRetrySync_EmptyCommentDesc(t *testing.T) {
-	p := &fakeTagProvider{stubProvider: &stubProvider{cloudType: config.CloudTCCVM, targetIndex: 0}}
-	s := newTagSnapshotSyncer(t, "auto-dns", p)
-
-	added, deleted, _, err := s.retrySync(p, config.DomainRule{
-		Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Targets: []int{0},
-	}, resolveLocalhostIPv4(t, s), "auto-dns")
-	if err != nil {
-		t.Fatalf("retrySync 失败: %v", err)
-	}
-	if added != 1 || deleted != 0 {
-		t.Errorf("计数 = added:%d deleted:%d, want 1/0", added, deleted)
-	}
-	if got := p.createdDescs(); len(got) != 1 || got[0] != "[auto-dns]" {
-		t.Errorf("空 comment 描述 = %v, want [[auto-dns]]", got)
-	}
-}
-
-// TestTruncateDesc_TagPrefixPreserved 描述截断保持既有语义：按云厂商上限截断且 [TAG] 前缀完整
-func TestTruncateDesc_TagPrefixPreserved(t *testing.T) {
-	long := "[auto-dns] " + strings.Repeat("很", 60)
-
-	swas := truncateDesc(long, config.CloudAliSWAS)
-	if n := len([]rune(swas)); n != 50 {
-		t.Errorf("SWAS 截断长度 = %d, want 50", n)
-	}
-	if !strings.HasPrefix(swas, "[auto-dns]") {
-		t.Errorf("SWAS 截断后 TAG 前缀不完整: %q", swas)
-	}
-
-	lighthouse := truncateDesc(long, config.CloudTCLighthouse)
-	if n := len([]rune(lighthouse)); n != 64 {
-		t.Errorf("Lighthouse 截断长度 = %d, want 64", n)
-	}
-	if !strings.HasPrefix(lighthouse, "[auto-dns]") {
-		t.Errorf("Lighthouse 截断后 TAG 前缀不完整: %q", lighthouse)
-	}
-
-	if got := truncateDesc(long, config.CloudTCCVM); got != long {
-		t.Errorf("CVM 不应截断: got %q", got)
-	}
-	short := "[auto-dns] 短描述"
-	if got := truncateDesc(short, config.CloudAliSWAS); got != short {
-		t.Errorf("未超长描述不应截断: got %q", got)
-	}
-}
-
 // ─── Step 7：部分写入计数、Provider 快照隔离、描述/TAG 边界 ───
-
-// TestRetrySync_PartialWriteCounting Step 7「部分写入后的计数与重试」：
-// 删除成功、新增可重试失败时，重试必须重新 Describe/Diff；
-// 已生效的删除不得在重试中重复计数，新增只在真正成功后才计数。
-func TestRetrySync_PartialWriteCounting(t *testing.T) {
-	// 云端存在一条属于本工具、但与本轮期望不一致的旧规则（端口不同）→ 本轮需删除
-	p := &fakeTagProvider{
-		stubProvider: &stubProvider{cloudType: config.CloudTCCVM, targetIndex: 0},
-		rules: []config.RuleInfo{
-			{Protocol: "TCP", Port: "80", CidrBlock: "10.0.0.1/32", Action: "ACCEPT", Description: "[auto-dns] 测试", RuleID: "r-old"},
-		},
-		failCreateOn: 1, // 第 1 次 CreateRules 返回可重试错误
-	}
-	s := newTagSnapshotSyncer(t, "auto-dns", p)
-
-	added, deleted, _, err := s.retrySync(p, config.DomainRule{
-		Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Comment: "测试", Targets: []int{0},
-	}, resolveLocalhostIPv4(t, s), "auto-dns")
-	if err != nil {
-		t.Fatalf("部分写入后重试应最终成功: %v", err)
-	}
-
-	// 第 1 次尝试：删除 1 条成功、新增失败；第 2 次尝试：重新 Describe/Diff 后只新增 1 条
-	if added != 1 || deleted != 1 {
-		t.Errorf("计数 = added:%d deleted:%d, want 1/1（删除不得重复计数）", added, deleted)
-	}
-	if got := p.getCalls.Load(); got != 2 {
-		t.Errorf("GetRules 调用次数 = %d, want 2（重试必须重新 Describe）", got)
-	}
-	if got := p.deleteCalls.Load(); got != 1 {
-		t.Errorf("DeleteRules 调用次数 = %d, want 1（第 2 次 Diff 不应再产生删除）", got)
-	}
-	if got := p.deletedDescs(); len(got) != 1 || got[0] != "[auto-dns] 测试" {
-		t.Errorf("实际删除描述 = %v, want [[auto-dns] 测试]", got)
-	}
-	// 新增调用 2 次：第 1 次记录后返回可重试错误，第 2 次成功（fakeTagProvider 的既有语义）
-	if got := p.createCalls.Load(); got != 2 {
-		t.Errorf("CreateRules 调用次数 = %d, want 2", got)
-	}
-	if got := p.createdDescs(); len(got) != 2 {
-		t.Errorf("新增描述记录 = %v, want 2 条（尝试 + 重试成功）", got)
-	}
-}
 
 // TestSyncRoundUsesSingleProviderSnapshot Step 7「Provider/Resolver/TAG/Config 完整单轮快照」：
 // 本轮 Describe 阻塞期间把 Provider 列表整体替换为另一个 Provider，
@@ -869,33 +674,5 @@ func TestSyncRoundUsesSingleProviderSnapshot(t *testing.T) {
 	}
 	if got := pA.getCalls.Load(); got != 2 {
 		t.Errorf("Provider A 不得再被新轮次使用：快照调用 = %d, want 2", got)
-	}
-}
-
-// TestTruncateDesc_ECSUntruncatedAndMaxTagBoundary Step 7「描述字段长度」「48 Unicode 字符 TAG」：
-//
-//   - ECS 走 default 分支，不做截断（AuthorizeSecurityGroup Description ≤512）；
-//   - TAG 取满 48 个 Unicode 字符时，"[TAG]" 恰好 50 个 rune，SWAS 截断后
-//     必须保留完整闭合方括号，绝不能截断 TAG 本身。
-func TestTruncateDesc_ECSUntruncatedAndMaxTagBoundary(t *testing.T) {
-	long := "[auto-dns] " + strings.Repeat("很", 60)
-	if got := truncateDesc(long, config.CloudAliECS); got != long {
-		t.Errorf("ECS 不应截断描述: got %q", got)
-	}
-
-	maxTag := strings.Repeat("测", 48) // config.NormalizeTag 允许的最大长度
-	desc := tag.Format(maxTag, "x")
-	if n := len([]rune(desc)); n != 52 {
-		t.Fatalf("前置条件：48 rune TAG + 单字符 comment 应为 52 rune，实际 %d", n)
-	}
-	swas := truncateDesc(desc, config.CloudAliSWAS)
-	if n := len([]rune(swas)); n != 50 {
-		t.Errorf("SWAS 截断长度 = %d, want 50", n)
-	}
-	if swas != tag.Format(maxTag, "") {
-		t.Errorf("48 rune TAG 截断后必须完整保留 [TAG]：got %q, want %q", swas, tag.Format(maxTag, ""))
-	}
-	if !strings.HasSuffix(swas, "]") {
-		t.Errorf("截断不得丢失闭合方括号: %q", swas)
 	}
 }
