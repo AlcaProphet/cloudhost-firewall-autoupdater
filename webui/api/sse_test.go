@@ -183,55 +183,61 @@ func TestHandleSyncEvents_WriteErrorExitsAndUnsubscribes(t *testing.T) {
 	}
 }
 
-// TestHandleLogStream_WriteErrorExitsAndUnsubscribes 日志流 SSE 同样必须检查写错误。
+// failAfterResponseWriter 允许 reset 成功，再独立验证日志帧写失败。
+type failAfterResponseWriter struct {
+	*erroringResponseWriter
+	allowed int
+	calls   int
+}
+
+func (w *failAfterResponseWriter) Write(p []byte) (int, error) {
+	w.calls++
+	if w.calls <= w.allowed {
+		return len(p), nil
+	}
+	return w.erroringResponseWriter.Write(p)
+}
+
+// TestHandleLogStream_WriteErrorExitsAndUnsubscribes 分别覆盖 reset 与日志帧失败。
 func TestHandleLogStream_WriteErrorExitsAndUnsubscribes(t *testing.T) {
-	b := NewLogBroadcaster("info")
-	d := &Deps{LogBroadcaster: b}
-	mux := http.NewServeMux()
-	d.Register(mux)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	req := httptest.NewRequest(http.MethodGet, "/api/logs/stream", nil).WithContext(ctx)
-
-	w := newErroringResponseWriter()
-
-	before := b.subCount()
-	handlerDone := make(chan struct{})
-	go func() {
-		defer close(handlerDone)
-		mux.ServeHTTP(w, req)
-	}()
-
-	deadline := time.Now().Add(3 * time.Second)
-	for b.subCount() != before+1 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if got := b.subCount(); got != before+1 {
-		t.Fatalf("建立订阅后订阅数 = %d, want %d", got, before+1)
-	}
-
-	if err := b.Handle(ctx, slog.NewRecord(time.Now(), slog.LevelInfo, "触发写错误", 0)); err != nil {
-		t.Fatalf("LogBroadcaster.Handle 失败: %v", err)
-	}
-
-	select {
-	case <-handlerDone:
-	case <-time.After(3 * time.Second):
-		t.Fatal("首个写错误后日志流 SSE handler 未退出（修复前会永久循环）")
-	}
-
-	deadline = time.Now().Add(3 * time.Second)
-	for b.subCount() != before && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if got := b.subCount(); got != before {
-		t.Errorf("订阅数 = %d, want 恢复到 %d（defer unsubscribe 必须生效）", got, before)
-	}
-	for _, s := range w.statuses {
-		if s >= 400 {
-			t.Errorf("写错误后不得写错误状态码，实际记录了 %d", s)
-		}
+	for _, tc := range []struct {
+		name    string
+		allowed int
+	}{{"reset", 0}, {"log_after_reset", 1}} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := NewLogBroadcaster("info")
+			if err := b.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "触发写错误", 0)); err != nil {
+				t.Fatal(err)
+			}
+			d := &Deps{LogBroadcaster: b}
+			mux := http.NewServeMux()
+			d.Register(mux)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			req := httptest.NewRequest(http.MethodGet, "/api/logs/stream", nil).WithContext(ctx)
+			w := &failAfterResponseWriter{erroringResponseWriter: newErroringResponseWriter(), allowed: tc.allowed}
+			done := make(chan struct{})
+			go func() { defer close(done); mux.ServeHTTP(w, req) }()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("首个写错误后日志流 SSE handler 未退出")
+			}
+			if got := b.subCount(); got != 0 {
+				t.Errorf("写失败后残留订阅 %d", got)
+			}
+			if w.calls != tc.allowed+1 || w.writeErrs != 1 {
+				t.Errorf("写调用=%d 错误=%d", w.calls, w.writeErrs)
+			}
+			for _, status := range w.statuses {
+				if status >= 400 {
+					t.Errorf("写错误后不得写错误状态码 %d", status)
+				}
+			}
+			if len(w.statuses) > 1 {
+				t.Errorf("重复写响应头 %d 次", len(w.statuses))
+			}
+		})
 	}
 }
 

@@ -15,13 +15,57 @@ const showDetailModal = ref(false)
 const detailLog = ref<SyncLogEntry | null>(null)
 
 let logEs: EventSource | null = null
+let active = false
+const streamStatus = ref('连接中')
+const streamNotice = ref('')
+let cursor: { epoch: string; seq: bigint } | null = null
+// 游标用 BigInt 比较；实例标识长度允许标准库未来增长。
+function parseCursor(id: string) {
+  const match = /^([A-Z2-7]{26,}):(0|[1-9][0-9]{0,19})$/.exec(id)
+  if (!match) return null
+  const seq = BigInt(match[2])
+  return seq <= 18446744073709551615n ? { epoch: match[1], seq } : null
+}
+// reset 同时重建显示窗口和去重基准，原因提示不混入日志正文。
+function resetStream(e: Event) {
+  if (!active) return
+  const event = e as MessageEvent<string>
+  const baseline = parseCursor(event.lastEventId)
+  const notices: Record<string, string> = {
+    initial: '',
+    instance_changed: '服务已重启，显示当前进程最近日志',
+    history_expired: '断线期间部分日志已超出缓存，显示最近日志',
+    invalid_cursor: '日志流已重新建立，显示最近日志',
+  }
+  if (!baseline || !Object.prototype.hasOwnProperty.call(notices, event.data)) {
+    streamStatus.value = '日志流格式异常'
+    return
+  }
+  logLines.value = []
+  cursor = baseline
+  streamNotice.value = notices[event.data]
+}
+function receiveLog(e: MessageEvent<string>) {
+  if (!active) return
+  const next = parseCursor(e.lastEventId)
+  if (!next || next.seq === 0n || !cursor || next.epoch !== cursor.epoch) {
+    streamStatus.value = '日志流格式异常'
+    return
+  }
+  if (next.seq <= cursor.seq) return
+  if (next.seq !== cursor.seq + 1n) streamNotice.value = '部分运行日志未接收，当前显示可能不连续'
+  logLines.value.push(e.data)
+  if (logLines.value.length > 1000) logLines.value.shift()
+  cursor = next
+}
 
 // ─── 历史记录加载（挂载与刷新按钮共用） ───
 async function loadLogs() {
   try {
-    logs.value = await request<SyncLogEntry[]>('/api/sync/logs')
+    const result = await request<SyncLogEntry[]>('/api/sync/logs')
+    if (active) logs.value = result
   } catch (e: any) {
-    message.error(`刷新失败: ${e.message}`)
+    if (active) message.error(`刷新失败: ${e.message}`)
   }
 }
 
@@ -38,19 +82,32 @@ function formatTime(ts: string): string {
 }
 
 // ─── 生命周期 ───
-onMounted(async () => {
-  await loadLogs()
-
-  // SSE 实时日志流（订阅时后端回放最近 1000 条，见 Build4 Step 2）
+// 日志连接不等待历史请求，卸载后晚到响应不再发布。
+onMounted(() => {
+  active = true
   logEs = new EventSource('/api/logs/stream')
-  logEs.onmessage = (e) => {
-    logLines.value.push(e.data)
-    if (logLines.value.length > 1000) logLines.value.shift()
+  logEs.addEventListener('reset', resetStream)
+  logEs.onmessage = receiveLog
+  logEs.onopen = () => {
+    if (active) streamStatus.value = '已连接'
   }
+  logEs.onerror = () => {
+    if (active && logEs) {
+      streamStatus.value = logEs.readyState === EventSource.CLOSED ? '连接已关闭' : '重连中'
+    }
+  }
+  void loadLogs()
 })
-
 onUnmounted(() => {
-  if (logEs) logEs.close()
+  active = false
+  if (logEs) {
+    logEs.removeEventListener('reset', resetStream)
+    logEs.onmessage = null
+    logEs.onopen = null
+    logEs.onerror = null
+    logEs.close()
+    logEs = null
+  }
 })
 
 // ─── 历史记录 ───
@@ -117,6 +174,7 @@ const columns = [
 
     <!-- 实时运行日志（常驻展开，Build4 Step 11：移除折叠控件） -->
     <h3 style="margin-top: 16px">运行日志（实时）</h3>
+    <p aria-live="polite" style="margin: 8px 0">{{ streamStatus }}<span v-if="streamNotice"> · {{ streamNotice }}</span></p>
     <pre style="max-height: 300px; overflow-y: auto; background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 6px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all;">{{ logLines.join('\n') || '等待日志输出...' }}</pre>
 
     <!-- 清空历史记录确认弹窗（卡片式） -->

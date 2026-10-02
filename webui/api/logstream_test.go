@@ -26,14 +26,14 @@ func TestLogBroadcaster_Replay(t *testing.T) {
 		}
 	}
 
-	ch, unsub := b.Subscribe()
+	ch, _, _, unsub := b.Subscribe("")
 	defer unsub()
 
 	for i, want := range []string{"第一条", "第二条", "第三条"} {
 		select {
 		case line := <-ch:
 			// TextHandler 对中文消息会加引号（输出 msg="第一条"），直接检查消息文本即可
-			if !strings.Contains(line, want) {
+			if !strings.Contains(line.Line, want) {
 				t.Errorf("回放第 %d 条 = %q, want 包含 %s", i, line, want)
 			}
 		case <-time.After(time.Second):
@@ -59,7 +59,7 @@ func TestLogBroadcaster_RingOverflow(t *testing.T) {
 		}
 	}
 
-	ch, unsub := b.Subscribe()
+	ch, _, _, unsub := b.Subscribe("")
 	defer unsub()
 
 	for i := 0; i < logRingSize; i++ {
@@ -85,13 +85,13 @@ func TestLogBroadcaster_Format(t *testing.T) {
 		t.Fatalf("Handle 失败: %v", err)
 	}
 
-	ch, unsub := b.Subscribe()
+	ch, _, _, unsub := b.Subscribe("")
 	defer unsub()
 
 	select {
 	case line := <-ch:
 		// 注意：TextHandler 对中文消息加引号（输出 msg="同步完成"），此处只断言级别与消息文本
-		if !strings.Contains(line, "level=INFO") || !strings.Contains(line, "同步完成") {
+		if !strings.Contains(line.Line, "level=INFO") || !strings.Contains(line.Line, "同步完成") {
 			t.Errorf("行格式不符合 TextHandler 规范: %q", line)
 		}
 	case <-time.After(time.Second):
@@ -109,7 +109,7 @@ func TestLogBroadcaster_LevelFilter(t *testing.T) {
 	logger := slog.New(b)
 	logger.Debug("调试") // slog.Logger 先检查 Enabled → false → 不调用 Handle，ring 保持为空
 
-	ch, unsub := b.Subscribe()
+	ch, _, _, unsub := b.Subscribe("")
 	defer unsub()
 	select {
 	case line, ok := <-ch:
