@@ -29,6 +29,11 @@ func WritePidFile(path string) (cleanup func(), err error) {
 		closeFile()
 		return nil, err
 	}
+	// 取得同一文件上的锁后才迁移权限；竞争启动者不得改动持锁者的文件。
+	if err := f.Chmod(0600); err != nil {
+		closeFile()
+		return nil, fmt.Errorf("收敛 pidfile 权限失败: %w", err)
+	}
 	// 只有持锁者可以改写诊断内容，不能在 OpenFile 时使用 O_TRUNC。
 	if err := f.Truncate(0); err != nil {
 		closeFile()

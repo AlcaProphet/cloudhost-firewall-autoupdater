@@ -32,12 +32,17 @@ type DeploymentConfig struct {
 //   - WEBUI_PORT：默认 60200，只接受十进制整数 1～65535
 func LoadDeploymentConfig() (DeploymentConfig, error) {
 	cfg := DeploymentConfig{
-		DataDir: DefaultDataDir(),
-		Host:    DefaultWebUIHost,
-		Port:    DefaultWebUIPort,
+		Host: DefaultWebUIHost,
+		Port: DefaultWebUIPort,
 	}
 
 	if dir := strings.TrimSpace(os.Getenv("FWALIZER_DATA_DIR")); dir != "" {
+		cfg.DataDir = dir
+	} else {
+		dir, err := DefaultDataDir()
+		if err != nil {
+			return DeploymentConfig{}, err
+		}
 		cfg.DataDir = dir
 	}
 	if host := strings.TrimSpace(os.Getenv("WEBUI_HOST")); host != "" {
@@ -57,20 +62,19 @@ func LoadDeploymentConfig() (DeploymentConfig, error) {
 	return cfg, nil
 }
 
-// DefaultDataDir 返回平台默认数据目录。
-func DefaultDataDir() string {
+// DefaultDataDir 返回平台默认数据目录；无法确定时返回错误，不回退到当前目录。
+func DefaultDataDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		// 回退到当前目录（极端情况）
-		return "."
+		return "", fmt.Errorf("确定默认数据目录失败: %w", err)
 	}
 	// 平台约束固定为 Linux/macOS（Windows 支持已按用户决策移除，见 Issue6 A19）。
 	// 刻意不给本文件加平台 build tag：否则 runtime 会变成未使用导入，
 	// 且 default 分支（Linux 及其他 Unix）会失去意义。
 	switch runtime.GOOS {
 	case "darwin":
-		return filepath.Join(home, "Library", "Application Support", "fwalizer")
+		return filepath.Join(home, "Library", "Application Support", "fwalizer"), nil
 	default:
-		return filepath.Join(home, ".config", "fwalizer")
+		return filepath.Join(home, ".config", "fwalizer"), nil
 	}
 }

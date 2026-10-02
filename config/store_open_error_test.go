@@ -68,7 +68,7 @@ func TestOpenStoreFailurePreservesCloseError(t *testing.T) {
 						t.Errorf("关闭测试数据库失败: %v", err)
 					}
 				})
-				store, err := openStoreDB(db)
+				store, err := openStoreDB(db, filepath.Join(t.TempDir(), "config.db"))
 				if store != nil || !errors.Is(err, primary) {
 					t.Fatalf("主错误被丢失: store=%v err=%v", store, err)
 				}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -110,16 +111,47 @@ func OpenStore(path string) (*Store, error) {
 		return nil, err
 	}
 
+	// 在 SQLite 首次访问前保护主库；不截断已有配置，创建模式也不能代替权限迁移。
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("预创建数据库失败: %w", err)
+	}
+	permissionErr := f.Chmod(0600)
+	if permissionErr != nil {
+		permissionErr = fmt.Errorf("收敛数据库权限失败: %w", permissionErr)
+	}
+	closeErr := f.Close()
+	if closeErr != nil {
+		closeErr = fmt.Errorf("关闭数据库预创建文件失败: %w", closeErr)
+	}
+	if err := errors.Join(permissionErr, closeErr); err != nil {
+		return nil, err
+	}
+	if err := chmodStoreAuxFiles(path); err != nil {
+		return nil, err
+	}
+
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库失败: %w", err)
 	}
 
-	return openStoreDB(db)
+	return openStoreDB(db, path)
+}
+
+// chmodStoreAuxFiles 迁移已存在的 WAL/SHM；缺失正常，不预创建或删除辅助文件。
+// 固定 Unix VFS 从主库权限创建新辅助文件，重建行为由实际 SQLite 回归验证。
+func chmodStoreAuxFiles(path string) error {
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := os.Chmod(path+suffix, 0600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("收敛数据库辅助文件 %s 权限失败: %w", suffix, err)
+		}
+	}
+	return nil
 }
 
 // openStoreDB 在初始化失败时关闭数据库，成功时将所有权交给 Store。
-func openStoreDB(db *sql.DB) (_ *Store, err error) {
+func openStoreDB(db *sql.DB, path string) (_ *Store, err error) {
 	defer func() {
 		if err != nil {
 			if closeErr := db.Close(); closeErr != nil {
@@ -134,6 +166,10 @@ func openStoreDB(db *sql.DB) (_ *Store, err error) {
 
 	s := &Store{db: db}
 	if err := s.initTables(); err != nil {
+		return nil, err
+	}
+	// 初始化可能刚创建辅助文件；权限失败仍走统一关闭，不能带不安全状态启动。
+	if err := chmodStoreAuxFiles(path); err != nil {
 		return nil, err
 	}
 	return s, nil

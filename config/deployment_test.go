@@ -22,8 +22,8 @@ func TestLoadDeploymentConfig_Defaults(t *testing.T) {
 	if cfg.Port != 60200 {
 		t.Errorf("Port = %d, want 60200", cfg.Port)
 	}
-	if cfg.DataDir != DefaultDataDir() {
-		t.Errorf("DataDir = %q, want 平台默认目录 %q", cfg.DataDir, DefaultDataDir())
+	if cfg.DataDir != defaultDataDirForTest(t) {
+		t.Errorf("DataDir = %q, want 平台默认目录 %q", cfg.DataDir, defaultDataDirForTest(t))
 	}
 }
 
@@ -35,8 +35,8 @@ func TestLoadDeploymentConfig_BlankDataDirTreatedAsUnset(t *testing.T) {
 		if err != nil {
 			t.Fatalf("FWALIZER_DATA_DIR=%q 不应报错: %v", blank, err)
 		}
-		if cfg.DataDir != DefaultDataDir() {
-			t.Errorf("FWALIZER_DATA_DIR=%q 时 DataDir = %q, want 平台默认目录 %q", blank, cfg.DataDir, DefaultDataDir())
+		if cfg.DataDir != defaultDataDirForTest(t) {
+			t.Errorf("FWALIZER_DATA_DIR=%q 时 DataDir = %q, want 平台默认目录 %q", blank, cfg.DataDir, defaultDataDirForTest(t))
 		}
 	}
 }
@@ -150,7 +150,40 @@ func TestLoadDeploymentConfig_BusinessEnvIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("业务环境变量不应影响部署参数校验: %v", err)
 	}
-	if cfg.DataDir != DefaultDataDir() || cfg.Host != "127.0.0.1" || cfg.Port != 60200 {
+	if cfg.DataDir != defaultDataDirForTest(t) || cfg.Host != "127.0.0.1" || cfg.Port != 60200 {
 		t.Errorf("业务环境变量改变了部署参数: %+v", cfg)
+	}
+}
+
+// defaultDataDirForTest 保持既有默认路径断言，同时显式处理路径解析错误。
+func defaultDataDirForTest(t *testing.T) string {
+	t.Helper()
+	dir, err := DefaultDataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestLoadDeploymentConfigMissingHome 默认目录无法确定时失败，显式部署目录仍有效。
+func TestLoadDeploymentConfigMissingHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("WEBUI_HOST", "")
+	t.Setenv("WEBUI_PORT", "")
+	if dir, err := DefaultDataDir(); err == nil || dir != "" {
+		t.Fatalf("无法确定默认目录时不能回退: dir=%q err=%v", dir, err)
+	}
+	for _, raw := range []string{"", "  ", "\t", " /tmp/fwalizer-explicit "} {
+		t.Run(raw, func(t *testing.T) {
+			t.Setenv("FWALIZER_DATA_DIR", raw)
+			cfg, err := LoadDeploymentConfig()
+			if strings.TrimSpace(raw) == "" {
+				if err == nil || !strings.Contains(err.Error(), "确定默认数据目录失败") || cfg.DataDir != "" {
+					t.Fatalf("默认路径失败必须阻止启动: cfg=%+v err=%v", cfg, err)
+				}
+			} else if err != nil || cfg.DataDir != "/tmp/fwalizer-explicit" {
+				t.Fatalf("显式目录不应依赖 HOME: cfg=%+v err=%v", cfg, err)
+			}
+		})
 	}
 }

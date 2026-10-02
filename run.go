@@ -41,8 +41,13 @@ func run(args []string, _ io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	if err := os.MkdirAll(deploy.DataDir, 0755); err != nil {
+	if err := os.MkdirAll(deploy.DataDir, 0700); err != nil {
 		fmt.Fprintf(stderr, "创建数据目录失败: %v\n", err)
+		return 1
+	}
+	// MkdirAll 不迁移已有目录权限；只收紧最终数据目录，不递归修改其他路径。
+	if err := os.Chmod(deploy.DataDir, 0700); err != nil {
+		fmt.Fprintf(stderr, "收敛数据目录权限失败: %v\n", err)
 		return 1
 	}
 
