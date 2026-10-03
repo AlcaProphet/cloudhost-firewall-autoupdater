@@ -3,7 +3,9 @@ package syncer
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -104,10 +106,219 @@ func TestDryRun_OneSnapshotPerTargetAndOneResolvePerHost(t *testing.T) {
 	if resolves != 1 {
 		t.Fatalf("同 host 解析次数 = %d, want 1（按 host 去重）", resolves)
 	}
-	// 目标内不得 sleep；目标间限速允许一次
-	if len(slept) > 1 {
-		t.Fatalf("目标内不得限速等待，实际等待 %v", slept)
+	// 首次单目标既无前序读取，也无下一目标，不得产生末尾等待。
+	if len(slept) != 0 {
+		t.Fatalf("首次单目标不得限速等待，实际等待 %v", slept)
 	}
+}
+
+// dryRunCooldownProbe 记录快照调用与结束时间，复用既有零写入计数夹具。
+type dryRunCooldownProbe struct {
+	*targetProbeProvider
+	events     *[]string
+	startedAt  time.Time
+	finishedAt time.Time
+}
+
+func (p *dryRunCooldownProbe) GetSnapshot() (provider.RuleSnapshot, error) {
+	p.startedAt = time.Now()
+	*p.events = append(*p.events, fmt.Sprintf("read:%d", p.TargetIndex()))
+	snapshot, err := p.targetProbeProvider.GetSnapshot()
+	p.finishedAt = time.Now()
+	return snapshot, err
+}
+
+// newDryRunCooldownSyncer 用 20 条同域名规则证明等待与读取次数不随规则数增长。
+func newDryRunCooldownSyncer(t *testing.T, clouds []config.CloudType, failFirst bool, targets []int) (*Syncer, *[]string, []*dryRunCooldownProbe, *int) {
+	t.Helper()
+	events := []string{}
+	ps := []provider.Provider{}
+	probes := []*dryRunCooldownProbe{}
+	for i, ct := range clouds {
+		p := &dryRunCooldownProbe{targetProbeProvider: newProbeProvider(ct, i+1), events: &events}
+		if failFirst && i == 0 {
+			p.snapshotErrs = []error{errors.New("合成快照读取失败")}
+		}
+		ps = append(ps, p)
+		probes = append(probes, p)
+	}
+	rules := make([]config.DomainRule, 20)
+	for i := range rules {
+		rules[i] = staticRule(i+1, "a.example.com", "TCP", fmt.Sprint(8000+i))
+		rules[i].Targets = targets
+	}
+	s := newTargetSyncer(t, ps, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+	resolves := 0
+	base := s.resolveHostFn
+	s.resolveHostFn = func(host string) ([]dns.ResolvedIP, error) { resolves++; return base(host) }
+	s.sleepFn = func(d time.Duration) {
+		if d <= 0 || d > 5*time.Second {
+			t.Fatalf("等待时间越界: %v", d)
+		}
+		events = append(events, "wait")
+	}
+	return s, &events, probes, &resolves
+}
+
+// TestDryRun_CooldownScheduling 验证等待位置、成功/失败与跨调用语义；
+// sleep 接缝只记录等待，时间间隔另由结束时间与真实时钟用例验证。
+func TestDryRun_CooldownScheduling(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		clouds    []config.CloudType
+		failFirst bool
+		targets   []int
+		runs      int
+		want      []string
+	}{
+		{"单目标20规则无末尾等待", []config.CloudType{config.CloudTCLighthouse}, false, nil, 1, []string{"read:1"}},
+		{"同平台仅下一目标读取前等待", []config.CloudType{config.CloudTCLighthouse, config.CloudTCLighthouse}, false, nil, 1, []string{"read:1", "wait", "read:2"}},
+		{"不同平台无相互等待", []config.CloudType{config.CloudTCLighthouse, config.CloudAliECS}, false, nil, 1, []string{"read:1", "read:2"}},
+		{"四平台独立冷却", []config.CloudType{config.CloudTCLighthouse, config.CloudTCCVM, config.CloudAliSWAS, config.CloudAliECS}, false, nil, 1, []string{"read:1", "read:2", "read:3", "read:4"}},
+		{"失败无末尾等待", []config.CloudType{config.CloudTCLighthouse}, true, nil, 1, []string{"read:1"}},
+		{"失败后下一目标仍限速", []config.CloudType{config.CloudTCLighthouse, config.CloudTCLighthouse}, true, nil, 1, []string{"read:1", "wait", "read:2"}},
+		{"成功冷却跨连续调用", []config.CloudType{config.CloudTCLighthouse}, false, nil, 2, []string{"read:1", "wait", "read:1"}},
+		{"失败冷却跨连续调用", []config.CloudType{config.CloudTCLighthouse}, true, nil, 2, []string{"read:1", "wait", "read:1"}},
+		{"无适用规则不读取不等待", []config.CloudType{config.CloudTCLighthouse}, false, []int{99}, 2, []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, events, ps, resolves := newDryRunCooldownSyncer(t, tc.clouds, tc.failFirst, tc.targets)
+			for run := 0; run < tc.runs; run++ {
+				resp, err := s.DryRun()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(resp.Results) != len(ps) {
+					t.Fatalf("结果数=%d，want %d", len(resp.Results), len(ps))
+				}
+				for i, result := range resp.Results {
+					if result.TargetID != i+1 {
+						t.Fatalf("结果顺序变化: %+v", resp.Results)
+					}
+					wantError := tc.failFirst && i == 0 && run == 0 && tc.targets == nil
+					if (result.Error != "") != wantError {
+						t.Fatalf("读取错误语义变化: %+v", result)
+					}
+					if tc.targets != nil {
+						assertUnscheduledDryRunResult(t, result)
+					}
+				}
+			}
+			if !reflect.DeepEqual(*events, tc.want) {
+				t.Fatalf("调用顺序=%v，want %v", *events, tc.want)
+			}
+			expectedResolves := len(ps) * tc.runs
+			for _, p := range ps {
+				expectedReads := tc.runs
+				if tc.targets != nil {
+					expectedReads = 0
+					expectedResolves = 0
+				}
+				n, c, d := p.counts()
+				if n != expectedReads || c != 0 || d != 0 {
+					t.Fatalf("目标%d snapshot/create/delete=%d/%d/%d，want %d/0/0", p.TargetIndex(), n, c, d, expectedReads)
+				}
+				if expectedReads == 0 {
+					continue
+				}
+				// 独立写出当前既定间隔，不能让生产错误缩短间隔后测试同步变绿。
+				interval := 200 * time.Millisecond
+				if p.CloudType() == config.CloudTCLighthouse || p.CloudType() == config.CloudAliSWAS {
+					interval = 5 * time.Second
+				}
+				if s.dryRunNextRead[p.CloudType()].Before(p.finishedAt.Add(interval)) {
+					t.Fatalf("目标%d 读取结束后的冷却不足 %v", p.TargetIndex(), interval)
+				}
+			}
+			if *resolves != expectedResolves {
+				t.Fatalf("DNS次数=%d，want %d（每目标每host一次）", *resolves, expectedResolves)
+			}
+			if tc.targets != nil && len(s.dryRunNextRead) != 0 {
+				t.Fatalf("无适用规则不得创建冷却: %v", s.dryRunNextRead)
+			}
+		})
+	}
+}
+
+// TestDryRun_CooldownSurvivesStateChange 冷却属于 Syncer，热更新/零规则不能清空它。
+func TestDryRun_CooldownSurvivesStateChange(t *testing.T) {
+	s, events, _, _ := newDryRunCooldownSyncer(t, []config.CloudType{config.CloudTCLighthouse}, false, nil)
+	if _, err := s.DryRun(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := s.dryRunNextRead[config.CloudTCLighthouse]
+	old := s.runtime.Snapshot()
+	emptyConfig := old.Config.DeepCopy()
+	emptyConfig.DomainRules = nil
+	empty, err := BuildRuntimeState(old, emptyConfig, BreakerPreserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty.Providers = old.Providers
+	s.ApplyState(empty)
+	resp, err := s.DryRun()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertUnscheduledDryRunResult(t, resp.Results[0])
+	if !s.dryRunNextRead[config.CloudTCLighthouse].Equal(deadline) {
+		t.Fatal("零规则期间冷却被改写")
+	}
+	next, err := BuildRuntimeState(empty, old.Config, BreakerPreserve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next.Providers = old.Providers
+	s.ApplyState(next)
+	if _, err := s.DryRun(); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(*events, []string{"read:1", "wait", "read:1"}) {
+		t.Fatalf("状态替换丢失冷却: %v", *events)
+	}
+}
+
+// TestDryRun_CooldownElapsed 已消耗时间抵扣冷却，并由真实时钟证明剩余等待发生在读取前。
+func TestDryRun_CooldownElapsed(t *testing.T) {
+	t.Run("DNS阶段已消耗冷却", func(t *testing.T) {
+		s, events, _, _ := newDryRunCooldownSyncer(t, []config.CloudType{config.CloudTCLighthouse}, false, nil)
+		if _, err := s.DryRun(); err != nil {
+			t.Fatal(err)
+		}
+		base := s.resolveHostFn
+		s.resolveHostFn = func(host string) ([]dns.ResolvedIP, error) {
+			// 推进冷却到已过期，确定性模拟慢DNS；不靠固定Sleep猜测时序。
+			s.dryRunNextRead = map[config.CloudType]time.Time{config.CloudTCLighthouse: time.Now().Add(-time.Second)}
+			return base(host)
+		}
+		if _, err := s.DryRun(); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(*events, []string{"read:1", "read:1"}) {
+			t.Fatalf("已过期仍等待: %v", *events)
+		}
+	})
+	t.Run("真实时钟仅等待剩余时间", func(t *testing.T) {
+		s, _, ps, _ := newDryRunCooldownSyncer(t, []config.CloudType{config.CloudTCCVM}, false, nil)
+		if _, err := s.DryRun(); err != nil {
+			t.Fatal(err)
+		}
+		// 当前200ms冷却已消耗大部分，仅剩20ms；测试不要求精确运行耗时。
+		remaining := 20 * time.Millisecond
+		deadline := time.Now().Add(remaining)
+		s.dryRunNextRead[config.CloudTCCVM] = deadline
+		var waited time.Duration
+		s.sleepFn = func(d time.Duration) { waited = d; time.Sleep(d) }
+		if _, err := s.DryRun(); err != nil {
+			t.Fatal(err)
+		}
+		if waited < 0 || waited > remaining {
+			t.Fatalf("未按剩余时间等待: %v", waited)
+		}
+		if ps[0].startedAt.Before(deadline) {
+			t.Fatalf("云读取早于冷却截止时间: %v < %v", ps[0].startedAt, deadline)
+		}
+	})
 }
 
 // TestDryRun_IncludesTargetsWithoutApplicableRules R7-03：所有已配置目标都必须返回，

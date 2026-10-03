@@ -80,7 +80,10 @@ type Syncer struct {
 	// 漏掉恢复后的立即一轮（Issue6 A7）。
 	enabled bool
 
-	dryRunMu sync.Mutex // Dry Run 防重入
+	dryRunMu sync.Mutex // Dry Run 防重入，同时保护跨调用的平台冷却
+	// dryRunNextRead 按云产品保留下一次快照读取的最早时间；只由持有 dryRunMu 的
+	// DryRun 访问，不随 RuntimeState 替换清空。仅保存时间，不缓存 DNS 或云快照。
+	dryRunNextRead map[config.CloudType]time.Time
 
 	// onStateApplied 在状态发布完成后调用（run.go 注入告警订阅的无失败替换与安全日志）。
 	// 必须是零 error、不访问网络的内存操作。
@@ -657,11 +660,18 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 		// 每目标按 host 去重解析一次（report=false：不写熔断器、不发 DNS 事件）
 		resolved, dnsErrors, _ := s.resolveTargetRules(state, rules, nil, false, nil)
 
+		// 只在下一次同平台读取前补足冷却，首次读取与末尾返回不额外等待。
+		// DNS/规划及其他平台处理已消耗的时间可抵扣；冷却跨连续 Dry Run 保留。
+		if s.dryRunNextRead == nil {
+			s.dryRunNextRead = make(map[config.CloudType]time.Time)
+		}
+		s.sleep(time.Until(s.dryRunNextRead[p.CloudType()]))
 		snapshot, err := p.GetSnapshot()
+		// 失败读取同样消耗请求预算；从完整快照操作结束后开始冷却，分页逻辑不变。
+		s.dryRunNextRead[p.CloudType()] = time.Now().Add(rateLimitInterval(p.CloudType()))
 		if err != nil {
 			result.Error = err.Error()
 			resp.Results = append(resp.Results, result)
-			s.sleep(rateLimitInterval(p.CloudType()))
 			continue
 		}
 
@@ -689,8 +699,6 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 			result.CleanupCandidates = append(result.CleanupCandidates, provider.RuleChangeFromInfo(c))
 		}
 		resp.Results = append(resp.Results, result)
-		// 限速发生在目标之间，同一目标内部不再 sleep（Issue7 §7.1）
-		s.sleep(rateLimitInterval(p.CloudType()))
 	}
 	return resp, nil
 }

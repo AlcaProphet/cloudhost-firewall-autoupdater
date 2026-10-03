@@ -508,7 +508,7 @@ total == ok + changed + failed + skipped
 - 无适用规则的已配置目标只返回空数组骨架、`coverage_ready=false` 与空 `error`；该项表示“未调度”，不解析 DNS、不 Describe、不进入 planner、不限速等待，页面必须明确正式同步会跳过该目标；
 - `cleanup_candidates` 是若此刻进入正式流程、且之后 S1 仍满足全部安全门时才可能删除的预览，不得写成“将删除”；
 - `cleanup_deferred` 明确列出当前已知阻断原因；
-- 每个有适用规则的目标只 Describe 一次，每 host 只解析一次；限速发生在发生云读取的目标之间，不在同一目标的规则之间 sleep；
+- 每个有适用规则的目标只取一次完整 `GetSnapshot()`，每目标每 host 只解析一次；快照内部可分页/版本重读，不能等同于一次 HTTP 请求。2026-10-03 P3-22 后续 B 改进：按 `CloudType` 跨连续 Dry Run 保留冷却，只在下一次同平台读取前补足剩余间隔；成功/失败均从快照操作结束后计时，首次读取及末尾返回不额外等待，DNS/规划等已耗时间可抵扣，热更新/零规则不重置，无适用规则目标不读也不更新冷却。仍保持配置目标顺序与同平台串行，不扩为全部云请求的统一限流；见 §12.8。
 - `target_id` 作为 Vue 稳定 key；domain 仅为来源列表，禁止再用 domain 作唯一 key；
 - 所有数组固定输出 `[]`，不得输出 null。
 
@@ -572,7 +572,7 @@ DNS 失败继续发布 `EventDNSFailed`，但相同目标/host 一轮最多一�
 | P2-08 Dashboard idle 误报 | Step 4 改为消费后端 outcome，idle/cleanup_deferred 不 unhealthy |
 | P2-09 Dry Run key 重复 | 每目标一项，以 target_id 为稳定 key |
 | P3-11 日志吞错 | 目标事件定型后让写库错误返回 EventBus |
-| P3-22 Dry Run 重复 Describe/sleep | 每目标一份快照，目标间限速 |
+| P3-22 Dry Run 重复 Describe/sleep | Step 4 每目标一份快照；后续 B 按平台跨调用保留冷却、读取前补足等待，取消末尾等待，见 §12.8 |
 | P3-25 ECS token 不推进 | 重复 token 硬失败，目标 failed 且零删除 |
 
 ### 8.2 受影响但不构成前置
@@ -853,6 +853,7 @@ git diff --check
 
 | 版本 | 日期 | 内容 |
 |---|---|---|
+| v1.13 | 2026-10-03 | P3-22 后续方案 B 正式改进：每平台跨调用保留冷却、读取前补足剩余等待、取消末尾等待；明确一次快照不等于一次 HTTP 请求；§7.1/§8.1/§12.8 与正式回归、负向控制、门禁及未执行边界同步 |
 | v1.12 | 2026-09-30 | 在 `main == origin/main == d6d208e`、工作树干净的**当时**基线上，只读复核 R7-01～R7-07 的提交祖先关系、生产符号与判别性测试：七项本地修复均真实保留；R7-05 与 v1.11 文档回写已由 `d6d208e` 提交。订正 §12.5 标题、定位、R7-05 状态和文档闭环提交状态；本轮未修改代码、未运行构建或测试，真实云/浏览器/当前 revision 远端 CI/GHCR 仍未执行 |
 | v1.11 | 2026-09-30 | **提交前历史快照：** R7-04/R7-06/R7-07 已提交为 `b19d271`；按方案 A 仅修改 `syncer/dryrun_test.go` 修复 R7-05 失效门禁，以 `json.RawMessage` 检查两层数组字段存在、非 null、类型为 array，覆盖有适用规则、无适用规则骨架、零结果三种真实输出，并对顶层与十个目标数组字段加入 null/缺失/对象负向控制；未发现生产 null，故未改 DTO/planner/API/前端。定向测试、两个 GOGC 压力门禁、两包 `-race -count=20`、全量 race 连续 3 次、vet/build/前端/diff-check 通过；Syncer 20 轮首次受 Go 默认 10m 总超时中止，保持次数不变并显式 `-timeout=20m` 后 892.213s 通过；该工作树随后提交为 `d6d208e`，外部验收未执行 |
 | v1.10 | 2026-09-30 | 按固定串行顺序本地修复 R7-06/R7-07 测试夹具与 R7-04 最终残留计数：两个阻塞 TCP helper 持有 accepted connection 并有界回收；清理结果改为直接传递 deleted/deferred，可信 S2 planner 成为最终残留唯一来源，NotFound 保持实际删除为 0，S2 失败保守回退并保持 failed；新增目标级计数矩阵与 EventBus/整轮/SQLite `1/0/0` 整链；压力、定向 race、全量 race 连续 3 次、vet/build/前端/diff-check 通过；未提交、未执行外部验收，R7-05 仍待处理 |
@@ -1078,3 +1079,15 @@ R7-04 实施时必须同时满足以下口径，避免为了让三个数字表�
 - 生产目标链仍为 `Run → syncAll → runRound → syncTarget → runTargetAttempt / runTargetCleanup`；`GetRules` 仍用于连接测试，旧 Diff/buildDesired 与 P0-01、planner 端口收敛、TAG/Provider 快照与 R7-06/R7-07 夹具继续保留。未修改目标状态机、Provider 增删、DNS、健康、API/schema、前端或 SDK。
 
 本项只关闭 P3-07/I-09 的本地不可达代码与测试迁移问题，不新增 ProdTestList 人工要求，不改变 PT-I7/PT-B7/PT-AUDIT 的未执行/免除边界。部分删除后 S2 失败且后续 S0 耗尽时，前次残留被空 attempt 覆盖为 0 的观察独立记录、尚未定语义，本次不修复也不把 0 固定为正确值。Go 1.26.6 / macOS arm64；源码/测试/文档尚未提交，未 fetch/push。未执行 Go 1.25/Linux、前端构建、产品真实二进制/浏览器、Docker、真实云/通知链路或当前 revision 远端 CI/GHCR，不外推长期稳定或外部验收。
+
+
+### 12.8 P3-22 后续冷却改进（2026-10-03，方案 B）
+
+原始逐规则重复 Describe/sleep 已由 Step 4 修复。本次研究实际验证单目标 20 条规则只读一份快照、零写入，原修复结论保留；进一步发现成功与失败分支均在末尾无条件等待，同平台单目标多等 5 秒、不同平台承受前一个平台间隔，旧测试只检查等待次数不超过一次。用户确认本聊天推荐 B 并授权正式改进与文档同步。
+
+- 实施前 `main / 9f46529662ee48c2e5b9ee83ea1c0ff3f3ace962`，本地 `origin/main / 5e1d79c`，ahead 9，工作树/暂存区干净；前序 P3-21 已提交。唯一生产 `syncer/syncer.go`，对应 `syncer/dryrun_test.go`，AGENTS/审计/本文，共五文件；未 fetch、提交或 push。
+- `dryRunNextRead` 只由既有 `dryRunMu` 保护，按 CloudType 保存时间而非快照/DNS/配置引用；读取前用剩余时间等待，完整快照调用返回后无论成功/失败均更新冷却。平台间独立且跨连续调用保留，热更新/零规则不清空，进程重启自然清空。既有 5 秒/200 毫秒间隔、结果顺序、每目标每host去重、只读 S0/同一纯 planner、数组形状、防重入/暂停独立与零事件/不改 breaker 保持。
+- 正式测试强化首次单目标零等待；新增调度九场景、热更新与零规则一场景、已过期/真实剩余等待两场景，共 12 场景。20 条同域名规则夹具证明每目标每次一份快照、一次解析、零写入；等待顺序与独立写出的既定间隔分别断言。实际时钟用例只等待约 20ms，不对整个测试运行时间作上限断言。
+- 正式新增/强化回归 race 20 轮、全部 Dry Run/数组回归 race 20 轮、vet/build 通过；全量 12 包 race 一轮、受影响 Go 格式与最终文档后的 diff-check 通过。旧 DryRun、遗漏等待、失败不记冷却、每次清空、缩短间隔、平台共用冷却、从读取开始计时七类正式 overlay 均按行为断言变红，无编译失败或 panic；最终门禁/格式/diff-check 见审计 P3-22 当前实施补记。
+
+本项只改 Dry Run 快照操作的等待位置，不修改正式同步、Provider分页/增删/超时、DNS解析、API/schema、前端、依赖或暂停/恢复状态机，不增加跨平台并发、全局请求限流、取消合同或持久化。Go `1.27.1 darwin/arm64`，使用既有 ignored 前端 dist；未执行 Linux/Docker/compose、前端构建/浏览器、真实云/通知链路或远端 CI/GHCR，不变更人工清单未执行/免除状态，也不外推长期稳定或外部通过。源码/测试/文档尚未提交。
