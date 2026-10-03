@@ -175,7 +175,7 @@ func (n *EmailNotifier) OnEvent(event Event) error {
 	if n.limiter != nil {
 		release, ok := n.limiter.Acquire()
 		if !ok {
-			logDropped(n.ChannelName(), event, InFlightLimit)
+			n.limiter.logDropped(n.ChannelName(), event.Type)
 			return nil
 		}
 		defer release()

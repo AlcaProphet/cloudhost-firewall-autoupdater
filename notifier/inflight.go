@@ -3,6 +3,7 @@ package notifier
 import (
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // InFlightLimit 每个告警渠道允许的最大在途发送数（Issue6 A2，2026-09-27 用户裁决 F5）。
@@ -16,10 +17,13 @@ const InFlightLimit = 4
 //
 // 由 AlertManager 持有并注入 notifier 实例，因此配置热重载只会替换具体实例
 // （旧实例的在途发送不取消、不等待），而**在途计数仍然连续**——这是「每渠道 ≤4」
-// 在热重载后依旧成立的关键。
+// 在热重载后依旧成立的关键。满载丢弃日志的计数与窗口也由同一实例连续持有。
 type InFlightLimiter struct {
-	capacity int
-	slots    chan struct{}
+	capacity  int
+	slots     chan struct{}
+	dropMu    sync.Mutex
+	dropTimer *time.Timer
+	drops     dropCounts
 }
 
 // NewInFlightLimiter 创建容量为 capacity 的限流器；capacity <= 0 时按 1 处理。
@@ -56,13 +60,89 @@ type LimitedNotifier interface {
 	ChannelName() string
 }
 
-// logDropped 输出「满载丢弃最新」的安全 WARN。
-//
-// 只记录渠道名、事件类型与在途上限：绝不记录 SMTP 密码、Webhook URL 或事件正文。
-func logDropped(channel string, event Event, limit int) {
+// dropLogWindow 只限制丢弃日志，不影响发送容量或投递结果。
+const dropLogWindow = 30 * time.Second
+
+// dropCounts 只保存固定类别计数，不持有事件、URL、正文或配置引用。
+type dropCounts struct {
+	channels [5]uint64
+	events   [3]uint64
+}
+
+// logDropped 首条立即输出，后续定时汇总；锁内取走快照，锁外写日志。
+// 首条不计入后续汇总，固定类别避免保留敏感事件或高基数配置。
+func (l *InFlightLimiter) logDropped(channel string, event EventType) {
+	ci := 4
+	switch channel {
+	case "email":
+		ci = 0
+	case "dingtalk":
+		ci = 1
+	case "feishu":
+		ci = 2
+	case "slack":
+		ci = 3
+	}
+	var ei int
+	switch event {
+	case EventDNSFailed:
+		ei = 0
+	case EventSyncError:
+		ei = 1
+	case EventOperationalUnhealthy:
+		ei = 2
+	default:
+		return
+	}
+	l.dropMu.Lock()
+	l.drops.channels[ci]++
+	l.drops.events[ei]++
+	if l.dropTimer != nil {
+		l.dropMu.Unlock()
+		return
+	}
+	snapshot := l.drops
+	l.drops = dropCounts{}
+	l.dropTimer = time.AfterFunc(dropLogWindow, l.flushDrops)
+	l.dropMu.Unlock()
+	l.writeDropLog(snapshot, "first")
+}
+
+// flushDrops 锁外写日志；回调输出后才重新计时，避免同渠道汇总回调重叠。
+// 空窗口结束活动周期；汇总只表示发生过丢弃，不表示渠道已恢复。
+func (l *InFlightLimiter) flushDrops() {
+	l.dropMu.Lock()
+	snapshot := l.drops
+	if snapshot.events == [3]uint64{} {
+		l.dropTimer = nil
+		l.dropMu.Unlock()
+		return
+	}
+	l.drops = dropCounts{}
+	l.dropMu.Unlock()
+	l.writeDropLog(snapshot, "summary")
+	l.dropMu.Lock()
+	l.dropTimer = time.AfterFunc(dropLogWindow, l.flushDrops)
+	l.dropMu.Unlock()
+}
+
+func (l *InFlightLimiter) writeDropLog(c dropCounts, phase string) {
+	names := [5]string{"email", "dingtalk", "feishu", "slack", "unknown"}
+	channel := "mixed"
+	count := 0
+	for i, n := range c.channels {
+		if n > 0 {
+			count++
+			channel = names[i]
+		}
+	}
+	if count > 1 {
+		channel = "mixed"
+	}
+	total := c.events[0] + c.events[1] + c.events[2]
 	slog.Warn("告警渠道在途已满，丢弃最新通知",
-		"channel", channel,
-		"event", string(event.Type),
-		"in_flight_limit", limit,
-	)
+		"channel", channel, "phase", phase, "in_flight_limit", l.capacity,
+		"window_seconds", int(dropLogWindow/time.Second), "dropped", total,
+		"dns_failed", c.events[0], "sync_error", c.events[1], "operational_unhealthy", c.events[2],
+		"email", c.channels[0], "dingtalk", c.channels[1], "feishu", c.channels[2], "slack", c.channels[3], "unknown", c.channels[4])
 }

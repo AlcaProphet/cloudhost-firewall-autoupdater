@@ -159,6 +159,8 @@
 
 #### A2｜高｜SMTP 无 deadline，异步告警无并发上界
 
+> **P3-15 后续实施说明（2026-10-03）**：下述 A2 方案与 2026-09-27 记录保留历史证据；其中“每次丢弃记录 WARN”的现时行为已由独立授权 P3-15 方案 B 替代。渠道长期限流器保存固定类别计数，新周期首条立即 WARN，随后约每 30 秒汇总新增丢弃，空窗口不输出并停止续约；窗口与计数跨配置重载、关闭再开启及旧实例晚到回调连续。Webhook 平台切换时按原平台计数，混合汇总标记 `mixed`。每渠道 4 条在途、满载丢弃最新、返回 nil、不排队不重试及 EventBus 异步边界保持。正式测试与门禁见 [审计 P3-15 当前实施补记](./fwalizer-audit-final1.md#p3-15-当前实施补记2026-10-03推荐方案-b)；真实外部链路人工状态保持，进程退出前未输出的计数可能丢失。
+
 - **状态与判定：** 确认存在，置信度高。SMTP 无 deadline 与并发无上限是代码事实；生产资源耗尽仍只是可信推论。
 - **当前证据：** `notifier/bus.go:109-115` 为每个接口订阅者启动一个 goroutine（无上限、无丢弃、无跟踪）；`notifier/email.go:49` 使用 `smtp.SendMail`——标准库内部 `smtp.Dial` 即 `net.Dial("tcp", addr)` 无 timeout，greeting（`ReadResponse(220)`）、STARTTLS、AUTH、MAIL、RCPT、DATA、QUIT 全链路无 deadline；Webhook client 已有 10s 超时（`notifier/webhook.go:26`）。全仓通知链路零并发上界（`syncer.go:448` 的 `WaitGroup` 只等轮次内云调用）。同步轮次不等待告警，进程退出也不等待在途告警（`run.go:182` 只等 `s.Wait()`）。localhost 静默 SMTP 与阻塞订阅者已分别复现长时间不返回及 goroutine 线性增长。
 - **最终方案（限流归属按 2026-09-27 用户裁决，§六.4 F5）：** SMTP 改为 `net.Dialer{Timeout:10s}` → `conn.SetDeadline(now+30s)` → `smtp.NewClient`，完整保留 greeting、STARTTLS、AUTH、MAIL、RCPT、DATA、QUIT；deadline 覆盖初始 greeting 与 QUIT。邮件与 Webhook **各自**最多 4 个在途任务；满载丢弃最新通知，每次记录不含密码、URL 或正文敏感值的 WARN。限流器**由 `AlertManager` 按渠道持有并注入 notifier 实例**，使“每渠道在途 ≤4”在配置热重载（旧实例在途发送不取消、不等待）后仍然成立；上限位于告警订阅者/调度边界，不能限流整个 EventBus。
