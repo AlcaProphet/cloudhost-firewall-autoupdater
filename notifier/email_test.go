@@ -26,6 +26,7 @@ type fakeSMTPOptions struct {
 	authOK        bool // AUTH 是否成功
 	rcptOK        bool // RCPT TO 是否成功
 	dataOK        bool // DATA 提交是否成功
+	traditional   bool // DATA 只接受 ASCII 与最多 1000 字节的物理行（含 CRLF）
 }
 
 // fakeSMTPRecord 记录一次会话中收到的内容（断言用）
@@ -184,6 +185,7 @@ func serveFakeSMTP(conn net.Conn, opts fakeSMTPOptions, rec *fakeSMTPRecord) {
 				return
 			}
 			var sb strings.Builder
+			valid := true
 			for {
 				dataLine, err := r.ReadString('\n')
 				if err != nil {
@@ -192,9 +194,29 @@ func serveFakeSMTP(conn net.Conn, opts fakeSMTPOptions, rec *fakeSMTPRecord) {
 				if strings.TrimRight(dataLine, "\r\n") == "." {
 					break
 				}
+				if opts.traditional {
+					if len(dataLine) > 1000 || !strings.HasSuffix(dataLine, "\r\n") {
+						valid = false
+					}
+					for _, b := range []byte(dataLine) {
+						if b >= 128 {
+							valid = false
+						}
+					}
+				}
+				// SMTP 接收端去除 DATA 的点转义后再保存邮件。
+				if strings.HasPrefix(dataLine, "..") {
+					dataLine = dataLine[1:]
+				}
 				sb.WriteString(dataLine)
 			}
 			rec.set(func() { rec.data = sb.String() })
+			if !valid {
+				if !send("554 DATA requires ASCII and bounded lines") {
+					return
+				}
+				continue
+			}
 			if !send("250 2.0.0 queued") {
 				return
 			}
@@ -263,16 +285,14 @@ func TestSendTestEmailSuccessAgainstFakeSMTP(t *testing.T) {
 		t.Errorf("收件人数量 = %d, want 2: %v", len(rec.Rcpts()), rec.Rcpts())
 	}
 	payload := rec.Data()
-	if !strings.Contains(payload, "Subject: 主题 - 测试邮件") {
-		t.Errorf("报文缺少测试主题后缀: %q", payload)
+	decodedSubject, decodedBody := decodeEmailForTest(t, payload)
+	if decodedSubject != subject {
+		t.Errorf("测试主题解码错误: %q", decodedSubject)
 	}
-	if !strings.Contains(payload, "这是一次手动测试邮件") {
-		t.Errorf("报文缺少测试说明: %q", payload)
+	if !strings.Contains(decodedBody, "这是一次手动测试邮件") {
+		t.Errorf("正文缺少测试说明: %q", decodedBody)
 	}
-	if !strings.Contains(payload, "Content-Type: text/plain; charset=UTF-8") {
-		t.Errorf("报文必须固定为纯文本 UTF-8: %q", payload)
-	}
-	if strings.Contains(payload, password) {
+	if strings.Contains(payload, password) || strings.Contains(decodedBody, password) {
 		t.Errorf("报文不得包含 SMTP 密码")
 	}
 }
@@ -374,12 +394,9 @@ func TestEmailSubjectSuffixAndBodyDetails(t *testing.T) {
 		t.Fatalf("自动邮件应成功: %v", err)
 	}
 
-	payload := rec.Data()
-	if !strings.Contains(payload, "Subject: [FWAlizer] 告警通知 - 同步失败") {
-		t.Errorf("主题必须是配置主题 + 固定后缀: %q", payload)
-	}
-	if !strings.Contains(payload, "Content-Type: text/plain; charset=UTF-8") {
-		t.Errorf("邮件必须固定为纯文本 UTF-8: %q", payload)
+	subject, payload := decodeEmailForTest(t, rec.Data())
+	if subject != "[FWAlizer] 告警通知 - 同步失败" {
+		t.Errorf("主题必须是配置主题 + 固定后缀: %q", subject)
 	}
 
 	// 固定详情顺序：事件类型 → 时间 → Provider → 域名 → 错误
@@ -404,8 +421,8 @@ func TestEmailSubjectSuffixAndBodyDetails(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("DNS 告警应成功: %v", err)
 	}
-	if payload := rec.Data(); !strings.Contains(payload, "Subject: [FWAlizer] 告警通知 - DNS 解析失败") {
-		t.Errorf("DNS 主题后缀错误: %q", payload)
+	if subject, _ := decodeEmailForTest(t, rec.Data()); subject != "[FWAlizer] 告警通知 - DNS 解析失败" {
+		t.Errorf("DNS 主题后缀错误: %q", subject)
 	}
 }
 
@@ -424,7 +441,7 @@ func TestEmailDetailsUsePlaceholderForMissingFields(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("事件应成功: %v", err)
 	}
-	payload := rec.Data()
+	_, payload := decodeEmailForTest(t, rec.Data())
 	if !strings.Contains(payload, "Provider：-\r\n") {
 		t.Errorf("缺失 Provider 必须写 '-': %q", payload)
 	}
@@ -510,9 +527,9 @@ func TestEmailOperationalEventIncludesReasons(t *testing.T) {
 		t.Fatalf("运行健康异常邮件应成功: %v", err)
 	}
 
-	payload := rec.Data()
-	if !strings.Contains(payload, "Subject: [FWAlizer] 告警通知 - 运行健康异常") {
-		t.Errorf("运行健康异常主题后缀错误: %q", payload)
+	subject, payload := decodeEmailForTest(t, rec.Data())
+	if subject != "[FWAlizer] 告警通知 - 运行健康异常" {
+		t.Errorf("运行健康异常主题后缀错误: %q", subject)
 	}
 	for _, fragment := range []string{
 		"事件类型：运行健康异常", "时间：2026-09-28 12:34:56",
@@ -539,7 +556,7 @@ func TestEmailOperationalEventIncludesReasons(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("DNS 告警应成功: %v", err)
 	}
-	if dnsPayload := rec.Data(); strings.Contains(dnsPayload, "原因：") {
+	if _, dnsPayload := decodeEmailForTest(t, rec.Data()); strings.Contains(dnsPayload, "原因：") {
 		t.Errorf("非运行健康异常事件不得输出原因行: %q", dnsPayload)
 	}
 
@@ -551,7 +568,7 @@ func TestEmailOperationalEventIncludesReasons(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("运行健康异常邮件应成功: %v", err)
 	}
-	if emptyPayload := rec.Data(); strings.Contains(emptyPayload, "原因：") {
+	if _, emptyPayload := decodeEmailForTest(t, rec.Data()); strings.Contains(emptyPayload, "原因：") {
 		t.Errorf("空原因列表不得输出原因行: %q", emptyPayload)
 	}
 }

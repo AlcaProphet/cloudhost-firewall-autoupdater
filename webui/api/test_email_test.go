@@ -3,9 +3,13 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
+	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
+	"net/mail"
 	"strings"
 	"sync"
 	"testing"
@@ -46,6 +50,31 @@ func (r *apiFakeSMTPRecord) Data() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.data
+}
+
+// decodeAPIMail 按接收端 MIME 语义检查真实 SMTP 报文。
+func decodeAPIMail(t *testing.T, wire string) (string, string) {
+	t.Helper()
+	msg, err := mail.ReadMessage(strings.NewReader(wire))
+	if err != nil {
+		t.Fatalf("解析 SMTP 报文: %v", err)
+	}
+	if msg.Header.Get("MIME-Version") != "1.0" || msg.Header.Get("Content-Transfer-Encoding") != "base64" {
+		t.Fatalf("SMTP 报文 MIME 字段错误: %v", msg.Header)
+	}
+	mediaType, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
+	if err != nil || mediaType != "text/plain" || !strings.EqualFold(params["charset"], "UTF-8") {
+		t.Fatalf("SMTP 报文必须是纯文本 UTF-8: %v / %v", msg.Header, err)
+	}
+	subject, err := new(mime.WordDecoder).DecodeHeader(msg.Header.Get("Subject"))
+	if err != nil {
+		t.Fatalf("解码 SMTP Subject: %v", err)
+	}
+	body, err := io.ReadAll(base64.NewDecoder(base64.StdEncoding, msg.Body))
+	if err != nil {
+		t.Fatalf("解码 SMTP 正文: %v", err)
+	}
+	return subject, string(body)
 }
 
 // startAPIFakeSMTP 启动端点用例使用的最小假 SMTP（addr 返回 "host:port" 形式）
@@ -122,6 +151,9 @@ func startAPIFakeSMTP(t *testing.T, authOK bool) (string, *apiFakeSMTPRecord) {
 							if strings.TrimRight(dl, "\r\n") == "." {
 								break
 							}
+							if strings.HasPrefix(dl, "..") {
+								dl = dl[1:]
+							}
 							sb.WriteString(dl)
 						}
 						rec.setData(sb.String())
@@ -191,9 +223,9 @@ func TestTestEmailUsesRequestValuesAndDoesNotWrite(t *testing.T) {
 	}
 
 	// 假 SMTP 必须收到表单值（而不是 Store 值）
-	payload := rec.Data()
-	if !strings.Contains(payload, "表单主题 - 测试邮件") {
-		t.Errorf("主题必须来自请求并追加测试后缀: %q", payload)
+	subject, payload := decodeAPIMail(t, rec.Data())
+	if subject != "表单主题 - 测试邮件" {
+		t.Errorf("主题必须来自请求并追加测试后缀: %q", subject)
 	}
 	if !strings.Contains(payload, "表单正文") || !strings.Contains(payload, "这是一次手动测试邮件") {
 		t.Errorf("正文必须来自请求并追加测试说明: %q", payload)

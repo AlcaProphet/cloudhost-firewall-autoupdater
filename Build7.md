@@ -301,6 +301,12 @@ Provider：tc_lighthouse(lhins-example)
 `原因` 行由事件数据中的稳定原因数组用 `; ` 连接；无原因（或原因全为空）时该行不输出，
 因此 DNS 解析失败与同步失败事件的正文保持既有形态不变。
 
+### 邮件传输编码（P3-20 后续补记，2026-10-03）
+
+邮件在共用发送出口序列化为 MIME：非 ASCII 主题使用标准库 RFC 2047 UTF-8 B 编码，只在 encoded-word 之间以 CRLF + SPACE 折叠，首行长度计入 `Subject: ` 前缀；encoded-word 不超过 75 字符，含 encoded-word 的物理行不超过 76 字符。声明 `MIME-Version: 1.0`、`Content-Type: text/plain; charset=UTF-8` 与 `Content-Transfer-Encoding: base64`；仅在序列化时将正文 CRLF/LF/裸 CR 统一为 CRLF，然后 Base64 每 76 字符折行，解码后保留规范化原文的末尾空白及换行有无。自动告警与测试邮件共用此出口，业务主题后缀/详情渲染与 Webhook 文本不变；不扩展邮箱地址或 SMTPUTF8 合同。
+
+主题/正文编辑与持久化仍保留原始业务文本，编码只作用于 SMTP DATA 报文。[RFC 2047](https://www.rfc-editor.org/rfc/rfc2047) 定义头部 encoded-word 与折叠边界；[RFC 2045](https://www.rfc-editor.org/rfc/rfc2045) 定义 MIME 与 Base64 编码行长；[RFC 2046 §4.1.1](https://www.rfc-editor.org/rfc/rfc2046) 定义纯文本 CRLF 换行。自动邮件、测试邮件均使用该编码，真实收件箱显示与投递仍待人工确认。
+
 ### 普通 Webhook 响应判断（P2-05 后续补记，2026-09-30）
 
 P2-05 是 Build7 完成后的独立修复，已提交为 `93e0e4b`；不改变 Step 0～7 历史验收结果，也不复用 Uptime Kuma Push 的响应协议。
@@ -857,7 +863,7 @@ GET 响应字段已逐字段核对，其余 18 处对齐）。
 | 层次 | 必须证明 | 不能替代 |
 |------|---------|---------|
 | 源码/静态 | 默认全关闭、配置链与订阅链唯一、敏感 URL/密码不入日志 | 运行时发送成功 |
-| notifier 单测 | 邮件格式、SMTP 接受/阶段错误、触发过滤、在途上限 | 真实 SMTP/收件箱 |
+| notifier 单测 | MIME 字段、B 编码主题/折叠、Base64 正文/行长、CRLF 解码等价性、SMTP 接受/阶段错误、触发过滤、在途上限 | 真实 SMTP/收件箱 |
 | API 集成 | 严格 JSON、事务、测试 API 零写入零发布、安全阶段诊断（原完整错误返回约定已由 P3-19 替代） | 浏览器交互 |
 | 健康状态测试 | SQLite/Syncer/failed/partial/超时/暂停/idle 的确定性结果 | 进程死亡、宿主机断电 |
 | HTTP/Push mock | 200/503、Push up/down、URL 脱敏、超时无重试 | 真实 Uptime Kuma |
@@ -887,6 +893,7 @@ GET 响应字段已逐字段核对，其余 18 处对齐）。
 | 版本 | 日期 | 说明 |
 |------|------|------|
 | v1.5 | 2026-10-03 | P3-19 定型 B 本地修复：SMTP 11 出口安全错误取代完整诊断历史约定；固定阶段/数字码/类别、无原文/原始链；正式门禁见后续补记，外部验收未执行 |
+| v1.6 | 2026-10-03 | P3-20 共用邮件出口采用 B 编码主题与 Base64 正文；首词/词间折行、CRLF 规范化、76 字符正文行长与解码语义验证；外部投递状态保持 |
 | v1.4 | 2026-09-30 | 同步独立 P2-05 修复（`93e0e4b`）：三渠道明确业务成功响应、16 KiB 有界读取、原 10 秒超时与安全错误；保留原异步/限流/配置/Push 边界；回写本地 race/vet/build 证据，真实 Webhook/产品浏览器/远端 CI 未验收 |
 | v0.1 | 2026-09-28 | 建立 Build7 研究初稿：记录告警开关、纯文本邮件、测试邮件、运行健康与 Uptime Kuma 两种接法；运行健康和配置协议尚待裁决 |
 | v1.0 | 2026-09-28 | 用户确认完整方向：固定默认全部关闭、运行健康异常、`health_timeout=10m`、failed/partial→503、operational endpoint、Uptime Kuma Push、version 3 且拒绝旧版本；补齐 Schema、配置包、API、页面、健康算法、Push 生命周期、测试矩阵与 Step 0～6 合同 |
@@ -900,3 +907,11 @@ GET 响应字段已逐字段核对，其余 18 处对齐）。
 - **当前行为与诊断取舍：** 生产逻辑只在 `notifier/email.go` 收紧 11 个错误出口，测试 API 仅订正注释；自动邮件与测试邮件共用安全错误。固定数字码先于类别；无法类型化的认证安全策略使用固定兜底，不匹配标准库私有错误字符串。供应商自由文本和详细证书诊断不再返回；阶段为原调用点标签，隐式 EHLO/HELO 失败仍可能在 AUTH/MAIL 阶段返回，不新增 SMTP 状态机。
 - **正式本地验证：** 两份安全回归共 9 个顶层 TestP319，定向 race 20 轮、notifier/API 两包完整 race 一轮、全量 12 包 race 一轮、vet/build、受影响 Go 格式与 diff-check 通过；五类错误改法负向控制由行为断言检出，deadline/正文 Write 仓库外故障探针在正式源码 overlay 上 race 20 轮通过、旧逻辑两出口对照失败。完整证据见审计 P3-19 当前实施补记。
 - **状态与边界：** 10 秒建连、30 秒整会话 deadline、STARTTLS/PlainAuth 策略、发送顺序、信封/正文/主题、在途限制、API/SQLite/订阅与成功口径保持。源码/测试/文档尚未提交，未 fetch/push；Go 1.27.1 darwin/arm64，使用既有 ignored 前端 dist。未执行本项产品进程/浏览器、Linux/Docker、前端构建、真实 SMTP/收件箱/云/Webhook/Uptime Kuma 或远端 CI/GHCR；PT-B7 未执行/免除状态保持，单次全量不外推长期稳定。P3-20 编码、P3-21 响应读取继续独立，固定错误输出不表示响应读取已新增字节上限。
+
+
+### P3-20 后续实施补记（2026-10-03，B 编码主题 + Base64 正文）
+
+- **授权与恢复点：** 用户依据引用研究结论授权复核后修复及文档同步。正式基线 `main / 974cb20`，本地 `origin/main / 5e1d79c`、ahead 7，工作树干净；候选单生产文件 patch 通过可应用性检查后实施。P3-19 已提交 `974cb20`，本轮未 fetch、提交或 push。
+- **范围与实际行为：** 唯一生产文件为 notifier/email.go；新增 notifier/email_encoding_test.go，调整 notifier/email_test.go、main_test.go、webui/api/test_email_test.go 与 alertset_policy_test.go，四份文档，共十文件。两份 API 测试是研究预计八文件中漏计的原始中文报文断言，已改为解码后语义检查；零写入/零发布、三触发过滤及热重载真实投递断言保留。正文编码只在传输出口进行，不改共用业务渲染器或 Webhook。
+- **正式证据：** 新增 18 场景在旧实现上全部按行为失败，最终 race 20 轮通过；API 四项发送/订阅用例 race 20 轮、notifier/API 两包完整 race、真实产品进程 TestProcessTestEmailWithUIPayload、vet/build 通过；全量 12 包 `go test ./... -race -count=1`、受影响 Go 格式与最终 `git diff --check` 均本地通过。正式五类负向控制分别检出首行 81 字符、正文编码行超限、非 ASCII DATA 被 554 拒绝、CTE 缺失、解码换行不等价。完整证据与修复中测试调整见审计 P3-20 当前实施补记。
+- **状态与外部边界：** 源码/测试/文档尚未提交；Go 1.27.1 darwin/arm64，使用既有 ignored 前端 dist。10 秒连接/30 秒会话、TLS/认证策略、发送顺序、收件人 Trim、在途限制、安全错误、API/SQLite/依赖/前端与仅 SMTP 接受的成功口径保留。未执行 Linux/Docker/compose、前端构建/浏览器、真实 SMTP/收件箱/云/Webhook/Uptime Kuma 或远端 CI/GHCR；PT-B7 未执行/免除状态不变。编码正确不保证真实收件箱投递或展示，I-10/P3-21 不随本项关闭。

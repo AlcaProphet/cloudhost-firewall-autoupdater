@@ -100,12 +100,12 @@ func TestAlertManagerPolicyControlsActualDelivery(t *testing.T) {
 		Data: map[string]any{"domain": "b.example.com", "error": "dns boom"},
 	})
 	waitForSMTPData(t, rec, 5*time.Second)
-	payload := rec.Data()
+	subject, payload := decodeAPIMail(t, rec.Data())
 	if !strings.Contains(payload, "b.example.com") || !strings.Contains(payload, "dns boom") {
 		t.Errorf("DNS 触发邮件缺少事件详情: %q", payload)
 	}
-	if !strings.Contains(payload, " - DNS 解析失败") {
-		t.Errorf("DNS 触发邮件主题缺少固定后缀: %q", payload)
+	if subject != "[FWAlizer] 告警通知 - DNS 解析失败" {
+		t.Errorf("DNS 触发邮件主题缺少固定后缀: %q", subject)
 	}
 }
 
@@ -158,7 +158,7 @@ func TestAlertManagerPolicyHotReloadSwitchesSubscriptions(t *testing.T) {
 		Data: map[string]any{"provider": "tc_lighthouse(lhins-9)", "domain": "new.example.com", "error": "boom"},
 	})
 	waitForSMTPData(t, rec, 5*time.Second)
-	if data := rec.Data(); !strings.Contains(data, "new.example.com") || !strings.Contains(data, " - 同步失败") {
+	if subject, data := decodeAPIMail(t, rec.Data()); !strings.Contains(data, "new.example.com") || subject != "[FWAlizer] 告警通知 - 同步失败" {
 		t.Errorf("热重载后新触发条件未生效: %q", data)
 	}
 }
@@ -191,9 +191,9 @@ func TestOperationalTriggerSubscribesAndDelivers(t *testing.T) {
 		Data: map[string]any{"reasons": []string{"同步引擎未运行"}},
 	})
 	waitForSMTPData(t, rec, 5*time.Second)
-	payload := rec.Data()
-	if !strings.Contains(payload, " - 运行健康异常") {
-		t.Errorf("运行健康异常邮件主题缺少固定后缀: %q", payload)
+	subject, payload := decodeAPIMail(t, rec.Data())
+	if subject != "[FWAlizer] 告警通知 - 运行健康异常" {
+		t.Errorf("运行健康异常邮件主题缺少固定后缀: %q", subject)
 	}
 	if !strings.Contains(payload, "事件类型：运行健康异常") {
 		t.Errorf("运行健康异常邮件详情缺少展示名: %q", payload)

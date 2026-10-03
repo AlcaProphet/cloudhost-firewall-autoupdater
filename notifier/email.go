@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/smtp"
 	"net/textproto"
@@ -257,8 +258,7 @@ func (n *EmailNotifier) send(subject, body string) error {
 	if err != nil {
 		return safeSMTPError("SMTP DATA 失败", err)
 	}
-	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
-		n.cfg.From, n.cfg.To, subject, body)
+	msg := buildEmailMessage(n.cfg.From, n.cfg.To, subject, body)
 	if _, err := w.Write([]byte(msg)); err != nil {
 		_ = w.Close()
 		return safeSMTPError("写入邮件正文失败", err)
@@ -338,4 +338,32 @@ func safeSMTPError(stage string, err error) error {
 		category = "网络连接异常"
 	}
 	return fmt.Errorf("%s: %s", stage, category)
+}
+
+// buildEmailMessage 将纯文本邮件编码为传统 SMTP 可传输的 MIME 报文。
+func buildEmailMessage(from, to, subject, body string) string {
+	encoded := mime.BEncoding.Encode("UTF-8", subject)
+	// encoded-word 之间的空格可以折叠；首行也计入 Subject 字段名。
+	if encoded != subject {
+		words := strings.Split(encoded, " ")
+		encoded = strings.Join(words, "\r\n ")
+		if len("Subject: ")+len(words[0]) > 76 {
+			encoded = "\r\n " + encoded
+		}
+	}
+	var out strings.Builder
+	out.WriteString(fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n", from, to, encoded))
+
+	// 先规范文本换行，再用标准 Base64 编码；只需对 ASCII 结果每 76 字符折行。
+	body = strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\r", "\n")
+	body = strings.ReplaceAll(body, "\n", "\r\n")
+	encodedBody := base64.StdEncoding.EncodeToString([]byte(body))
+	for len(encodedBody) > 76 {
+		out.WriteString(encodedBody[:76])
+		out.WriteString("\r\n")
+		encodedBody = encodedBody[76:]
+	}
+	out.WriteString(encodedBody)
+
+	return out.String()
 }

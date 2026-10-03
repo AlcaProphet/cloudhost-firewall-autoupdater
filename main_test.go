@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/mail"
 	"net/url"
 	"os"
 	"os/exec"
@@ -1457,6 +1460,9 @@ func serveFakeSMTP(conn net.Conn, rec *fakeSMTPRecord) {
 				if dataLine == ".\r\n" || dataLine == ".\n" {
 					break
 				}
+				if strings.HasPrefix(dataLine, "..") {
+					dataLine = dataLine[1:]
+				}
 				sb.WriteString(dataLine)
 			}
 			rec.setData(sb.String())
@@ -1521,14 +1527,30 @@ func TestProcessTestEmailWithUIPayload(t *testing.T) {
 
 	// 服务端必须真的走完 SMTP 会话：主题追加固定后缀、正文追加固定说明与时间
 	mailData := rec.Data()
-	if !strings.Contains(mailData, "Subject: [FWAlizer] 告警通知 - 测试邮件") {
-		t.Errorf("测试邮件主题缺少固定后缀: %q", mailData)
+	msg, err := mail.ReadMessage(strings.NewReader(mailData))
+	if err != nil {
+		t.Fatalf("解析产品进程邮件: %v", err)
 	}
-	if !strings.Contains(mailData, "这是一次手动测试邮件") {
-		t.Errorf("测试邮件正文缺少固定说明: %q", mailData)
+	if msg.Header.Get("MIME-Version") != "1.0" || msg.Header.Get("Content-Transfer-Encoding") != "base64" {
+		t.Fatalf("测试邮件 MIME 字段错误: %v", msg.Header)
 	}
-	if !strings.Contains(mailData, "Content-Type: text/plain; charset=UTF-8") {
-		t.Errorf("测试邮件必须固定为纯文本 UTF-8: %q", mailData)
+	subject, err := new(mime.WordDecoder).DecodeHeader(msg.Header.Get("Subject"))
+	if err != nil || subject != "[FWAlizer] 告警通知 - 测试邮件" {
+		t.Errorf("测试邮件主题解码错误: %q / %v", subject, err)
+	}
+	decodedBody, err := io.ReadAll(base64.NewDecoder(base64.StdEncoding, msg.Body))
+	if err != nil {
+		t.Fatalf("解码测试邮件正文: %v", err)
+	}
+	const bodyPrefix = "FWAlizer 检测到运行异常，请检查同步日志。\r\n\r\n这是一次手动测试邮件\r\n时间："
+	if !strings.HasPrefix(string(decodedBody), bodyPrefix) {
+		t.Errorf("测试邮件正文缺少用户正文/固定说明/时间: %q", decodedBody)
+	} else if _, err := time.Parse("2006-01-02 15:04:05", strings.TrimPrefix(string(decodedBody), bodyPrefix)); err != nil {
+		t.Errorf("测试邮件时间格式错误: %v", err)
+	}
+	mediaType, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
+	if err != nil || mediaType != "text/plain" || !strings.EqualFold(params["charset"], "UTF-8") {
+		t.Errorf("测试邮件必须固定为纯文本 UTF-8: %v / %v", msg.Header, err)
 	}
 	// 多收件人必须逐项 Trim 后分别投递
 	rcpts := rec.Rcpts()
