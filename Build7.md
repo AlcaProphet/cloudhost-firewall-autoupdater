@@ -716,6 +716,12 @@ Push URL：空
 - [Uptime Kuma 官方 Go Push 示例](https://github.com/louislam/uptime-kuma/blob/master/extra/push-examples/go/index.go)
 - [Uptime Kuma README - HTTP/JSON Query/Push 等监控类型](https://github.com/louislam/uptime-kuma/blob/master/README.md)
 
+**P3-21 后续响应读取合同（2026-10-03，方案 B）：**
+
+- Push 的 HTTP 2xx 业务正文上限为 **16 KiB**，最多读取 16,385 字节识别超限；按实际 `Response.Body` 字节计数，默认 gzip 解压后的正文仍受保护。完整读取成功、未超限、整个正文为一个合法 JSON 文档且 `ok` 为非 null 的 true 才确认成功；允许合法尾随空白与未知字段，保留 `encoding/json` 的字段大小写匹配及重复键覆盖规则，不承诺拒绝所有重复键。非 2xx 及时记 `http_status` 并关闭，不主动额外 drain；读取失败/超限/非法 JSON/未确认 ok 分别记固定 `response_read`/`response_too_large`/`invalid_json`/`not_ok`。Close 错误只记固定 `response_close` WARN，不输出错误原文或敏感正文，不推翻已确认的业务结果；在途名额保持到读取与关闭结束。10 秒时限、单在途、不排队不重试、失败不改健康与 shutdown 取消继续有效。业务读取上限不是整个网络栈总下载上限；标准 HTTP/1 Transport 关闭后可能有界清理，异常连接复用不作保证，不将标准库清理的版本实现数值写为项目强要求。
+- 16 KiB 为本工具的本地保护策略，不是 Uptime Kuma 官方响应配额；官方正常成功响应为 `{"ok":true}`。JSON 兼容语义参见 [encoding/json Unmarshal](https://pkg.go.dev/encoding/json#Unmarshal)。
+- Webhook 的 ≤16 KiB 2xx 已读至 EOF；非 2xx 和超限仍及时关闭，保留 P2-05 的渠道协议。Go 1.27 标准 HTTP/1 Transport 会在 Close 后尝试有界清理（[官方发布说明](https://go.dev/doc/go1.27#net/http)），接受异常连接可能无法复用，不增加应用层主动 drain 或通用响应框架。
+
 ### 7.7 最终组合
 
 本 Build 固定同时提供：
@@ -866,7 +872,7 @@ GET 响应字段已逐字段核对，其余 18 处对齐）。
 | notifier 单测 | MIME 字段、B 编码主题/折叠、Base64 正文/行长、CRLF 解码等价性、SMTP 接受/阶段错误、触发过滤、在途上限 | 真实 SMTP/收件箱 |
 | API 集成 | 严格 JSON、事务、测试 API 零写入零发布、安全阶段诊断（原完整错误返回约定已由 P3-19 替代） | 浏览器交互 |
 | 健康状态测试 | SQLite/Syncer/failed/partial/超时/暂停/idle 的确定性结果 | 进程死亡、宿主机断电 |
-| HTTP/Push mock | 200/503、Push up/down、URL 脱敏、超时无重试 | 真实 Uptime Kuma |
+| HTTP/Push mock | 200/503、Push up/down、URL 脱敏、超时无重试；P3-21 新增 16 KiB/加一字节、完整正文、Content-Length/chunked/gzip、截断/停滞/取消、Read/Close 名额与正常失败后周期回归 | 真实 Uptime Kuma，PT-B7-05 未执行 |
 | race/build | 并发与编译门禁 | 外部服务真实性 |
 | 浏览器 | 开关、主题/正文、loading、结果框、刷新消失 | SMTP 最终投递 |
 | 真实 SMTP | SMTP 接受、收件箱与真实错误 | Webhook/Uptime Kuma |
@@ -893,6 +899,7 @@ GET 响应字段已逐字段核对，其余 18 处对齐）。
 | 版本 | 日期 | 说明 |
 |------|------|------|
 | v1.5 | 2026-10-03 | P3-19 定型 B 本地修复：SMTP 11 出口安全错误取代完整诊断历史约定；固定阶段/数字码/类别、无原文/原始链；正式门禁见后续补记，外部验收未执行 |
+| v1.7 | 2026-10-03 | P3-21 方案 B：Push 16 KiB 有界完整正文与单 JSON 校验、非 null ok、安全 Close WARN；Webhook 保留及时失败，Go 1.27 清理与复用边界更新；正式门禁见补记，外部验收未升级 |
 | v1.6 | 2026-10-03 | P3-20 共用邮件出口采用 B 编码主题与 Base64 正文；首词/词间折行、CRLF 规范化、76 字符正文行长与解码语义验证；外部投递状态保持 |
 | v1.4 | 2026-09-30 | 同步独立 P2-05 修复（`93e0e4b`）：三渠道明确业务成功响应、16 KiB 有界读取、原 10 秒超时与安全错误；保留原异步/限流/配置/Push 边界；回写本地 race/vet/build 证据，真实 Webhook/产品浏览器/远端 CI 未验收 |
 | v0.1 | 2026-09-28 | 建立 Build7 研究初稿：记录告警开关、纯文本邮件、测试邮件、运行健康与 Uptime Kuma 两种接法；运行健康和配置协议尚待裁决 |
@@ -911,7 +918,16 @@ GET 响应字段已逐字段核对，其余 18 处对齐）。
 
 ### P3-20 后续实施补记（2026-10-03，B 编码主题 + Base64 正文）
 
+> 该批次其后已提交为 `ee39f08`；以下保留当时实施记录，其中“尚未提交”只指该批次。
+
 - **授权与恢复点：** 用户依据引用研究结论授权复核后修复及文档同步。正式基线 `main / 974cb20`，本地 `origin/main / 5e1d79c`、ahead 7，工作树干净；候选单生产文件 patch 通过可应用性检查后实施。P3-19 已提交 `974cb20`，本轮未 fetch、提交或 push。
 - **范围与实际行为：** 唯一生产文件为 notifier/email.go；新增 notifier/email_encoding_test.go，调整 notifier/email_test.go、main_test.go、webui/api/test_email_test.go 与 alertset_policy_test.go，四份文档，共十文件。两份 API 测试是研究预计八文件中漏计的原始中文报文断言，已改为解码后语义检查；零写入/零发布、三触发过滤及热重载真实投递断言保留。正文编码只在传输出口进行，不改共用业务渲染器或 Webhook。
 - **正式证据：** 新增 18 场景在旧实现上全部按行为失败，最终 race 20 轮通过；API 四项发送/订阅用例 race 20 轮、notifier/API 两包完整 race、真实产品进程 TestProcessTestEmailWithUIPayload、vet/build 通过；全量 12 包 `go test ./... -race -count=1`、受影响 Go 格式与最终 `git diff --check` 均本地通过。正式五类负向控制分别检出首行 81 字符、正文编码行超限、非 ASCII DATA 被 554 拒绝、CTE 缺失、解码换行不等价。完整证据与修复中测试调整见审计 P3-20 当前实施补记。
 - **状态与外部边界：** 源码/测试/文档尚未提交；Go 1.27.1 darwin/arm64，使用既有 ignored 前端 dist。10 秒连接/30 秒会话、TLS/认证策略、发送顺序、收件人 Trim、在途限制、安全错误、API/SQLite/依赖/前端与仅 SMTP 接受的成功口径保留。未执行 Linux/Docker/compose、前端构建/浏览器、真实 SMTP/收件箱/云/Webhook/Uptime Kuma 或远端 CI/GHCR；PT-B7 未执行/免除状态不变。编码正确不保证真实收件箱投递或展示，I-10/P3-21 不随本项关闭。
+
+### P3-21 后续实施补记（2026-10-03，定型方案 B）
+
+- **恢复点与范围：** `main / ee39f08`，本地 `origin/main / 5e1d79c`，ahead 8，实施前干净；前序 P3-20 已提交。唯一生产 push.go、新增响应测试、五份文档，共七文件；生产时限、健康、Webhook、配置/API/schema/依赖/前端边界保持。
+- **正式本地验证：** 正式新增 12 个顶层响应测试定向 `-race -count=20 -timeout=5m`、health/notifier 两包完整 race 一轮、全量 12 包 `go test ./... -race -count=1 -timeout=20m`、`go vet ./...`、`go build ./...` 均通过；旧源码 overlay 与八类负向控制均按行为断言变红，无编译失败。受影响 Go 格式与最终文档后的 diff-check 见审计补记。
+- **测试含义：** 成功必须读到真实 EOF；超大未知字段及尾随空白受限，尾随垃圾/第二个 JSON 拒绝，true 后 null 不成功；真实 HTTP 截断、gzip 解压超限、正文停滞与 shutdown 取消，Read/Close 两阶段名额保持、成功 HTTP/1 即时复用与失败后周期继续均覆盖。Close 失败只安全警告，已确认接受不改判；不保证所有异常响应连接复用。
+- **状态与外部边界：** P3-21 与 I-08 本地修复闭环；具体正式证据、祖先核对与研究/正式区分见审计 P3-21 当前实施补记。Go `1.27.1 darwin/arm64`，使用既有 ignored 前端 dist；未执行 Linux/Docker/compose、前端构建/真实浏览器、真实云/SMTP/收件箱/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR。PT-B7-03 人工免除仍非通过，PT-B7-05 仍未执行；单轮全仓绿色不外推长期稳定或外部验收。源码/测试/文档尚未提交，未 fetch/push。

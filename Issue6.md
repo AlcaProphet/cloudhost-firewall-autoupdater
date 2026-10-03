@@ -602,7 +602,8 @@ git diff --check
 6. **SSE 契约缺口**：`/api/sync/events` 无 `id:`/`Last-Event-ID`/回放，缓冲（cap 32）满即丢，`sync:complete` 可能对已连接客户端不可见；两类 SSE 均无心跳。
 7. **Dashboard 数字双口径（2026-09-28 修复时尚未提交，后续提交 `043ac36`）**：核验时统计概览仍取最近一条逐域日志的 added/deleted，与 A18 的整轮汇总并存会出现两套数字；本轮已统一改取同一份 `SyncStatus.last_round.added/deleted` 整轮快照，实施与证据见 §7.2 第 1 项。
 8. **云侧错误码与重试面**：阿里云 `Throttling`/`ServiceUnavailable` 等不在可重试列表（F2 只新增腾讯 `ClientError.NetworkError`）。
-9. **Webhook 细节**：`resp.Body.Close()` 错误被忽略且不 drain body（影响 keep-alive 复用）。
+9. **Webhook 细节（历史观察，当前更正见下）**：`resp.Body.Close()` 错误被忽略且不 drain body（影响 keep-alive 复用）。
+   - **P3-21 当前更正（2026-10-03，方案 B）：** P2-05（`93e0e4b`）已处理 Close 的固定安全警告，≤16 KiB 的 2xx 经 ReadAll 读至 EOF；非 2xx/超限仍及时关闭。当前 Go 1.27 标准 HTTP/1 Transport 关闭后会尝试有界清理（[官方发布说明](https://go.dev/doc/go1.27#net/http)），不保证慢正文/取消/超大响应等异常连接复用；接受此边界，不增加主动 drain 等待。独立 Push 子项现已实施 16 KiB 有界完整正文校验、`*bool` 确认 ok 和安全 Close WARN，原 10 秒/单在途/无重试/健康独立保持，不混用 Webhook 的渠道成功协议。正式回归与门禁见 [审计报告 P3-21 当前实施补记](./fwalizer-audit-final1.md#p3-21-当前实施补记2026-10-03定型方案-b)；P3-21 本地闭环，真实通知验收状态保持。
 10. **SMTP 收件人解析**：`strings.Split(To, ",")` 未逐项 `TrimSpace`，`"a@x.com, b@y.com"` 会产生带前导空格的收件人。
 11. **时间戳纯内存**：`last_sync` 与新增的 `last_success` 重启归 null，UI 文案需避免表述为“从未成功”。
 12. **SQLite 其他缺口**：未设置任何连接池上限；`AddSyncLog` 的 `COUNT(*)` 是全表扫描且不在事务内；`WithTransaction` 使用无 context 的 `Begin()`；`PRAGMA foreign_keys` 未设置。

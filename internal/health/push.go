@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -29,6 +30,9 @@ import (
 
 // DefaultPushTimeout 单次 Push 请求的 HTTP 上限（Build7 §7.6）。
 const DefaultPushTimeout = 10 * time.Second
+
+// pushResponseLimit 限制业务响应大小，额外读一字节识别超限。
+const pushResponseLimit = 16 * 1024
 
 // maxDownMessageRunes down 状态短原因的最大字符数（Build7 §7.6）。
 const maxDownMessageRunes = 250
@@ -249,22 +253,35 @@ func (p *Pusher) sendOnce(baseCtx context.Context, cfg PushConfig) bool {
 		slog.Warn("Uptime Kuma Push 失败", "category", pushErrorCategory(err))
 		return true
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Warn("Uptime Kuma Push 响应体关闭失败", "category", "response_close")
+		}
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		slog.Warn("Uptime Kuma Push 失败", "category", "http_status", "status", resp.StatusCode)
 		return true
 	}
 
-	// 成功口径：2xx 且响应 JSON 为 {"ok":true}
-	var payload struct {
-		OK bool `json:"ok"`
+	response, err := io.ReadAll(io.LimitReader(resp.Body, pushResponseLimit+1))
+	if err != nil {
+		slog.Warn("Uptime Kuma Push 失败", "category", "response_read")
+		return true
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if len(response) > pushResponseLimit {
+		slog.Warn("Uptime Kuma Push 失败", "category", "response_too_large")
+		return true
+	}
+	// 完整正文只允许一个 JSON 文档；未知字段保留兼容，缺失/null 不视为成功。
+	var payload struct {
+		OK *bool `json:"ok"`
+	}
+	if err := json.Unmarshal(response, &payload); err != nil {
 		slog.Warn("Uptime Kuma Push 失败", "category", "invalid_json")
 		return true
 	}
-	if !payload.OK {
+	if payload.OK == nil || !*payload.OK {
 		slog.Warn("Uptime Kuma Push 失败", "category", "not_ok")
 		return true
 	}
