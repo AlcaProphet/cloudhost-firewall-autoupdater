@@ -242,7 +242,7 @@ func TestJSONCachePolicyBoundaries(t *testing.T) {
 		d := &Deps{}
 		for _, path := range []string{"/api/sync/events", "/api/logs/stream"} {
 			w := doJSON(t, d, http.MethodGet, path, "")
-			assertJSONNoStore(t, w.Result(), http.StatusBadRequest)
+			assertJSONNoStore(t, w.Result(), http.StatusServiceUnavailable)
 		}
 	})
 	t.Run("mux_errors", func(t *testing.T) {

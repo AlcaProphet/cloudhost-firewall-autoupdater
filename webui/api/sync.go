@@ -22,7 +22,7 @@ func (d *Deps) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
 
 func (d *Deps) handleSyncTrigger(w http.ResponseWriter, r *http.Request) {
 	if d.Syncer == nil {
-		writeError(w, http.StatusBadRequest, "同步引擎未启动，请先配置目标和规则")
+		writeError(w, http.StatusServiceUnavailable, "同步引擎未启动")
 		return
 	}
 	if !d.Syncer.Status().Enabled {
@@ -40,7 +40,7 @@ func (d *Deps) handleSyncTrigger(w http.ResponseWriter, r *http.Request) {
 // 那是第二次运行时写入，迟到时会覆盖后提交的真值，造成 SQLite 与运行时分裂（Issue6 A5）。
 func (d *Deps) handleSyncPause(w http.ResponseWriter, r *http.Request) {
 	if d.Syncer == nil {
-		writeError(w, http.StatusBadRequest, "同步引擎未启动")
+		writeError(w, http.StatusServiceUnavailable, "同步引擎未启动")
 		return
 	}
 	err := d.coordinator().Mutate(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
@@ -59,7 +59,7 @@ func (d *Deps) handleSyncPause(w http.ResponseWriter, r *http.Request) {
 // 同样不得在协调器之外再调用 Syncer.Resume()（Issue6 A5）。
 func (d *Deps) handleSyncResume(w http.ResponseWriter, r *http.Request) {
 	if d.Syncer == nil {
-		writeError(w, http.StatusBadRequest, "同步引擎未启动")
+		writeError(w, http.StatusServiceUnavailable, "同步引擎未启动")
 		return
 	}
 	err := d.coordinator().Mutate(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
@@ -74,7 +74,7 @@ func (d *Deps) handleSyncResume(w http.ResponseWriter, r *http.Request) {
 
 func (d *Deps) handleSyncDryRun(w http.ResponseWriter, r *http.Request) {
 	if d.Syncer == nil {
-		writeError(w, http.StatusBadRequest, "同步引擎未启动，请先配置目标和规则")
+		writeError(w, http.StatusServiceUnavailable, "同步引擎未启动")
 		return
 	}
 	resp, err := d.Syncer.DryRun()
@@ -92,7 +92,7 @@ func (d *Deps) handleSyncDryRun(w http.ResponseWriter, r *http.Request) {
 // handleSyncEvents SSE 实时事件推送
 func (d *Deps) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 	if d.EventBus == nil {
-		writeError(w, http.StatusBadRequest, "事件总线不可用")
+		writeError(w, http.StatusServiceUnavailable, "事件总线不可用")
 		return
 	}
 

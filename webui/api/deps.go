@@ -43,7 +43,7 @@ type EventSubscriber interface {
 // Deps API handler 共享依赖
 type Deps struct {
 	Store          *config.Store
-	Syncer         Syncer                 // 可为 nil（无配置时）
+	Syncer         Syncer                 // 可为 nil（未接线时）
 	EventBus       EventSubscriber        // 可为 nil
 	Runtime        *syncer.RuntimeManager // 可为 nil（只读快照来源）
 	Alerts         *AlertManager          // 可为 nil（无告警接线时）

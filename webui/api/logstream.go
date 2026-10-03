@@ -162,7 +162,7 @@ func (b *LogBroadcaster) WithGroup(name string) slog.Handler       { return b }
 
 func (d *Deps) handleLogStream(w http.ResponseWriter, r *http.Request) {
 	if d.LogBroadcaster == nil {
-		writeError(w, http.StatusBadRequest, "日志流不可用")
+		writeError(w, http.StatusServiceUnavailable, "日志流不可用")
 		return
 	}
 
