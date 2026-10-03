@@ -2,13 +2,18 @@ package api
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/app"
 )
 
 // newRecord 构造测试用日志记录
@@ -34,7 +39,7 @@ func TestLogBroadcaster_Replay(t *testing.T) {
 		case line := <-ch:
 			// TextHandler 对中文消息会加引号（输出 msg="第一条"），直接检查消息文本即可
 			if !strings.Contains(line.Line, want) {
-				t.Errorf("回放第 %d 条 = %q, want 包含 %s", i, line, want)
+				t.Errorf("回放第 %d 条 = %q, want 包含 %s", i, line.Line, want)
 			}
 		case <-time.After(time.Second):
 			t.Fatalf("回放第 %d 条超时", i)
@@ -44,7 +49,7 @@ func TestLogBroadcaster_Replay(t *testing.T) {
 	select {
 	case line, ok := <-ch:
 		if ok {
-			t.Errorf("回放多出内容: %q", line)
+			t.Errorf("回放多出内容: %q", line.Line)
 		}
 	case <-time.After(100 * time.Millisecond):
 	}
@@ -72,7 +77,7 @@ func TestLogBroadcaster_RingOverflow(t *testing.T) {
 	select {
 	case line, ok := <-ch:
 		if ok {
-			t.Errorf("回放应恰好 %d 条，多出: %q", logRingSize, line)
+			t.Errorf("回放应恰好 %d 条，多出: %q", logRingSize, line.Line)
 		}
 	case <-time.After(100 * time.Millisecond):
 	}
@@ -92,7 +97,7 @@ func TestLogBroadcaster_Format(t *testing.T) {
 	case line := <-ch:
 		// 注意：TextHandler 对中文消息加引号（输出 msg="同步完成"），此处只断言级别与消息文本
 		if !strings.Contains(line.Line, "level=INFO") || !strings.Contains(line.Line, "同步完成") {
-			t.Errorf("行格式不符合 TextHandler 规范: %q", line)
+			t.Errorf("行格式不符合 TextHandler 规范: %q", line.Line)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("回放超时")
@@ -114,7 +119,7 @@ func TestLogBroadcaster_LevelFilter(t *testing.T) {
 	select {
 	case line, ok := <-ch:
 		if ok {
-			t.Errorf("debug 日志不应进入缓冲: %q", line)
+			t.Errorf("debug 日志不应进入缓冲: %q", line.Line)
 		}
 	case <-time.After(100 * time.Millisecond):
 	}
@@ -251,4 +256,121 @@ func TestLogBroadcaster_SetLevelConcurrent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+type p313Writer struct{ calls int }
+
+func (w *p313Writer) Write(p []byte) (int, error) { w.calls++; return 0, io.ErrClosedPipe }
+func TestP313TextHandlerToBroadcaster(t *testing.T) {
+	for _, viaLogger := range []bool{false, true} {
+		t.Run(map[bool]string{false: "direct", true: "logger"}[viaLogger], func(t *testing.T) {
+			b := NewLogBroadcaster("info")
+			live, _, _, stop := b.Subscribe("")
+			defer stop()
+			writer := &p313Writer{}
+			m := slog.NewMultiHandler(slog.NewTextHandler(writer, nil), b)
+			if viaLogger {
+				slog.New(m).Info("p313-marker", "key", "value")
+			} else {
+				r := slog.NewRecord(time.Time{}, slog.LevelInfo, "p313-marker", 0)
+				r.AddAttrs(slog.String("key", "value"))
+				if err := m.Handle(context.Background(), r); !errors.Is(err, io.ErrClosedPipe) {
+					t.Errorf("missing writer error: %v", err)
+				}
+			}
+			if writer.calls != 1 {
+				t.Errorf("writer calls=%d want 1", writer.calls)
+			}
+			var first logEntry
+			select {
+			case first = <-live:
+				if first.Seq != 1 || !strings.Contains(first.Line, "p313-marker") || !strings.Contains(first.Line, "key=value") {
+					t.Errorf("bad live entry: %+v", first)
+				}
+			default:
+				t.Fatal("broadcaster did not receive log")
+			}
+			replay, _, _, unsub := b.Subscribe("")
+			defer unsub()
+			select {
+			case got := <-replay:
+				if got != first {
+					t.Errorf("replay differs: %+v", got)
+				}
+			default:
+				t.Fatal("ring missing log")
+			}
+			select {
+			case <-live:
+				t.Error("duplicate live entry")
+			default:
+			}
+		})
+	}
+}
+
+// TestP313InitLoggerContinuesToBroadcaster 通过实际产品装配验证首路写失败不丢 WebUI 日志。
+// 使用已关闭文件，让 Write 返回错误，不改变进程 SIGPIPE 策略。
+func TestP313InitLoggerContinuesToBroadcaster(t *testing.T) {
+	previousLogger, previousStdout := slog.Default(), os.Stdout
+	previousLevel := app.LogLevelVar.Level()
+	defer func() {
+		os.Stdout = previousStdout
+		slog.SetDefault(previousLogger)
+		app.LogLevelVar.Set(previousLevel)
+	}()
+	closed, err := os.CreateTemp(t.TempDir(), "closed-stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = closed
+	for _, viaLogger := range []bool{false, true} {
+		t.Run(map[bool]string{false: "direct", true: "logger"}[viaLogger], func(t *testing.T) {
+			b := NewLogBroadcaster("info")
+			live, _, _, stop := b.Subscribe("")
+			defer stop()
+			app.InitLoggerWithBroadcaster("info", b)
+			if viaLogger {
+				slog.Info("product-p313-marker", "key", "value")
+			} else {
+				r := slog.NewRecord(time.Time{}, slog.LevelInfo, "product-p313-marker", 0)
+				r.AddAttrs(slog.String("key", "value"))
+				if err := slog.Default().Handler().Handle(t.Context(), r); !errors.Is(err, os.ErrClosed) {
+					t.Fatalf("首路错误未保留: %v", err)
+				}
+			}
+			var first logEntry
+			select {
+			case first = <-live:
+				if first.Seq != 1 || !strings.Contains(first.Line, "product-p313-marker") || !strings.Contains(first.Line, "key=value") {
+					t.Fatalf("产品实时日志错误: %+v", first)
+				}
+			default:
+				t.Fatal("产品装配在首路失败后未调用 broadcaster")
+			}
+			replay, _, _, unsub := b.Subscribe("")
+			defer unsub()
+			select {
+			case got := <-replay:
+				if got != first {
+					t.Fatalf("产品回放不一致: %+v", got)
+				}
+			default:
+				t.Fatal("产品日志没有进入回放缓存")
+			}
+			select {
+			case <-live:
+				t.Fatal("产品实时日志重复")
+			default:
+			}
+			select {
+			case <-replay:
+				t.Fatal("产品回放日志重复")
+			default:
+			}
+		})
+	}
 }

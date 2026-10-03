@@ -10,8 +10,8 @@
 - **模块路径**：`github.com/alcaprophet/cloudhost-firewall-autoupdater`
 - **仓库名称**：`cloudhost-firewall-autoupdater`
 - **产品与兼容标识**：产品显示名、二进制名、`FWALIZER_DATA_DIR` 部署变量、数据目录及 GHCR 镜像继续使用 `FWAlizer` / `fwalizer`，避免破坏保留的部署边界
-- **Go 版本**：`go 1.25`
-- **平台约束**：仅支持 **Linux 与 macOS**（平台文件 build tag 精确为 `linux || darwin`）；**不支持 Windows**（Windows pidfile 实现与 `%APPDATA%` 数据目录分支已移除，`GOOS=windows` 构建按预期失败）；构建与发布面向 `linux/amd64`
+- **Go 版本**：`go 1.27.1`（源码构建最低补丁要求；CI/Docker 固定该版本）
+- **平台约束**：仅支持 **Linux 与 macOS 13+**（平台文件 build tag 精确为 `linux || darwin`）；**不支持 Windows**（Windows pidfile 实现与 `%APPDATA%` 数据目录分支已移除，`GOOS=windows` 构建按预期失败）；构建与发布面向 `linux/amd64`
 - **文档定位与优先级**：编码前先阅读本文件（强要求）。设计记录见 [Design5.md](./Design5.md)（当前，非强制，供参考）；Build6/Build7 为已完成的历史构建记录；当前实施合同与串行步骤见 [Issue7.md](./Issue7.md)（Step 0～5 主体已实施，§12.5 追踪完整核验未完成项）；问题历史见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)；人工验收清单见 [ProdTestList.md](./ProdTestList.md)；历史文档（Design1-4、Build1-5、Issue1-4）见 [HistoryDocs/](./HistoryDocs/)
 - **Build6 已完成构建（历史记录）**：目标形态固定为 WebUI 单二进制 + SQLite。截至 2026-09-27，Step 0～7 已验收通过。Step 5 的工程实现、本地自动门禁、浏览器人工回归及真实云/DNS/同步链路已经完成并由用户确认真机通过；跨实例不同自增历史的人工交叉导入因当前无该使用场景而免除（底层 ID 映射仍由自动化覆盖）。Step 7 的自动补测、统一验收门禁、真实二进制/Docker 容器验收与文档闭环已完成，并按用户确认的最小边界修复 Issue6 A10/A5/A7/A6/A8；**在此之后按用户一次性授权完成 Issue6 批次 1（A1、A12）、批次 3（A20、A16）、批次 2（A2）、批次 4（A3、A18、A13、A15 与 A11 接口部分）、批次 5（A4、A9、A14、A17）、批次 6（A11 收尾）与批次 7（A19、A8 文档收口）**，批次 8（低风险清理）亦已完成，Issue6 §2.1 状态表为权威记录。远端 GitHub Actions 已取得真实结果（tag `v2.0.0` → 运行 `36300428681` 成功，含远端 `go test -race -v ./...`，并真实推送 `ghcr.io/alcaprophet/fwalizer:2.0.0`），Issue5 O5-02 已关闭。真实 Email/SMTP/收件箱与 Webhook 的人工验收（原 `ProdTestList.md` PT-B6-08/09）经用户 2026-09-27 明确决定跳过、由用户自行处理，属**人工验收免除**（沿用 PT-B6-04 先例），不阻塞 Step 7，**但这两个外部链路仍无真实通过结论，不得写成已经通过**。
 - **Build7 实施状态（2026-09-28）**：Build7（[Build7.md](./Build7.md)，告警与运行健康）**Step 0～6 已全部实施完成，Step 7（核验缺陷修复）亦已完成**：告警三个触发开关（默认全部关闭，渠道与触发同时开启才订阅）、可编辑纯文本邮件主题与正文（固定事件后缀与稳定详情顺序）、`POST /api/alerts/test-email`、唯一 `OperationalHealth` 计算源（`internal/health`）+ 30 秒内部监督器 + `GET /api/health/operational`、Uptime Kuma Push（默认关闭、默认 60s、最小 20s）；配置包为 version 3，version 1/2 与其他版本直接拒绝。Step 7 修复了两项核验缺陷：告警页测试邮件请求体多带 `enabled` 导致必然 HTTP 400（前端改为显式 8 字段载荷，后端严格契约不变）；启动窗口把「同步引擎尚未启动」误判为「未运行」导致重启误报 Push DOWN 与运行健康异常（启动顺序确定性化 + 固定 10 秒启动宽限）。**本机已取得的证据**：`go test ./... -race -count=1`（12 包）、`go vet ./...`、`go build ./...`、前端 `npm ci`/`npm run build`/两条 `npm audit`（0 漏洞）、`docker compose config`、`docker build`、容器非 root（uid 1000）+ `healthy` + `docker stop` 有界且退出码 0、真实二进制进程级用例（静态 `/api/health` 与 `/api/health/operational` 200、Push 心跳发往本地 mock、SIGTERM 干净退出、UI 载荷测试邮件走完假 SMTP、重启后首条心跳为 up）。**仍无真实通过结论（不得写成通过）**：真实 SMTP 接受、真实收件箱投递、真实 Webhook、真实 Uptime Kuma HTTP Monitor 与 Push 的 DOWN/恢复通知、真实云 API、远端 CI/GHCR 均未执行，清单见 [ProdTestList.md](./ProdTestList.md)。
@@ -44,7 +44,10 @@
 **P3-10 剩余错误处理后续修复状态（2026-10-03，细化后的方案 A，历史批次，后已提交 `99f3fe2`）**：用户确认本聊天的研究推荐并授权正式修复及文档同步；实施前 `main / f6b3757`、本地 `origin/main / c08f2e1`、ahead 2，工作树与暂存区干净，前序 P3-09 已提交。生产仅 `config/store.go`、`webui/api/logstream.go`、`webui/api/sync.go`、`webui/server.go`：数据库初始化失败统一关闭，关闭也失败才 `errors.Join` 保留主错误与关闭错误；日志渲染检查并返回 Handler 错误，失败不更新序号/缓存/投递，不递归记录；同步 SSE 序列化失败只记录固定 WARN、事件类型与错误类型，跳过坏事件但继续连接，不记录负载或错误原文；静态 health 的 Write 失败记 Debug，不补写状态码或重试。pidfile 子项此前已由 I-01 收口，本轮不改。`bytes.Buffer.Write` 的 error 保证为 nil，本项日志渲染属于规范性补齐，不宣称复现生产 buffer 故障；`slog.Logger` 丢弃 Handler 错误，不宣称自动告警。三份新增测试与本文件/审计报告，共九文件。正式新回归及日志格式/回放/缓存控制 race 20 轮、外部 writer 故障注入 race 20 轮、受影响三包完整 race 与十类正式负向控制已通过；全量 12 包 race 一轮（含 TestMain 构建真实产品二进制的既有进程回归）、vet/build、受影响 Go 文件 gofmt 与 diff-check 均本地通过。P3-10 本地收口，单次全量绿色不外推长期稳定。源码/测试/文档尚未提交，未 fetch/push。本机 Go `1.26.6 darwin/arm64`；未执行 Go 1.25/Linux、前端构建、P3-10 专门进程级故障验收/浏览器、Docker/compose、真实云/通知链路或远端 CI/GHCR。保持 `_txlock=immediate`、schema/事务策略、SSE 帧/deadline/订阅、静态健康语义与原有满队列丢弃边界，不外推长期稳定或外部通过。I-07 的 P3-12/P3-14/P3-13 继续独立追踪；详见审计报告 P3-10 当前实施补记。
 
 
-**P3-12 文件权限后续修复状态（2026-10-03，细化后的方案 A）**：用户确认本聊天研究推荐并授权正式实施与文档同步；实施前 `main / 99f3fe2`、本地 `origin/main / c08f2e1`、ahead 3，工作树与暂存区干净，前序 P3-10 已提交。生产仅 `run.go`、`config/deployment.go`、`config/store.go`、`config/pidfile.go`：最终数据目录显式收紧为 `0700`；取得同一 FD 上的 flock 后、截断 PID 前收紧锁文件为 `0600`；SQLite 首次访问前预创建/收紧主库 `0600` 并处理关闭错误，打开前与初始化后迁移已存在 WAL/SHM，缺失不预创建、不清空、不删除；初始化后的权限失败沿用 P3-10 统一关闭与错误聚合。默认目录无法确定时返回错误，不再回退 `.`；显式专用数据目录优先且不依赖 HOME。四份测试与本文件/审计/README，共 11 文件；无全进程 umask、递归 chmod、自动 chown、后台巡检或新权限框架。正式新回归及既有 pidfile/P3-10 收尾回归在 macOS Go `1.25.0` 下定向 race 20 轮、正式产品进程新回归 race 20 轮通过；macOS Go `1.25.0` 与 Linux Go `1.25.14`（arm64 容器）全量 12 包 race 各一轮、vet/build 通过。正式 Linux/amd64 静态产品二进制在现有运行镜像中以 UID1000 验证目录/锁/DB/WAL/SHM 五种权限失败、新目录、旧宽权限目录以及新/旧/root-owned 命名卷；旧卷恢复属主后重启保留配置。六类源码 overlay 负向控制与辅助文件打开前检查的容器负向控制有判别证据，详见审计 P3-12 当前实施补记。P3-12 本地收口，I-07 的 P3-13/P3-14 继续未完成；源码/测试/文档尚未提交，未 fetch/push。单轮全量不外推长期稳定；Docker VM 为 linux/aarch64，amd64 二进制通过兼容执行，未执行原生 amd64 主机、完整发布镜像重建/compose、前端构建、浏览器、真实云/SMTP/Webhook/Uptime Kuma 或远端 CI/GHCR；权限保护不阻止 root/同UID 主体，不承诺 ACL/NFS 等特殊边界。
+**P3-12 文件权限后续修复状态（2026-10-03，细化后的方案 A，历史批次，后已提交 `5e1d79c`）**：用户确认本聊天研究推荐并授权正式实施与文档同步；实施前 `main / 99f3fe2`、本地 `origin/main / c08f2e1`、ahead 3，工作树与暂存区干净，前序 P3-10 已提交。生产仅 `run.go`、`config/deployment.go`、`config/store.go`、`config/pidfile.go`：最终数据目录显式收紧为 `0700`；取得同一 FD 上的 flock 后、截断 PID 前收紧锁文件为 `0600`；SQLite 首次访问前预创建/收紧主库 `0600` 并处理关闭错误，打开前与初始化后迁移已存在 WAL/SHM，缺失不预创建、不清空、不删除；初始化后的权限失败沿用 P3-10 统一关闭与错误聚合。默认目录无法确定时返回错误，不再回退 `.`；显式专用数据目录优先且不依赖 HOME。四份测试与本文件/审计/README，共 11 文件；无全进程 umask、递归 chmod、自动 chown、后台巡检或新权限框架。正式新回归及既有 pidfile/P3-10 收尾回归在 macOS Go `1.25.0` 下定向 race 20 轮、正式产品进程新回归 race 20 轮通过；macOS Go `1.25.0` 与 Linux Go `1.25.14`（arm64 容器）全量 12 包 race 各一轮、vet/build 通过。正式 Linux/amd64 静态产品二进制在现有运行镜像中以 UID1000 验证目录/锁/DB/WAL/SHM 五种权限失败、新目录、旧宽权限目录以及新/旧/root-owned 命名卷；旧卷恢复属主后重启保留配置。六类源码 overlay 负向控制与辅助文件打开前检查的容器负向控制有判别证据，详见审计 P3-12 当前实施补记。P3-12 本地收口，I-07 的 P3-13/P3-14 继续未完成；源码/测试/文档尚未提交，未 fetch/push。单轮全量不外推长期稳定；Docker VM 为 linux/aarch64，amd64 二进制通过兼容执行，未执行原生 amd64 主机、完整发布镜像重建/compose、前端构建、浏览器、真实云/SMTP/Webhook/Uptime Kuma 或远端 CI/GHCR；权限保护不阻止 root/同UID 主体，不承诺 ACL/NFS 等特殊边界。
+
+
+**P3-13 / Go 1.27.1 后续实施状态（2026-10-03）**：用户确认引用聊天《核查 P3-13 并准备 Go 升级》的设计及 Go 1.27 最新稳定补丁方向，授权正式修改与文档同步。实施前 `main == origin/main == 5e1d79c`，工作树与暂存区干净，前序 P3-12 已提交。当前最低 Go 为 `1.27.1`、最低 macOS 为 13；CI/Docker 固定同一补丁并设置 `GOTOOLCHAIN=local`。唯一业务生产源码改动为 `app/logutil.go`：删除自写 MultiHandler，直接用标准库顺序分发全部启用路、逐路 Clone 并聚合错误；接受单错误包装，使用 `errors.Is/As` 识别。两份日志测试补分发、聚合、隔离、并发与实际初始化入口的实时/回放回归，五处 `%q` 参数改为 `line.Line`。范围固定九文件（模块、生产日志、两份测试、Docker、CI、AGENTS、README、审计）；依赖版本与 `go.sum` 不变，CI 七条 SDK 更新策略保留。正式 macOS 定向 race 20 轮、两包完整 race、全量 12 包 race 一轮、vet/build/tidy-diff 及旧接线/旧工具链负向控制已通过；Linux Go `1.27.1`（arm64 容器）全量 12 包 race 一轮、vet 与 CGO=0 linux/amd64 编译通过。正式三阶段 amd64 镜像构建通过（前端阶段使用有效缓存），新镜像 UID1000/healthy、两个健康端点与 SPA 200、目录0700及四文件0600、0.158秒停止/exit0 均经断言验证；受影响 Go 格式与 diff-check 通过。P3-13 本地收口，最终证据见审计补记。本轮未 fetch、提交或 push。默认 stdout/stderr 的 SIGPIPE、Handler 阻塞/panic 和 Logger 丢弃错误边界保持；真实云/通知链路、浏览器、远端 CI/GHCR、macOS 13 真机与原生 amd64 尚未执行，不外推长期稳定或外部通过。P3-14 继续独立未完成，I-07 整体不关闭。
 
 ---
 
@@ -159,7 +162,7 @@
 ## 八、Docker 约束
 
 - 基础镜像：`alpine:3.20`
-- 编译镜像：`golang:1.25-alpine`
+- 编译镜像：`golang:1.27.1-alpine`，编译阶段设置 `GOTOOLCHAIN=local`
 - `CGO_ENABLED=0` 静态编译（Docker 构建）
 - 非 root 用户运行（`adduser -D appuser`）
 - 日志输出到 stdout（Text 格式，`docker logs` 查看）
@@ -222,6 +225,7 @@
 - 推送 tag（如 `v1.0.0`）时自动构建 Docker 镜像推送到 **ghcr.io**
 - 镜像命名：`ghcr.io/alcaprophet/fwalizer:<tag>`
 - 构建平台：`linux/amd64`
+- CI 的 setup-go 固定 `1.27.1`，构建环境设置 `GOTOOLCHAIN=local`；云 SDK 更新若要求更高版本应显式失败，再单独决定升级，不隐式切换工具链。
 - PR 时仅编译检查，不推送镜像
 - **SDK 版本策略（有意设计）**：腾讯云/阿里云要求使用较新的 SDK，使用过期 SDK 无法调用新接口/功能；因此每次构建前执行 `go get -u` 将云厂商 SDK 升级到最新（见 `docker-publish.yml`「更新所有 SDK 到最新版」步骤），镜像始终携带最新 SDK，SDK 可复现性要求服从该策略
 
@@ -236,7 +240,7 @@
 - 遵守 `PlatformAPIDocs/` 中的 API 文档要求（参数格式、字段长度限制、频率限制）
 - 多云抽象基于 Provider 接口 + 工厂注册模式（详见 HistoryDocs/Build1.md）
 - 项目交付范围仅包含 WebUI 单二进制 + SQLite 以及 Docker/服务器部署；不包含 `.env` Headless 业务模式、CLI 子命令、桌面托盘、开机自启或原生桌面打包计划
-- 日志多路复用器 `MultiHandler` 统一定义在 `app/logutil.go`（消除与 `webui/api/logstream.go` 的重复）
+- 日志多路复用使用标准库 `slog.NewMultiHandler`，只在 `app/logutil.go` 统一装配 stdout 与 WebUI；全部启用路按顺序分发，每路 `Record.Clone()`，错误由标准库聚合，调用方通过 `errors.Is/As` 识别，不依赖单错误直接相等。`slog.Logger` 丢弃 Handler 返回错误，不承诺自动告警。
 - WebUI 模式通过 pidfile（`config/pidfile.go` + 平台文件（linux/darwin））防止多实例运行
 - 事件类型：全局同步完成用 `EventSyncComplete`，目标级云端写入与覆盖验证用 `EventTargetSyncComplete`，DNS 失败继续用 `EventDNSFailed`，运行健康异常边沿用 `EventOperationalUnhealthy`；`EventDomainSyncComplete` 不再承载云端增删数量
 - 同步全局开关：`POST /api/sync/pause|resume` 端点（先写 DB 后通知 Syncer）；`SyncStatus.enabled` 字段；前端「模拟测试」页（路由 `/dry-run`）承载目标级变更预览，正式同步与 Dry Run 共用同一纯规划器；至少表达 `desired`、`satisfied_by_owned`、`satisfied_by_external`、`to_add`、`cleanup_candidates`、`cleanup_deferred`、`dns_errors`、`unsupported`、`conflicts`、`coverage_ready`；连接测试保留在目标添加/编辑弹窗（`POST /api/test-connection`）
