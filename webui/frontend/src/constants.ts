@@ -1,4 +1,4 @@
-// 共享常量（消除 Targets.vue 与 Advanced.vue 的重复定义）
+// 共享云产品选项、中文名映射与资源 ID 输入提示
 import type { SelectOption } from 'naive-ui'
 
 // 云产品选项（与后端 config.CloudType 一致）
@@ -18,7 +18,7 @@ for (const o of cloudOptions) {
 
 // 云类型 → 资源 ID 输入提示（placeholder 文案）
 // 轻量云类填写实例 ID，CVM/ECS 类填写安全组 ID
-// 供 Targets.vue 与 RunTest.vue 共用
+// 供 Targets.vue 的目标添加/编辑表单使用
 const resourceIdHints: Record<string, string> = {
   tc_lighthouse: '实例ID（lhins- 开头）',
   tc_cvm: '安全组ID（sg- 开头）',

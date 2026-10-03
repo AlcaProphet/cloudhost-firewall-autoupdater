@@ -28,7 +28,7 @@
 | PT-B7-06 | 真实运行健康异常邮件：开启第三触发条件，制造持续 unhealthy，确认只在边沿收到一次告警且恢复后再次异常会再次告警 | 未执行 |
 | PT-B7-07 | 浏览器人工回归（Build7 页面）：默认全部关闭、四卡片布局、保存、测试发送 loading/成功/失败、刷新后测试结果消失、敏感输入样式 | 全项未执行；2026-09-30 P2-06 已取得局部浏览器/API/临时 SQLite 联合证据：失败/不完整/挂起加载禁用保存且零 PUT，成功加载后正常保存并保留敏感值，失败加载时测试按钮仍独立 POST（本地模拟响应）。其余默认值/布局、真实测试邮件 loading/成功/失败、刷新清除结果与敏感输入样式的完整回归仍待执行；不能将本项整体标为通过。详见审计报告 P2-06。 |
 | PT-B7-08 | 远端 GitHub Actions 与 GHCR 发布（当前改动未推送） | 未执行 |
-| PT-B7-09 | **真实阿里云 SWAS `Remark` 字段的长度上限**：用真实 SWAS 账号尝试创建/修改防火墙规则，逐步加长 `Remark`，确认云端的**实际**上限，以及它是按**字符**还是**字节**计算。<br>**为什么需要：** `syncer/retry.go:200` 的注释声称 `Remark ≤ 50 字符（阿里云 SWAS API）`，但 `PlatformAPIDocs/AliyunSWASAPIGuide/` 下所有出现 `Remark` 的文件都未给出长度限制。<br>**影响：** 只影响 `[TAG] comment` 的可读 comment 截断预算；P1-01 定案已明确 comment 不承担身份，因此本项**不再是 Step 1～4 的实施前置**，也不用于构造 `[TAG] host/协议/端口` 身份串。 | 未执行 |
+| PT-B7-09 | **真实阿里云 SWAS `Remark` 字段的长度上限**：用真实 SWAS 账号尝试创建/修改防火墙规则，逐步加长 `Remark`，确认云端的**实际**上限，以及它是按**字符**还是**字节**计算。<br>**为什么需要：** 当前 `provider/plan.go` 的 `RenderDescription` 调用 `TruncateDescription`，后者对 SWAS 使用历史预算 `maxLen=50` 并按 rune 截断（旧 `syncer/retry.go` 渲染链已由 P3-07 删除），但 `PlatformAPIDocs/AliyunSWASAPIGuide/` 下所有出现 `Remark` 的文件都未给出长度限制。<br>**影响：** 只影响 `[TAG] comment` 的可读 comment 截断预算；P1-01 定案已明确 comment 不承担身份，因此本项**不再是 Step 1～4 的实施前置**，也不用于构造 `[TAG] host/协议/端口` 身份串。 | 未执行 |
 
 ### PT-I7：Issue7 Step 5 真实外部验收（已具备执行条件，尚未执行）
 

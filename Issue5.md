@@ -1,8 +1,9 @@
-# Issue5.md — FWAlizer 问题追踪（当前）
+# Issue5.md — FWAlizer 问题追踪（Build6 阶段历史记录）
 
-> **文档定位：** 本文档是 FWAlizer 的当前问题记录（非强制，经验参考），记录 2026-09-22 只读审查发现的 R5-01～R5-03、O5-01～O5-06 和 A5-01。已确认的修复口径由 [Build6.md](./Build6.md) 分步实施，未经对应 Step 验收不得标记为已修复。
-> **当前进度（2026-09-27）：** Build6 Step 0～7 已验收通过（Step 7 的 Email/Webhook 人工验收由用户决定免除，见 O5-03）。Step 5 的工程、本地门禁、生产浏览器、真实腾讯云/阿里云、DNS 增量同步及真实负载运行时行为均已完成；跨实例不同自增历史数据库的人工交叉导入因无使用场景而免除，ID 映射仍由自动化覆盖，R5-01 已关闭。Step 7 的自动补测、统一门禁、真实二进制/Docker 容器验收、远端 Actions 与镜像发布、文档闭环全部完成，并按用户确认边界最小修复 Issue6 A10/A5/A7/A6/A8（A1/A2/A3/A4/A9/A11～A19 继续留在 Issue6），**Step 7 与 O5-03 已验收通过**。真实 Email/SMTP/收件箱（PT-B6-08）与 Webhook（PT-B6-09）经用户 2026-09-27 明确决定跳过、由用户自行处理，属**人工验收免除**（沿用 PT-B6-04 先例），不阻塞验收，**但这两个外部链路仍无真实通过结论、不得写成已通过**。O5-02 的远端 race 缺口已由真实 GitHub Actions 运行关闭（见 O5-02）。
-> **Build7（2026-09-28）：** 当前构建方案为 [Build7.md](./Build7.md)（告警与运行健康）；Build7 **Step 0～6 已全部实施完成**（version 3 配置包、四对象告警 API、测试邮件、触发过滤、运行健康监督器与 operational 端点、Uptime Kuma Push），逐步证据见 Build7 第八节。本文档的 Build6 记录继续作为已完成的历史证据保留；真实 SMTP/收件箱、Webhook、Uptime Kuma 与远端 CI 仍未执行。
+> **文档定位：** 本文档是 FWAlizer 的 Build6 阶段问题历史记录（非强制，经验参考），记录 2026-09-22 只读审查发现的 R5-01～R5-03、O5-01～O5-06 和 A5-01。已确认的修复口径由 [Build6.md](./Build6.md) 分步实施，未经对应 Step 验收不得标记为已修复。
+> **Build6 历史进度（2026-09-27）：** Build6 Step 0～7 已验收通过（Step 7 的 Email/Webhook 人工验收由用户决定免除，见 O5-03）。Step 5 的工程、本地门禁、生产浏览器、真实腾讯云/阿里云、DNS 增量同步及真实负载运行时行为均已完成；跨实例不同自增历史数据库的人工交叉导入因无使用场景而免除，ID 映射仍由自动化覆盖，R5-01 已关闭。Step 7 的自动补测、统一门禁、真实二进制/Docker 容器验收、远端 Actions 与镜像发布、文档闭环全部完成，并按用户确认边界最小修复 Issue6 A10/A5/A7/A6/A8（A1/A2/A3/A4/A9/A11～A19 继续留在 Issue6），**Step 7 与 O5-03 已验收通过**。真实 Email/SMTP/收件箱（PT-B6-08）与 Webhook（PT-B6-09）经用户 2026-09-27 明确决定跳过、由用户自行处理，属**人工验收免除**（沿用 PT-B6-04 先例），不阻塞验收，**但这两个外部链路仍无真实通过结论、不得写成已通过**。O5-02 的远端 race 缺口已由真实 GitHub Actions 运行关闭（见 O5-02）。
+> **Build7（2026-09-28）：** 当前构建方案为 [Build7.md](./Build7.md)（告警与运行健康）；Build7 **Step 0～7 已全部实施完成（含 Step 7 核验缺陷修复）**（version 3 配置包、四对象告警 API、测试邮件、触发过滤、运行健康监督器与 operational 端点、Uptime Kuma Push），逐步证据见 Build7 第八节与第十一节。本文档的 Build6 记录继续作为已完成的历史证据保留；真实 SMTP/收件箱、Webhook、Uptime Kuma 与远端 CI 仍未执行。
+> **后续状态与历史阅读说明（2026-10-03 P3-18）：** 下文“继续留在 Issue6”、逐 Step 授权、version 2 与远端发布结果均为各 Build6 批次的历史事实。Issue6 批次 1～8 后续已由 `b38678a` 实施完成，见 [Issue6.md](./Issue6.md) §2.1；当前目标级同步与 R7 修复见 [Issue7.md](./Issue7.md) §12.3～12.5。旧 `v2.0.0` Actions/GHCR 结果不证明当前 revision 已通过，真实通知链路的未执行/免除状态继续保留。
 > 编码指令以 [AGENTS.md](./AGENTS.md) 为唯一强要求；设计记录见 [Design5.md](./Design5.md)；上一阶段的 Design4、Build5 和 Issue4 已原文移入 [HistoryDocs/](./HistoryDocs/)。
 
 ---
