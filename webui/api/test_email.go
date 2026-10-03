@@ -76,7 +76,7 @@ func (d *Deps) handleTestEmail(w http.ResponseWriter, r *http.Request) {
 		From: cfg.FromAddr, To: cfg.ToAddr,
 	}, subject, body)
 	if err != nil {
-		// 失败日志只含阶段错误：绝不主动拼接密码或完整正文
+		// SendTestEmail 只返回固定阶段、SMTP 数字响应码或固定类别；不含服务器原文或底层错误链。
 		slog.Warn("测试邮件发送失败", "error", err)
 		writeJSON(w, http.StatusOK, testEmailResponse{Success: false, Error: err.Error()})
 		return

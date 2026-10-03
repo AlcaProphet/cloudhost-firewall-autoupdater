@@ -5,15 +5,24 @@
 | 仓库 | `/Users/kyle/Desktop/Repo/cloudhost-firewall-autoupdater` |
 | 审计快照分支 / HEAD | `main` / `11918fb945fe9dfe2a86ead5bc833b14dd156a68` |
 | 审计快照开始前工作树 | **干净**（0 tracked 改动、0 非忽略未跟踪文件）；这是历史审计快照，不表示当前工作树状态 |
-| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-10-03 P3-18 文档漂移）」** |
+| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-10-03 P3-19 SMTP 安全错误）」** |
 | 审核性质 | 原始全量代码审核为**只读**；2026-09-30 批次只静态核验既有修复并更新本文与 `Issue7.md`，未修改代码，未运行构建、测试或格式化（属该批次记录） |
 | 审核方式 | 8 路并行子代理分模块审核 + 主代理亲自覆盖超时范围 + 判别性探针独立复现 + 交叉复核裁决 |
 | 审核范围（审计快照值） | 快照 `11918fb` 口径：233 个 tracked 文件；**53/53 生产 Go 文件**（10,890 行）；62 个测试文件（20,457 行）；18 个前端源文件（2,212 行）；6 个构建/部署/CI 文件；8 份合同文档。**报告早期复核快照值（非本轮统计）为 244 tracked / 55 生产 Go（12,606 行）/ 69 测试文件（24,896 行）/ 18 前端源（2,361 行）/ 同样 6 个构建文件与 8 份合同文档**（新增 `provider/plan.go`、`syncer/target.go`） |
 | 报告版本 | final1（已剔除全部被驳回/误报项，并纳入用户 7 项决策） |
 
-> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-10-03 P3-18 文档漂移）」小节为准**。各日期实施补记（包括文末“当前实施补记”）中的“本轮/尚未提交”均指该批次当时；后续提交事实以段首提交标记与 §0.2 状态索引为准。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
+> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-10-03 P3-19 SMTP 安全错误）」小节为准**。各日期实施补记（包括文末“当前实施补记”）中的“本轮/尚未提交”均指该批次当时；后续提交事实以段首提交标记与 §0.2 状态索引为准。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
 
-### 最近实施基线（2026-10-03 P3-18 文档漂移）
+### 最近实施基线（2026-10-03 P3-19 SMTP 安全错误）
+
+- **实施前基线**：`main / f0997cd0ada6c0c71cd386d85f8767f41d1411f2`，本地 `origin/main / 5e1d79c2b3378f31079e3240c75777b174c30781`，ahead 6；工作树与暂存区干净，前序 P3-18 已提交。引用聊天《研究 P3-19 修复方案》的定型 B、候选补丁及文档片段已实际读取；用户授权按定案正式修复与同步文档，未 fetch、提交或 push，本地跟踪引用不保证远端现时状态。
+- **范围与状态**：固定八文件，唯一业务生产逻辑为 `notifier/email.go` 的 11 个安全错误出口；测试 API 仅改注释，两份新增安全测试及 AGENTS/本文/Build7/ProdTestList。P3-19 本地收口，I-10 仅本子项更新，P3-20/P3-21 等继续独立。源码/测试/文档尚未提交。
+- **正式门禁**：定向 race 20 轮、notifier/API 两包完整 race 一轮、全仓 12 包 race 一轮、vet/build、受影响 Go 格式与 diff-check 通过；五类正式负向控制按行为断言失败，deadline/正文 Write 外部故障探针在正式源码 overlay 上 race 20 轮通过、旧逻辑两出口对照失败。详见文末 P3-19 当前实施补记；研究候选证据不替代本轮正式工作树门禁。
+- **边界**：Go `1.27.1 darwin/arm64`，使用既有 ignored 前端 dist；保留超时、TLS/认证策略、发送顺序、API/no-store/零写入零发布、在途与成功口径。未执行本项产品进程/浏览器、前端构建、Linux/Docker/compose、真实 SMTP/收件箱/云/Webhook/Uptime Kuma 或远端 CI/GHCR；单次全量不外推长期稳定或外部通过。
+
+### 前序实施基线（2026-10-03 P3-18 文档漂移，历史批次，已提交 `f0997cd`）
+
+> 以下保留该批次实施当时记录；其中“尚未提交”现已由提交 `f0997cd` 替代。
 
 - **实施前基线**：`main / 5860cefb4dc36aaeea6a2ff8290367ad1ef9da6b`，本地 `origin/main / 5e1d79c2b3378f31079e3240c75777b174c30781`，ahead 5；工作树与暂存区干净，前序 P3-17 已提交。本轮用户授权按研究推荐 B 执行十文件改动，未 fetch、提交或 push。
 - **范围与状态**：九份 Markdown 与 `webui/frontend/src/constants.ts` 两处注释；当前入口/历史基线/提交状态/源码引用逐项对账，历史分析、授权与验收证据保留。P3-18 与 I-11 本地文档/注释队列收口，独立业务候选和外部验收不升级。
@@ -231,7 +240,8 @@
 | P3-15 | ✅ 已按推荐 B 本地修复，已提交 `ce3eeaa`；首条立即 WARN、30 秒尾批汇总、空闲停计时、跨热重载连续 | I-08 仅本子项收口；正式计数/管理器/负向控制与全仓失败复核见当前实施补记，P3-21 继续独立追踪 |
 | P3-16 其余子项 | ✅ 按推荐 B 已本地修复（路由派生高亮、保存守卫、可见字段提交、清空结果分支与缓存隔离、后端统一时长校验）；已提交 `396885f` | 独立问题队列 I-10；文末 P3-16 当前实施补记 |
 | P3-17 | ✅ 已按推荐 B 本地清理 12 处/7 文件的陈旧版本表述，已提交 `5860cef`；合法旧版本拒绝与历史说明保留 | I-11 仅本子项；统计及 export_test 状态更正、正式 token 比对与门禁见文末补记；P3-18 文档项已按 B 本地收口 |
-| P3-18 | ✅ 已按推荐 B 本地修复文档漂移，尚未提交 | I-11 本地文档/注释闭环；十文件对账与正式核验见文末 P3-18 补记 |
+| P3-18 | ✅ 已按推荐 B 本地修复文档漂移，已提交 `f0997cd` | I-11 本地文档/注释闭环；十文件对账与正式核验见文末 P3-18 补记 |
+| P3-19 | ✅ 已按定型 B 本地修复，尚未提交；11 个 SMTP 错误出口只保留固定阶段、数字码或固定类别，无服务器原文/原始链 | I-10 仅本子项；正式安全回归、五类负向控制及故障探针见文末补记，真实 SMTP/浏览器未验收 |
 | 其余 P3 | 🔵/⏳ 未修复、文档清理或待真实验证 | 按 0.4 的独立队列处理 |
 
 ### 0.3 当前唯一串行主线：Issue7
@@ -258,8 +268,8 @@
 - [x] **I-07｜P3-12、P3-14、P3-10、P3-13**：**本地修复闭环（2026-10-03）**。P3-05（`82ad2dc`）、P3-11（Issue7 Step 4）、P3-10（`99f3fe2`）、P3-12（`5e1d79c`）、P3-13（`0818197`）已有独立本地修复证据；P3-14 按细化 A 完成并通过正式门禁，已提交 `5c16116`。既有生产实现、状态记录与提交祖先已核对；本项只关闭本地修复队列，浏览器/真实外部验收及当前 revision 远端 CI/GHCR 状态保持，详见 P3-14 当前实施补记。
 - [ ] **I-08｜P3-01、P3-02、P3-21、P3-15**：P3-01 已提交 `ac0ee62`；P3-02 按后续独立授权 B 已提交 `88154cd`，详见实施补记；P3-15 已按推荐 B 本地修复，正式证据见其当前实施补记；P3-21（Webhook drain 子项部分修复、Push 字节上限未修复）继续独立追踪，I-08 整体保持未完成。
 - [x] **I-09｜P3-07**：2026-10-02 按独立授权方案 B 本地收口：再次证明现生产入口不调用旧链，删除 `retrySync` / `retrySyncDetailed` / `truncateDesc`，迁移有效回归并清理过期测试与夹具；正式门禁及六类负向控制通过，已提交 `ba82292`。详见 P3-07 当前实施补记与 Issue6 §7.9 / Issue7 §12.7；独立残留计数观察不由本项关闭。
-- [ ] **I-10｜其余独立 P3**：P3-04 已按 B 本地修复并提交 `ebf8f19`，真实浏览器仍待 PT-AUDIT-01；P3-06 已独立按 B 本地修复并提交 `c08f2e1`，真实响应、模板统计与提额情况待 PT-I7-03；P3-09 已按 A 本地修复并提交为 `f6b3757`；P3-16 剩余五子项已按 B 本地收口，真实浏览器/API/临时 SQLite 局部证据见实施补记，已提交 `396885f`；P3-19、P3-20 继续独立追踪，I-10 整体保持未完成。
-- [x] **I-11｜P3-17、P3-18**：P3-17 已本地文字修复并提交 `5860cef`；P3-18 按推荐 B 完成当前入口、历史基线、提交状态和失效引用对账，正式核验见文末 P3-18 补记。本项仅关闭本地文档/注释队列；本轮改动尚未提交，独立业务待办与真实外部验收保持原状态。
+- [ ] **I-10｜其余独立 P3**：P3-04 已按 B 本地修复并提交 `ebf8f19`，真实浏览器仍待 PT-AUDIT-01；P3-06 已独立按 B 本地修复并提交 `c08f2e1`，真实响应、模板统计与提额情况待 PT-I7-03；P3-09 已按 A 本地修复并提交为 `f6b3757`；P3-16 剩余五子项已按 B 本地收口，真实浏览器/API/临时 SQLite 局部证据见实施补记，已提交 `396885f`；P3-19 已按定型 B 本地收口、尚未提交，正式安全回归与边界见文末实施补记；P3-20 继续独立追踪，I-10 整体保持未完成。
+- [x] **I-11｜P3-17、P3-18**：P3-17 已本地文字修复并提交 `5860cef`；P3-18 按推荐 B 完成当前入口、历史基线、提交状态和失效引用对账，正式核验见文末 P3-18 补记。本项仅关闭本地文档/注释队列；该批文档改动已提交 `f0997cd`，独立业务待办与真实外部验收保持原状态。
 - [x] **I-12｜Issue7 R7-01（P1）**：已修复并提交为 `b80b1b0`；可重试清理失败耗尽后保持 S1 已覆盖的 success + cleanup_deferred 强语义与每 attempt 重读快照。
 - [x] **I-13｜Issue7 R7-02（P2）**：已修复并提交为 `eab4bea`；补全目标事件 `cleanup_deleted`/`duration_ms`/canonical `unsupported`，并以真实 publisher/EventBus/SQLite 整链证明清理 `2/1/1` 落库一致。
 - [x] **I-14｜Issue7 R7-03（P2）**：已按用户裁决 A 修复并提交为 `297ccfe`；Dry Run 覆盖所有已配置目标，无适用规则目标只返回未调度空骨架且零 DNS/云 API/planner/限速，正式同步统计口径不变。
@@ -333,7 +343,7 @@
 | Goroutine / 连接 / 订阅泄漏 | **未发现** |
 | 无界内存 | DNS 熔断器历史域名累积（P3-01）已本地修复；条目数受该快照配置域名数约束，不是固定绝对内存上限 |
 | 核心同步静默停止 | **未发现** |
-| 明确凭据泄漏 | **未发现**（唯一残余是 P3-12 同机文件权限与 P3-19 的 SMTP 诊断文本回显） |
+| 明确凭据泄漏 | **原审计快照未发现**；P3-19 恶意/异常 AUTH 诊断回显已由合成本地 SMTP 复现并按 B 本地修复，非真实供应商泄漏结论；P3-12 同机文件权限亦已独立本地收口，root/同 UID 边界保持 |
 | 整体质量判断 | 架构与并发设计**优秀**（事务、快照、凭据、生命周期、SSE 五条主线干净，正向控制密度很高）；缺陷集中在**规则身份与端口比较层**（会造成持续删改云端规则）与**清理收尾** |
 
 ### 一句话结论
@@ -879,7 +889,8 @@ FAIL
 | P3-17 | **✅ 已按推荐 B 本地修复（2026-10-03），已提交 `5860cef`。** 原陈旧 `version 2` 实为 10 处/6 文件，加两处 `v2` 后为 12 处/7 文件 | 七测试仅清理注释/子测试名称/失败提示；完整配置包明确 version 3，业务设置与 ID 映射去掉不必要的版本绑定；实际 version 3 缺 monitoring 的用例改名“monitoring 缺失”；四处合法旧版本拒绝/历史说明保留 | `export_test.go:461` 原仍有 `v2`，此前完整串搜索造成“已修复”误判；当前已清理。正式 token 比对及该批次门禁见文末补记；P3-18 后续按 B 本地收口，见其独立补记 |
 | P3-17（修复前历史证据） | **原统计及 export_test 判断已由 2026-10-03 补记更正；以下保留旧记录，不作为当前状态。** 陈旧 "version 2" 表述残留（核验后为 **10 处 / 10 个测试文件**；全仓 `_test.go` 内共 14 处命中） | 陈旧标签：`config/runtime_test.go:27,66`、`main_test.go:732`、`webui/api/testenv_test.go:216`、`import_runtime_test.go:90`（原引 `:82`）、`import_test.go:11,20,111`、`redact_test.go:111,116`。**已修复**：`export_test.go:461` 已不含该串。**属合法负向控制、不应改**：`main_test.go:907,912`（断言 version 2 导入必须 400）、`alerts_v3_test.go:14,154`（历史说明 + 真实 `{"version":2}` 拒绝夹具） | `import_test.go:111` 仍用 map key `"version 2"` 承载 `{"version":3,...}`，属陈旧标识 |
 | P3-18 | **✅ 已按推荐 B 本地修复（2026-10-03），尚未提交** | Build6/Issue5 当前入口、Issue6 固定历史基线与提交角色、Design5 R7 状态、Build7 实施前基线、人工清单当前源码引用及 constants.ts 两处注释已对账；审计/TODOLIST/AGENTS 同步 | 原问题与更正证据见文末补记；I-11 仅本地文档/注释闭环，不关闭其他业务或真实外部验收 |
-| P3-19 | 邮件 AUTH 失败保留 SMTP 诊断文本（含 535 回显） | `notifier/email.go:219-221` `%w` 包装；`webui/api/test_email.go:78-82` 回给浏览器；`notifier/email_test.go:293-295` **显式断言**保留诊断 | 理论风险：若服务器回显 AUTH 载荷可间接泄露 base64 凭据（**未验证**；标准 SMTP 不会这样做）。属可调试性取舍 |
+| P3-19 | **✅ 已按定型 B 本地修复（2026-10-03），尚未提交**：整个 SMTP 会话共 11 个失败出口统一生成安全错误 | `notifier/email.go` 的 `send`/`safeSMTPError` 仅保留固定阶段、200～599 SMTP 数字码或固定中文类别，不复制服务器/底层原文，不保留原始 cause/Unwrap；测试邮件 JSON/WARN 与自动邮件 EventBus WARN 共用边界 | 正式定向 race 20 轮、两包/全仓 race、vet/build 与五类负向控制及两个外部故障出口证据见当前实施补记；Build7 完整诊断旧约定已明确替代。I-10 仅本项收口，真实 SMTP/浏览器未执行，P3-20/P3-21 独立 |
+| P3-19（修复前历史证据与更正） | 原 finding：邮件 AUTH 失败保留 SMTP 诊断文本（含 535 回显），当时标为“理论风险、未验证、可调试性取舍” | 原引用 `notifier/email.go:219-221`、API `:78-82`、测试 `:293-295` 均为历史行号；研究基线 `f0997cd` 的 AUTH 包装实际位于 `email.go:232`，且会话共有 11 个底层错误包装出口。既有 AUTH/RCPT/DATA 测试只检查 535/550/554 数字码，原“显式断言保留诊断”应收窄，未要求供应商自由文本 | 本地合成 SMTP 回显实际 AUTH PLAIN 载荷后，旧实现可将其送入 API JSON、WARN 与日志回放，风险已本地复现；原“标准 SMTP 不会这样做”不构成普遍安全保证。真实供应商是否出现此行为仍未知；当前安全输出保留数字码、舍弃自由诊断与详细证书信息 |
 | P3-20 | 邮件头/正文直发原始 UTF-8（无 RFC 2047 头部编码、无 CTE 声明） | `notifier/email.go:243-244`；`config/validate.go:307-316` 已排除头部注入 | 默认配置即中文主题/正文。多数现代 MTA 可正常投递；**真实表现必须由真实收件箱验证**（未执行） |
 | P3-21 | **两子项状态不同，须分别处理：** ① Webhook 响应体未 drain——**部分已修复**；② Push 响应体解析无字节上限——**未修复** | ① `notifier/webhook.go:139` 现经 `io.LimitReader` 读取至 EOF（`93e0e4b`），**≤16 KiB 的 2xx 响应已隐式 drain、连接可复用**；仍不 drain 的只有非 2xx（`:136-138` 在任何读取前返回）与 >16 KiB（`:143-145` 只读 16385 字节）。② `internal/health/push.go:263`（原引 `:247`）`json.NewDecoder(resp.Body).Decode(&payload)` **无 `io.LimitReader`**，`internal/health/` 内 `LimitReader/MaxBytesReader/ReadAll` 零命中，仅有时间上界（`:94` client timeout 与 `:221` 每请求 context deadline，10s） | ① 残余影响收窄为"非 2xx 与超限响应可能多一次握手"；② Push 内存峰值仍不受字节数约束。**不得把 ① 的修复外推为 P3-21 整体完成**。本轮已为子项①补一条此前缺失的判别性用例：`TestWebhookResponseSlotHeldUntilClose`（`notifier/webhook_response_test.go`）断言「名额保持到响应体读取与关闭都结束」——闸门阻塞读取期间 `InFlight()==1`、放行并返回后 `InFlight()==0` 且响应体已关闭。**判别力已验证**：把 `defer release()` 改为读取前提前释放后该用例精确失败（`响应体读取期间在途名额应为 1，实际 0`），恢复后通过；`-race -count=20` 通过。子项②（Push 无字节上限）本轮**未修复**、未补测 |
 | P3-22 | Dry Run 对每条规则各发一次 `GetRules` 并 sleep 一个厂商限速间隔（审计快照） | `syncer/syncer.go:604-640` 内层 for rule 里 `p.GetRules()` + `time.Sleep(rateLimitInterval(...))`，注释写"与 syncAll 一致"（实际 `syncAll` 每 provider 只 sleep 一次，`:805-817`） | ✅ 已由 Issue7 Step 4 修复：Dry Run 按目标取一次完整快照并在内存中规划，目标间保留限速；原 20 条规则约 100 秒/20 次 Describe 的风险仅作历史证据 |
@@ -1162,7 +1173,7 @@ FAIL
 | **配置事务与运行时发布** | **本项目最强的一环**：协调器 `锁 → 单事务 → 事务内快照 → 事务内构造候选 → commit → 无失败发布`；commit 后不读库不访问网络；`commit` 失败不 apply；`RuntimeState` 深拷贝 + 单锁替换；已证明**事务内无任何网络 I/O**（四个 SDK 工厂只做本地构造，无 IMDS/元数据/token 获取） | P2-04 已本地修复：ApplyState 先于 Wake | — | 本轮判别性测试证明两条分支唤醒时新快照可见 |
 | **同步调度** | 单一控制通道 + 4 处 `beginRound()` 硬门控（stop 门控与 enabled 门控**并列不合并**）；`Stop` 为吸收态且 `doneCh` 单所有者；`idle/failed/partial/success` 判定清晰 | P3-23 的无条件 Reset；P3-24 通知合并 | — | 仅 interval 实际变化时 Reset；`false → true` 保留恢复立即轮；按 Go 1.25 默认合同不加入 stale-tick drain，旧兼容模式另行裁决 |
 | **DNS/Provider** | 仅增量 API；严格 TAG 所有权与 canonical FunctionalKey（comment 不参与身份）；普通配置发布裁剪 breaker、导入 Reset；正式 `syncTarget` 每 attempt 重新 S0/规划/Add/S1/验证/条件清理，确认进度跨 attempt 累计 | P1-01 本地核验已收口但真实云未验收；`isRetryable` 保留腾讯 SDK 无 Unwrap 所需字符串兜底；失败重试后的残留计数独立观察见 P3-07 补记 | P3-07 三个不可达旧函数已删除；P3-09 已按 A 订正 `_txlock` 注释并实现写事务提前预留（见补记） | I-09 本地收口；GetRules 有连接测试生产消费者，旧 Diff/P0-01 回归保留，不扩大清理 |
-| **告警** | 默认全关；`渠道开关 + 触发开关`同时开启才订阅；邮件与 Webhook **共用同一固定渲染器**（顺序稳定、不遍历 map）；4 在途 + 满载丢弃最新 + 安全 WARN；限流器跨热重载连续；`test-email` 8 字段契约两侧严格一致且不写库；P3-11 写库错误已能上抛 | P3-03 非空非法 URL 周期校验已本地修复（P2-04 时序亦已修复）；P2-05 已补齐三渠道响应校验与有界读取，真实 Webhook 未验收；P3-15 已本地实施丢弃日志聚合；P3-19/P3-20/P3-21 邮件与响应体细节 | — | P2-05/P3-15 已本地实施；P3-03 已按独立授权补齐有下限的定时校验，真实 Uptime Kuma 仍待验收 |
+| **告警** | 默认全关；`渠道开关 + 触发开关`同时开启才订阅；邮件与 Webhook **共用同一固定渲染器**（顺序稳定、不遍历 map）；4 在途 + 满载丢弃最新 + 安全 WARN；限流器跨热重载连续；`test-email` 8 字段契约两侧严格一致且不写库；P3-11 写库错误已能上抛 | P3-03 非空非法 URL 周期校验已本地修复（P2-04 时序亦已修复）；P2-05 已补齐三渠道响应校验与有界读取，真实 Webhook 未验收；P3-15 已本地实施丢弃日志聚合；P3-19 已按 B 本地修复 SMTP 安全错误；P3-20/P3-21 邮件编码与响应体细节继续独立 | — | P2-05/P3-15 已本地实施；P3-03 已按独立授权补齐有下限的定时校验，真实 Uptime Kuma 仍待验收 |
 | **OperationalHealth** | **唯一计算源被三个消费者真实共用**（`supervisor` / `operational` 端点 / `pusher` 都走同一个 `*health.Checker`）；2s 非阻塞探活（`Store` 结构体**无互斥量**，不持应用锁）；`StartupGrace=10s` 三分支正确；`failed/partial` 直到被 `success/idle` 覆盖；原因稳定去重排序；30s 边沿监督器 | 判定输入来自三次独立 `Snapshot()`（`run.go:127-142`），注释自述"一致快照"但可能混用新旧 policy/interval → 30s 内一次瞬时误判，自愈 | `slices.Compact` 冗余 | 一次取 `*RuntimeState` 后派生 policy/interval |
 | **HTTP/SSE** | 严格解码齐全（未知字段/尾随/多顶层值/10 MiB/1 MiB/413）；路径 ID `strconv.Atoi` 且 >0；请求 DTO 不含 DB `id`；导出 GET 已删（实测 405）；两类 SSE 监听服务器级 `ShutdownCh` 且每次写出有 5s deadline；P3-05 已实施普通 JSON 成功/错误统一 `no-store` | `GET /api/alerts` 4 次非事务读存在撕裂窗口（PUT 单事务写，读侧可能"新 policy + 旧 email"，前端整体回传即把旧值写回） | `fs.Sub` 静默降级 | 普通 JSON 禁缓存已由 P3-05 收口；P3-14 缺失依赖 503 已本地修复；GET alerts 改只读事务取快照 |
 | **前端** | 8 字段测试邮件载荷两侧严格一致（历史上真实 bug 点，现有注释+类型双重防护）；无 `console.*`/存储/cookie 泄漏；密码与 Webhook/Push URL 用 `type="password"`；导出用 `fetch`+Blob 且 `revokeObjectURL`；EventSource 单实例且卸载关闭；无 `addEventListener` 泄漏 | P3-04 已本地修复（浏览器待验）；P3-16 已按 B 本地修复并有局部浏览器证据 | 时长校验已收敛至后端 | P2-06/P2-07 已本地收口；其余逐项按 P3 收敛；**不建议**引入 Pinia/Vitest 等重型栈 |
@@ -1765,6 +1776,8 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 
 ### P3-18 当前实施补记（2026-10-03，推荐方案 B：当前入口与历史证据逐项对账）
 
+> **后续提交标记：** 本批已提交为 `f0997cd`；以下保留实施时证据，“本轮/尚未提交”仅指该批次当时。
+
 - **授权与基线**：用户先要求研究并确认是否已修复，随后明确“开始执行改动”，按研究推荐 B 执行。实施前 `main / 5860cefb4dc36aaeea6a2ff8290367ad1ef9da6b`、本地 `origin/main / 5e1d79c2b3378f31079e3240c75777b174c30781`、ahead 5，工作树与暂存区干净；前序 P3-17 已由 `5860cef` 提交。本轮未 fetch、提交或 push，本地跟踪引用不保证远端现时状态。
 - **原问题与历史清单**：P3-18 原 finding 记录“Step 0 部分收口”：Design5 version 3、Build7 已完成状态与人工清单范围已更正，但 Build6/Issue5 历史措辞、Issue6 基线仍待清理；§4 原清单引用 `Build6.md:3`、`Issue5.md:5`、`Issue6.md:5,7,597`、`constants.ts:1/21`、`notifier/email.go:57`/`webhook.go:41`、`internal/health/push.go:103-104`（均为引用时快照行号）。本轮逐项核对后保留原问题依据，补充此前遗漏的 Design5 R7 状态、Build7 实施前基线及人工清单失效源码位置；P3-17 的陈旧测试版本标签不再次修改。
 - **方案与实际范围**：九份 Markdown（Build6、Issue5、Issue6、Design5、Build7、ProdTestList、AGENTS、本文、TODOLIST）加 `webui/frontend/src/constants.ts`，固定十文件。当前阅读入口与历史批次分别标注；历史事实不按当前业务合同重写，不移动文档、不引入新框架或常驻检查。常量文件只改两处中文注释，云产品选项、中文名映射、提示值与导出符号完全不变。
@@ -1773,3 +1786,15 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 - **正式核验**：与实施前快照比对，恰为九份 Markdown 与一个 TS 文件，无暂存或新增非忽略文件；Build6/Issue5 从第一节起的历史正文逐字节一致，Issue6 第三节除 18 个实施记录标题外逐字节一致。使用既有 TypeScript scanner 的 skipTrivia 模式比对，142 个非注释 token 全部一致。13 个新增相对链接逐项存在，所改九文档的既有相对链接也无失效路径；新增引用的 Issue6/Issue7 章节与 Provider 符号存在。31 个引用提交均存在且为实施前 HEAD 的祖先，固定历史 diff 与两类提交角色经 Git 实际输出核对。ProdTestList 的 21 条人工验收/历史索引状态逐项完全一致；TODOLIST TODO-001/002/003/008 原文完全一致，未升级业务修复、测试补强或待裁决状态。最终 `git diff --check` 通过。
 - **核验产物**：实施前十文件副本及结构化检查结果位于仓库外 `/var/folders/1x/ngps27d54l1791wzj_qlqv980000gn/T/fwalizer-p318-sdqkvdni/`；核验脚本为 `/tmp/fwalizer_p318_verify.py`。这些是本轮文档核验产物，不是产品测试或外部验收证据。
 - **收口与边界**：P3-18 与 I-11 的本地文档/注释队列收口；P3-17 已提交 `5860cef`，本轮改动仍尚未提交。TODO-006 对应文档范围已处理，TODO-004/005/007 的其余统计、当前生产路径证据与测试注释仍单独追踪；TODO-001～003/008、其他独立业务 finding 和人工验收均不关闭。未改可执行生产代码、测试、API/schema、依赖、配置或部署；未运行 Go race/vet/build、前端构建或业务测试、Docker/compose、浏览器、真实云/SMTP/收件箱/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR，不新增这些层级的通过结论。
+
+### P3-19 当前实施补记（2026-10-03，定型方案 B：SMTP 会话安全错误）
+
+- **授权、恢复点与范围：** 用户明确依据引用聊天《研究 P3-19 修复方案》的定案“开始执行修复，修复后需同步更新文档”。实施前 `main / f0997cd0ada6c0c71cd386d85f8767f41d1411f2`，本地 `origin/main / 5e1d79c2b3378f31079e3240c75777b174c30781`、ahead 6，工作树与暂存区干净，前序 P3-18 已提交。四文件候选补丁通过 `git apply --check --whitespace=error-all` 后应用；固定八文件为 notifier/email.go、webui/api/test_email.go（仅注释）、两份新增安全回归及 AGENTS/本文/Build7/ProdTestList。研究候选与正式工作树证据分开，未 fetch/提交/push。
+- **原问题与判别性复现：** 旧 `send` 的连接、deadline、greeting、STARTTLS、AUTH、MAIL、RCPT、DATA、正文 Write、结束 DATA、QUIT 共 11 处 `%w` 可输出底层文本。合成 SMTP 收到实际 AUTH PLAIN 的 base64 载荷后，将密码、用户、正文 canary 与载荷写入失败响应；原出口逻辑 overlay 在会话/API/日志/回放安全断言与错误链断言变红，证明此输出风险超出 AUTH 单出口。该本地复现不证明真实 SMTP 服务曾泄漏，也不改变真实收件箱未验收状态。
+- **最终实现与取舍：** 私有 `safeSMTPError` 先用标准库解析的 `textproto.Error.Code`，仅允许 200～599；非预期 2xx 仍为原失败结果，范围外码归入响应格式异常。无有效数字码时依次判超时、可识别 TLS 类型、协议/挑战格式、EOF/关闭、其他网络、会话/安全策略，关闭优先于网络以覆盖包装 `net.ErrClosed` 的 `net.OpError`。不复制 `Msg`、不调用底层 `Error()`、不匹配私有错误字符串，不将 cause 或 `Unwrap` 存入新普通 error。固定阶段与类别组合最多 56 UTF-8 字节，例如 `SMTP 认证失败: SMTP 响应码 535`；供应商自由文本与详细证书诊断不再返回。阶段保留原调用点，隐式 EHLO/HELO 失败可能沿 AUTH/MAIL 出口返回，不增加状态机/公开错误类型/生产测试接缝。
+- **正式新增回归：** notifier 8 项、API 1 项顶层 TestP319。12 类会话故障（greeting/非法 greeting/hello/STARTTLS/AUTH/多行 AUTH/非法 AUTH/MAIL/RCPT/DATA/结束 DATA/QUIT）、16 类类型判别、超时有界、超长合成诊断、loopback 真实 STARTTLS 自签证书拒绝、拨号失败、非 TLS 且非 localhost 的 PlainAuth 安全策略，以及真正 EventBus WARN。API 4 类真实本地 HTTP 请求联合检查 HTTP 200、success=false/error、no-store、TextHandler 日志与 WebUI 历史回放无 canary、邮件配置不变和零 apply；请求使用当前未保存表单。未知 error 的 `Error()` 会 panic，证明安全兜底不依赖字符串。新日志夹具恢复 slog.Default 及标准 log writer/flags；TCP accepted connection 在会话 goroutine 中持有且 deadline/cleanup 有界。
+- **正式工作树门禁：** Go `1.27.1 darwin/arm64`；`go test -race ./notifier ./webui/api -run '^TestP319' -count=20 -timeout=3m` 通过（notifier 3.565s、API 2.371s）；`go test -race ./notifier ./webui/api -count=1 -timeout=3m` 两包通过（12.756s/15.296s）；`go test ./... -race -count=1 -timeout=10m` 12 包全部 ok（含既有 TestMain 构建产品二进制的进程回归）；`go vet ./...`、`go build ./...` 通过。受影响四个 Go 文件 gofmt 检查、八文件范围与最终文档后 `git diff --check` 通过。全仓一轮通过不外推长期稳定绿色；既有 ignored 前端 dist 用于 embed 编译，本轮未重建前端。
+- **正式负向控制：** 仓库外 Go overlay 从正式源码生成五类错误实现，原 11 出口逻辑、仅 AUTH 安全化、%w→%v、安全 Error() 但保留原始 Unwrap、关闭误归网络，均 exit 1 且由明确行为断言检出，无编译失败。前三类在会话与 API JSON/日志/回放中失败，保留 Unwrap 在原始原因可达断言失败，关闭误归网络仅 `TestP319Classification/wrapped_closed` 类别断言失败。
+- **外部故障探针与边界：** 仓库外 overlay 仅将正式发送器的 net.DialTimeout 调用替换为连接包装器，deadline 设置与正文 Write 两个出口注入合成敏感错误；`go test -race -overlay ... ./notifier -run '^TestP319FaultPaths$' -count=20 -timeout=2m` 通过，恢复旧返回逻辑的两出口对照按原文/原始链断言失败。没有向正式源码增加 Dial 全局接缝或新探针文件。探针/对照日志保存在 `/var/folders/1x/ngps27d54l1791wzj_qlqv980000gn/T/fwalizer-p319-implementation-b3ke5tan/`；属于正式源码 overlay 证据，不冒充未修改条件下的实际外部 SMTP 验收。旧 deadline 原已有效，旧超时分类失败不表示缺少 deadline。
+- **文档与状态：** Build7 §1.1/决策12/§5.2/5.3/5.4/验收矩阵明确替代完整 SMTP 诊断历史约定，旧响应及历史证据保留；§4.4 业务事件详情渲染不改。AGENTS 增安全合同与本轮记录，本文最新基线/状态索引/finding/总览/I-10/告警矩阵同步；ProdTestList 只补 PT-B7-01/07 安全失败反馈关注点，PT-B7-02 人工免除仍非通过。P3-19 本地收口、尚未提交，I-10 整体仍未完成，P3-20 编码/P3-21 响应读取继续独立。
+- **未执行与保持：** 未执行 P3-19 专门产品进程故障/浏览器、前端构建、Linux/Docker/compose、真实 SMTP/收件箱/云/Webhook/Uptime Kuma 或远端 CI/GHCR，不新增这些通过结论。现有 10 秒拨号、30 秒整会话 deadline、TLS/认证策略、信封/正文/主题、在途限制、API/no-store/零写入零发布/订阅、成功仅 SMTP 接受、Close 清理保持。固定错误输出上限不代表 SMTP 响应读取新增字节上限，本项也不治理业务事件详情块的错误内容。

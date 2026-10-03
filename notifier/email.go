@@ -2,10 +2,15 @@ package notifier
 
 import (
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/smtp"
+	"net/textproto"
 	"strings"
 	"time"
 )
@@ -202,18 +207,18 @@ func (n *EmailNotifier) send(subject, body string) error {
 
 	conn, err := net.DialTimeout("tcp", addr, smtpDialTimeout)
 	if err != nil {
-		return fmt.Errorf("连接 SMTP 服务器失败: %w", err)
+		return safeSMTPError("连接 SMTP 服务器失败", err)
 	}
 	// 整条会话的硬上限：覆盖初始 greeting 与最后的 QUIT
 	if err := conn.SetDeadline(time.Now().Add(smtpDeadline)); err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("设置 SMTP deadline 失败: %w", err)
+		return safeSMTPError("设置 SMTP deadline 失败", err)
 	}
 
 	c, err := smtp.NewClient(conn, n.cfg.Host)
 	if err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("创建 SMTP 客户端失败: %w", err)
+		return safeSMTPError("创建 SMTP 客户端失败", err)
 	}
 	defer func() {
 		// Quit 已正常结束时再次 Close 是幂等的；这里保证异常路径也释放连接
@@ -222,19 +227,19 @@ func (n *EmailNotifier) send(subject, body string) error {
 
 	if ok, _ := c.Extension("STARTTLS"); ok {
 		if err := c.StartTLS(&tls.Config{ServerName: n.cfg.Host}); err != nil {
-			return fmt.Errorf("STARTTLS 失败: %w", err)
+			return safeSMTPError("STARTTLS 失败", err)
 		}
 	}
 
 	if n.cfg.User != "" {
 		auth := smtp.PlainAuth("", n.cfg.User, n.cfg.Pass, n.cfg.Host)
 		if err := c.Auth(auth); err != nil {
-			return fmt.Errorf("SMTP 认证失败: %w", err)
+			return safeSMTPError("SMTP 认证失败", err)
 		}
 	}
 
 	if err := c.Mail(n.cfg.From); err != nil {
-		return fmt.Errorf("SMTP MAIL FROM 失败: %w", err)
+		return safeSMTPError("SMTP MAIL FROM 失败", err)
 	}
 	// 多收件人逐项 Trim（Build7 §4.5）：页面示例 "a@x.com, b@y.com" 的第二个地址
 	// 不得把前导空格传给 SMTP；空项直接跳过。
@@ -244,26 +249,26 @@ func (n *EmailNotifier) send(subject, body string) error {
 			continue
 		}
 		if err := c.Rcpt(rcpt); err != nil {
-			return fmt.Errorf("SMTP RCPT TO 失败: %w", err)
+			return safeSMTPError("SMTP RCPT TO 失败", err)
 		}
 	}
 
 	w, err := c.Data()
 	if err != nil {
-		return fmt.Errorf("SMTP DATA 失败: %w", err)
+		return safeSMTPError("SMTP DATA 失败", err)
 	}
 	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
 		n.cfg.From, n.cfg.To, subject, body)
 	if _, err := w.Write([]byte(msg)); err != nil {
 		_ = w.Close()
-		return fmt.Errorf("写入邮件正文失败: %w", err)
+		return safeSMTPError("写入邮件正文失败", err)
 	}
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("结束 DATA 失败: %w", err)
+		return safeSMTPError("结束 DATA 失败", err)
 	}
 
 	if err := c.Quit(); err != nil {
-		return fmt.Errorf("SMTP QUIT 失败: %w", err)
+		return safeSMTPError("SMTP QUIT 失败", err)
 	}
 	return nil
 }
@@ -302,4 +307,35 @@ func BuildTestEmailContent(subject, body string, now time.Time) (string, string)
 func SendTestEmail(cfg EmailConfig, subject, body string) error {
 	n := &EmailNotifier{cfg: cfg}
 	return n.send(subject, body)
+}
+
+// safeSMTPError 只生成固定阶段、SMTP 数字响应码或固定类别的安全诊断。
+// stage 必须来自调用处的固定标签；不复制服务器文本，也不保留底层错误链。
+func safeSMTPError(stage string, err error) error {
+	var reply *textproto.Error
+	if errors.As(err, &reply) && reply.Code >= 200 && reply.Code <= 599 {
+		return fmt.Errorf("%s: SMTP 响应码 %d", stage, reply.Code)
+	}
+	category := "会话或安全策略异常"
+	var network net.Error
+	var proto textproto.ProtocolError
+	var corrupt base64.CorruptInputError
+	var cert *tls.CertificateVerificationError
+	var tlsRecord tls.RecordHeaderError
+	var unknown x509.UnknownAuthorityError
+	var invalid x509.CertificateInvalidError
+	var hostname x509.HostnameError
+	switch {
+	case errors.As(err, &network) && network.Timeout():
+		category = "会话超时"
+	case errors.As(err, &cert), errors.As(err, &tlsRecord), errors.As(err, &unknown), errors.As(err, &invalid), errors.As(err, &hostname):
+		category = "TLS 验证或握手异常"
+	case errors.As(err, &reply), errors.As(err, &proto), errors.As(err, &corrupt):
+		category = "SMTP 响应格式异常"
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, net.ErrClosed):
+		category = "连接已关闭"
+	case errors.As(err, &network):
+		category = "网络连接异常"
+	}
+	return fmt.Errorf("%s: %s", stage, category)
 }
