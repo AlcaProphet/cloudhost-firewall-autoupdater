@@ -87,7 +87,7 @@ func waitProviderCalls(t *testing.T, p *countingImportProvider, want int32, msg 
 	t.Fatalf("%s（GetRules 调用次数 = %d, want >= %d）", msg, p.calls.Load(), want)
 }
 
-// bundleSettingsSync 构造 version 2 的 settings JSON 片段（可指定 sync_enabled）。
+// bundleSettingsSync 构造配置包的 settings JSON 片段（可指定 sync_enabled）。
 func bundleSettingsSync(syncEnabled bool) string {
 	value := "false"
 	if syncEnabled {

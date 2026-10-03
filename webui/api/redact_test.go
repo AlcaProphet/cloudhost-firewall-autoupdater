@@ -108,12 +108,12 @@ func TestDocumentedGetContractsStillReturnSecrets(t *testing.T) {
 	if !strings.Contains(alertsBodyText, sentinelSMTPPassword) || !strings.Contains(alertsBodyText, sentinelWebhookURL) {
 		t.Errorf("GET /api/alerts 应返回告警表单所需的完整对象: %s", alertsBodyText)
 	}
-	// version 2 导出是完整敏感快照，也是**唯一**允许包含这些 sentinel 的 HTTP 响应
-	// （Build6 §3.6、§12.16）；其余响应与日志都不允许出现。
+	// version 3 导出必须包含完整敏感快照；上方 settings/alerts GET 仍按表单回显契约返回相应凭据。
+	// 导入成功/错误响应与日志不得泄露敏感值（Build6 §3.6、§12.16）。
 	exportBody := e.do(t, http.MethodPost, "/api/config/export", "").Body.String()
 	for _, secret := range allSentinels {
 		if !strings.Contains(exportBody, secret) {
-			t.Errorf("version 2 导出应包含完整敏感快照，缺少 %q", secret)
+			t.Errorf("version 3 导出应包含完整敏感快照，缺少 %q", secret)
 		}
 	}
 }

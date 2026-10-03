@@ -212,7 +212,7 @@ func settingsWithSentinels(tcID, tcKey, aliID, aliKey string) string {
 		`"ali_access_id":"` + aliID + `","ali_access_key":"` + aliKey + `"}`
 }
 
-// validBundleSettings 构造一份合法的 version 2 settings JSON 片段
+// validBundleSettings 构造一份合法的配置包 settings JSON 片段
 func validBundleSettings() string {
 	return `"settings":{"credentials":{"tencent":{"secret_id":"","secret_key":""},` +
 		`"aliyun":{"access_key_id":"","access_key_secret":""}},` +

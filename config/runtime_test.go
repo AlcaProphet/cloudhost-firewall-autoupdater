@@ -24,7 +24,7 @@ func newSnapshotStore(t *testing.T) *Store {
 	return store
 }
 
-// TestLoadBusinessSnapshotTxDefaultsOnEmptyDB 空库快照补齐全部 version 2 默认值，
+// TestLoadBusinessSnapshotTxDefaultsOnEmptyDB 空库快照补齐全部业务设置默认值，
 // 且不包含数据库中的未知键（Build6 §3.1、§12.10）。
 func TestLoadBusinessSnapshotTxDefaultsOnEmptyDB(t *testing.T) {
 	store := newSnapshotStore(t)
@@ -63,7 +63,7 @@ func TestLoadBusinessSnapshotTxDefaultsOnEmptyDB(t *testing.T) {
 	}
 }
 
-// TestLoadBusinessSnapshotTxDropsUnknownKeys 快照只保留 version 2 键集合，
+// TestLoadBusinessSnapshotTxDropsUnknownKeys 快照只保留业务设置的完整键集合，
 // 数据库中的 webui_port 等残留/未知键不得进入快照。
 func TestLoadBusinessSnapshotTxDropsUnknownKeys(t *testing.T) {
 	store := newSnapshotStore(t)

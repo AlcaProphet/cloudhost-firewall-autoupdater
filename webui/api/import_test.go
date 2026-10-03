@@ -8,7 +8,7 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
 
-// TestConfigImportSuccessReplacesAndNormalizes 合法 version 2 导入：覆盖式替换、复用同一组校验并归一化、只一次运行时发布
+// TestConfigImportSuccessReplacesAndNormalizes 合法 version 3 导入：覆盖式替换、复用同一组校验并归一化、只一次运行时发布
 func TestConfigImportSuccessReplacesAndNormalizes(t *testing.T) {
 	e := newTestEnv(t)
 	e.seedTarget(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-old")
@@ -17,7 +17,7 @@ func TestConfigImportSuccessReplacesAndNormalizes(t *testing.T) {
 		t.Fatalf("预置旧设置失败: %v", err)
 	}
 
-	// version 2：导出 ID 与目标数据库 ID 无关，规则通过 target_export_ids 引用
+	// 导出 ID 与目标数据库 ID 无关，规则通过 target_export_ids 引用
 	body := bundleWithSettings(
 		`[{"export_id":7,"cloud_type":" ali_ecs ","region":" cn-hangzhou ","resource_id":" sg-1 "}]`,
 		`[{"host":" api.example.com ","protocol":" tcp ","ports":" 443 ","action":"accept",`+
@@ -108,7 +108,7 @@ func TestConfigImportInvalidInputNoWriteNoReload(t *testing.T) {
 	cases := map[string]string{
 		"version 缺失":             bundleWithout("version"),
 		"version 1":              `{"version":1,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`,
-		"version 2":              `{"version":3,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`,
+		"monitoring 缺失":          `{"version":3,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`,
 		"version 4":              `{"version":4,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `,` + validBundleMonitoring() + `}`,
 		"version null":           `{"version":null,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` + validBundleSettings() + `,` + validBundleAlerts() + `}`,
 		"metadata 缺失":            bundleWithout("metadata"),

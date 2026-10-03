@@ -729,10 +729,10 @@ func TestProcessSecretsNotLogged(t *testing.T) {
 	}
 }
 
-// ─── Build6 Step 5：真实二进制进程级 version 2 配置导入导出 ───
+// ─── Build6 Step 5 / Build7：真实二进制进程级 version 3 配置导入导出 ───
 
 // TestProcessConfigExportImportRoundTrip 真实二进制进程级验证：
-// POST 导出得到 v2 附件（含完整敏感快照）→ 在另一数据目录导入 → 业务关系重建。
+// POST 导出得到 version 3 附件（含完整敏感快照）→ 在另一数据目录导入 → 业务关系重建。
 //
 // 这是「接口层 + 真实进程 + 真实 SQLite」的证据层，不使用 mock。
 func TestProcessConfigExportImportRoundTrip(t *testing.T) {

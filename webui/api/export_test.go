@@ -458,7 +458,7 @@ func TestConfigImportAlertsRoundTrip(t *testing.T) {
 }
 
 // TestConfigImportSharedTargetAcrossRules 多条规则引用同一目标时，
-// v2 导入的 export_id → 新数据库 ID 映射必须让这些规则仍指向同一个新目标，
+// 导入的 export_id → 新数据库 ID 映射必须让这些规则仍指向同一个新目标，
 // 且该目标是本次导入重建的业务目标（Issue5 R5-01「多规则复用同一目标」回归）。
 func TestConfigImportSharedTargetAcrossRules(t *testing.T) {
 	e := newTestEnv(t)
