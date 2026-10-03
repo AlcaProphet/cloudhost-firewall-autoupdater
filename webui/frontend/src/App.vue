@@ -2,12 +2,14 @@
 // 应用外壳：侧边栏导航 + 全局主题（light/dark，DB 持久化，Build4 Step 5）
 import { NLayout, NLayoutSider, NLayoutContent, NMenu, NConfigProvider, NMessageProvider, NSwitch, NTooltip } from 'naive-ui'
 import { darkTheme } from 'naive-ui'
-import { useRouter } from 'vue-router'
-import { ref, onMounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
+import { computed, onMounted } from 'vue'
 import { useSettings } from './composables/useSettings'
 
 const router = useRouter()
-const activeKey = ref('/')
+const route = useRoute()
+// 高亮跟随已经生效的路由，覆盖深链、页面内跳转与浏览器历史导航。
+const activeKey = computed(() => route.path)
 const { theme, applyTheme, setTheme } = useSettings()
 
 // 全局主题覆盖：字号 16px + 按钮高度统一放大（明暗主题共用）
@@ -64,7 +66,6 @@ const menuOptions = [
 ]
 
 function handleMenuUpdate(key: string) {
-  activeKey.value = key
   router.push(key)
 }
 

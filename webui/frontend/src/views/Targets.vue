@@ -11,6 +11,8 @@ import type { TargetConfig, TestConnectionResult } from '../types'
 
 const targets = ref<TargetConfig[]>([])
 const showModal = ref(false)
+// 保存包含后续列表刷新，锁定期间不允许重新创建或切换表单。
+const saving = ref(false)
 const editingId = ref<number | null>(null)
 // resource_id 初始为 null：避免 NSelect tag 模式将空字符串视为已选值导致 placeholder 不显示
 const form = ref<{ cloud_type: string; region: string; resource_id: string | null }>({ cloud_type: 'tc_lighthouse', region: '', resource_id: null })
@@ -101,7 +103,7 @@ onMounted(async () => {
 })
 
 function openAdd() {
-  if (!pageActive || deletePhase.value !== 'idle') return
+  if (!pageActive || saving.value || deletePhase.value !== 'idle') return
   editingId.value = null
   form.value = { cloud_type: 'tc_lighthouse', region: '', resource_id: null }
   showModal.value = true
@@ -109,7 +111,7 @@ function openAdd() {
 }
 
 function openEdit(row: TargetConfig) {
-  if (!pageActive || deletePhase.value !== 'idle') return
+  if (!pageActive || saving.value || deletePhase.value !== 'idle') return
   editingId.value = row.id
   form.value = { cloud_type: row.cloud_type, region: row.region, resource_id: row.resource_id }
   showModal.value = true
@@ -117,20 +119,29 @@ function openEdit(row: TargetConfig) {
 }
 
 async function saveTarget() {
-  if (!pageActive || deletePhase.value !== 'idle') return
-  const method = editingId.value ? 'PUT' : 'POST'
-  const url = editingId.value ? `/api/targets/${editingId.value}` : '/api/targets'
+  if (!pageActive || saving.value || deletePhase.value !== 'idle') return
+  if (!showModal.value) return
+  saving.value = true
+  ++loadSequence
+  const id = editingId.value
+  const method = id ? 'PUT' : 'POST'
+  const url = id ? `/api/targets/${id}` : '/api/targets'
   try {
     await request(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cloud_type: form.value.cloud_type, region: form.value.region, resource_id: form.value.resource_id }),
     })
+    if (!pageActive) return
     showModal.value = false
-    message.success(editingId.value ? '更新成功' : '添加成功')
-    load()
-  } catch (e: any) {
-    message.error(`保存失败: ${e.message}`) // 修复：非 2xx 不再误报成功
+    message.success(id ? '更新成功' : '添加成功')
+    await load('配置已保存，但目标列表刷新失败，请刷新页面核对')
+  } catch (e: unknown) {
+    if (pageActive) message.error(e instanceof RequestError
+      ? `保存失败: ${e.message}`
+      : '未能确认保存结果，请刷新列表核对；不会自动重试保存')
+  } finally {
+    saving.value = false
   }
 }
 
@@ -166,7 +177,7 @@ function focusDeleteCancel() {
 }
 
 function openDeleteConfirm(row: TargetConfig, origin: HTMLElement | null = null) {
-  if (!pageActive || deletePhase.value !== 'idle' || showModal.value) return
+  if (!pageActive || saving.value || deletePhase.value !== 'idle' || showModal.value) return
   pendingDelete.value = { ...row }
   deleteOrigin = origin
   deleteDialogLeft = false
@@ -224,6 +235,7 @@ async function confirmDelete() {
 
 // 弹窗内表单级「测试连接」：用未保存的表单值验证（保留），15s 超时
 async function testConnection() {
+  if (!pageActive || saving.value) return
   testResult.value = '测试中...'
   try {
     const data = await request<TestConnectionResult>(
@@ -253,8 +265,8 @@ const columns = [
     render(row: any) {
       return h(NSpace, { size: 'small' }, {
         default: () => [
-          h(NButton, { size: 'tiny', disabled: deleteBusy.value, onClick: () => openEdit(row) }, { default: () => '编辑' }),
-          h(NButton, { size: 'tiny', type: 'error', disabled: deleteBusy.value, onClick: (event: MouseEvent) => openDeleteConfirm(row, event.currentTarget as HTMLElement) }, { default: () => '删除' }),
+          h(NButton, { size: 'tiny', disabled: deleteBusy.value || saving.value, onClick: () => openEdit(row) }, { default: () => '编辑' }),
+          h(NButton, { size: 'tiny', type: 'error', disabled: deleteBusy.value || saving.value, onClick: (event: MouseEvent) => openDeleteConfirm(row, event.currentTarget as HTMLElement) }, { default: () => '删除' }),
         ]
       })
     }
@@ -265,11 +277,11 @@ const columns = [
 <template>
   <div>
     <h2>云资源管理</h2>
-    <NButton ref="pageAddButton" type="primary" size="large" :disabled="deleteBusy" style="margin: 8px 0 12px" @click="openAdd">添加目标</NButton>
+    <NButton ref="pageAddButton" type="primary" size="large" :disabled="deleteBusy || saving" style="margin: 8px 0 12px" @click="openAdd">添加目标</NButton>
     <NDataTable :columns="columns" :data="targets" :bordered="true" />
 
-    <NModal v-model:show="showModal" :title="editingId ? '编辑目标' : '添加目标'" preset="card" style="width: 500px">
-      <NForm :model="form" label-placement="left" label-width="80">
+    <NModal v-model:show="showModal" :title="editingId ? '编辑目标' : '添加目标'" preset="card" :closable="!saving" :mask-closable="!saving" :close-on-esc="!saving" style="width: 500px">
+      <NForm :disabled="saving" :model="form" label-placement="left" label-width="80">
         <!-- Keys 缺失提示（改进 12） -->
         <NAlert v-if="credWarning" type="warning" style="margin-bottom: 12px">
           {{ credWarning }}
@@ -299,8 +311,8 @@ const columns = [
           />
         </NFormItem>
         <NSpace>
-          <NButton type="primary" @click="saveTarget">保存</NButton>
-          <NButton @click="testConnection">测试连接</NButton>
+          <NButton type="primary" :loading="saving" :disabled="saving" @click="saveTarget">保存</NButton>
+          <NButton :disabled="saving" @click="testConnection">测试连接</NButton>
         </NSpace>
         <p v-if="testResult" style="margin-top: 8px; color: #666">{{ testResult }}</p>
       </NForm>

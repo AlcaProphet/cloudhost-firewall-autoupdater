@@ -8,11 +8,15 @@ import type { ScannedResource } from '../types'
 
 // 各云厂商的扫描结果缓存（key = cloud_type）
 const cache = ref<Record<string, ScannedResource[]>>({})
+// 每产品只接收最新读取；清空使之前和清空期间发出的读取失效。
+const sequences: Record<string, number> = {}
 
 // 拉取某云厂商的扫描结果（失败静默保留旧数据）
 async function load(cloudType: string) {
+  const sequence = sequences[cloudType] = (sequences[cloudType] || 0) + 1
   try {
-    cache.value[cloudType] = await request<ScannedResource[]>(`/api/scanned-resources?cloud_type=${cloudType}`)
+    const data = await request<ScannedResource[]>(`/api/scanned-resources?cloud_type=${cloudType}`)
+    if (sequences[cloudType] === sequence) cache.value[cloudType] = data
   } catch { /* 失败静默 */ }
 }
 
@@ -32,12 +36,12 @@ async function scan(cloudType: string, region: string): Promise<string | null> {
   }
 }
 
-// 清理某云厂商的扫描结果
+// 清理成功才清缓存；错误交给页面汇总，不能把失败当作已清空。
 async function clear(cloudType: string) {
-  try {
-    await request(`/api/scanned-resources?cloud_type=${cloudType}`, { method: 'DELETE' })
-    cache.value[cloudType] = []
-  } catch { /* 失败静默 */ }
+  sequences[cloudType] = (sequences[cloudType] || 0) + 1
+  await request(`/api/scanned-resources?cloud_type=${cloudType}`, { method: 'DELETE' })
+  sequences[cloudType] = (sequences[cloudType] || 0) + 1
+  cache.value[cloudType] = []
 }
 
 // 清空全部缓存（「清空所有数据」后调用，避免残留旧数据）

@@ -1,17 +1,17 @@
 <script setup lang="ts">
 import { NForm, NFormItem, NInput, NSelect, NButton, NSpace, NCard, NGrid, NGi, NModal, useMessage, useThemeVars } from 'naive-ui'
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { request } from '../api'
 import { useZones } from '../composables/useZones'
 import { useScannedResources } from '../composables/useScannedResources'
 
 const settings = ref<Record<string, string>>({})
+const saving = ref(false)
+let pageActive = true
+onUnmounted(() => { pageActive = false })
 const message = useMessage()
 // 主题感知变量：明暗模式下文字/分隔线颜色自动切换（修复暗色模式扫描结果不可读）
 const themeVars = useThemeVars()
-
-// 间隔格式校验（如 30s、5m、1h、500ms），保存前拦截非法值
-const intervalPattern = /^\d+(ms|s|m|h)$/
 
 // ─── 扫描资源（卡片内云产品 + 地域选择 → 扫描 → 已扫描资源列表） ───
 const { load: loadZones, regionOptions } = useZones()
@@ -69,6 +69,7 @@ onMounted(async () => {
 })
 
 async function runScan(s: typeof tcScan) {
+  if (!pageActive || clearing.value || s.loading) return
   if (!s.product || !s.region) {
     message.warning('请先选择云产品与地域')
     return
@@ -86,6 +87,7 @@ async function runScan(s: typeof tcScan) {
 
 // ─── 清空扫描结果（卡片式确认后执行；清空该厂商全部产品，与「已扫描的资源」展示范围一致） ───
 const clearConfirm = ref(false)
+const clearing = ref(false)
 const clearTarget = ref<'tc' | 'ali' | null>(null)
 
 const clearTitle = computed(() => (clearTarget.value === 'tc' ? '清空腾讯云扫描结果' : '清空阿里云扫描结果'))
@@ -95,13 +97,32 @@ const clearDesc = computed(() =>
     : '将清空阿里云（轻量云 + ECS）的全部扫描结果，添加目标时将不再提供这些资源的自动补全。此操作不可恢复，确认继续？'
 )
 
+// 两个产品独立清空；部分结果未确认时保留失败产品缓存，不自动重试。
 async function confirmClearScan() {
-  const products = clearTarget.value === 'tc' ? ['tc_lighthouse', 'tc_cvm'] : ['ali_swas', 'ali_ecs']
-  clearConfirm.value = false
-  for (const ct of products) {
-    await clearResources(ct)
+  if (!pageActive || clearing.value || !clearConfirm.value || !clearTarget.value) return
+  const scanState = clearTarget.value === 'tc' ? tcScan : aliScan
+  if (scanState.loading) {
+    message.warning('请等待该厂商扫描完成后再清空')
+    return
   }
-  message.success('扫描结果已清空')
+  const products = clearTarget.value === 'tc' ? ['tc_lighthouse', 'tc_cvm'] : ['ali_swas', 'ali_ecs']
+  clearing.value = true
+  try {
+    const results = await Promise.allSettled(products.map(ct => clearResources(ct)))
+    if (!pageActive) return
+    const failures = results.filter(result => result.status === 'rejected').length
+    clearConfirm.value = false
+    if (failures === 0) {
+      scanState.hasScanned = false
+      message.success('扫描结果已清空')
+    } else {
+      message.error(failures === products.length
+        ? '未能确认扫描结果已清空，请刷新页面核对；不会自动重试'
+        : '仅部分产品确认清空，其他产品未能确认，请刷新页面核对；不会自动重试')
+    }
+  } finally {
+    clearing.value = false
+  }
 }
 
 // ─── 清空所有数据（重新初始化，卡片式确认） ───
@@ -123,13 +144,13 @@ async function resetAll() {
   }
 }
 
-// 可编辑设置键：与后端 PUT /api/settings 的固定 11 字段 DTO 一一对应
+// 设置页只提交十个可见字段；theme 由侧边栏单独更新，后端仍保留十一字段部分更新 DTO
 const editableKeys = [
   'tc_access_id', 'tc_access_key', 'ali_access_id', 'ali_access_key',
-  'tag', 'interval', 'dns', 'dns_timeout', 'dns_fail_threshold', 'log_level', 'theme',
+  'tag', 'interval', 'dns', 'dns_timeout', 'dns_fail_threshold', 'log_level',
 ] as const
 
-// buildSettingsPayload 构造仅含 11 个可编辑键的保存 payload
+// buildSettingsPayload 只构造当前设置页可见字段的保存 payload
 // 不再整体回传 GET 响应对象，避免把数据库中的保留键/未知键提交给后端
 function buildSettingsPayload(src: Record<string, string>): Record<string, string> {
   const payload: Record<string, string> = {}
@@ -140,20 +161,21 @@ function buildSettingsPayload(src: Record<string, string>): Record<string, strin
   return payload
 }
 
+// 时长语法与正数校验交由后端统一处理，保留用户输入供错误后修改。
 async function save() {
-  if (!intervalPattern.test(String(settings.value.interval || ''))) {
-    message.error('同步间隔格式无效，示例：30s / 5m / 1h')
-    return
-  }
+  if (!pageActive || saving.value) return
+  saving.value = true
   try {
     await request('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildSettingsPayload(settings.value)),
     })
-    message.success('保存成功')
+    if (pageActive) message.success('保存成功')
   } catch (e: any) {
-    message.error(`保存失败: ${e.message}`) // 修复：非 2xx 不再误报成功
+    if (pageActive) message.error(`保存失败: ${e.message}`)
+  } finally {
+    saving.value = false
   }
 }
 
@@ -284,8 +306,8 @@ async function confirmImport() {
           <NSpace align="center" style="margin-bottom: 8px">
             <NSelect size="large" v-model:value="tcScan.product" :options="tcProductOptions" placeholder="选择云产品" style="width: 150px" />
             <NSelect size="large" v-model:value="tcScan.region" :options="regionOptions(tcScan.product || '')" filterable tag clearable placeholder="选择地域" style="width: 190px" />
-            <NButton type="primary" size="large" :loading="tcScan.loading" @click="runScan(tcScan)">扫描资源</NButton>
-            <NButton type="error" tertiary size="large" @click="clearTarget = 'tc'; clearConfirm = true">清空</NButton>
+            <NButton type="primary" size="large" :loading="tcScan.loading" :disabled="clearing" @click="runScan(tcScan)">扫描资源</NButton>
+            <NButton type="error" tertiary size="large" :disabled="clearing || tcScan.loading" @click="clearTarget = 'tc'; clearConfirm = true">清空</NButton>
           </NSpace>
           <p v-if="tcScan.error" style="color: #d03050; font-size: 14px; margin: 0 0 8px">{{ tcScan.error }}</p>
           <!-- 已扫描资源区（厂商聚合：轻量云 + CVM） -->
@@ -324,8 +346,8 @@ async function confirmImport() {
           <NSpace align="center" style="margin-bottom: 8px">
             <NSelect size="large" v-model:value="aliScan.product" :options="aliProductOptions" placeholder="选择云产品" style="width: 150px" />
             <NSelect size="large" v-model:value="aliScan.region" :options="regionOptions(aliScan.product || '')" filterable tag clearable placeholder="选择地域" style="width: 190px" />
-            <NButton type="primary" size="large" :loading="aliScan.loading" @click="runScan(aliScan)">扫描资源</NButton>
-            <NButton type="error" tertiary size="large" @click="clearTarget = 'ali'; clearConfirm = true">清空</NButton>
+            <NButton type="primary" size="large" :loading="aliScan.loading" :disabled="clearing" @click="runScan(aliScan)">扫描资源</NButton>
+            <NButton type="error" tertiary size="large" :disabled="clearing || aliScan.loading" @click="clearTarget = 'ali'; clearConfirm = true">清空</NButton>
           </NSpace>
           <p v-if="aliScan.error" style="color: #d03050; font-size: 14px; margin: 0 0 8px">{{ aliScan.error }}</p>
           <!-- 已扫描资源区（厂商聚合：轻量云 + ECS） -->
@@ -361,7 +383,7 @@ async function confirmImport() {
         </NGi>
         <NGi>
           <NFormItem label="同步间隔">
-            <NInput v-model:value="settings.interval" placeholder="5m（30s / 5m / 1h）" />
+            <NInput v-model:value="settings.interval" placeholder="5m（30s / 1h30m / 1.5h）" />
           </NFormItem>
         </NGi>
         <NGi>
@@ -392,7 +414,7 @@ async function confirmImport() {
       </NGrid>
       <NFormItem>
         <NSpace>
-          <NButton type="primary" size="large" @click="save">保存</NButton>
+          <NButton type="primary" size="large" :disabled="saving" :loading="saving" @click="save">保存</NButton>
           <!-- 导出确认（卡片式弹窗） -->
           <NButton size="large" @click="showExportConfirm = true">导出配置</NButton>
           <label>
@@ -447,13 +469,13 @@ async function confirmImport() {
     </NModal>
 
     <!-- 清空扫描结果确认弹窗（厂商级，红色警告按钮） -->
-    <NModal v-model:show="clearConfirm" preset="card" :title="clearTitle" style="width: 420px">
+    <NModal v-model:show="clearConfirm" preset="card" :title="clearTitle" :closable="!clearing" :mask-closable="!clearing" :close-on-esc="!clearing" style="width: 420px">
       <p style="margin: 0 0 16px; line-height: 1.7">
         {{ clearDesc }}
       </p>
       <NSpace justify="end">
-        <NButton size="large" @click="clearConfirm = false">取消</NButton>
-        <NButton type="error" size="large" @click="confirmClearScan">确认清空</NButton>
+        <NButton size="large" :disabled="clearing" @click="clearConfirm = false">取消</NButton>
+        <NButton type="error" size="large" :disabled="clearing" :loading="clearing" @click="confirmClearScan">确认清空</NButton>
       </NSpace>
     </NModal>
 

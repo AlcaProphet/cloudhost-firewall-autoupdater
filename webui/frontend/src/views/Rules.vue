@@ -7,6 +7,8 @@ import type { DomainRule } from '../types'
 
 const rules = ref<DomainRule[]>([])
 const showModal = ref(false)
+// 保存包含后续列表刷新，锁定期间不允许重新创建或切换表单。
+const saving = ref(false)
 const editingId = ref<number | null>(null)
 const form = ref({ host: '', protocol: 'TCP', ports: '', action: 'ACCEPT', comment: '', enable_ipv6: false, targets: [] as number[] })
 const message = useMessage()
@@ -68,34 +70,43 @@ onMounted(async () => {
 })
 
 function openAdd() {
-  if (!pageActive || deletePhase.value !== 'idle') return
+  if (!pageActive || saving.value || deletePhase.value !== 'idle') return
   editingId.value = null
   form.value = { host: '', protocol: 'TCP', ports: '', action: 'ACCEPT', comment: '', enable_ipv6: false, targets: [] }
   showModal.value = true
 }
 
 function openEdit(row: any) {
-  if (!pageActive || deletePhase.value !== 'idle') return
+  if (!pageActive || saving.value || deletePhase.value !== 'idle') return
   editingId.value = row.id
   form.value = { host: row.host, protocol: row.protocol, ports: row.ports, action: row.action, comment: row.comment || '', enable_ipv6: !!row.enable_ipv6, targets: Array.isArray(row.targets) ? [...row.targets] : [] }
   showModal.value = true
 }
 
 async function saveRule() {
-  if (!pageActive || deletePhase.value !== 'idle') return
-  const method = editingId.value ? 'PUT' : 'POST'
-  const url = editingId.value ? `/api/rules/${editingId.value}` : '/api/rules'
+  if (!pageActive || saving.value || deletePhase.value !== 'idle') return
+  if (!showModal.value) return
+  saving.value = true
+  ++loadSequence
+  const id = editingId.value
+  const method = id ? 'PUT' : 'POST'
+  const url = id ? `/api/rules/${id}` : '/api/rules'
   try {
     await request(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(form.value),
     })
+    if (!pageActive) return
     showModal.value = false
-    message.success(editingId.value ? '更新成功' : '添加成功')
-    load()
-  } catch (e: any) {
-    message.error(`保存失败: ${e.message}`) // 修复：非 2xx 不再误报成功
+    message.success(id ? '更新成功' : '添加成功')
+    await load('配置已保存，但规则列表刷新失败，请刷新页面核对')
+  } catch (e: unknown) {
+    if (pageActive) message.error(e instanceof RequestError
+      ? `保存失败: ${e.message}`
+      : '未能确认保存结果，请刷新列表核对；不会自动重试保存')
+  } finally {
+    saving.value = false
   }
 }
 
@@ -131,7 +142,7 @@ function focusDeleteCancel() {
 }
 
 function openDeleteConfirm(row: DomainRule, origin: HTMLElement | null = null) {
-  if (!pageActive || deletePhase.value !== 'idle' || showModal.value) return
+  if (!pageActive || saving.value || deletePhase.value !== 'idle' || showModal.value) return
   pendingDelete.value = { ...row, targets: [...row.targets] }
   deleteOrigin = origin
   deleteDialogLeft = false
@@ -215,8 +226,8 @@ const columns = [
     render(row: any) {
       return h(NSpace, { size: 'small' }, {
         default: () => [
-          h(NButton, { size: 'tiny', disabled: deleteBusy.value, onClick: () => openEdit(row) }, { default: () => '编辑' }),
-          h(NButton, { size: 'tiny', type: 'error', disabled: deleteBusy.value, onClick: (event: MouseEvent) => openDeleteConfirm(row, event.currentTarget as HTMLElement) }, { default: () => '删除' }),
+          h(NButton, { size: 'tiny', disabled: deleteBusy.value || saving.value, onClick: () => openEdit(row) }, { default: () => '编辑' }),
+          h(NButton, { size: 'tiny', type: 'error', disabled: deleteBusy.value || saving.value, onClick: (event: MouseEvent) => openDeleteConfirm(row, event.currentTarget as HTMLElement) }, { default: () => '删除' }),
         ]
       })
     }
@@ -227,11 +238,11 @@ const columns = [
 <template>
   <div>
     <h2>域名规则</h2>
-    <NButton ref="pageAddButton" type="primary" size="large" :disabled="deleteBusy" style="margin: 8px 0 12px" @click="openAdd">添加规则</NButton>
+    <NButton ref="pageAddButton" type="primary" size="large" :disabled="deleteBusy || saving" style="margin: 8px 0 12px" @click="openAdd">添加规则</NButton>
     <NDataTable :columns="columns" :data="rules" :bordered="true" />
 
-    <NModal v-model:show="showModal" :title="editingId ? '编辑规则' : '添加规则'" preset="card" style="width: 540px">
-      <NForm :model="form" label-placement="left" label-width="80">
+    <NModal v-model:show="showModal" :title="editingId ? '编辑规则' : '添加规则'" preset="card" :closable="!saving" :mask-closable="!saving" :close-on-esc="!saving" style="width: 540px">
+      <NForm :disabled="saving" :model="form" label-placement="left" label-width="80">
         <NFormItem label="域名">
           <NInput v-model:value="form.host" placeholder="api.example.com" />
         </NFormItem>
@@ -239,7 +250,7 @@ const columns = [
           <NSelect v-model:value="form.protocol" :options="protocolOptions" />
         </NFormItem>
         <NFormItem label="端口">
-          <NInput v-model:value="form.ports" :placeholder="form.protocol === 'ICMP' ? 'ICMP 协议固定为 ALL' : '443,80 / 8000-8010 / ALL'" :disabled="form.protocol === 'ICMP'" />
+          <NInput v-model:value="form.ports" :placeholder="form.protocol === 'ICMP' ? 'ICMP 协议固定为 ALL' : '443,80 / 8000-8010 / ALL'" :disabled="saving || form.protocol === 'ICMP'" />
         </NFormItem>
         <NFormItem label="动作">
           <NSelect v-model:value="form.action" :options="actionOptions" />
@@ -254,7 +265,7 @@ const columns = [
           <NSwitch v-model:value="form.enable_ipv6" />
           <span style="margin-left: 8px; font-size: 14px; color: #999">{{ form.enable_ipv6 ? '同时使用 A + AAAA 记录' : '仅使用 A 记录（IPv4）' }}</span>
         </NFormItem>
-        <NButton type="primary" @click="saveRule">保存</NButton>
+        <NButton type="primary" :loading="saving" :disabled="saving" @click="saveRule">保存</NButton>
       </NForm>
     </NModal>
 

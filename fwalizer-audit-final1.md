@@ -5,15 +5,24 @@
 | 仓库 | `/Users/kyle/Desktop/Repo/cloudhost-firewall-autoupdater` |
 | 审计快照分支 / HEAD | `main` / `11918fb945fe9dfe2a86ead5bc833b14dd156a68` |
 | 审计快照开始前工作树 | **干净**（0 tracked 改动、0 非忽略未跟踪文件）；这是历史审计快照，不表示当前工作树状态 |
-| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-10-03 P3-15 丢弃告警日志聚合）」** |
+| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-10-03 P3-16 前端状态）」** |
 | 审核性质 | 原始全量代码审核为**只读**；2026-09-30 批次只静态核验既有修复并更新本文与 `Issue7.md`，未修改代码，未运行构建、测试或格式化（属该批次记录） |
 | 审核方式 | 8 路并行子代理分模块审核 + 主代理亲自覆盖超时范围 + 判别性探针独立复现 + 交叉复核裁决 |
 | 审核范围（审计快照值） | 快照 `11918fb` 口径：233 个 tracked 文件；**53/53 生产 Go 文件**（10,890 行）；62 个测试文件（20,457 行）；18 个前端源文件（2,212 行）；6 个构建/部署/CI 文件；8 份合同文档。**当前值为 244 tracked / 55 生产 Go（12,606 行）/ 69 测试文件（24,896 行）/ 18 前端源（2,361 行）/ 同样 6 个构建文件与 8 份合同文档**（新增 `provider/plan.go`、`syncer/target.go`） |
 | 报告版本 | final1（已剔除全部被驳回/误报项，并纳入用户 7 项决策） |
 
-> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-10-03 P3-15 丢弃告警日志聚合）」小节为准**。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
+> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-10-03 P3-16 前端状态）」小节为准**。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
 
-### 最近实施基线（2026-10-03 P3-15 丢弃告警日志聚合）
+### 最近实施基线（2026-10-03 P3-16 前端状态）
+
+- **实施前基线**：`main / ce3eeaa5e1d119fdac97c1f98dc6178d17e79405`，本地 `origin/main / 5e1d79c2b3378f31079e3240c75777b174c30781`，ahead 3；工作树与暂存区干净，前序 P3-15 已提交。用户在本聊天明确确认推荐 B 并授权修复与同步文档；本轮未 fetch、提交或 push，本地跟踪引用不保证远端现时状态。
+- **范围与状态**：五个前端生产文件、一个新增前端回归、package.json 执行入口及 AGENTS/本文/ProdTestList，共十文件。P3-16 剩余五子项已本地修复，原 RunTest 44px 已修复证据保留。I-10 的其他独立问题仍未完成。源码、测试及本轮文档尚未提交。
+- **正式证据**：27 个新增与 31 个既有前端回归全通过；五类缺陷负向控制与端口禁用控制按断言变红；前端 build、API/config 两包 race、go vet、实际产品二进制编译与 diff-check 通过。真实浏览器、loopback 产品/故障代理与临时 SQLite 联合证据见文末 P3-16 当前实施补记；不把研究候选或本项局部结果写成全仓/外部验收通过。
+- **边界**：后端/API/schema/依赖不改；未执行全仓 Go race、Linux/Docker/compose、npm audit、真实云/通知或远端 CI/GHCR。单页守卫不保证跨客户端幂等，两个产品清空仍为独立 DELETE。
+
+### 前序实施基线（2026-10-03 P3-15 丢弃告警日志聚合，历史批次）
+
+> 该批次其后已提交为 `ce3eeaa`；以下保留当时实施记录，P3-16 当前基线见上方。
 
 - **实施前基线**：`main / 5c1611601f42d9373d04818c3cccc6a60937efd6`，本地 `origin/main / 5e1d79c2b3378f31079e3240c75777b174c30781`，ahead 2；工作树与暂存区干净，前序 P3-14 已提交 `5c16116`。引用研究聊天与候选补丁已实际读取，当前 HEAD 与研究基线一致；本轮未 fetch、提交或 push，本地跟踪引用不保证远端现时状态。
 - **授权与范围**：用户依据《研究 P3-15 修复方案》明确授权按推荐方案进行改动前检查、确认后实施及同步文档；采用 B。生产仅 `notifier/inflight.go`、`notifier/email.go`、`notifier/webhook.go`，新增 notifier/API 两份回归，AGENTS/本文/Issue6/Build7 四份文档，共九文件。现有 AlertManager 接线、EventBus、发送容量与投递语义保持。
@@ -205,7 +214,7 @@
 | P3-13 | ✅ 已按 Go 1.27.1 + 标准库方案本地修复，已提交 `0818197`；实际装配继续分发、聚合错误与实时/回放均有判别证据 | I-07 仅本子项收口；正式两平台门禁及 amd64 镜像运行见当前实施补记，P3-14 已按细化 A 本地收口，见当前实施补记 |
 | P3-14 | ✅ 已按细化 A 本地修复，已提交 `5c16116`；六处缺失依赖返回 503，去掉两处错误配置引导 | 正式 HTTP/副作用边界/负向控制与门禁见当前实施补记；I-07 本地修复闭环，非外部验收通过 |
 | P3-15 | ✅ 已按推荐 B 本地修复，尚未提交；首条立即 WARN、30 秒尾批汇总、空闲停计时、跨热重载连续 | I-08 仅本子项收口；正式计数/管理器/负向控制与全仓失败复核见当前实施补记，P3-21 继续独立追踪 |
-| P3-16 其余子项 | 🔵 未修复（侧边栏高亮、保存 in-flight 守卫、`theme` 双写、清空扫描误报成功、前端正则过严） | 独立问题队列 I-10 |
+| P3-16 其余子项 | ✅ 按推荐 B 已本地修复（路由派生高亮、保存守卫、可见字段提交、清空结果分支与缓存隔离、后端统一时长校验）；尚未提交 | 独立问题队列 I-10；文末 P3-16 当前实施补记 |
 | 其余 P3 | 🔵/⏳ 未修复、文档清理或待真实验证 | 按 0.4 的独立队列处理 |
 
 ### 0.3 当前唯一串行主线：Issue7
@@ -232,7 +241,7 @@
 - [x] **I-07｜P3-12、P3-14、P3-10、P3-13**：**本地修复闭环（2026-10-03）**。P3-05（`82ad2dc`）、P3-11（Issue7 Step 4）、P3-10（`99f3fe2`）、P3-12（`5e1d79c`）、P3-13（`0818197`）已有独立本地修复证据；P3-14 按细化 A 完成并通过正式门禁，已提交 `5c16116`。既有生产实现、状态记录与提交祖先已核对；本项只关闭本地修复队列，浏览器/真实外部验收及当前 revision 远端 CI/GHCR 状态保持，详见 P3-14 当前实施补记。
 - [ ] **I-08｜P3-01、P3-02、P3-21、P3-15**：P3-01 已提交 `ac0ee62`；P3-02 按后续独立授权 B 已提交 `88154cd`，详见实施补记；P3-15 已按推荐 B 本地修复，正式证据见其当前实施补记；P3-21（Webhook drain 子项部分修复、Push 字节上限未修复）继续独立追踪，I-08 整体保持未完成。
 - [x] **I-09｜P3-07**：2026-10-02 按独立授权方案 B 本地收口：再次证明现生产入口不调用旧链，删除 `retrySync` / `retrySyncDetailed` / `truncateDesc`，迁移有效回归并清理过期测试与夹具；正式门禁及六类负向控制通过，已提交 `ba82292`。详见 P3-07 当前实施补记与 Issue6 §7.9 / Issue7 §12.7；独立残留计数观察不由本项关闭。
-- [ ] **I-10｜其余独立 P3**：P3-04 已按 B 本地修复并提交 `ebf8f19`，真实浏览器仍待 PT-AUDIT-01；P3-06 已独立按 B 本地修复并提交 `c08f2e1`，真实响应、模板统计与提额情况待 PT-I7-03；P3-09 已按 A 本地修复并提交为 `f6b3757`；P3-16 非 Dry Run 子项、P3-19、P3-20 继续独立追踪，I-10 整体保持未完成。
+- [ ] **I-10｜其余独立 P3**：P3-04 已按 B 本地修复并提交 `ebf8f19`，真实浏览器仍待 PT-AUDIT-01；P3-06 已独立按 B 本地修复并提交 `c08f2e1`，真实响应、模板统计与提额情况待 PT-I7-03；P3-09 已按 A 本地修复并提交为 `f6b3757`；P3-16 剩余五子项已按 B 本地收口，真实浏览器/API/临时 SQLite 局部证据见实施补记，源码/文档尚未提交；P3-19、P3-20 继续独立追踪，I-10 整体保持未完成。
 - [ ] **I-11｜P3-17、P3-18**：仅做文档/注释闭环；不得与业务语义修改混在同一批次。
 - [x] **I-12｜Issue7 R7-01（P1）**：已修复并提交为 `b80b1b0`；可重试清理失败耗尽后保持 S1 已覆盖的 success + cleanup_deferred 强语义与每 attempt 重读快照。
 - [x] **I-13｜Issue7 R7-02（P2）**：已修复并提交为 `eab4bea`；补全目标事件 `cleanup_deleted`/`duration_ms`/canonical `unsupported`，并以真实 publisher/EventBus/SQLite 整链证明清理 `2/1/1` 落库一致。
@@ -849,7 +858,7 @@ FAIL
 | P3-14（修复前历史证据） | **以下保留当时只读核验；当前状态由上行与 P3-14 当前实施补记替代。** **🔵 问题真实存在，当前未修复，继续归入 I-07。** 本轮仅完成只读核验与本审计条目更新，未修改源码、测试或其他文件，未构建、未运行测试或格式化。 | **当前基线**：`main` / HEAD `34aa9b859c38904e701a19d672dcc4f65435b31c`（**历史基线，非当前 HEAD；当前见头部「最近核验基线」小节**），`main == origin/main`；本轮前工作树已有修改仅涉及本报告。`webui/api/sync.go:24` 的 `/api/sync/trigger`、`:76` 的 `/api/sync/dryrun` 在 `Syncer == nil` 时返回 HTTP 400；`:42、:61` 的 `/api/sync/pause` 与 `/api/sync/resume` 同样如此；`:94` 的 `/api/sync/events` 在 `EventBus == nil` 时返回 HTTP 400；`webui/api/logstream.go:131` 的 `/api/logs/stream` 在 `LogBroadcaster == nil` 时返回 HTTP 400。这些分支表示服务端依赖未接线或尚未就绪，不是客户端请求格式错误。对照 `webui/api/operational.go:46-52`，`Health == nil` 已按同类不可用语义返回 503，说明仓库已有正确范式。`/api/sync/status` 的 `Syncer == nil` 分支在 `webui/api/sync.go:16` 返回 200 且 `running:false`，并由 `webui/server_test.go:1119-1151` 作为未接入 Syncer 的状态查询场景固定覆盖；本条暂不扩大到该观察接口。现有 `webui/api/sync_test.go`、`webui/api/sse_test.go` 与相关日志流测试没有对上述 nil 依赖精确断言 503。前端 `webui/frontend/src/views/Logs.vue:45-49` 只创建 `EventSource` 并处理消息，没有应用层不可用提示或恢复逻辑；浏览器对该具体非 2xx 响应的重连表现本轮未人工验证。 | **后续最小设计与用户决策（尚未授权实施）**：A（推荐）仅把五个 handler 中六个未就绪依赖分支（trigger、dryrun、pause、resume、events、logs）传给 `writeError` 的状态码从 `http.StatusBadRequest` 改为 `http.StatusServiceUnavailable`，保留现有错误文案、JSON 形状和响应头；补充判别性本地 HTTP 测试。`/api/sync/status` 继续保持 200，Syncer 已接线但暂停的操作仍为 409，Dry Run 冲突仍为 409，SSE 能力不支持仍为 500，正常路径状态码不变。B：把 `/api/sync/status` 的 nil 分支也改为 503；不推荐，会改变已有状态查询兼容语义，应另立状态接口决策。C：同时补前端 `Logs.vue` 的错误提示或 EventSource 重连；可作为独立 UI 议题，不纳入 P3-14 后端最小修复。影响文件限定为 `webui/api/sync.go`、`webui/api/logstream.go` 及 `webui/api/sync_test.go`、`webui/api/sse_test.go`/日志流测试；不改 `writeError`、`webui/api/deps.go`、`run.go`、`operational.go`、前端、Provider、SSE 生命周期或重试策略。是否授权 A 需用户决策，本条不擅自裁决。 | **判别性验收、风险、外部边界与停止条件**：L0 静态确认上述六个 nil 分支均为 503，`/api/sync/status` 仍为 200，其他 409/500/200 分支未改变。L1 使用 `Deps{Syncer:nil}` 分别请求 `POST /api/sync/trigger`、`/api/sync/dryrun`、`/api/sync/pause`、`/api/sync/resume`，使用 `Deps{EventBus:nil}` 请求 `GET /api/sync/events`，使用 `Deps{LogBroadcaster:nil}` 请求 `GET /api/logs/stream`；每项精确断言 503、`application/json; charset=utf-8` 与 `{"error":"..."}` 形状，并证明不访问 Store/协调器、不调用 `probeSSE`、不建立订阅。保留正常 Syncer 触发 202、暂停触发 409、正常 pause/resume 200、正常 SSE 200、SSE 能力缺失 500、nil Syncer 的 status 200 等负向控制。L2 在获得授权后执行受影响包测试，再按项目门禁执行全量 race、vet、build 与 `git diff --check`；当前这些命令均未执行，不能预先写成通过，也不得以单次绿色外推为稳定绿色。L3 可选地用本地真实二进制和 `curl -i`核对最终状态码与 JSON 头部。风险低，主要是让调用方正确识别服务端不可用，前端仍可能因缺少应用层 `onerror`/恢复 UI 而只显示空日志；浏览器人工回归仅补充用户表现，不是后端关闭必要条件。该项不依赖真实腾讯云、阿里云、DNS、SMTP、Webhook、Uptime Kuma、Docker 或远端 CI/GHCR。未完成上述 nil 依赖判别性测试和受影响门禁前保持 P3-14/I-07 未修复；若扩大到 `/api/sync/status`、通用错误封装、运行时接线、前端重连、`Retry-After` 或 SSE 生命周期，或把浏览器未验证行为写成确定结论，应立即停止并重新审查范围。 |
 | P3-15 | **✅ 已按推荐 B 本地修复（2026-10-03），尚未提交。** | 渠道长期限流器持有固定类别计数；首条立即 WARN，随后约每 30 秒汇总新增丢弃，空窗口停计时；跨 Apply/平台切换保持连续 | 正式回归、五类负向控制与门禁见 P3-15 当前实施补记；进程退出前尚未输出的计数可能丢失，P3-21/I-08 继续独立追踪 |
 | P3-15（修复前历史证据） | 被丢弃的告警事件**每条约一条 WARN**，故障期日志洪水 | `notifier/inflight.go:62-67` `logDropped` 对每个被丢弃事件都记 WARN；`notifier/bus.go:113` 每事件每订阅者一个 goroutine | 500 个 DNS 失败事件 → 约 496 条 WARN。量级不大且信息有用，属可聚合项 |
-| P3-16 | 前端 UI/状态偏离（AGENTS §十一）——**6 子项中 1 项已修复** | ✅ ~~`RunTest.vue:32` 缺 `size="large"`（唯一漏网，**属明确漏改**）~~ **已修复**：`RunTest.vue:32` 现有 `size="large"`（与 §0.2 一致）；其余 5 子项仍成立：`App.vue:10/67` 侧边栏高亮不随路由（刷新/深链后停在"仪表盘"）；`Targets.vue:106-121/210`、`Rules.vue:71-84/165` 保存按钮无 in-flight 守卫（双击产生重复行）；`Settings.vue:127-141` 把不可见的 `theme` 当隐藏字段回传（与侧边栏主题开关**双写**，导致主题静默回退）；`useScannedResources.ts:36-41`（`catch { /* 失败静默 */ }`）+`Settings.vue:98-105` 清空扫描失败仍无条件提示"已清空"；`Settings.vue:14` 前端正则 `/^\d+(ms|s|m|h)$/` 比后端 `time.ParseDuration` 更严（合法 `1h30m` 被拦） | 均为可静态判定；`theme` 双写与"清空误报成功"影响用户可观察状态 |
+| P3-16 | 前端 UI/状态偏离（AGENTS §十一）——**六子项已本地收口，原五项历史证据保留** | ✅ ~~`RunTest.vue:32` 缺 `size="large"`（唯一漏网，**属明确漏改**）~~ **已修复**：`RunTest.vue:32` 现有 `size="large"`（与 §0.2 一致）；**2026-10-03 剩余五项已按 B 本地修复，见文末；以下保留修复前证据**：`App.vue:10/67` 侧边栏高亮不随路由（刷新/深链后停在"仪表盘"）；`Targets.vue:106-121/210`、`Rules.vue:71-84/165` 保存按钮无 in-flight 守卫（双击产生重复行）；`Settings.vue:127-141` 把不可见的 `theme` 当隐藏字段回传（与侧边栏主题开关**双写**，导致主题静默回退）；`useScannedResources.ts:36-41`（`catch { /* 失败静默 */ }`）+`Settings.vue:98-105` 清空扫描失败仍无条件提示"已清空"；`Settings.vue:14` 前端正则 `/^\d+(ms|s|m|h)$/` 比后端 `time.ParseDuration` 更严（合法 `1h30m` 被拦） | 均为可静态判定；`theme` 双写与"清空误报成功"影响用户可观察状态 |
 | P3-17 | 陈旧 "version 2" 表述残留（核验后为 **10 处 / 10 个测试文件**；全仓 `_test.go` 内共 14 处命中） | 陈旧标签：`config/runtime_test.go:27,66`、`main_test.go:732`、`webui/api/testenv_test.go:216`、`import_runtime_test.go:90`（原引 `:82`）、`import_test.go:11,20,111`、`redact_test.go:111,116`。**已修复**：`export_test.go:461` 已不含该串。**属合法负向控制、不应改**：`main_test.go:907,912`（断言 version 2 导入必须 400）、`alerts_v3_test.go:14,154`（历史说明 + 真实 `{"version":2}` 拒绝夹具） | `import_test.go:111` 仍用 map key `"version 2"` 承载 `{"version":3,...}`，属陈旧标识 |
 | P3-18 | 文档漂移（非强制文档） | **Step 0 部分收口：** `Design5.md` 当前配置包已改为 version 3，Build7 已完成状态与 `ProdTestList.md` 范围矛盾已收口；`Build6.md`/`Issue5.md` 历史措辞、`Issue6.md` 基线对账与测试内 version 2 注释等仍是剩余文档清理 | 与 P1-01 直接冲突的部分已修；其余不是 Issue7 Step 1 前置 |
 | P3-19 | 邮件 AUTH 失败保留 SMTP 诊断文本（含 535 回显） | `notifier/email.go:219-221` `%w` 包装；`webui/api/test_email.go:78-82` 回给浏览器；`notifier/email_test.go:293-295` **显式断言**保留诊断 | 理论风险：若服务器回显 AUTH 载荷可间接泄露 base64 凭据（**未验证**；标准 SMTP 不会这样做）。属可调试性取舍 |
@@ -1134,7 +1143,7 @@ Step 0 已修正 `Design5.md` 当前 version 3 口径、Build7 状态与 `ProdTe
 | **告警** | 默认全关；`渠道开关 + 触发开关`同时开启才订阅；邮件与 Webhook **共用同一固定渲染器**（顺序稳定、不遍历 map）；4 在途 + 满载丢弃最新 + 安全 WARN；限流器跨热重载连续；`test-email` 8 字段契约两侧严格一致且不写库；P3-11 写库错误已能上抛 | P3-03 非空非法 URL 周期校验已本地修复（P2-04 时序亦已修复）；P2-05 已补齐三渠道响应校验与有界读取，真实 Webhook 未验收；P3-15 已本地实施丢弃日志聚合；P3-19/P3-20/P3-21 邮件与响应体细节 | — | P2-05/P3-15 已本地实施；P3-03 已按独立授权补齐有下限的定时校验，真实 Uptime Kuma 仍待验收 |
 | **OperationalHealth** | **唯一计算源被三个消费者真实共用**（`supervisor` / `operational` 端点 / `pusher` 都走同一个 `*health.Checker`）；2s 非阻塞探活（`Store` 结构体**无互斥量**，不持应用锁）；`StartupGrace=10s` 三分支正确；`failed/partial` 直到被 `success/idle` 覆盖；原因稳定去重排序；30s 边沿监督器 | 判定输入来自三次独立 `Snapshot()`（`run.go:127-142`），注释自述"一致快照"但可能混用新旧 policy/interval → 30s 内一次瞬时误判，自愈 | `slices.Compact` 冗余 | 一次取 `*RuntimeState` 后派生 policy/interval |
 | **HTTP/SSE** | 严格解码齐全（未知字段/尾随/多顶层值/10 MiB/1 MiB/413）；路径 ID `strconv.Atoi` 且 >0；请求 DTO 不含 DB `id`；导出 GET 已删（实测 405）；两类 SSE 监听服务器级 `ShutdownCh` 且每次写出有 5s deadline；P3-05 已实施普通 JSON 成功/错误统一 `no-store` | `GET /api/alerts` 4 次非事务读存在撕裂窗口（PUT 单事务写，读侧可能"新 policy + 旧 email"，前端整体回传即把旧值写回） | `fs.Sub` 静默降级 | 普通 JSON 禁缓存已由 P3-05 收口；P3-14 缺失依赖 503 已本地修复；GET alerts 改只读事务取快照 |
-| **前端** | 8 字段测试邮件载荷两侧严格一致（历史上真实 bug 点，现有注释+类型双重防护）；无 `console.*`/存储/cookie 泄漏；密码与 Webhook/Push URL 用 `type="password"`；导出用 `fetch`+Blob 且 `revokeObjectURL`；EventSource 单实例且卸载关闭；无 `addEventListener` 泄漏 | P3-04 已本地修复（浏览器待验）；P3-16 一批 UI/状态偏离 | 前端重复实现后端校验 | P2-06/P2-07 已本地收口；其余逐项按 P3 收敛；**不建议**引入 Pinia/Vitest 等重型栈 |
+| **前端** | 8 字段测试邮件载荷两侧严格一致（历史上真实 bug 点，现有注释+类型双重防护）；无 `console.*`/存储/cookie 泄漏；密码与 Webhook/Push URL 用 `type="password"`；导出用 `fetch`+Blob 且 `revokeObjectURL`；EventSource 单实例且卸载关闭；无 `addEventListener` 泄漏 | P3-04 已本地修复（浏览器待验）；P3-16 已按 B 本地修复并有局部浏览器证据 | 时长校验已收敛至后端 | P2-06/P2-07 已本地收口；其余逐项按 P3 收敛；**不建议**引入 Pinia/Vitest 等重型栈 |
 | **Docker/CI** | 非 root + `CGO_ENABLED=0` 静态编译 + `HEALTHCHECK` 用静态 `/api/health`（实测全部符合）；前端在 builder 阶段构建并 `COPY` 进 Go 阶段（顺序正确）；容器实测 `healthy`、`ExitCode=0` | **清洁检出裸 Go 命令 100% 失败**（P1 级构建阻断）；P1-02 已本地修复；`go get -u` 使构建不可复现（AGENTS §十 **有意设计**） | Makefile 与 CI 命令集不统一 | 给 `test`/`vet` 加 `frontend` 前置；`go get -u` 策略受强要求约束，**不建议**擅自改为锁版本 |
 
 ### 附：构建阻断（原 P1，已并入批次 6 但严重度仍在）
@@ -1681,6 +1690,8 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 
 ### P3-15 当前实施补记（2026-10-03，推荐方案 B）
 
+> 该历史批次其后已提交为 `ce3eeaa`，以下保留当时实施记录；最近基线与当前未提交改动见 P3-16。
+
 - **授权与改动前检查**：用户依据已引用研究聊天授权检查后实施及文档同步；实际读取研究结果、三个生产候选差异与测试，重新核对 AGENTS、审计 P3-15/I-08、Issue6 A2、Build7 订阅合同和生产 OnEvent → limiter → slog → stdout/WebUI 路径。恢复点 `main / 5c1611601f42d9373d04818c3cccc6a60937efd6`，本地 `origin/main / 5e1d79c`，ahead 2；工作树/暂存区干净。AlertManager 已按渠道持有长期 limiter，生产接线无需变更；本轮未 fetch、提交或 push。
 - **修复与精确语义**：`InFlightLimiter` 持有固定 30 秒窗口、三类事件与五类安全平台的计数数组；每个活动周期首次丢弃立即输出 `phase=first,dropped=1`，后续只累加，汇总 `dropped` 仅含上次取走快照后的新增数量。锁内取走快照、锁外写日志；汇总回调输出完成后重新计时，避免同渠道汇总回调重叠。空窗口不输出并清除计时器引用；单条丢弃后也在空窗口回收。固定记录 `dns_failed/sync_error/operational_unhealthy`、`email/dingtalk/feishu/slack/unknown` 数量，混合平台使用 `channel=mixed`。未知平台映射 unknown，不存事件、时间戳、Data、正文、URL、密码或配置引用。
 - **生命周期与保留边界**：邮件/Webhook 满载分支改为调用本 limiter 的聚合方法，仍丢弃最新、返回 nil，每渠道容量 4，不排队不重试。状态跨真实 Apply、关闭再开启、多次配置保存、平台切换和旧实例晚到回调连续；关闭后允许汇总此前尾批，之后未订阅的新事件不贡献计数。汇总只说明丢弃发生过，不证明渠道恢复；不增加持久化或 shutdown 强制汇总，进程在汇总前退出可能丢失尚未输出的数量。日志级别过滤、Handler 故障/阻塞/panic 和 Logger 丢弃错误仍属既有边界。
@@ -1690,3 +1701,23 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 - **夹具修正及全仓观察**：首次 affected-package 测试发现新捕获夹具恢复 slog 后未恢复标准 log writer，后续日志访问已结束 synctest bubble 的阻塞通道；已仅在新增测试中恢复 writer/flags 并过滤非目标日志，生产聚合逻辑未因此改动。首轮正式全仓 race 的 notifier/API 等 11 包通过，syncer 在既有 `TestStateAppliedHookFiresOncePerApplyState` 的第 80 行失败：回调先 `hooks.Add(1)` 后 `enabledAtHook.Store(...)`，等待方把前者当后者完成屏障，可能提前读取 false；属于原子操作之间的观察时序窗口，非 race detector 数据竞态。该用例单独 race 20 轮通过；外部 overlay 在原 P3-15 生产基线中仅放大此夹具窗口，也按同一断言失败。此项只记录观察、未改 syncer 源码/正式夹具，不由 P3-15 顺带关闭。
 - **正式门禁**：最终 `go test ./notifier ./webui/api -run TestP315 -race -count=20` 通过（notifier 1.897s、API 1.321s）；`go test ./notifier ./webui/api -race -count=1` 通过（12.626s/14.749s）；`go vet ./...`、`go build ./...` 通过。`go test ./... -race -count=1` 首轮 11 包 ok / syncer hook 夹具失败，复核后重跑 12 包全部 ok（notifier 14.521s、API 18.031s、syncer 38.798s）；两次结果均保留。受影响 Go 文件 gofmt 与最终文档后的 `git diff --check` 通过；没有通过修改既有断言或生产语义换取绿色。
 - **范围、状态与外部边界**：三份生产文件、两份新增测试、AGENTS/本文/Issue6/Build7 共九文件；模块/依赖、AlertManager 生产接线、EventBus、Provider/DNS、同步状态机、健康、SQLite/schema/API、前端与发送超时均不改。P3-15 本地收口，I-08 仅本子项更新，P3-21（Webhook drain 部分修复、Push 字节上限未修复）独立保留，I-08 整体不勾选。Go 1.27.1 darwin/arm64，使用既有 ignored 前端 dist；未执行 Linux/Docker/compose、前端构建、浏览器、P3-15 专门产品进程验收、真实云/SMTP/收件箱/Webhook/Uptime Kuma 或远端 CI/GHCR，既有人工未执行/免除状态不变；不外推长期稳定或真实投递通过。正式恢复点、原生产源码、五类负向控制、hook 观察控制和完整门禁日志保存在仓库外 `/var/folders/1x/ngps27d54l1791wzj_qlqv980000gn/T/fwalizer-p315-implementation-2ap42m_1`。
+
+### P3-16 当前实施补记（2026-10-03，推荐方案 B）
+
+- **授权与改动前检查**：用户在本聊天确认研究推荐 B，明确授权修复与同步文档。正式基线 `main / ce3eeaa5e1d119fdac97c1f98dc6178d17e79405`、本地 `origin/main / 5e1d79c2b3378f31079e3240c75777b174c30781`、ahead 3，工作树与暂存区干净，P3-15 已提交。重新核对 AGENTS、审计 P3-16/I-10、当前五个前端文件、PUT settings 部分更新及 ParsePositiveDuration 合同，实际读取候选补丁并校验可应用性；本轮未 fetch、提交或 push。
+- **路由与主题**：App 用响应性 route.path 派生菜单键，菜单点击只发起导航，不提前改变实际高亮。Settings 白名单只含十个可见字段，省略隐藏 theme；后端十一字段部分更新、侧栏主题入口、完整配置包 theme 保持。当前平面菜单使用已有路由 path，未建立新的导航状态或全局 Store。
+- **保存生命周期**：目标/规则及 Settings 的保存函数同步设 saving，入口拒绝重复在途请求。目标/规则保存开始使旧列表 GET 失效，快照 ID/载荷，按钮 loading/disabled、表单 disabled、关闭图标/遮罩/Escape 受限，添加/编辑/删除入口同步守卫；目标连接测试保存期间不再新发起。保存锁持续至列表刷新结束；成功但刷新失败单独说明“配置已保存”，不把刷新失败归为创建失败。明确 API 拒绝保留编辑并解锁；网络不确定结果提示核对、不自动重试。离开页面不代表服务端取消，晚到保存成功/失败不再提示或 GET 旧页面；不引入超时、请求队列或后端幂等键。
+- **清空结果与缓存**：clear 不吞 DELETE 错误，成功才清对应产品缓存；Settings 收集两产品独立结果，仅两者均成功提示已清空。部分失败保留未确认产品缓存并明确反馈，全部失败不报成功；不自动重试，也不虚构原子回滚。clearing 拒绝重复确认并限制关闭/取消、清空按钮和新扫描；同厂商已有扫描在途时拒绝清空。每产品请求序号在 clear 开始和成功后使旧/期间 GET 失效，阻断迟到读取恢复已删除缓存。全成功重置本厂商 hasScanned；卸载后清空结果不弹提示。跨客户端扫描 POST、导入/reset 的其他缓存时序仍属独立范围。
+- **时长校验**：删除 Settings 的独立正则，将语法、Trim、溢出及正数判断交给现有后端；输入示例增加 `1h30m / 1.5h`。非法请求沿原 API 400 和零提交边界返回错误，表单保持用户输入；未移植 Go 解析器至 TS，未改变后端合同。
+- **正式前端回归**：新增 `webui/frontend/tests/p316-state.test.mjs` 与 `npm run test:state`，使用已有 Vue SFC/DOM 编译器、TypeScript、Vue 和 Node test/vm，实际编译页面/composable，替换请求和消息依赖，无新依赖/框架。初始 23 项在旧正式源码上 **3 通过 / 20 失败 / 0 取消**；最终 **27 项全部通过**，含新增旧列表 GET 隔离、网络不确定结果及端口独立 disabled 的 AST 接线断言。与既有 alerts/delete/logs 31 项联合执行 **58/58 通过**。脚本/模板证据与以下浏览器证据分层记录。
+- **正式负向控制**：仓库外隔离源码在正式测试上分别恢复原 App 路由（1 红）、原 Targets/Rules 保存（2 红）、隐藏 theme（1 红）、原正则（1 红）、原扫描错误吞掉（真实 clear/Settings 联合及错误传播 2 红）；均因对应行为断言退出 1，无编译失败/超时。另仅恢复 Rules 端口原独立 disabled 表达式，真实模板回归变红，证明不会只检查 NForm 而漏掉独立控件覆盖。
+- **浏览器发现并修正**：第一轮真实浏览器在规则保存挂起时看到端口输入仍可编辑；现有 `:disabled="form.protocol === 'ICMP'"` 的 false 覆盖 NForm disabled。正式将表达式改为 `saving || form.protocol === 'ICMP'`，补 AST 回归后重新构建前端与产品。最终浏览器显示域名/端口禁用，端口实际 isEnabled=false；该修正位于已批准的 Rules 表单锁范围。
+- **浏览器/API/SQLite 联合证据**：实际前端 build 后编译产品，独立临时数据目录、loopback 产品 `61216` 与故障代理 `61217`；先暂停同步，全部凭据为空，仅创建测试目标/规则与 SQLite 扫描夹具，不接触业务数据库或真实云。
+  1. `/rules` hash 深链直接打开高亮正确；刷新、返回/前进及目标弹窗“去设置”跳转均与实际菜单选中项一致。
+  2. 设置页保持打开切换深色后保存 `1h30m`：代理两条 PUT 分别只含 theme 与十个可见字段，SQLite 保持 theme=dark；刷新保持深色。最终新构建保存 `1.5h` 成功，再提交 `0s` 显示后端错误并保留输入，SQLite 仍为 interval=1.5h/theme=dark。
+  3. 目标/规则创建各快速双击保存：各仅一条 POST，临时 SQLite 各从一行增至两行；目标在途 Escape/遮罩不关闭，关闭按钮消失、表单/测试连接/列表操作禁用。最终规则编辑在途双击只有一条 PUT，域名与端口均禁用；保存期间返回其他页面，随后释放旧响应无旧成功提示及旧规则 GET。
+  4. 目标保存成功后注入列表 GET 500，实际同时显示“更新成功”和“配置已保存，但目标列表刷新失败”，随后操作恢复。规则 PUT 注入 400，编辑内容保留；解除故障后重试正常保存并显示更新成功。
+  5. 两产品清空分别验证一成功一失败、全部失败、全部成功：提示与残留列表/SQLite 一致；部分失败保留 CVM、成功的 Lighthouse 消失；全失败不报成功；全成功出现空态。双击确认只有两条产品 DELETE。
+  6. 挂起四类已取得响应的旧扫描 GET，其中 Lighthouse 响应包含专用晚到夹具；完成腾讯云 DELETE 后释放旧响应，腾讯云仍为空，阿里云既有结果正常显示。挂起同厂商扫描 POST 时清空按钮实际禁用且零 DELETE；此 POST 仅挂起无凭据快速失败响应，不是实际云扫描验收。
+- **正式门禁与收尾**：Go `1.27.1 darwin/arm64`、Node `v26.7.0`；正式前端最终 build 与 58 项回归通过，`go test -race ./webui/api ./config -count=1 -timeout=10m` 两包通过（15.172s/26.867s），`go vet ./...`、真实产品 `go build -o ... .` 和 diff-check 通过。端口修正后重新构建了实际产品并重做相应浏览器验证；Go 生产源码不变，未把 API/config 两包 race 写成全仓 race。验证用产品与代理在收尾停止，临时 SQLite、恢复点、源码负向控制与门禁日志保留在仓库外 `/var/folders/1x/ngps27d54l1791wzj_qlqv980000gn/T/fwalizer-p316-implementation-uup17l4z`；最终保存锁截图位于本聊天可视化目录 `p316-save-guard.png`。
+- **范围与状态边界**：固定十文件（五生产前端、一个新增测试、package.json、AGENTS/本文/ProdTestList）。P3-16 剩余五项本地收口，RunTest 44px 既有修复保留；I-10 的 P3-19/P3-20 等继续未完成。本轮源码/测试/文档尚未提交。未执行全仓 Go race、Linux/Docker/compose、npm audit、真实腾讯云/阿里云、SMTP/收件箱/Webhook/Uptime Kuma 或远端 CI/GHCR；本项局部浏览器不关闭其他 PT-AUDIT/PT-B7/PT-I7 项。单页守卫不提供跨页面/多客户端幂等，两个产品清空不保证厂商级原子性，侧栏主题乐观持久化及快速切换排序仍为原有独立边界，不外推长期稳定或真实外部通过。
