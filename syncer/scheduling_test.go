@@ -201,15 +201,15 @@ func TestP323TimelineOverrun(t *testing.T) {
 	})
 }
 
-// 该控制故意保持既有合并语义，固定 P3-23 的范围边界，不表示 P3-24 已修复或其现状被认可。
-func TestP323CoalescedResumeRemainsSeparate(t *testing.T) {
+// P3-24 修复回归：长启动轮内合并的恢复也须补一轮，保持 P3-23 的恢复轮前计时。
+func TestP324CoalescedResumePreservesScheduling(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		r := p323New(t, true, time.Hour, 3*time.Second)
 		defer r.close()
 		r.save(false, time.Hour, "dark")
 		r.save(true, time.Hour, "light")
 		synctest.Sleep(5 * time.Second)
-		r.want(t, 0)
+		r.want(t, 0, 3)
 	})
 }
 

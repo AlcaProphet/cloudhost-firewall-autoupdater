@@ -20,9 +20,9 @@ import (
 // 读取其他来源，因此不会出现「同一轮混用新 TAG、新 Provider、旧 Resolver」。
 //
 // 状态替换与调度控制是两个不同问题：
-//   - ApplyState 原子替换状态并投递一条可合并的控制通知；
+//   - ApplyState 原子替换状态、保留真实恢复边沿，并投递一条可合并控制通知；
 //   - Run goroutine 消费通知时重新读取最新状态，据此决定是否启动新一轮、
-//     是否重置 ticker，因此最终状态不会因为 channel 满而永久丢失。
+//     是否重置 ticker；最终状态与尚未消费的恢复边沿不会因为 channel 满而丢失。
 type Syncer struct {
 	runtime *RuntimeManager
 	bus     *notifier.EventBus
@@ -80,6 +80,10 @@ type Syncer struct {
 	// 漏掉恢复后的立即一轮（Issue6 A7）。
 	enabled bool
 
+	// pendingResume 由 mu 保护，表示至少一次已发布的 false→true 尚未被 Run 消费。
+	// 多次恢复合并为一轮；取得最终状态时同锁清除，轮中新的恢复留待下一次消费。
+	pendingResume bool
+
 	dryRunMu sync.Mutex // Dry Run 防重入，同时保护跨调用的平台冷却
 	// dryRunNextRead 按云产品保留下一次快照读取的最早时间；只由持有 dryRunMu 的
 	// DryRun 访问，不随 RuntimeState 替换清空。仅保存时间，不缓存 DNS 或云快照。
@@ -136,18 +140,42 @@ func (s *Syncer) Runtime() *RuntimeManager {
 // ApplyState 原子替换完整运行时状态，并通知 Run goroutine 重新读取最新状态。
 //
 // 这是无失败操作：调用前候选状态必须已构造成功（Build6 §12.4）。通知可合并，
-// 但不会丢失最终状态——Run 消费时总是重新读取 RuntimeManager 的快照。
+// 最终状态与恢复边沿由同一把 mu 线性化，Run 消费时同锁取得快照与恢复标记。
 func (s *Syncer) ApplyState(next *RuntimeState) {
+	s.mu.Lock()
+	previous := s.runtime.Snapshot()
+	if previous != nil && !previous.Config.SyncEnabled && next.Config.SyncEnabled {
+		s.pendingResume = true
+	}
 	s.runtime.Apply(next)
-
-	// 调度镜像在此同步推进：IsEnabled 读的是已发布真值，镜像只作为
-	// 「运行时状态尚未发布」时的回退（见 enabled 字段注释与 Issue6 A7）。
-	s.setEnabledMirror(next.Config.SyncEnabled)
+	// 镜像只作为尚未发布状态时的 IsEnabled 回退，与本次发布一起推进。
+	s.enabled = next.Config.SyncEnabled
+	s.mu.Unlock()
 
 	select {
 	case s.controlCh <- struct{}{}:
 	default: // 已有待处理通知，最终状态在快照里，合并即可
 	}
+}
+
+// consumeControlState 同锁取得最终状态并消费已合并的恢复边沿。
+// 此处在起轮前消费；最终暂停则抑制恢复，起轮后发布的新恢复不会被轮后清除。
+// 锁只保护内存操作，不跨越同步轮、日志、ticker 操作或状态回调。
+func (s *Syncer) consumeControlState() (*RuntimeState, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := s.runtime.Snapshot()
+	pending := s.pendingResume
+	s.pendingResume = false
+	return state, pending
+}
+
+// hasPendingResume 在普通轮准入前检查已存在的恢复，交给下方统一恢复分支处理。
+// 检查后新发布的恢复属于下一批，仍可在当前轮结束后补轮；不提供 select 优先级。
+func (s *Syncer) hasPendingResume() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.pendingResume
 }
 
 // SetStateAppliedHook 注入「新状态已被 Run 消费」后的回调，用于重新读取生效中的
@@ -198,7 +226,8 @@ func (s *Syncer) Run() {
 		}
 	}
 
-	state := s.runtime.Snapshot()
+	// 启动轮代表此时的最终配置，同时消费启动前标记，避免随后重复补轮。
+	state, _ := s.consumeControlState()
 	// 记录 ticker 实际使用的间隔，不以初始配置或最新发布指针代替。
 	tickerInterval := state.Config.Interval
 	ticker := time.NewTicker(tickerInterval)
@@ -240,6 +269,9 @@ func (s *Syncer) Run() {
 		} else {
 			select {
 			case <-ticker.C:
+				if s.hasPendingResume() {
+					break
+				}
 				// 暂停可能已在当前轮次进行中提交、但控制通知尚未被消费；
 				// 定时触发必须与手动触发使用同一门控（AGENTS §五「暂停时 ticker
 				// 与手动 trigger 均不触发同步」）。此处不直接 syncAll，而是跳出
@@ -255,6 +287,9 @@ func (s *Syncer) Run() {
 				s.syncAll()
 				roundCompleted = true
 			case <-s.triggerCh:
+				if s.hasPendingResume() {
+					break
+				}
 				// 排队中的 trigger 在消费前重新检查开关（Build6 §12.5）：
 				// 以**已提交状态**为准（而不是本循环的相位镜像），因为暂停可能在
 				// 当前同步轮次进行中就已生效；此时排队中的触发属过期触发，必须丢弃，
@@ -278,7 +313,7 @@ func (s *Syncer) Run() {
 		}
 
 		// 每轮循环结束都重新读取最新状态（控制通知消费后必须重新读取）
-		latest := s.runtime.Snapshot()
+		latest, pendingResume := s.consumeControlState()
 		if latest == nil {
 			continue
 		}
@@ -287,8 +322,8 @@ func (s *Syncer) Run() {
 		enabled = latest.Config.SyncEnabled
 
 		switch {
-		case !wasEnabled && enabled:
-			// false → true：更新 interval 并立即触发一轮（与 Resume 一致），
+		case enabled && (!wasEnabled || pendingResume):
+			// 已观察的恢复或被合并的恢复边沿：更新 interval 并立即触发一轮，
 			// 且先清空暂停期间排队的过期 trigger —— 本轮的立即同步已代表最新配置，
 			// 陈旧 trigger 再补一轮会造成「恢复多跑一轮」（Build6 §12.5）。
 			slog.Info("同步已开启")
@@ -339,7 +374,7 @@ func (s *Syncer) Resume() {
 // setSyncEnabled 在运行时状态的一次指针替换内翻转同步开关。
 //
 // 运行时快照始终是调度与业务逻辑的唯一真相来源，因此控制通知消费后读到的是
-// 最新状态；通知可合并，但最终状态不会因 channel 满而丢失。
+// 最新状态；通知可合并，真实恢复边沿由 ApplyState 单独保留。
 func (s *Syncer) setSyncEnabled(enabled bool) {
 	current := s.runtime.Snapshot()
 	if current == nil {
@@ -403,7 +438,7 @@ func (s *Syncer) isEnabledMirror() bool {
 
 // drainTrigger 清空暂停期间排队的过期同步触发（非阻塞）。
 //
-// 唯一调用点是 false → true 过渡：此时本轮立即同步已代表最新配置，陈旧
+// 唯一调用点是恢复轮准入：此时本轮立即同步已代表最新配置，陈旧
 // trigger 必须丢弃，否则恢复会额外多跑一轮（Build6 §12.5）。
 func (s *Syncer) drainTrigger() {
 	for {
@@ -453,7 +488,7 @@ func (s *Syncer) isStopped() bool {
 // beginRound 是「启动一个新同步轮次」的统一硬门控（Issue6 A20）。
 //
 // 四处 syncAll 调用点（Run 入口的启动轮、ticker、trigger、false→true 恢复轮）
-// 必须先通过本门控；返回 false 表示已请求停止，调用方不得启动新轮次。
+// 必须先通过本门控；恢复入口也处理被合并的边沿。返回 false 时不得启动新轮次。
 // stop 门控与 A6 的 enabled 门控**并列存在、不合并**：前者回答「是否还要跑」，
 // 后者回答「本轮是否被允许跑」。
 //
