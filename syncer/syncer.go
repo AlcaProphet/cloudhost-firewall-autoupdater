@@ -199,7 +199,9 @@ func (s *Syncer) Run() {
 	}
 
 	state := s.runtime.Snapshot()
-	ticker := time.NewTicker(state.Config.Interval)
+	// 记录 ticker 实际使用的间隔，不以初始配置或最新发布指针代替。
+	tickerInterval := state.Config.Interval
+	ticker := time.NewTicker(tickerInterval)
 	defer ticker.Stop()
 
 	s.setEnabledMirror(state.Config.SyncEnabled)
@@ -218,6 +220,9 @@ func (s *Syncer) Run() {
 	}
 
 	for {
+		// 定时/手动轮返回即算完成（包括失败或 idle），保留原有轮后间隔。
+		// 启动/恢复轮保持轮前计时，不能由普通配置通知补做轮后 Reset。
+		roundCompleted := false
 		// 过渡前值取「本循环已经处理过的相位」，而不是已发布镜像（Issue6 A7）：
 		// ApplyState 在发布时就会同步推进镜像，若镜像先于本循环推进，
 		// 用镜像判定会把 false→true 误判为 true→true，从而漏掉恢复后的立即一轮。
@@ -248,6 +253,7 @@ func (s *Syncer) Run() {
 					break
 				}
 				s.syncAll()
+				roundCompleted = true
 			case <-s.triggerCh:
 				// 排队中的 trigger 在消费前重新检查开关（Build6 §12.5）：
 				// 以**已提交状态**为准（而不是本循环的相位镜像），因为暂停可能在
@@ -263,6 +269,7 @@ func (s *Syncer) Run() {
 				}
 				slog.Info("手动触发同步")
 				s.syncAll()
+				roundCompleted = true
 			case <-s.controlCh:
 			case <-s.stopCh:
 				slog.Info("同步引擎停止")
@@ -286,6 +293,7 @@ func (s *Syncer) Run() {
 			// 陈旧 trigger 再补一轮会造成「恢复多跑一轮」（Build6 §12.5）。
 			slog.Info("同步已开启")
 			ticker.Reset(latest.Config.Interval)
+			tickerInterval = latest.Config.Interval
 			s.drainTrigger()
 			// false→true 的恢复轮同样是「新轮次」，必须走同一 stop 门控（Issue6 A20）：
 			// pause/resume 与 SIGTERM 并发时，暂停子循环的 select 可能选中 control
@@ -296,15 +304,17 @@ func (s *Syncer) Run() {
 			}
 			s.syncAll()
 		case wasEnabled && enabled:
-			// true → true：只按新 interval 重置 ticker，不额外立即同步
-			ticker.Reset(latest.Config.Interval)
+			// 定时/手动轮完成后保留原有轮后等待；纯配置通知只在间隔变化时重新计时。
+			if roundCompleted || latest.Config.Interval != tickerInterval {
+				ticker.Reset(latest.Config.Interval)
+				tickerInterval = latest.Config.Interval
+			}
 		case wasEnabled && !enabled:
 			// true → false：当前轮已完成，停止 ticker 并进入暂停等待
 			slog.Info("同步已暂停")
 			ticker.Stop()
 		default:
-			// false → false：暂停期间仍按最新 interval 准备，恢复后立即生效
-			ticker.Reset(latest.Config.Interval)
+			// false → false：保持暂停，最新间隔在恢复时使用。
 		}
 
 		// 调度决策完成后通知观察者：此时新状态的开关/interval 已真正生效。
