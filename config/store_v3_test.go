@@ -273,8 +273,8 @@ func TestSchemaV3FreshDatabaseShape(t *testing.T) {
 	if v := scalarString(t, db, "SELECT body FROM alert_email WHERE id=1"); v != "FWAlizer 检测到运行异常，请检查同步日志。" {
 		t.Errorf("alert_email.body = %q, want 默认正文", v)
 	}
-	if v := scalarString(t, db, "SELECT channel FROM alert_webhook WHERE id=1"); v != "dingtalk" {
-		t.Errorf("alert_webhook.channel = %q, want dingtalk", v)
+	if v := scalarString(t, db, "SELECT channel FROM alert_webhook WHERE id=1"); v != "" {
+		t.Errorf("alert_webhook.channel = %q, want 未选择", v)
 	}
 }
 

@@ -255,7 +255,7 @@ export interface TestEmailPayload {
 export interface AlertWebhookConfig {
   enabled: boolean
   url: string
-  channel?: string
+  channel: string
 }
 
 // AlertUptimeKumaPushConfig 外部运行监控（Build7 §4.6）：独立于普通 Webhook 渠道

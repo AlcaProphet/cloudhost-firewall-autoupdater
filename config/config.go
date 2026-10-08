@@ -20,8 +20,8 @@ const (
 	MinPushInterval = 20 * time.Second
 	// DefaultAlertPort 默认 SMTP 端口
 	DefaultAlertPort = "587"
-	// DefaultWebhookChannel 默认 Webhook 渠道
-	DefaultWebhookChannel = "dingtalk"
+	// DefaultWebhookChannel 未配置时的渠道值；启用前必须明确选择。
+	DefaultWebhookChannel = ""
 )
 
 // CloudType 云产品类型
@@ -127,7 +127,7 @@ func DefaultUptimeKumaPush() UptimeKumaPushConfig {
 type AlertWebhookConfig struct {
 	Enabled bool   `json:"enabled"`
 	URL     string `json:"url"`
-	Channel string `json:"channel"` // dingtalk / feishu / slack，默认 dingtalk
+	Channel string `json:"channel"` // 关闭时允许空值；启用时为 dingtalk / feishu / slack
 }
 
 // Credentials 四个云访问凭据的领域值（BusinessSnapshot 的组成部分）。

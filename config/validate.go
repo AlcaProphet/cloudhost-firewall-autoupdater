@@ -322,12 +322,16 @@ func NormalizeAlertEmail(c AlertEmailConfig) (AlertEmailConfig, error) {
 
 // NormalizeAlertWebhook 归一化并校验 Webhook 告警配置（Build6 §4.5）：
 //
-//   - channel 只允许 dingtalk / feishu / slack；
+//   - 关闭时 channel 允许空值，启用时必须为 dingtalk / feishu / slack；
 //   - 启用时 URL 必须是 host 非空的绝对 http/https URL；
 //   - 不主动发起请求。
 func NormalizeAlertWebhook(c AlertWebhookConfig) (AlertWebhookConfig, error) {
 	channel := strings.ToLower(strings.TrimSpace(c.Channel))
 	switch channel {
+	case "":
+		if c.Enabled {
+			return AlertWebhookConfig{}, invalidField("webhook.channel", "启用时必须选择渠道")
+		}
 	case "dingtalk", "feishu", "slack":
 	default:
 		return AlertWebhookConfig{}, invalidField("webhook.channel", "只允许 dingtalk / feishu / slack")

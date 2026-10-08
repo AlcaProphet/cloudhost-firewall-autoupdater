@@ -127,7 +127,7 @@ func TestPutSettingsSuccessOneReload(t *testing.T) {
 	}
 }
 
-// TestGetAlertsDefaultsOnEmptyDB 空库时补齐 port/channel 默认值
+// TestGetAlertsDefaultsOnEmptyDB 空库时补齐 port 默认值并保留未选择渠道
 func TestGetAlertsDefaultsOnEmptyDB(t *testing.T) {
 	e := newTestEnv(t)
 	w := e.do(t, http.MethodGet, "/api/alerts", "")
@@ -144,8 +144,8 @@ func TestGetAlertsDefaultsOnEmptyDB(t *testing.T) {
 	if got.Email.Port != "587" {
 		t.Errorf("邮件端口默认值 = %q, want 587", got.Email.Port)
 	}
-	if got.Webhook.Channel != "dingtalk" {
-		t.Errorf("Webhook 渠道默认值 = %q, want dingtalk", got.Webhook.Channel)
+	if got.Webhook.Channel != "" {
+		t.Errorf("Webhook 渠道默认值 = %q, want 未选择", got.Webhook.Channel)
 	}
 }
 
@@ -238,7 +238,7 @@ func TestPutAlertsValidation(t *testing.T) {
 		"启用但 to 空":   wrap(email(`{"enabled":true,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"","subject":"s","body":"b"}`), webhook, policy, push),
 		"主题为空":       wrap(email(`{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"  ","body":"b"}`), webhook, policy, push),
 		"渠道未知":       wrap(baseEmail, `{"enabled":false,"url":"","channel":"wecom"}`, policy, push),
-		"渠道为空":       wrap(baseEmail, `{"enabled":false,"url":"","channel":""}`, policy, push),
+		"启用但渠道为空":    wrap(baseEmail, `{"enabled":true,"url":"https://example.invalid/hook","channel":""}`, policy, push),
 		"启用但 URL 为空": wrap(baseEmail, `{"enabled":true,"url":"","channel":"dingtalk"}`, policy, push),
 		"启用但非 http":  wrap(baseEmail, `{"enabled":true,"url":"ftp://example.com","channel":"dingtalk"}`, policy, push),
 		"启用但无 host":  wrap(baseEmail, `{"enabled":true,"url":"https://","channel":"dingtalk"}`, policy, push),

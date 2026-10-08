@@ -53,7 +53,6 @@ func TestWebhookResponseMatrix(t *testing.T) {
 		{"ding_oversize", "dingtalk", `{"errcode":0}` + strings.Repeat(" ", 16*1024), 200, false},
 		{"ding_exact_limit", "dingtalk", `{"errcode":0}` + strings.Repeat(" ", 16*1024-len(`{"errcode":0}`)), 200, true},
 		{"http_failure", "dingtalk", `{"errcode":0}`, 500, false},
-		{"unknown_channel", "unknown-secret", `{"errcode":0}`, 200, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

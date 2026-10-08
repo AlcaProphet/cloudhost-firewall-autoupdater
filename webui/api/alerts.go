@@ -74,9 +74,6 @@ func (d *Deps) handleGetAlerts(w http.ResponseWriter, r *http.Request) {
 	if emailCfg.Body == "" {
 		emailCfg.Body = config.DefaultEmailBody
 	}
-	if webhookCfg.Channel == "" {
-		webhookCfg.Channel = config.DefaultWebhookChannel
-	}
 	if pushCfg.IntervalText == "" {
 		*pushCfg = config.DefaultUptimeKumaPush()
 	}

@@ -60,7 +60,7 @@ func TestI818SnapshotGETAbsentRows(t *testing.T) {
 		}
 	}
 	got := getAlertsV3(t, e)
-	if got.Policy.HealthTimeout != "10m" || got.Email.Port != "587" || got.Email.Subject != config.DefaultEmailSubject || got.Email.Body != config.DefaultEmailBody || got.Webhook.Channel != "dingtalk" || got.UptimeKumaPush.Interval != "60s" {
+	if got.Policy.HealthTimeout != "10m" || got.Email.Port != "587" || got.Email.Subject != config.DefaultEmailSubject || got.Email.Body != config.DefaultEmailBody || got.Webhook.Channel != "" || got.UptimeKumaPush.Interval != "60s" {
 		t.Fatal("缺行默认值变化")
 	}
 	if got.Policy.DNSFailedEnabled || got.Policy.SyncErrorEnabled || got.Policy.OperationalErrorEnabled || got.Email.Enabled || got.Webhook.Enabled || got.UptimeKumaPush.Enabled || got.Email.Host != "" || got.Webhook.URL != "" || got.UptimeKumaPush.URL != "" {

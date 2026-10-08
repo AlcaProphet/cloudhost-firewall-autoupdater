@@ -405,7 +405,7 @@ func TestResetRestoresAlertDefaults(t *testing.T) {
 	if got.Email.Subject != "[FWAlizer] 告警通知" || got.Email.Body != "FWAlizer 检测到运行异常，请检查同步日志。" {
 		t.Errorf("reset 后主题/正文必须回到默认: %+v", got.Email)
 	}
-	if got.Webhook.Enabled || got.Webhook.URL != "" || got.Webhook.Channel != "dingtalk" {
+	if got.Webhook.Enabled || got.Webhook.URL != "" || got.Webhook.Channel != "" {
 		t.Errorf("reset 后 Webhook 必须回到默认: %+v", got.Webhook)
 	}
 	if got.UptimeKumaPush.Enabled || got.UptimeKumaPush.URL != "" || got.UptimeKumaPush.Interval != "60s" {

@@ -30,7 +30,7 @@ func TestWebhookSendErrorDoesNotExposeSecrets(t *testing.T) {
 		channelSecret = "channel-secret"
 	)
 	transportErr := errors.New(errorSecret)
-	n := NewWebhookNotifier("https://"+hostSecret+"/"+pathSecret+"?token="+querySecret, channelSecret)
+	n := NewWebhookNotifier("https://"+hostSecret+"/"+pathSecret+"?token="+querySecret, "feishu")
 	n.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, transportErr
 	})}
@@ -39,7 +39,7 @@ func TestWebhookSendErrorDoesNotExposeSecrets(t *testing.T) {
 	if err == nil {
 		t.Fatal("transport 失败必须返回错误")
 	}
-	if !strings.Contains(err.Error(), "channel=unknown") || !strings.Contains(err.Error(), "category=transport") {
+	if !strings.Contains(err.Error(), "channel=feishu") || !strings.Contains(err.Error(), "category=transport") {
 		t.Errorf("错误必须只保留安全渠道名和固定类别；实际: %q", err)
 	}
 	for _, secret := range []string{hostSecret, pathSecret, querySecret, errorSecret, channelSecret} {

@@ -354,9 +354,6 @@ func toBundleV3(snapshot *config.BusinessSnapshot, exportedAt time.Time) bundleV
 		email.Body = config.DefaultEmailBody
 	}
 	webhook := snapshot.Webhook
-	if webhook.Channel == "" {
-		webhook.Channel = "dingtalk"
-	}
 	push := snapshot.UptimeKumaPush
 	if push.IntervalText == "" {
 		push = config.DefaultUptimeKumaPush()

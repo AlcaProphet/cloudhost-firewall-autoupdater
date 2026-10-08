@@ -232,7 +232,7 @@ CREATE TABLE IF NOT EXISTS alert_webhook (
 	id INTEGER PRIMARY KEY DEFAULT 1,
 	enabled INTEGER NOT NULL DEFAULT 0,
 	url TEXT NOT NULL DEFAULT '',
-	channel TEXT NOT NULL DEFAULT 'dingtalk'
+	channel TEXT NOT NULL DEFAULT '` + DefaultWebhookChannel + `'
 );
 CREATE TABLE IF NOT EXISTS alert_policy (
 	id INTEGER PRIMARY KEY DEFAULT 1,
@@ -256,6 +256,9 @@ CREATE TABLE IF NOT EXISTS scanned_resources (
 	scanned_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 `
+
+// defaultWebhookRowSQL 显式指定未配置渠道，避免旧表默认值影响初始化与重置。
+const defaultWebhookRowSQL = "INSERT OR IGNORE INTO alert_webhook (id, channel) VALUES (1, '" + DefaultWebhookChannel + "');"
 
 // singleRowTables 是四张单行表：业务 ID 固定为 1，至多一行。
 var singleRowTables = []string{"alert_email", "alert_webhook", "alert_policy", "uptime_kuma_push"}
@@ -300,7 +303,8 @@ func (s *Store) initTables() error {
 //  2. **只有** alert_email 的主题/正文列是本次新增时，才把邮件与 Webhook 的启用状态
 //     统一归零。这是「一次性」语义：列已存在说明该库已经迁移过（或本来就是新库），
 //     绝不能在每次启动重复重置用户配置；
-//  3. 单行表归一化为「至多一行且业务 ID=1」，并保证默认行存在；
+//  3. 缺 channel 的历史主配置行仅在新增列时转换为钉钉；新默认行显式写空渠道；
+//  4. 单行表归一化为「至多一行且业务 ID=1」，并保证默认行存在；
 //     alert_policy / uptime_kuma_push 是新表，默认行即全部关闭 + 10m/60s。
 //
 // 任何一步失败都返回错误并中止启动（Issue6 A17 口径），绝不带着不完整 Schema 运行。
@@ -309,9 +313,14 @@ func migrateSchemaTx(ctx context.Context, tx *sql.Tx) error {
 		"ALTER TABLE rules ADD COLUMN enable_ipv6 INTEGER DEFAULT 0"); err != nil {
 		return err
 	}
-	if _, err := ensureColumnTx(ctx, tx, "alert_webhook", "channel",
+	if channelAdded, err := ensureColumnTx(ctx, tx, "alert_webhook", "channel",
 		"ALTER TABLE alert_webhook ADD COLUMN channel TEXT DEFAULT '"+DefaultWebhookChannel+"'"); err != nil {
 		return err
+	} else if channelAdded {
+		// 缺列旧库原先按钉钉发送；仅转换已存在的主配置行，不作为新配置默认值。
+		if _, err := tx.ExecContext(ctx, "UPDATE alert_webhook SET channel = 'dingtalk' WHERE id = 1"); err != nil {
+			return fmt.Errorf("迁移历史 Webhook 渠道失败: %w", err)
+		}
 	}
 
 	subjectAdded, err := ensureColumnTx(ctx, tx, "alert_email", "subject",
@@ -338,7 +347,11 @@ func migrateSchemaTx(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE id <> 1"); err != nil {
 			return fmt.Errorf("归一化单行表 %s 失败: %w", table, err)
 		}
-		if _, err := tx.ExecContext(ctx, "INSERT OR IGNORE INTO "+table+" (id) VALUES (1)"); err != nil {
+		insertSQL := "INSERT OR IGNORE INTO " + table + " (id) VALUES (1)"
+		if table == "alert_webhook" {
+			insertSQL = defaultWebhookRowSQL
+		}
+		if _, err := tx.ExecContext(ctx, insertSQL); err != nil {
 			return fmt.Errorf("写入 %s 默认行失败: %w", table, err)
 		}
 	}
@@ -537,7 +550,7 @@ const resetAllSQL = "DELETE FROM targets; DELETE FROM rules; DELETE FROM setting
 	"DELETE FROM alert_email; DELETE FROM alert_webhook; DELETE FROM alert_policy; DELETE FROM uptime_kuma_push;" +
 	"DELETE FROM scanned_resources;" +
 	"INSERT OR IGNORE INTO alert_email (id) VALUES (1);" +
-	"INSERT OR IGNORE INTO alert_webhook (id) VALUES (1);" +
+	defaultWebhookRowSQL +
 	"INSERT OR IGNORE INTO alert_policy (id) VALUES (1);" +
 	"INSERT OR IGNORE INTO uptime_kuma_push (id) VALUES (1);"
 

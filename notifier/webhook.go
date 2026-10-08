@@ -34,9 +34,6 @@ type WebhookNotifier struct {
 
 // NewWebhookNotifier 创建 Webhook 通知器
 func NewWebhookNotifier(url, channel string) *WebhookNotifier {
-	if channel == "" {
-		channel = "dingtalk"
-	}
 	return &WebhookNotifier{
 		url:     url,
 		channel: channel,
@@ -89,6 +86,12 @@ func (n *WebhookNotifier) OnEvent(event Event) error {
 		return nil
 	}
 
+	switch n.channel {
+	case "dingtalk", "feishu", "slack":
+	default:
+		return fmt.Errorf("Webhook 发送失败: channel=%s category=invalid_channel", n.ChannelName())
+	}
+
 	// 在途上限：满载丢弃最新通知
 	if n.limiter != nil {
 		release, ok := n.limiter.Acquire()
@@ -111,7 +114,7 @@ func (n *WebhookNotifier) OnEvent(event Event) error {
 		}
 	case "slack":
 		payload = map[string]any{"text": content}
-	default: // dingtalk
+	case "dingtalk":
 		payload = map[string]any{
 			"msgtype": "text",
 			"text":    map[string]string{"content": content},

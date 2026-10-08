@@ -68,7 +68,7 @@ func TestConfigExportEmptyDatabaseSchema(t *testing.T) {
 		got.Alerts.Email.Body != "FWAlizer 检测到运行异常，请检查同步日志。" {
 		t.Errorf("空库邮件告警字段不完整: %+v", got.Alerts.Email)
 	}
-	if got.Alerts.Webhook.Enabled || got.Alerts.Webhook.Channel != "dingtalk" {
+	if got.Alerts.Webhook.Enabled || got.Alerts.Webhook.Channel != "" {
 		t.Errorf("空库 Webhook 告警字段不完整: %+v", got.Alerts.Webhook)
 	}
 	// Build7 §4.3：默认全部关闭、health_timeout=10m、Push 默认关闭且 60s

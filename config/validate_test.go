@@ -305,7 +305,10 @@ func TestNormalizeAlertWebhook(t *testing.T) {
 		t.Errorf("启用且 URL 合法应通过: %v", err)
 	}
 
-	requireInvalid(t, mustErr(NormalizeAlertWebhook(AlertWebhookConfig{Channel: ""})), "webhook.channel")
+	if _, err := NormalizeAlertWebhook(AlertWebhookConfig{Channel: ""}); err != nil {
+		t.Fatalf("关闭时允许空渠道: %v", err)
+	}
+	requireInvalid(t, mustErr(NormalizeAlertWebhook(AlertWebhookConfig{Enabled: true, Channel: ""})), "webhook.channel")
 	requireInvalid(t, mustErr(NormalizeAlertWebhook(AlertWebhookConfig{Channel: "wecom"})), "webhook.channel")
 	requireInvalid(t, mustErr(NormalizeAlertWebhook(AlertWebhookConfig{Enabled: true, Channel: "dingtalk", URL: ""})), "webhook.url")
 	requireInvalid(t, mustErr(NormalizeAlertWebhook(AlertWebhookConfig{Enabled: true, Channel: "dingtalk", URL: "ftp://example.com"})), "webhook.url")

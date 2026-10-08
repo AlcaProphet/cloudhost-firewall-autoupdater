@@ -180,3 +180,57 @@ test('成功后重载失败重新锁定，测试邮件仍独立使用八字段PO
     ['host', 'port', 'username', 'password', 'from_addr', 'to_addr', 'subject', 'body'].sort())
   assert.equal(calls.some((call) => call.opts?.method === 'PUT'), false)
 })
+
+test('空渠道可随关闭配置保存；开启但未选择时零PUT，选择后可保存', async () => {
+  const data = fixture(); data.webhook.channel = ''; data.webhook.url = ''
+  const calls = []
+  const { state, mounted, messages } = mount((url, opts) => { calls.push({ url, opts }); return opts ? {} : structuredClone(data) })
+  await mounted(); assert.equal(state.webhook.value.channel, '')
+  await state.save(); assert.equal(calls.length, 2)
+  assert.equal(JSON.parse(calls[1].opts.body).webhook.channel, '')
+  state.webhook.value.enabled = true
+  await state.save(); assert.equal(calls.length, 2)
+  assert.equal(messages.at(-1).text, '请选择 Webhook 通知渠道')
+  state.webhook.value.channel = 'slack'; state.webhook.value.url = 'https://example.invalid/slack'
+  await state.save(); assert.equal(calls.length, 3)
+  assert.equal(JSON.parse(calls[2].opts.body).webhook.channel, 'slack')
+})
+
+test('加载已有三种渠道后，关闭再开启不清空渠道或URL', async () => {
+  for (const channel of ['dingtalk', 'feishu', 'slack']) {
+    const data = fixture(); data.webhook.channel = channel; data.webhook.enabled = true
+    const calls = []
+    const { state, mounted } = mount((url, opts) => { calls.push({ url, opts }); return opts ? {} : structuredClone(data) })
+    await mounted(); assert.equal(state.webhook.value.channel, channel)
+    state.webhook.value.enabled = false; await state.save()
+    state.webhook.value.enabled = true; await state.save()
+    for (const c of calls.slice(1)) { const hook = JSON.parse(c.opts.body).webhook; assert.equal(hook.channel, channel); assert.equal(hook.url, data.webhook.url) }
+  }
+})
+
+test('真实单选组件渲染：空值未选中，已有渠道恰选中一项', async () => {
+  const { compileTemplate } = await import('@vue/compiler-sfc')
+  const { renderToString } = await import('@vue/server-renderer')
+  for (const channel of ['', 'dingtalk', 'feishu', 'slack']) {
+    const { descriptor } = parse(source.replace("channel: ''", `channel: '${channel}'`))
+    const compiledScript = compileScript(descriptor, { id: 'channel-render-test' })
+    const template = compileTemplate({ source: descriptor.template.content, filename: 'Alerts.vue', id: 'channel-render-test', ssr: true, ssrCssVars: [], compilerOptions: { bindingMetadata: compiledScript.bindings } })
+    assert.deepEqual(template.errors, [])
+    const modules = {}
+    for (const [name, code] of [['script', compiledScript.content], ['template', template.code]]) {
+      const module = { exports: {} }
+      new Script(ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText).runInNewContext({ module, exports: module.exports, require(name) {
+        if (name === '../api') return { request: () => { throw new Error('unexpected SSR request') } }
+        if (name === 'naive-ui') return { ...require('naive-ui'), useMessage: () => ({ error() {}, success() {} }) }
+        return require(name)
+      } })
+      modules[name] = module.exports
+    }
+    const component = modules.script.default; component.ssrRender = modules.template.ssrRender
+    const html = await renderToString(vue.createSSRApp(component))
+    const inputs = html.match(/<input\b[^>]*type="radio"[^>]*>/g) || []
+    const checked = inputs.filter((s) => /\bchecked(?:\s|=|>)/.test(s))
+    assert.equal(inputs.length, 3); assert.equal(checked.length, channel === '' ? 0 : 1)
+    if (channel) assert.match(checked[0], new RegExp(`value="${channel}"`))
+  }
+})

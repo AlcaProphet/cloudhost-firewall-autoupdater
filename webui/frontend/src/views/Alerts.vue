@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NCard, NForm, NFormItem, NInput, NSelect, NSwitch, NButton, NText, NAlert, useMessage } from 'naive-ui'
+import { NCard, NForm, NFormItem, NInput, NRadioGroup, NRadio, NSwitch, NButton, NText, NAlert, useMessage } from 'naive-ui'
 import { ref, onMounted } from 'vue'
 import { request } from '../api'
 import type { AlertEmailConfig, AlertPolicyConfig, AlertUptimeKumaPushConfig, AlertWebhookConfig, TestEmailPayload } from '../types'
@@ -38,7 +38,7 @@ const email = ref<AlertEmailConfig>({
 const webhook = ref<AlertWebhookConfig>({
   enabled: false,
   url: '',
-  channel: 'dingtalk',
+  channel: '',
 })
 
 const push = ref<AlertUptimeKumaPushConfig>({
@@ -138,6 +138,10 @@ async function save() {
     return
   }
   if (saving.value) return
+  if (webhook.value.enabled && webhook.value.channel === '') {
+    message.error('请选择 Webhook 通知渠道')
+    return
+  }
   saving.value = true
   try {
     await request('/api/alerts', {
@@ -247,21 +251,17 @@ async function save() {
         <NSwitch v-model:value="webhook.enabled" />
       </template>
       <NForm :model="webhook" label-placement="left" label-width="100">
-        <NFormItem label="Webhook URL">
-          <NInput
-            v-model:value="webhook.url"
-            type="password"
-            show-password-on="click"
-            placeholder="https://oapi.dingtalk.com/robot/send?access_token=xxx"
-            :disabled="!webhook.enabled"
-          />
-        </NFormItem>
         <NFormItem label="通知渠道">
-          <NSelect v-model:value="webhook.channel" :options="[
-            { label: '钉钉', value: 'dingtalk' },
-            { label: '飞书', value: 'feishu' },
-            { label: 'Slack', value: 'slack' },
-          ]" :disabled="!webhook.enabled" />
+          <NRadioGroup v-model:value="webhook.channel" :disabled="!webhook.enabled">
+            <NRadio value="dingtalk">钉钉</NRadio>
+            <NRadio value="feishu">飞书</NRadio>
+            <NRadio value="slack">Slack</NRadio>
+          </NRadioGroup>
+        </NFormItem>
+        <NFormItem label="Webhook URL">
+          <NInput v-model:value="webhook.url" type="password" show-password-on="click"
+            :placeholder="webhook.channel ? '请输入所选渠道的 Webhook URL' : '请先选择通知渠道'"
+            :disabled="!webhook.enabled" />
         </NFormItem>
       </NForm>
     </NCard>

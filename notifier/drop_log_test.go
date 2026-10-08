@@ -309,7 +309,11 @@ func TestP315FilterAndUnknown(t *testing.T) {
 				if len(c.copy()) != 0 {
 					t.Fatal("unsupported counted")
 				}
-				p315Send(t, n, EventDNSFailed)
+				if channel == "channel-secret" {
+					l.logDropped(channel, EventDNSFailed)
+				} else {
+					p315Send(t, n, EventDNSFailed)
+				}
 				want := channel
 				if channel == "channel-secret" {
 					want = "unknown"
