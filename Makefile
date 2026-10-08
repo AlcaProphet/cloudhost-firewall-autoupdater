@@ -6,10 +6,10 @@ frontend:
 build: frontend
 	go build -o fwalizer .
 
-test:
+test: frontend
 	go test ./... -race -v
 
-vet:
+vet: frontend
 	go vet ./...
 
 clean:

@@ -1,5 +1,7 @@
 # Issue8.md — 现存缺陷台账（2026-10-08 复核整理版）
 
+> **I8-03 后续实施（2026-10-08）**：已按用户裁决 A 补齐 Make 的共享真实前端前置，Q-05 已裁决；范围、正式回归与本地/外部证据边界见文末 I8-03 补记。以下原复核记录保留为历史。
+
 > **2026-10-08 后续实施：I8-01 已按用户裁决 A 本地修复，Q-01 已裁决；本轮实现与验证见文末补记。I8-02 另按用户裁决 C 本地实施，Q-02 已裁决。I8-18 已按用户裁决 A 本地实施，Q-03 已裁决；正式证据见文末补记。I8-111 已在用户明确无兼容性需求后按严格方案 B 本地实施，Q-08 已裁决；正式证据见文末补记。以下只读复核记录保留为历史，I8-113 已按用户定型的空渠道＋单选按钮本地实施，Q-09 已裁决；正式证据见文末补记。I8-12 已按推荐方案 A 本地实施，新增 Q-14 已裁决；本轮证据见文末补记。I8-01/I8-02/I8-18/I8-111/I8-113/I8-12 当前状态以各自补记为准。**
 >
 > **本文档保留问题追踪编号，明确区分真实待修问题、合理前置条件、维护候选、已撤销判断、证据缺口与外部验收边界。本次只修订文档，生产与测试均未修改。**
@@ -81,7 +83,9 @@
 
 ### 1.2 构建与门禁
 
-#### I8-03【中·可复现性】清洁检出下 Makefile 的 test/vet/all 缺前端前置　`②`
+#### I8-03【已本地修复·原中可复现性】清洁检出下 Makefile 的 test/vet/all 缺前端前置　`②`
+
+- **当前状态**：2026-10-08 按用户裁决 A 为 `test`、`vet` 补齐共享 `.PHONY frontend` 前置，保留真实安装/构建；17 项依赖与失败传播回归已入仓，正式证据见文末。以下现象与命令结果为修复前历史。
 
 - **正常前置与问题范围**：裸 Go 构建前需真实 dist；`README.md:407/410/413` 指示先 make build 再 test/vet，CI workflow :51 先前端、:65/68 后 Go，因此 CI 顺序当前正确。欠完善的是清洁副本单独 make test/vet 和 make all 的入口，不能把正常 embed 前置称全部构建不可用。
 - **现象**：`webui/embed.go:5` 的 `//go:embed frontend/dist` 依赖被 `.gitignore:5` 忽略的目录，而 `Makefile:9-13` 的 `test`/`vet` **无 `frontend` 前置**（`build` 有）。
@@ -89,7 +93,7 @@
 - **对照**：当前工作树存在 ignored `webui/frontend/dist` → `go build ./...` EXIT 0。
 - **⚠️ 根因不是"目录存在"**：`mkdir -p webui/frontend/dist` 后 `go build ./...` **仍 EXIT 1**（`cannot embed directory frontend/dist: contains no embeddable files`）；必须目录内有 **≥1 个可 embed 文件**。审计 §5 附表 H5 行原写的"建空目录后 EXIT=0"**已证伪，不得据此修**（见附录 B）。
 - **附带**：清洁检出中 `go list ./...` 本身失败（非 0 且无输出）⇒ 任何 `go test $(go list ./...)` 脚本会**静默退化成"只跑当前目录"**；须用 `go list -e ./...`。
-- **禁止项**：**不得**提交占位 `webui/frontend/dist/index.html`——`webui/server.go:307` 会把占位页当真实 SPA 提供，且 build/vet/test 全变绿，**静默掩盖真实故障**（当前仅 `git add -f` 可绕过忽略规则）。
+- **禁止项**：**不得**提交占位 `webui/frontend/dist/index.html`——`webui/server.go:307` 会把占位页当真实 SPA 提供，占位页可以通过编译，但当前 `TestStaticAssetsServedFromEmbed` 会因缺少真实 JS 资源而失败；原“全部测试变绿”判断已订正。不得用占位页绕过真实前端构建（仅 `git add -f` 可绕过忽略规则）。
 - **修法见 §2 Q-05**。
 
 #### I8-04【中·门禁密闭性】默认测试命令会执行真实外网 DNS 查询　`②`
@@ -219,7 +223,7 @@
 | I8-111 | 已按严格 B 本地修复；Q-08 已裁决，旧版本业务漏洞判断仍未成立 | 字段名精确匹配、全层级重复/非法 Unicode 拒绝；合法转义等价；大小检查先于解析，非法包零写入零发布 | 正式 TestI8111* 覆盖 57 条字段路径、运行时与完整配置保留、限额及安全错误；门禁/负向控制见文末补记 |
 | I8-113 | 已按细化 A 本地修复；Q-09 已裁决 | 空初始值＋单选按钮；历史主行仅补列时转换，旧库 reset 显式未选择；外部验收保持 | 正式初始化/回滚/往返/零写入零发布/发送前拒绝/真实组件渲染及负向控制，见文末 |
 | I8-12 | 已按 A 本地修复；Q-14 已裁决 | 四请求阶段；重试清空、持久错误、中性空结果/完成通知；保留目标级明细 | 正式 17 项页面/模板/请求封装行为回归及六类负向控制；证据见文末，真实浏览器待 PT-AUDIT-03 |
-| I8-03 | 待改，门禁入口；裸 Go 缺产物是正常前置 | Make test/vet/all 前置真实前端构建或明确契约；清洁副本验证顺序、失败传播及一次构建，不提交占位页 | Makefile9–13；README407 与 workflow51先前端、65/68后Go，CI已有正确顺序 |
+| I8-03 | 已按 A 本地修复；裸 Go 缺产物仍为正常前置 | test/vet/build 共享真实 frontend，单次 Make 只构建一次；17 项依赖/故障回归、清洁副本与正式门禁见文末；不提交占位页 | Makefile、build/makefile_test.sh；CI/Docker 原有正确顺序保持 |
 | I8-04 | 待改，网络依赖与假绿风险 | 本地 DNS 替身或明确短模式；统计本地报文，失败必须按所测合同 FAIL，默认测试不意外外发 | resolver_test24–56／Make10／CI68；本次不访问真实上游 |
 | I8-102 | 待改，低；未解 Promise 可挂起 | 逐用例超时；已知挂起候选有界失败且后续报告可见，正常实现通过 | package script源码；180s/15s对照是历史 |
 | I8-09 | 待改，低；异常云结构导致请求中断 | nil/结构守卫并返回可识别错误；SDK→handler 缺 Response 与有效空集合对照，旧缓存不覆盖 | scan72/113源码；历史 SDK panic 不证明进程崩溃 |
@@ -258,7 +262,7 @@
 | **Q-02（已裁决）** | **I8-02** failed 路径的观察表达 | 用户选择 C + 追加字段保留旧整数类型，并分别保留 latest/last_complete；历史来源、估计、未知明确区分，可信零可替换；已授权正式修复 | 目标事件、RoundSummary、SQLite 详情、Dashboard 与字段合同；无 schema/配置包迁移；实施见文末与 Issue7 §12.9 |
 | **Q-03（已裁决）** | **I8-18** GET 告警快照一致性 | 用户 2026-10-08 确认 A：只用一个只读事务读取四对象，复用现有私有 loader，保持 HTTP 默认值/字段/安全错误语义；不复用完整业务快照、不引入编辑版本冲突机制。已授权并本地实施 | 2 个生产、2 个新增测试及 4 个文档，共 8 文件；前端不变，正式证据见文末补记 |
 | **Q-04** | **I8-08 / I8-09** SWAS 扫描缺失集合 与 Lighthouse/CVM 扫描空响应的处置 | ①统一为保守失败 `ErrSnapshotIncomplete`（与 P3-26 的 ECS 策略一致，不覆盖缓存）②仅补 nil 守卫防 panic ③显式接受现状并文档化 | `provider/scan.go:72/113/153-156`、`webui/api/scan.go:49-69` |
-| **Q-05** | **I8-03** 构建阻断的修法 | ①给 `Makefile` 的 `test`/`vet` 加 `frontend` 前置（`build` 已有，overlay 验证前置生效且 `npm ci` 只跑一次）②在 CI/文档中明确"裸 Go 命令需先构建前端" ③其他 | `Makefile:9-13`、`webui/embed.go:5`、`.gitignore:5`、`AGENTS.md` §八 |
+| **Q-05（已裁决）** | **I8-03** 构建入口契约 | 用户 2026-10-08 选择 A 并授权实施：test/vet/build 共享真实 `.PHONY frontend` 前置；完整核验推荐一次 make all，快速裸 Go 检查显式使用已准备好的 dist；不引入增量缓存 | Makefile 两条前置、一份回归脚本与 README/AGENTS/本文/审计共六文件；正式证据见文末 |
 | **Q-06** | **I8-04** `dns` 包真实外网依赖 | ①改为本地 DNS mock（最彻底，门禁密闭）②统一为默认加 `-short` 并为两种模式定合同 ③接受现状并文档化 | `dns/resolver_test.go`、`Makefile:10`、CI workflow |
 | **Q-07** | **I8-05 + I8-06** Push 心跳的"重置语义"与"下限语义" | ①同 URL、同启用状态、同间隔的普通保存保留剩余等待；URL/启用/间隔实际变化的重新计时语义另定，Wake 须及时重读新配置，独立 Health 监督器的唤醒保持；正常路径补 MinPushInterval 防脏库 ②显式接受现状并在 `AGENTS.md`/Build7 写明代价（连续保存可推迟心跳） | `internal/health/push.go:138-178`、`webui/api/deps.go:168`、`AGENTS.md` §三/§五 |
 | **Q-08（已裁决）** | **I8-111** version 3 严格解析策略 | 用户 2026-10-08 明确无兼容性需求、允许破坏性改动后授权严格 B：全层级拒绝重复字段、只接受规定大小写、拒绝非法 Unicode，合法转义按解码后的字段名识别。已本地实施；强要求同步至 AGENTS §9.1 | 三个生产文件与两份测试，同步 AGENTS/本文/Build7/README/审计；正式证据见文末补记 |
@@ -305,7 +309,7 @@
 
 1. **I8-08/09、I8-05**：优先跟进扫描异常覆盖缓存/请求中断、普通保存持续延迟心跳。分别先定异常与有效空集合区分、等待截止时间语义；I8-18 已按 A 本地修复，正式证据见文末补记。
 2. **I8-11、I8-17b**：完整性与 IPv6 DNS 需要改进；I8-12 已按 A 本地修复，真实浏览器待 PT-AUDIT-03；I8-02 已按 C 本地修复，真实浏览器/云观察仍待 PT-I7-07，不再作为待裁决事项。
-3. **I8-03/04/102 与 §3**：完善清洁 Make 入口、无外网门禁和失败能有界变红的证据；CI 当前已先构建前端，不能误写 CI 构建缺陷。
+3. **I8-04/102 与 §3**：继续完善无外网门禁和失败能有界变红的证据；I8-03 已按 A 本地修复，清洁 Make 入口证据见文末。CI 原有前端先行顺序正确；I8-03 收口不表示 I8-04 外网 DNS 已解决。
 4. **I8-01 已本地修复**；I8-43、I8-17f 继续独立处理错误顺序和末尾等待候选，分别守住无效请求零写入、跨轮限速。
 5. **I8-06、Q-11/12/13 与静态候选**：脏库防御、维护清理和整体预算按收益与合同决定。I8-111 已按严格 B 本地修复，Q-08 已裁决。I8-113 已按细化 A 本地修复，Q-09 已裁决，真实浏览器仍待执行。当前合理前置条件或理论路径不作为必须修的产品缺陷；文档修订不表示生产修复。
 
@@ -421,3 +425,14 @@
 - **正式负向控制**：仓库外隔离源码使用本轮正式测试，恢复旧页面/组件展示、隐藏失败原因、保留旧预览、绿色完成 toast、绿色空结果、失败不更新时间六类均由目标行为断言检出；无编译错误、TypeError 或挂起作为红灯证据。隔离源码/日志保存在 `/tmp/fwalizer-i812-research/controls/`。
 - **门禁**：`npm run test:dryrun` 17 项与 `node --test tests/*.test.mjs` 全部 86 项通过；`npm run build`（vue-tsc + vite）通过并更新 ignored dist；`go vet ./...`/`go build ./...` 通过。`go test ./... -race -count=1 -timeout=20m` 全仓 12 包通过，含使用本轮重建前端产物的既有产品进程及静态嵌入回归；单轮通过不外推长期稳定。最终 `git diff --check` 通过。
 - **范围与外部边界**：三个前端生产文件、package.json 命令入口、一份专用回归与 AGENTS/Issue8/Issue7/ProdTestList/审计五份文档，共十文件。无后端业务源码/API/schema/配置包/依赖/正式同步/健康改动，不新增超时、自动重试或历史缓存。Go `1.27.1 darwin/arm64`；真实浏览器登记 PT-AUDIT-03，尚未执行。未执行本项专门产品进程验收、Linux/Docker/compose、原生 amd64/macOS 13、真实云/SMTP/收件箱/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR；其他人工未执行/免除状态保持。全仓默认 Go 门禁包含既有 I8-04 网络 DNS 测试，不把包级通过/自行 skip 当作外部验收；既有 TestMain 产品进程回归也不替代本项浏览器验收。本地证据不外推长期稳定或外部通过；源码/测试/文档尚未提交或推送。
+
+## I8-03 当前实施补记（2026-10-08，用户裁决 A：共享真实前端前置）
+
+- **授权与基线**：用户在本聊天选择 A，随后明确授权修复并同步文档；实施前 `main / bb8e30103a21e28523745e5eed71be17694451e8`、本地 `origin/main / c3bb468478f02b32361c85be1090c70743750579`、ahead 1，工作树/暂存区干净，未 fetch。本轮修改尚未提交或推送。
+- **正式实现与契约**：Makefile 仅将 `test:`、`vet:` 改为依赖 `frontend`，保留已有 `build: frontend`、`.PHONY frontend` 与 `npm ci && npm run build`。前端成功后才能执行消费者；同一次 Make 调用共享一次构建，前端失败则不执行 Go。`make -j4 all` 在前端完成后允许 Go 检查/测试/构建并行，任一失败返回非零，不承诺其他并行任务从未运行或独立 Make 进程互斥。不引入增量缓存、占位 dist、替代 embed、递归 Make 或新 Make 版本要求。
+- **正式回归与判别力**：新增 `build/makefile_test.sh`，POSIX shell 在隔离目录复制待测真实 Makefile、使用本地 npm/go 替身；不安装依赖、不创建 dist。17 项覆盖 test/vet/build/all、并行 all、多目标、npm ci/前端 build 失败抑制消费者、三个 Go 阶段失败传播与单次安装/构建计数；同名 frontend 文件验证 `.PHONY` 不被遮蔽。`sh build/makefile_test.sh` 全部通过；旧 Makefile、缺 test 前置、缺 vet 前置、仅 all 加兄弟前置、移除 frontend 的 phony 声明五类仓外负向控制均被同一正式回归按行为断言检出。`sh -n build/makefile_test.sh` 通过。
+- **正式工作树真实门禁**：运行 `make -j4 all`，外部临时 go 包装器仅对 test 追加 `-short -timeout=5m`，以隔离 I8-04 的两个外网 DNS 用例；Makefile 原测试命令未改。npm ci 与 vue-tsc/vite 构建各一次，Go build/vet 与全仓 12 包 race 短模式测试一轮通过；现有 TestHTTPRoutesRegression、TestStaticAssetsServedFromEmbed 与既有 TestMain 产品二进制进程回归包含在该门禁内。此结果不是原样默认 make test 的外网验证，也不外推长期稳定绿色。正式 ignored dist 与二进制已重建。
+- **无产物副本验证**：按正式工作树 tracked 输入加本轮新增脚本复制到仓外隔离目录，明确不携带 dist/node_modules（不是尚未提交修改之前的 git archive HEAD）。执行真实 `make -j4 vet build` 通过，npm ci 与前端 build 各一次，Go vet/build 成功并生成真实 index.html 与 fwalizer；副本 Makefile 与正式工作树逐字节一致。研究阶段的清洁副本 make all 和占位页负向证据仅作为研究历史保留，不冒充本轮正式门禁。
+- **文档闭环与历史订正**：README 推荐一次 make all，删掉完整二进制章节重复 npm build，说明单独调用的重建成本、裸 Go 前置及独立脚本入口；AGENTS 固定构建契约；本文标题/状态表/Q-05/优先级与审计对应当前状态同步。占位页可编译但当前静态资源回归会拒绝缺少 JS 的 dist，原“build/vet/test 全变绿”表述已订正，禁止占位修法保持。审计最近基线与历史指针更新，本次不回写其他缺陷的完成结论。
+- **范围与证据**：Makefile、一份新回归脚本与 README/AGENTS/Issue8/审计四份文档，共六文件；Go 业务源码、embed、前端源码、模块/前端依赖、CI/Docker、DNS 测试与 clean 策略不变。证据保存在仓外 `/private/tmp/codex-i803-implementation-xpxif0aj/`（checks.json、regression.log、各负向控制、formal-result.json/formal-all.log、clean-result.json/clean-vet-build.log）；最终六文件范围、暂存区为空及 `git diff --check` 已检查。
+- **环境与外部边界**：Go `1.27.1 darwin/arm64` 实际二进制、`GOTOOLCHAIN=local`；Node `26.7.0`、npm `11.19.0`、GNU Make `3.81`。本轮未验证 CI 固定 Node 24.21.0、Linux/Docker/compose、浏览器、原生 amd64/macOS 13、真实云/上游 DNS/SMTP/收件箱/Webhook/Uptime Kuma 或远端 CI/GHCR。I8-04 未修，其他外部未执行/免除状态保持。npm ci 输出 3 个 high 漏洞提示，未执行独立 npm audit、未修改依赖，不将历史 audit=0 写成本轮结果；依赖风险独立核验，不扩大本次修复。

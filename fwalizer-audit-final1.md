@@ -5,29 +5,36 @@
 | 仓库 | `/Users/kyle/Desktop/Repo/cloudhost-firewall-autoupdater` |
 | 审计快照分支 / HEAD | `main` / `11918fb945fe9dfe2a86ead5bc833b14dd156a68` |
 | 审计快照开始前工作树 | **干净**（0 tracked 改动、0 非忽略未跟踪文件）；这是历史审计快照，不表示当前工作树状态 |
-| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-10-08 I8-113 空渠道）」** |
+| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-10-08 I8-03 Make 入口）」** |
 | 审核性质 | 原始全量代码审核为**只读**；2026-09-30 批次只静态核验既有修复并更新本文与 `Issue7.md`，未修改代码，未运行构建、测试或格式化（属该批次记录） |
 | 审核方式 | 8 路并行子代理分模块审核 + 主代理亲自覆盖超时范围 + 判别性探针独立复现 + 交叉复核裁决 |
 | 审核范围（审计快照值） | 快照 `11918fb` 口径：233 个 tracked 文件；**53/53 生产 Go 文件**（10,890 行）；62 个测试文件（20,457 行）；18 个前端源文件（2,212 行）；6 个构建/部署/CI 文件；8 份合同文档。**报告早期复核快照值（非本轮统计）为 244 tracked / 55 生产 Go（12,606 行）/ 69 测试文件（24,896 行）/ 18 前端源（2,361 行）/ 同样 6 个构建文件与 8 份合同文档**（新增 `provider/plan.go`、`syncer/target.go`） |
 | 报告版本 | final1（已剔除全部被驳回/误报项，并纳入用户 7 项决策） |
 
-> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-10-08 I8-113 空渠道）」小节为准**。各日期实施补记（包括文末“当前实施补记”）中的“本轮/尚未提交”均指该批次当时；后续提交事实以段首提交标记与 §0.2 状态索引为准。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
+> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-10-08 I8-03 Make 入口）」小节为准**。各日期实施补记（包括文末“当前实施补记”）中的“本轮/尚未提交”均指该批次当时；后续提交事实以段首提交标记与 §0.2 状态索引为准。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
 
-### 最近实施基线（2026-10-08 I8-113 空渠道）
+### 最近实施基线（2026-10-08 I8-03 Make 入口）
+
+- **正式基线与范围**：`main / bb8e30103a21e28523745e5eed71be17694451e8`，本地 `origin/main / c3bb468478f02b32361c85be1090c70743750579`，ahead 1；实施前工作树/暂存区干净，未 fetch。本轮六文件：Makefile、build/makefile_test.sh 与 README/AGENTS/Issue8/本文；尚未提交或推送，正式证据见文末 I8-03 补记。
+- **边界**：只修 Make 共享前端前置与配套门禁/文档，不改 Go 业务、embed、前端源码、依赖、CI/Docker、DNS 测试或清理策略；I8-04 与外部验收状态保持。
+
+### I8-113 实施基线（2026-10-08，历史批次）
+
+> 该批次已提交为 `c3bb468`；以下保留当时记录，现时基线以上方 I8-03 为准。
 
 - **正式基线与范围**：`main / 8052015c766121b05cdaf8afe2eabd55a45aa8db`，本地 `origin/main / 7696482243461f582342aeb78fdc2f467012f674`，ahead 4；实施前工作树/暂存区干净，未 fetch。当前工作树为本轮 27 文件修改：九生产、十三测试、五文档，含三个新增测试文件；尚未提交或推送。I8-113/Q-09 按用户确认的空初始值＋单选按钮实施，正式证据见文末补记。
 - **边界**：只处理 Webhook 未配置语义与配套读写/发送/UI；表字段结构与配置包 version 3 保留，旧版导入新增空渠道包不要求兼容，已有配置及一次性历史转换明确区分。真实浏览器/通知平台与外部验收状态保持。
 
 ### I8-111 实施基线（2026-10-08，历史批次）
 
-> 该批次已提交为 `8052015`；以下保留当时记录，现时基线以上方 I8-113 为准。
+> 该批次已提交为 `8052015`；以下保留当时记录，现时基线以上方 I8-03 为准。
 
 - **正式基线与范围**：`main / 3cc4c3db3da02b7985ddc2700a06bd12af234d98`，本地 `origin/main / 7696482243461f582342aeb78fdc2f467012f674`，ahead 3；实施前工作树与暂存区干净，未 fetch。当前工作树为本轮 10 文件修改：三个生产文件、两份测试与 AGENTS/Issue8/Build7/README/本文五文档。严格输入合同、正式门禁和负向控制见文末 I8-111 当前实施补记；尚未提交或推送。
 - **边界**：只收紧配置导入；版本仍为 3，schema/依赖/普通 API/前端/协调器写事务不变，不升级真实外部验收状态。此前 I8-18 与审计快照基线保留为历史。
 
 ### I8-18 实施基线（2026-10-08，历史批次）
 
-> 该批次已提交为 `3cc4c3d`；以下保留当时记录，现时基线以上方 I8-113 为准。
+> 该批次已提交为 `3cc4c3d`；以下保留当时记录，现时基线以上方 I8-03 为准。
 
 - **正式基线与范围**：`main / 3f50f3821c86d04ee19b67a1d280a28069880194`，本地 `origin/main / 7696482243461f582342aeb78fdc2f467012f674`，ahead 2；实施前工作树/暂存区干净，未 fetch、提交或 push。当前工作树为本轮 8 个文件修改；两生产文件修复四对象 GET 一致快照，新增两份正式测试，同步四文档；具体证据见文末 I8-18 当前实施补记。
 - **边界**：此前 P3-25 与审计快照基线均保留为历史，本项只保证单次 GET 内部一致，不新增版本冲突检测或外部验收结论。
@@ -1267,11 +1274,11 @@ FAIL
 | **OperationalHealth** | **唯一计算源被三个消费者真实共用**（`supervisor` / `operational` 端点 / `pusher` 都走同一个 `*health.Checker`）；2s 非阻塞探活（`Store` 结构体**无互斥量**，不持应用锁）；`StartupGrace=10s` 三分支正确；`failed/partial` 直到被 `success/idle` 覆盖；原因稳定去重排序；30s 边沿监督器 | 判定输入来自三次独立 `Snapshot()`（`run.go:127-142`），注释自述"一致快照"但可能混用新旧 policy/interval → 30s 内一次瞬时误判，自愈 | `slices.Compact` 冗余 | 一次取 `*RuntimeState` 后派生 policy/interval |
 | **HTTP/SSE** | 严格解码齐全（未知字段/尾随/多顶层值/10 MiB/1 MiB/413）；路径 ID `strconv.Atoi` 且 >0；请求 DTO 不含 DB `id`；导出 GET 已删（实测 405）；两类 SSE 监听服务器级 `ShutdownCh` 且每次写出有 5s deadline；P3-05 已实施普通 JSON 成功/错误统一 `no-store` | I8-18 已于 2026-10-08 按 A 本地修复：四对象窄只读事务，不依赖无关业务表；修复前四读撕裂及前端回写是历史事实，正式证据见文末补记 | `fs.Sub` 吞错仅理论规范候选；固定合法 embed.FS 路径下未证明此错误可达，缺index的404不是该分支后果 | 普通 JSON 禁缓存已由 P3-05 收口；I8-111 导入严格 B 已本地修复（字段名精确、重复/非法 Unicode 拒绝、先限额与安全错误）；P3-14 缺失依赖 503 已本地修复；I8-18 已按 A 改为窄只读快照，编辑冲突检测不在本项范围；I8-113 关闭空渠道/启用必选、GET/导出不补渠道已实施 |
 | **前端** | 8 字段测试邮件载荷两侧严格一致（历史上真实 bug 点，现有注释+类型双重防护）；无 `console.*`/存储/cookie 泄漏；密码与 Webhook/Push URL 用 `type="password"`；导出用 `fetch`+Blob 且 `revokeObjectURL`；EventSource 单实例且卸载关闭；无 `addEventListener` 泄漏 | P3-04 已本地修复（浏览器待验）；P3-16 已按 B 本地修复并有局部浏览器证据 | 时长校验已收敛至后端 | P2-06/P2-07 已本地收口；其余逐项按 P3 收敛；**不建议**引入 Pinia/Vitest 等重型栈 |
-| **Docker/CI** | 非 root + `CGO_ENABLED=0` 静态编译 + `HEALTHCHECK` 用静态 `/api/health`（实测全部符合）；前端在 builder 阶段构建并 `COPY` 进 Go 阶段（顺序正确）；容器实测 `healthy`、`ExitCode=0` | 清洁检出裸 Go 需真实dist是正常前置；Make test/vet/all缺前置，CI已先构建前端（2026-10-08订正）；P1-02 已本地修复；`go get -u` 使构建不可复现（AGENTS §十 **有意设计**） | Makefile 与 CI 命令集不统一 | 给 `test`/`vet` 加 `frontend` 前置；`go get -u` 策略受强要求约束，**不建议**擅自改为锁版本 |
+| **Docker/CI** | 非 root + `CGO_ENABLED=0` 静态编译 + 静态 `/api/health` HEALTHCHECK（历史实测符合）；CI 与 Docker 原有前端先行顺序正确 | 裸 Go 需真实 dist 是正常前置；I8-03 Make test/vet/all 缺前置已于 2026-10-08 按 A 本地修复；`go get -u` 不可复现性属 AGENTS §十有意策略 | Makefile 与 CI 命令集仍有不同，I8-04 默认 DNS 边界独立 | test/vet/build 共享真实 frontend，回归与正式证据见文末；本轮未执行 Docker/远端 CI，不擅自改 SDK 更新策略 |
 
 ### 附：构建入口前置（历史 P1 判断已限定为 Make 入口，CI 顺序正确）
 
-`webui/embed.go:5` 的 `//go:embed frontend/dist` 依赖被 `.gitignore:5` 忽略的目录；`Makefile:6` 的 `build` 有 `frontend` 前置，但 `Makefile:9-13` 的 `test`/`vet` **没有**。在 `git archive HEAD` 抽取的清洁副本上实测：
+**当前状态（2026-10-08）**：I8-03 已按 A 本地修复，test/vet/build 共享真实 frontend，正式证据见文末。以下保留修复前历史：embed 依赖被忽略的 dist，原 Makefile 仅 build 有 frontend 前置；清洁副本历史结果如下。当前 embed 已使用 `all:frontend/dist`，本轮不修改其规则。
 
 | 命令 | 结果 |
 |---|---|
@@ -1279,7 +1286,7 @@ FAIL
 | `make vet` | **EXIT=2** |
 | 手动 `mkdir -p webui/frontend/dist` 后 `go build ./...` | **2026-10-08 订正：EXIT=1**，空目录没有可 embed 文件；需真实前端构建产物，不能提交占位页 |
 
-**修复**：给 `test`/`vet` 加 `frontend` 前置依赖（Make 在同一次调用内对同一前置去重，`make all` 仍只跑一次 `npm ci`）。**不要**提交占位 `webui/frontend/dist/index.html`——它会被 embed 并由 `webui/server.go:305` 的 FileServer 当真实页面提供。
+**已实施**：给 `test`/`vet` 加 `frontend` 前置依赖，同一次 Make 调用只构建一次真实前端。**不要**提交占位 `webui/frontend/dist/index.html`：它会被当作真实页面提供；仓外负向验证证明占位可编译，但当前静态资源回归会拒绝缺少 JS 的 dist，不能再声称全部测试也会变绿。
 
 ---
 
@@ -1634,7 +1641,7 @@ P3-05（普通 JSON 统一 `no-store`，已本地修复）、P3-10（忽略的 e
 
 **历史批次 6 — 构建、测试与文档闭环**
 
-Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；逐项改善弱断言并验证判别力（2026-10-08已撤销“7个永不失败”概括）；补字面量锚点；补构建契约测试；补 `pidfile` 单测；清理约 12 处 "version 2" 与 §4 文档漂移
+I8-03 的 Makefile `test`/`vet` 前置与配套依赖/故障回归已本地收口（2026-10-08，见文末）；修 `waitForNoSMTPData`；逐项改善弱断言并验证判别力（2026-10-08已撤销“7个永不失败”概括）；补字面量锚点；补构建契约测试；补 `pidfile` 单测；清理约 12 处 "version 2" 与 §4 文档漂移
 
 **依赖关系**：P1-01 的产品语义已确认，不再有配置形态决策前置。P3-25 **同步路径**已在自动清理前改为不完整快照硬失败；资源扫描路径现已按独立证据本地修复，见 I-19 / P3-26；真实云仍未验收。P2-04 代码已按 Step 0 修订的 AGENTS 发布顺序独立落地（2026-09-30，提交为 `7acf303`）；其余死代码与同文件清理应在 Issue7 Step 1～4 完成后再重新证明。
 
@@ -1739,7 +1746,7 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；逐项�
 
 ## 14. 审计快照的 Git 完整性（历史记录与当前复核）
 
-> 本节前四列保留原始审计快照，不应被误读为当前 HEAD。**现时基线见头部「最近实施基线（2026-10-08 I8-113 空渠道）」小节**：`main` / `8052015c766121b05cdaf8afe2eabd55a45aa8db`，本地 `origin/main / 7696482243461f582342aeb78fdc2f467012f674`（**ahead 4**），工作树含本轮 27 个修改/新增文件（**非干净**）。**历史说明（2026-09-30 第二轮批次，勿当作现时）**：该批基线为 `main` / `b84531b10a9dbbf1321b4eb131f8391a6eea0c4a`、`origin/main` = `d6d208e`、ahead 7、工作树干净。下述"当前复核（2026-09-30）"行是**该批次**记录，其"`main == origin/main`"当时为真、现已过期。
+> 本节前四列保留原始审计快照，不应被误读为当前 HEAD。**现时基线见头部「最近实施基线（2026-10-08 I8-03 Make 入口）」小节**：`main` / `bb8e30103a21e28523745e5eed71be17694451e8`，本地 `origin/main / c3bb468478f02b32361c85be1090c70743750579`（**ahead 1**），工作树含本轮六个修改/新增文件（**非干净**）。**历史说明（2026-09-30 第二轮批次，勿当作现时）**：该批基线为 `main` / `b84531b10a9dbbf1321b4eb131f8391a6eea0c4a`、`origin/main` = `d6d208e`、ahead 7、工作树干净。下述"当前复核（2026-09-30）"行是**该批次**记录，其"`main == origin/main`"当时为真、现已过期。
 
 | 项 | 审核前 | 审核后 |
 |---|---|---|
@@ -1774,7 +1781,7 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；逐项�
 | 方法学更正 | P1-02 首次测试（`--volumes-from`）未能复现，改用持久命名卷后确认；已在正文如实记录 |
 | 纳入决策 | 用户 7 项决策写入第 9 节与相应 finding |
 | P1-01 状态继续更新 | 2026-09-28 的“待决策/已冻结”已于 2026-09-29 被第 8 节最终方案取代；Step 0～5 主体提交为 `28559ed`，F1/F5 补强提交为 `38bdc19`，R7-01～R7-04/R7-06/R7-07 已提交为既有修复链，R7-05 与文档回写已提交为 `d6d208e`；`maxTagRunes` 仍为 48，SWAS `Remark` 上限仍登记为 PT-B7-09 |
-| 历史复核状态（2026-09-30） | 该批次基线为 `main == origin/main == d6d208e`、复核开始时工作树干净；R7-01～R7-07 的提交祖先关系、生产符号与判别性测试已静态复核保留，该批次未重跑门禁；P3-11/P3-22 已修复；P3-25 拆分为同步路径已修复、资源扫描路径未修复；外部/人工验收登记为 PT-B7 9 项 + PT-I7 7 项。**该行"当前基线"为 2026-09-30 批次的历史表述**；**现时 I8-113 基线为 `main` / `8052015`、本地 `origin/main / 7696482`、ahead 4、工作树含本轮 27 个修改/新增文件**（见头部「最近实施基线（2026-10-08 I8-113 空渠道）」小节与 [Issue8.md](./Issue8.md)）；第二轮核验另新增 P3-26（资源扫描分页中途空响应）并订正 P3-06 结论 |
+| 历史复核状态（2026-09-30） | 该批次基线为 `main == origin/main == d6d208e`、复核开始时工作树干净；R7-01～R7-07 的提交祖先关系、生产符号与判别性测试已静态复核保留，该批次未重跑门禁；P3-11/P3-22 已修复；P3-25 拆分为同步路径已修复、资源扫描路径未修复；外部/人工验收登记为 PT-B7 9 项 + PT-I7 7 项。**该行"当前基线"为 2026-09-30 批次的历史表述**；**现时 I8-03 基线为 `main` / `bb8e301`、本地 `origin/main / c3bb468`、ahead 1、工作树含本轮六个修改/新增文件**（见头部「最近实施基线（2026-10-08 I8-03 Make 入口）」小节与 [Issue8.md](./Issue8.md)）；第二轮核验另新增 P3-26（资源扫描分页中途空响应）并订正 P3-06 结论 |
 
 | 第二轮核验与更正（2026-09-30） | 只读真实性核验后按用户批准方案回写：新增「最近核验基线」小节；当时订正 P3-06（撤销"每方向 100"与"只统计入站"；此历史判断后已由 2026-10-02 官方正文与 B 实施替代）、P3-07（死代码集合扩为 `retrySync`+`retrySyncDetailed`+`truncateDesc`，生产链改指 `syncTarget`）、P3-16（`RunTest.vue` 44px 已修复）、P3-17（当时记录 10 处标签、`export_test.go:461` 已修复；2026-10-03 更正为陈旧标签共 12 处/7 文件、export_test 当时仍有 `v2`，现已清理）、P3-21（Webhook drain 部分已修复 / Push 无字节上限未修复）、P2-08 与 P2-09 补状态横幅、§4 Dashboard 行改标已修复、§6 pidfile 单测改标已补齐、§3 的 `io.ReadAll` 计数与 `IdleConnTimeout` 证据边界、§11 路由数 28→31、`AGENTS.md` 行号引用订正；新增 **P3-26** 独立 finding；另新增两个判别性测试（见 §6 与 §3 对应行）。所有"通过"仍属历史执行记录，本轮门禁结果见文末回写 |
 
@@ -2015,3 +2022,14 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；逐项�
 - **正式负向控制**：仓库外隔离源码使用本轮正式测试，恢复旧页面/组件展示、隐藏失败原因、保留旧预览、绿色完成 toast、绿色空结果、失败不更新时间六类均由目标行为断言检出；无编译错误、TypeError 或挂起作为红灯证据。隔离源码/日志保存在 `/tmp/fwalizer-i812-research/controls/`。
 - **门禁**：`npm run test:dryrun` 17 项与 `node --test tests/*.test.mjs` 全部 86 项通过；`npm run build`（vue-tsc + vite）通过并更新 ignored dist；`go vet ./...`/`go build ./...` 通过。`go test ./... -race -count=1 -timeout=20m` 全仓 12 包通过，含使用本轮重建前端产物的既有产品进程及静态嵌入回归；单轮通过不外推长期稳定。最终 `git diff --check` 通过。
 - **范围与外部边界**：三个前端生产文件、package.json 命令入口、一份专用回归与 AGENTS/Issue8/Issue7/ProdTestList/审计五份文档，共十文件。无后端业务源码/API/schema/配置包/依赖/正式同步/健康改动，不新增超时、自动重试或历史缓存。Go `1.27.1 darwin/arm64`；真实浏览器登记 PT-AUDIT-03，尚未执行。未执行本项专门产品进程验收、Linux/Docker/compose、原生 amd64/macOS 13、真实云/SMTP/收件箱/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR；其他人工未执行/免除状态保持。全仓默认 Go 门禁包含既有 I8-04 网络 DNS 测试，不把包级通过/自行 skip 当作外部验收；既有 TestMain 产品进程回归也不替代本项浏览器验收。本地证据不外推长期稳定或外部通过；源码/测试/文档尚未提交或推送。
+
+## I8-03 当前实施补记（2026-10-08，用户裁决 A：共享真实前端前置）
+
+- **授权与基线**：用户在本聊天选择 A，随后明确授权修复并同步文档；实施前 `main / bb8e30103a21e28523745e5eed71be17694451e8`、本地 `origin/main / c3bb468478f02b32361c85be1090c70743750579`、ahead 1，工作树/暂存区干净，未 fetch。本轮修改尚未提交或推送。
+- **正式实现与契约**：Makefile 仅将 `test:`、`vet:` 改为依赖 `frontend`，保留已有 `build: frontend`、`.PHONY frontend` 与 `npm ci && npm run build`。前端成功后才能执行消费者；同一次 Make 调用共享一次构建，前端失败则不执行 Go。`make -j4 all` 在前端完成后允许 Go 检查/测试/构建并行，任一失败返回非零，不承诺其他并行任务从未运行或独立 Make 进程互斥。不引入增量缓存、占位 dist、替代 embed、递归 Make 或新 Make 版本要求。
+- **正式回归与判别力**：新增 `build/makefile_test.sh`，POSIX shell 在隔离目录复制待测真实 Makefile、使用本地 npm/go 替身；不安装依赖、不创建 dist。17 项覆盖 test/vet/build/all、并行 all、多目标、npm ci/前端 build 失败抑制消费者、三个 Go 阶段失败传播与单次安装/构建计数；同名 frontend 文件验证 `.PHONY` 不被遮蔽。`sh build/makefile_test.sh` 全部通过；旧 Makefile、缺 test 前置、缺 vet 前置、仅 all 加兄弟前置、移除 frontend 的 phony 声明五类仓外负向控制均被同一正式回归按行为断言检出。`sh -n build/makefile_test.sh` 通过。
+- **正式工作树真实门禁**：运行 `make -j4 all`，外部临时 go 包装器仅对 test 追加 `-short -timeout=5m`，以隔离 I8-04 的两个外网 DNS 用例；Makefile 原测试命令未改。npm ci 与 vue-tsc/vite 构建各一次，Go build/vet 与全仓 12 包 race 短模式测试一轮通过；现有 TestHTTPRoutesRegression、TestStaticAssetsServedFromEmbed 与既有 TestMain 产品二进制进程回归包含在该门禁内。此结果不是原样默认 make test 的外网验证，也不外推长期稳定绿色。正式 ignored dist 与二进制已重建。
+- **无产物副本验证**：按正式工作树 tracked 输入加本轮新增脚本复制到仓外隔离目录，明确不携带 dist/node_modules（不是尚未提交修改之前的 git archive HEAD）。执行真实 `make -j4 vet build` 通过，npm ci 与前端 build 各一次，Go vet/build 成功并生成真实 index.html 与 fwalizer；副本 Makefile 与正式工作树逐字节一致。研究阶段的清洁副本 make all 和占位页负向证据仅作为研究历史保留，不冒充本轮正式门禁。
+- **文档闭环与历史订正**：README 推荐一次 make all，删掉完整二进制章节重复 npm build，说明单独调用的重建成本、裸 Go 前置及独立脚本入口；AGENTS 固定构建契约；本文标题/状态表/Q-05/优先级与审计对应当前状态同步。占位页可编译但当前静态资源回归会拒绝缺少 JS 的 dist，原“build/vet/test 全变绿”表述已订正，禁止占位修法保持。审计最近基线与历史指针更新，本次不回写其他缺陷的完成结论。
+- **范围与证据**：Makefile、一份新回归脚本与 README/AGENTS/Issue8/审计四份文档，共六文件；Go 业务源码、embed、前端源码、模块/前端依赖、CI/Docker、DNS 测试与 clean 策略不变。证据保存在仓外 `/private/tmp/codex-i803-implementation-xpxif0aj/`（checks.json、regression.log、各负向控制、formal-result.json/formal-all.log、clean-result.json/clean-vet-build.log）；最终六文件范围、暂存区为空及 `git diff --check` 已检查。
+- **环境与外部边界**：Go `1.27.1 darwin/arm64` 实际二进制、`GOTOOLCHAIN=local`；Node `26.7.0`、npm `11.19.0`、GNU Make `3.81`。本轮未验证 CI 固定 Node 24.21.0、Linux/Docker/compose、浏览器、原生 amd64/macOS 13、真实云/上游 DNS/SMTP/收件箱/Webhook/Uptime Kuma 或远端 CI/GHCR。I8-04 未修，其他外部未执行/免除状态保持。npm ci 输出 3 个 high 漏洞提示，未执行独立 npm audit、未修改依赖，不将历史 audit=0 写成本轮结果；依赖风险独立核验，不扩大本次修复。
