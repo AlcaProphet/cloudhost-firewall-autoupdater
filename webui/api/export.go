@@ -98,7 +98,7 @@ func attachmentName(exportedAt time.Time) string {
 // 与扫描缓存全部保持不变，也不返回成功。
 func (d *Deps) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 	var wire bundleV3Wire
-	if err := decodeJSONStrict(w, r, maxImportBodyBytes, &wire); err != nil {
+	if err := decodeBundleV3Strict(w, r, &wire); err != nil {
 		writeRequestError(w, err)
 		return
 	}

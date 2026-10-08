@@ -89,6 +89,8 @@
 
 ---
 
+**I8-111 配置导入严格解析后续修复状态（2026-10-08，严格方案 B）**：用户明确当前无兼容性需求、允许破坏性改动后授权正式修复和文档同步；实施前 `main / 3cc4c3d`、本地 `origin/main / 7696482`、ahead 3，工作树/暂存区干净，前序 I8-18 已提交。生产仅 decode.go/bundle_v3.go/export.go：导入 JSON v2、精确字段名、全层级重复与非法 Unicode 拒绝、合法转义等价；先完整 10 MiB 有界读取，超限 413、安全错误转换，数组复用 decoder/选项，不保留旧自定义解码。57 路径四类字段变体、旧配置/缓存/运行时/告警保留、限额与安全诊断正式回归定向 race 20 轮通过，六类负向控制按行为变红。全仓 12 包 race 每项重复三次通过；补充整数溢出回归后，安全错误专项 race 20 轮及最终全仓 race 一轮通过，vet/build/格式/diff-check 通过。 三生产/两测试/五文档共 10 文件，schema/版本3/依赖/普通 API/前端/事务发布链保持。Go 1.27.1 darwin/arm64，使用既有 ignored dist；未执行前端/专项产品进程/浏览器、Linux/Docker、真实云/通知链路或当前 revision 远端 CI/GHCR，不外推长期稳定或外部验收。源码/测试/文档尚未提交，未 fetch/push；完整证据见 Issue8 当前补记。
+
 ## 二、核心编码原则
 
 ### 简单轻量化
@@ -230,6 +232,7 @@
 **Build7 已实施合同（告警与运行健康，Step 1～7 于 2026-09-28 完成；Step 7 为核验缺陷修复）**
 
 - 配置包只接受 version 3；version 1/2 及其他版本一律 HTTP 400，不迁移、不补全、不兼容；version 3 固定包含 `metadata`、`targets`、`rules`、`settings`、`alerts`（`policy`/`email`/`webhook`）与 `monitoring.uptime_kuma_push` 全字段，数组与对象不得为 `null`
+- 配置导入使用独立的标准库 JSON v2 严格解码：字段名大小写必须精确匹配，任意对象内拒绝重复字段（同值也拒绝），拒绝非法 UTF-8 与孤立代理项；合法 JSON 转义按解码后名称判断，`version` 与 `\u0076ersion` 同时出现仍为重复。先完成 10 MiB 有界读取，超限统一 413；其余解析/字段错误为安全 400，仅返回固定原因与必要字段路径，不回显原始错误或字段值。全部解码与领域校验完成后才进入配置写事务，非法输入零写入零发布；普通 API 不随本项切换解析器。（I8-111，用户确认当前无兼容性需求，采用严格方案 B。）
 - 告警配置持久化固定为 `alert_policy`（三个触发开关 + `health_timeout`）、`alert_email`（含 `subject`/`body`）、`alert_webhook`、`uptime_kuma_push` 四张单行表；现有数据库执行一次性最小显式迁移，保证各单行表至多一行且业务 ID 固定为 1，不得依赖 `CREATE TABLE IF NOT EXISTS` 自动补列，也不得在每次启动重复重置用户配置
 - 告警默认值固定全部关闭：`email.enabled`、`webhook.enabled`、三个触发开关与 `uptime_kuma_push.enabled` 的初始值与迁移结果均为 false；只有“渠道开关 + 对应触发开关”同时开启才安装该事件订阅；只开启触发条件但不启用渠道、或只启用渠道但不开启触发条件，都不发送自动通知；测试邮件独立于这些开关
 - 三个触发开关是邮件与 Webhook **共用**的全局策略，不为两个渠道复制两套开关；`health_timeout` 默认 `10m` 且只保留这一个健康超时；Push 间隔默认 `60s`、最小 `20s`
@@ -297,7 +300,7 @@
 - 清空所有数据：`POST /api/config/reset` 只接受单一空对象 `{}`，经配置变更协调器在单事务内调 `Store.ResetAllTx()` 清空全部业务表（targets/rules/settings/sync_logs/alert_policy/alert_email/alert_webhook/uptime_kuma_push/scanned_resources），并恢复告警默认全部关闭与 `health_timeout=10m`、Push `interval=60s` 的默认值，等效重新初始化；前端入口需红色警告按钮 + 卡片式二次确认
 - 普通 JSON API 的成功与错误响应统一由 `webui/api/deps.go` 的 `writeJSON` 在提交响应头前设置 `Cache-Control: no-store`；`writeError` 及请求/事务/内部错误包装共用该出口。SSE 成功流继续 `no-cache`，配置导出成功继续独立 `no-store`；静态资源、静态 `/api/health` 与路由器自动响应不由该规则改写。
 - 缺失服务端依赖时，`/api/sync/trigger|dryrun|pause|resume`、`/api/sync/events`、`/api/logs/stream` 返回普通 JSON 503（`error` 单键、`no-store`），依赖判断早于协调器与 SSE 能力探测；不以 `Running=false` 替代 nil 判断，不承诺自动恢复或发送无依据的 `Retry-After`。`/api/sync/status` 的 nil 分支保持 200；暂停 trigger/Dry Run 冲突保持 409、SSE 能力缺失保持 500。
-- 普通 API 最小校验边界：固定结构请求与配置导入统一走 `webui/api/decode.go` 的 `decodeJSONStrict`（拒绝未知字段/尾随 JSON/多个顶层值，超限 413；普通请求 1 MiB、配置导入 10 MiB），路径 ID 用 `strconv.Atoi` 严格解析且必须大于 0；请求 DTO 不含数据库 `id`；更新/删除按 `RowsAffected` 返回 404；规则请求的 `targets` 必须显式提供（省略返回 400），空数组仍表示适用于全部目标
+- 普通 API 最小校验边界：普通固定结构请求走 `webui/api/decode.go` 的 `decodeJSONStrict`（拒绝未知字段/尾随 JSON/多个顶层值，1 MiB、超限 413）；配置导入另走 `decodeBundleV3Strict`（10 MiB、JSON v2 严格规则见 §9.1），路径 ID 用 `strconv.Atoi` 严格解析且必须大于 0；请求 DTO 不含数据库 `id`；更新/删除按 `RowsAffected` 返回 404；规则请求的 `targets` 必须显式提供（省略返回 400），空数组仍表示适用于全部目标
 - 配置变更协调器：目标、规则、settings、alerts、pause/resume、reset 与配置导入的写入口统一经 `webui/api/ConfigCoordinator` 串行化（锁 → 单事务 → 事务内完整业务快照 → 事务内构造候选 `RuntimeState` 与候选告警集合 → commit → 无失败发布：日志级别 → 告警集合 → `RuntimeState` → 运行健康监督器唤醒 → Uptime Kuma Push 唤醒）；唤醒时新运行时必须已可见；非法输入零写入零 apply，commit 之后不重新读库、不构造 Provider、不访问网络
 - Provider 凭据为不可变值 `provider.Credentials`，由 `ClientPool` 在创建时持有且无 setter；已删除进程级全局凭据与 `provider.SetCredentials`，连接测试、资源扫描、正式同步与 Dry Run 共用同一显式凭据模型和一次快照
 - 运行时设置动态生效：日志级别使用 `app.LogLevelVar`（`slog.LevelVar`）与 `LogBroadcaster.SetLevel`；DNS 熔断阈值随完整 `RuntimeState` 原子发布（普通变更经 `dns.CircuitBreaker.CloneForDomains` + `SetThreshold` 仅保留新配置规范化域名身份的正数失败轮计数；成功解析立即删除条目，新旧 breaker 独立且不按历史 map 大小预分配；完整导入**确定**新建 breaker 并清空计数）

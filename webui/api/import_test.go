@@ -229,7 +229,7 @@ func TestConfigImportTransactionFailureRollsBack(t *testing.T) {
 	}
 }
 
-// TestConfigImportStrictDecoding 导入与普通 API 共用同一严格解码语义，只有大小上限不同（Build6 §12.8）
+// TestConfigImportStrictDecoding 导入保留大小/未知字段/尾随值边界，另由 I8-111 收紧字段名与编码。
 func TestConfigImportStrictDecoding(t *testing.T) {
 	cases := map[string]struct {
 		body string

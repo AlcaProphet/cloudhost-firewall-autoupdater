@@ -1,11 +1,11 @@
 package api
 
 import (
-	"bytes"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"strconv"
 	"time"
 
@@ -34,27 +34,22 @@ type presenceSlice[T any] struct {
 	Provided bool
 }
 
-// UnmarshalJSON 实现 json.Unmarshaler。
+// UnmarshalJSONFrom 实现 JSON v2 解码，保留缺失/null 与合法空数组的区分。
 //
-// 必须使用独立的严格 decoder：encoding/json 在外层设置了 DisallowUnknownFields
-// 后**不会**传播到自定义 UnmarshalJSON 内部，直接用 json.Unmarshal 会让数组元素
-// 里的未知字段被静默忽略（Build6 §3.2「任意层级未知字段」）。
-func (p *presenceSlice[T]) UnmarshalJSON(data []byte) error {
-	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+// 子元素复用当前 decoder 与选项，不另建 v1 decoder，避免大小写与未知字段
+// 规则在 targets/rules/target_export_ids 中丢失（I8-111）。
+func (p *presenceSlice[T]) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	if dec.PeekKind() == jsontext.KindNull {
+		if _, err := dec.ReadValue(); err != nil {
+			return err
+		}
 		p.Provided = false
 		p.Values = nil
 		return nil
 	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
 	var values []T
-	if err := dec.Decode(&values); err != nil {
+	if err := jsonv2.UnmarshalDecode(dec, &values); err != nil {
 		return err
-	}
-	// 只允许一个顶层数组值
-	var extra json.RawMessage
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("数组元素后存在多余内容")
 	}
 	p.Provided = true
 	p.Values = values

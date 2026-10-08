@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"io"
 	"log/slog"
@@ -18,7 +20,7 @@ const maxJSONBodyBytes = 1 << 20
 
 // maxImportBodyBytes 配置导入请求体上限（10 MiB）。
 //
-// 导入与普通 API 共用同一严格解码语义，只有大小上限不同（Build6 §12.8、§3.2）。
+// 导入使用独立的 JSON v2 严格解码；普通 API 保持既有最小校验（I8-111）。
 const maxImportBodyBytes = 10 << 20
 
 // httpError 已分类的 4xx 请求错误：状态码 + 安全文案。
@@ -66,6 +68,49 @@ func decodeJSONStrict(w http.ResponseWriter, r *http.Request, limit int64, dst a
 		return decodeError(err)
 	}
 	return nil
+}
+
+// decodeBundleV3Strict 在领域校验与写事务前解码完整配置包（I8-111）。
+//
+// 先完整有界读取，确保超限总是 413，不被更早的语法或未知字段错误遮蔽。
+// JSON v2 默认拒绝重复字段、大小写变体和非法 Unicode；显式拒绝未知字段。
+// 合法转义按解码后的字段名处理，嵌套数组通过同一个 decoder 继承这些规则。
+func decodeBundleV3Strict(w http.ResponseWriter, r *http.Request, dst *bundleV3Wire) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxImportBodyBytes)
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		return decodeError(err)
+	}
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return badRequest("请求体不能为空")
+	}
+	if data[0] != '{' {
+		return badRequest("请求体必须是 JSON 对象")
+	}
+	if err := jsonv2.Unmarshal(data, dst, jsonv2.RejectUnknownMembers(true)); err != nil {
+		return decodeBundleV3Error(err)
+	}
+	return nil
+}
+
+// decodeBundleV3Error 只提取错误类别与 JSON Pointer，不回显 JSONValue 或 Error 原文。
+func decodeBundleV3Error(err error) error {
+	if errors.Is(err, jsontext.ErrDuplicateName) {
+		return badRequest("请求体包含重复字段")
+	}
+	var semantic *jsonv2.SemanticError
+	if errors.As(err, &semantic) {
+		path := string(semantic.JSONPointer)
+		if errors.Is(err, jsonv2.ErrUnknownName) {
+			return badRequest("请求体包含未知字段: " + path)
+		}
+		if path != "" {
+			return badRequest("字段类型错误: " + path)
+		}
+		return badRequest("字段类型错误")
+	}
+	return badRequest("请求体 JSON 格式错误")
 }
 
 // decodeJSONObjectStrict 与 decodeJSONStrict 语义一致，但额外要求顶层是 JSON 对象。
