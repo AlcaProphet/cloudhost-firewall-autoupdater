@@ -327,7 +327,7 @@ Add 后必须重新取得 S1 并用**同一纯规划器/同一 canonical key**�
 1. S1 是完整快照；
 2. 每一个 Implementable Desired key 都至少被一条 Owned 或 External 规则精确覆盖；
 3. 不存在 Add 提交状态未知；
-4. 完整 Desired 非空；
+4. 可实施 Desired 子集非空（完整 Desired 非空仍不足以排除全量 unsupported；I8-01 方案 A）；
 5. 这不表示清理门已打开；DNS、unsupported、conflict、删除定位仍需独立检查。
 
 S1 出现了期望规则但 description 被云平台截断，只要严格 TAG 所有权仍成立且 key 精确相等，即可作为 Owned 覆盖；若 TAG 本身被破坏则只能按 External 处理，且不得删除。

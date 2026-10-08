@@ -677,3 +677,44 @@ func TestTargetSyncCompleteEventIsSoleTargetCompletion(t *testing.T) {
 		}
 	}
 }
+
+// TestDryRun_CoverageReadyCapabilityBoundary 直接验证输出布尔值，避免同源 planner 对比掩盖误报。
+func TestDryRun_CoverageReadyCapabilityBoundary(t *testing.T) {
+	for _, mixed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mixed_%t", mixed), func(t *testing.T) {
+			stale := staleRule("TCP", "9999", "10.9.9.9/32", "stale", "")
+			p := newProbeProvider(config.CloudAliSWAS, 1, stale)
+			drop := staticRule(1, "probe.example", "TCP", "443")
+			drop.Action = "DROP"
+			rules := []config.DomainRule{drop}
+			if mixed {
+				rules = append(rules, staticRule(2, "probe.example", "TCP", "443"))
+				p.rules = append(p.rules, staleRule("TCP", "443", "1.1.1.1/32", "covered", ""))
+			}
+			s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"probe.example": "1.1.1.1/32"})
+			resp, err := s.DryRun()
+			if err != nil || len(resp.Results) != 1 {
+				t.Fatalf("DryRun: %+v %v", resp, err)
+			}
+			got := resp.Results[0]
+			if got.CoverageReady != mixed || len(got.Unsupported) != 1 || len(got.ToAdd) != 0 || len(got.CleanupCandidates) != 1 {
+				t.Fatalf("输出契约不符: %+v", got)
+			}
+			_, creates, deletes := p.counts()
+			if creates != 0 || deletes != 0 {
+				t.Fatalf("Dry Run 不得写入: %d/%d", creates, deletes)
+			}
+			state := s.runtime.Snapshot()
+			round := newDNSRound(state)
+			res := s.syncTarget(state, p, rules, round)
+			round.finish()
+			if res.outcome != TargetPartial || res.cleanupDeferred != 1 {
+				t.Fatalf("正式目标必须 partial 并保留残留: %+v %v", res, err)
+			}
+			_, _, deletes = p.counts()
+			if deletes != 0 {
+				t.Fatalf("unsupported 必须零删除: %d", deletes)
+			}
+		})
+	}
+}

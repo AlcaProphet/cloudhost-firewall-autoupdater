@@ -254,6 +254,9 @@ func TestPlan_UnsupportedMatrixFreezesCleanup(t *testing.T) {
 		rules := []config.DomainRule{r}
 		resolved := map[int][]dns.ResolvedIP{1: {v6("2001:db8::1")}}
 		plan := planFor(t, config.CloudAliSWAS, rules, resolved, []config.RuleInfo{stale})
+		if plan.CoverageReady || len(plan.CleanupDeletable) != 0 {
+			t.Fatalf("全量 unsupported 不得覆盖或删除: %+v", plan)
+		}
 		if !hasIssue(plan.Unsupported, IssueUnsupportedIPv6) {
 			t.Fatalf("缺少 %s: %+v", IssueUnsupportedIPv6, plan.Unsupported)
 		}
@@ -272,6 +275,9 @@ func TestPlan_UnsupportedMatrixFreezesCleanup(t *testing.T) {
 		rules := []config.DomainRule{rule(1, "api.example.com", "TCP", "443", "DROP", "")}
 		resolved := map[int][]dns.ResolvedIP{1: {v4("1.1.1.1")}}
 		plan := planFor(t, config.CloudAliSWAS, rules, resolved, []config.RuleInfo{stale})
+		if plan.CoverageReady || len(plan.CleanupDeletable) != 0 {
+			t.Fatalf("全量 unsupported 不得覆盖或删除: %+v", plan)
+		}
 		if !hasIssue(plan.Unsupported, IssueUnsupportedAction) {
 			t.Fatalf("缺少 %s: %+v", IssueUnsupportedAction, plan.Unsupported)
 		}
@@ -286,6 +292,9 @@ func TestPlan_UnsupportedMatrixFreezesCleanup(t *testing.T) {
 		rules := []config.DomainRule{r}
 		resolved := map[int][]dns.ResolvedIP{1: {v6("2001:db8::1")}}
 		plan := planFor(t, config.CloudAliECS, rules, resolved, []config.RuleInfo{stale})
+		if plan.CoverageReady || len(plan.CleanupDeletable) != 0 {
+			t.Fatalf("全量 unsupported 不得覆盖或删除: %+v", plan)
+		}
 		if !hasIssue(plan.Unsupported, IssueUnsupportedICMPv6) {
 			t.Fatalf("缺少 %s: %+v", IssueUnsupportedICMPv6, plan.Unsupported)
 		}
@@ -668,6 +677,54 @@ func TestRenderDescription_EmptyComment(t *testing.T) {
 		t.Run(string(ct), func(t *testing.T) {
 			if got := RenderDescription(ct, "auto-dns", ""); got != "[auto-dns]" {
 				t.Fatalf("空 comment 描述 = %q, want [auto-dns]", got)
+			}
+		})
+	}
+}
+
+// TestPlan_CoverageReadyImplementableSubset 固定 I8-01：覆盖状态只针对非空可实施子集。
+func TestPlan_CoverageReadyImplementableSubset(t *testing.T) {
+	accept := rule(1, "probe.example", "TCP", "443", "ACCEPT", "")
+	drop := rule(2, "probe.example", "TCP", "443", "DROP", "")
+	owned := config.RuleInfo{Protocol: "TCP", Port: "443", CidrBlock: "1.1.1.1/32", Action: "ACCEPT", Description: "[auto-dns]", RuleID: "owned"}
+	external := owned
+	external.Description = "manual"
+	unsupported := owned
+	unsupported.Action = "DROP"
+	stale := owned
+	stale.Port = "9999"
+	stale.RuleID = "stale"
+	cases := []struct {
+		name            string
+		rules           []config.DomainRule
+		snapshot        []config.RuleInfo
+		unknown, ready  bool
+		adds, deletable int
+	}{
+		{"empty", nil, nil, false, false, 0, 0},
+		{"unsupported_only", []config.DomainRule{drop}, nil, false, false, 0, 0},
+		{"unsupported_matched", []config.DomainRule{drop}, []config.RuleInfo{unsupported}, false, false, 0, 0},
+		{"mixed_missing", []config.DomainRule{accept, drop}, nil, false, false, 1, 0},
+		{"mixed_owned", []config.DomainRule{accept, drop}, []config.RuleInfo{owned}, false, true, 0, 0},
+		{"mixed_external", []config.DomainRule{accept, drop}, []config.RuleInfo{external}, false, true, 0, 0},
+		{"owned", []config.DomainRule{accept}, []config.RuleInfo{owned}, false, true, 0, 1},
+		{"external", []config.DomainRule{accept}, []config.RuleInfo{external}, false, true, 0, 1},
+		{"missing", []config.DomainRule{accept}, nil, false, false, 1, 0},
+		{"unknown", []config.DomainRule{accept}, []config.RuleInfo{owned}, true, false, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := PlanTarget(TargetPlanInput{CloudType: config.CloudAliSWAS, Tag: "auto-dns", Rules: tc.rules, Resolved: map[int][]dns.ResolvedIP{1: {v4("1.1.1.1")}, 2: {v4("1.1.1.1")}}, Snapshot: RuleSnapshot{Rules: append(append([]config.RuleInfo{}, tc.snapshot...), stale)}, AddStateUnknown: tc.unknown})
+			if plan.CoverageReady != tc.ready || len(plan.ToAdd) != tc.adds || len(plan.CleanupDeletable) != tc.deletable || len(plan.CleanupCandidates) != 1 {
+				t.Fatalf("覆盖/新增/清理与预期不符: %+v", plan)
+			}
+			if hasIssue(plan.CleanupDeferred, IssueCoverageNotReady) == tc.ready {
+				t.Fatalf("coverage_not_ready 与覆盖状态不符: %+v", plan.CleanupDeferred)
+			}
+			if len(tc.rules) == 2 || (len(tc.rules) == 1 && tc.rules[0].Action == "DROP") {
+				if !hasIssue(plan.Unsupported, IssueUnsupportedAction) || !hasIssue(plan.CleanupDeferred, IssueUnsupportedAction) {
+					t.Fatalf("平台能力限制与独立清理门必须保留: %+v", plan)
+				}
 			}
 		})
 	}

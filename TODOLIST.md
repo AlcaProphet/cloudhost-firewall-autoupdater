@@ -31,18 +31,13 @@
 
 - **关联编号**：P1-01、P2-03。
 - **优先级**：中低（2026-10-08 文档订正；当前独立 unsupported 清理安全门冻结删除，无误删后果）。
-- **当前状态**：核心安全门已存在，但输出字段存在可达语义错误，不能保持“无保留成立”。
-- **问题**：`provider/plan.go:655` 当前主要依据 `len(plan.Desired) > 0 && !in.AddStateUnknown && len(plan.ToAdd) == 0` 判定 `CoverageReady`，没有确认存在可实施的 Desired。
-- **触发场景**：目标只配置 SWAS IPv6、SWAS DROP 或其他不支持能力的规则时：
-  - `Desired` 非空；
-  - 该项 `Implementable=false`；
-  - `ToAdd` 为空；
-  - `CoverageReady` 可能被错误设置为 `true`。
-- **契约依据**：`Issue7.md:321`、`:325` 要求没有任何可实施期望时 `CoverageReady=false`。
-- **安全影响**：当前 unsupported 仍会生成结构化原因码，且清理冻结仍由 `provider/plan.go:699-727` 保护，正式目标仍可判为 `partial`；主要影响是 Dry Run/API 对覆盖状态的误导。
-- **建议动作**：修正 `CoverageReady` 判定，候选为 `implementable > 0 && covered == implementable && !AddStateUnknown`，使其依赖非空可实施期望和覆盖结果；不要放宽 unsupported 清理安全门。
-- **验收要求**：覆盖空 Desired，补充全量 unsupported → `coverage_ready=false` 的正向/负向判别测试，并覆盖“unsupported + 一个可实施项”的混合场景。
-- **外部边界**：修改后仍需将真实四云和浏览器验收独立登记，不能仅凭本地 planner 测试宣称外部通过。
+- **当前状态**：2026-10-08 已按用户确认 A 本地修复；本轮尚未提交。
+- **历史问题**：旧公式只检查完整 Desired 非空与 ToAdd 为空，全量 unsupported 会误报 true；独立安全门仍冻结删除，无误删后果。
+- **当前判定**：`implementable > 0 && covered == implementable && !in.AddStateUnknown`。混合目标的可实施部分全部覆盖时可 true，但 unsupported 仍令正式目标 partial、冻结清理。
+- **契约依据**：`provider/plan.go` 字段注释、AGENTS §三与已澄清的 Issue7 §4.5。
+- **验证**：新增 planner 边界矩阵、三种 unsupported 能力断言、Dry Run 直接预期及正式目标 partial/零删除回归；旧实现按行为变红，最终门禁见 Issue8 文末实施补记。
+- **输出影响**：unsupported-only 为 false，cleanup_deferred 新增 `coverage_not_ready` 原因；Desired/ToAdd/候选/可删除集合及 API 字段结构不变。
+- **外部边界**：真实云、浏览器与当前 revision 远端 CI/GHCR 未执行，不宣称外部验收通过。
 
 ### TODO-002：补齐 P2-02 ECS 删除分批测试判别力
 
@@ -81,9 +76,9 @@
 
 ### P1-01：TAG 所有权与目标级同步
 
-- **状态**：核心安全主线已确认；因 `coverage_ready` 误报需补充，不能写成无保留成立。
+- **状态**：核心安全主线已确认；`coverage_ready` 误报已按 TODO-001 本地修复，外部验收仍独立。
 - **已确认**：严格 TAG 命名空间 `internal/tag/tag.go:22-25`；canonical `FunctionalKey`；S0 → Add → S1 → 覆盖验证 → 安全门 → Delete → 必要时 S2 的目标级状态机。
-- **待办**：完成 TODO-001；补充 unsupported-only 和混合可实施/不可实施目标的 `CoverageReady` 判别测试。
+- **待办**：TODO-001 的 unsupported-only 和混合目标判别回归已补充，门禁见 Issue8 实施补记。
 - **边界**：真实四云、真实浏览器、当前 revision 远端 CI/GHCR 未验收。
 
 ### P1-02：PID 文件互斥
@@ -109,7 +104,7 @@
 
 ### P2-03：unsupported 能力、partial 与清理冻结
 
-- **状态**：unsupported 原因码、目标 `partial`、清理冻结已确认；`coverage_ready` 输出需按 TODO-001 修正。
+- **状态**：unsupported 原因码、目标 `partial`、清理冻结已确认；`coverage_ready` 输出已按 TODO-001 修正。
 - **证据**：`provider/plan.go:169-182` 能力矩阵、`:405-429` 原因码、`:699-728` 安全门；`syncer/target.go:213-217` partial。
 - **验收重点**：unsupported-only 不得报告为 coverage ready；unsupported 与可实施期望混合时仍需保留 partial/安全门语义。
 
@@ -328,7 +323,7 @@
 
 - **范围**：九份 Markdown 与 constants.ts 两处注释，共十文件；当前状态、固定历史比较终点、文档/实现提交角色与源码符号引用已更正。
 - **清单更正**：Push 旧注释已随 `c5cc79d` 修复，邮件/Webhook 所引注释缺少具体错误证据，本轮不修改这些 Go 源码。
-- **收口边界**：P3-17 已提交 `5860cef`，P3-18 与 I-11 仅本地文档/注释闭环；TODO-004/005/007 的其余统计、生产路径证据与测试注释仍待独立处理，TODO-001～003/008 保持未完成/待裁决。
+- **收口边界**：P3-17 已提交 `5860cef`，P3-18 与 I-11 仅本地文档/注释闭环；TODO-004/005/007 的其余统计、生产路径证据与测试注释仍待独立处理，当时 TODO-001～003/008 保持未完成/待裁决；TODO-001 后续已于 2026-10-08 按 A 本地修复，见 Issue8 实施补记。
 - **核验**：提交/祖先关系、固定历史 diff、相对链接/新增章节引用、外部状态、文件范围及 TypeScript token 比对结果见 [审计报告](./fwalizer-audit-final1.md) P3-18 实施补记。没有新增真实外部通过结论；该批改动**已提交 `f0997cd`**（2026-10-08 复核订正，原文"尚未提交"为当时记录），未 fetch/push。仍未闭环项见 [Issue8.md](./Issue8.md)。
 
 ## 六、尚未裁决的观察
@@ -352,7 +347,7 @@
 
 ## 八、建议跟进顺序
 
-1. 先处理 TODO-001：修复并测试 unsupported-only `coverage_ready`。
+1. TODO-001 已本地修复，见 Issue8 实施补记；其余待办仍独立处理。
 2. 再处理 TODO-002：补齐 ECS 分批测试判别力。
 3. 决定 TODO-003 的 `ErrSnapshotIncomplete` 契约口径并补测试。
 4. 对 P3-07 独立观察做状态矩阵，决定是否列入后续修复。
@@ -363,5 +358,5 @@
 ## 九、当前结论
 
 - 报告的绝大多数生产路径判断得到子代理支持。
-- 原“28/28 全部源码层面无保留成立”需要改写为：基础 28 项中，主线大多成立；P1-01/P2-03 存在 `coverage_ready` 输出缺陷；P3-06 有错误分类契约差异；额外 P3-21/P3-25/P3-26 必须按拆分范围理解。
+- 原“28/28 全部源码层面无保留成立”需要改写为：基础 28 项中，主线大多成立；P1-01/P2-03 当时存在 `coverage_ready` 输出缺陷（后续已按 TODO-001 本地修复）；P3-06 有错误分类契约差异；额外 P3-21/P3-25/P3-26 必须按拆分范围理解。
 - 本文件的原核验与未完成待办继续保留；仅本次明确标记的 P3-18/对应 TODO-006 文档项已本地实施，不代表其他待办或外部验收完成。

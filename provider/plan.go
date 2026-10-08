@@ -652,7 +652,7 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 			plan.ToAdd = append(plan.ToAdd, d.Action)
 		}
 	}
-	plan.CoverageReady = len(plan.Desired) > 0 && !in.AddStateUnknown && len(plan.ToAdd) == 0
+	plan.CoverageReady = implementable > 0 && covered == implementable && !in.AddStateUnknown
 
 	// ── 4) 清理候选：S0 Owned 中**全部** key 都不在完整 Desired 的规则 ──
 	desiredKeys := make(map[FunctionalKey]bool, len(plan.Desired))

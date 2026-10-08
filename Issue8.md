@@ -1,5 +1,7 @@
 # Issue8.md — 现存缺陷台账（2026-10-08 复核整理版）
 
+> **2026-10-08 后续实施：I8-01 已按用户裁决 A 本地修复，Q-01 已裁决；本轮实现与验证见文末补记。以下只读复核记录保留为历史，I8-01 当前状态以补记为准。**
+>
 > **本文档保留问题追踪编号，明确区分真实待修问题、合理前置条件、维护候选、已撤销判断、证据缺口与外部验收边界。本次只修订文档，生产与测试均未修改。**
 > 正文保留本次核验过的原单元并显式标候选/撤销，以便后续跟进；既有历史误判与已完成专项索引见 [附录 A](#附录-a已撤销的误判与不再登记的条目)，对审计报告与 TODOLIST 的待回写事实订正见 [附录 B](#附录-b审计报告与-todolist-待回写的订正)。
 >
@@ -26,13 +28,13 @@
 
 ### 1.1 数据与逻辑
 
-#### I8-01【中低·逻辑错误】`coverage_ready` 在 unsupported-only 计划下误报　`①`　（= TODO-001）
+#### I8-01【已本地修复·原中低逻辑错误】`coverage_ready` 在 unsupported-only 计划下误报　`①`　（= TODO-001）
 
 - **现象**：某目标**全部**期望功能都被标记为平台不支持时，`coverage_ready` 仍为 `true`，被下游读作"已覆盖"。
 - **证据**：`provider/plan.go:627` 定义 `implementable, covered := 0, 0`；`:631` `implementable++`；`:638/:647` `covered++`；**两个变量此后均未被读取**。`:655` 实际判定为 `len(plan.Desired) > 0 && !in.AddStateUnknown && len(plan.ToAdd) == 0` ⇒ 全部不可实施时 `ToAdd` 为空，可达 `true`。
 - **严重度订正（重要）**：**不产生任何删除后果**——清理安全门在 `provider/plan.go:698-701` 对本轮**每一个** `plan.Unsupported` 代码追加"存在平台无法实施的期望规则，保留全部清理候选"，删除集合独立被冻结。消费者也只有两处：`provider/plan.go:709`（即上述已被冻结的门）与 `syncer/syncer.go:738`（Dry Run DTO 字段）。
 - **用户可见性**：前端仅在 `webui/frontend/src/types.ts:148` 声明 `coverage_ready: boolean`，**无任何组件读取该字段**。⇒ 实际后果是 **API 输出字段语义错误**，不是"可能误删"。
-- **结论**：逻辑错误成立；本次已将 TODOLIST 的 TODO-001 从 P0/高订正为中低。生产缺陷未修复。现有 `provider/plan.go:137-138` 明确无可实施期望时为 false；最小候选须包含 `implementable > 0`，仅 `covered == implementable` 会让空集仍为 true（见 Q-01）。
+- **历史只读结论（已由文末实施补记替代）**：逻辑错误成立；当时将 TODOLIST 的 TODO-001 从 P0/高订正为中低，生产缺陷尚未修复。现有 `provider/plan.go:137-138` 明确无可实施期望时为 false；最小候选须包含 `implementable > 0`，仅 `covered == implementable` 会让空集仍为 true（见 Q-01）。
 
 #### I8-02【中·可观测性】失败 attempt 抹平已确认的清理/不支持明细　`②`　（= TODO-008；呼应 Issue7 §12.7 与审计 `:990`）
 
@@ -210,7 +212,7 @@
 
 | 单元 | 本次结论／可达性 | 最小跟进方向与所需验证 | 本次证据 |
 |---|---|---|---|
-| I8-01 | 待改，中低；API 标志误报，无删除后果 | 非空可实施集合且全部覆盖；测空／全 unsupported／混合／owned／external，独立清理门不放宽 | 正式 PlanTarget 仓外探针：SWAS DROP desired=1、unsupported=1、to_add=0、ready=true、deletable=0；源码 137–138/655/699–702 |
+| I8-01 | 已按 A 本地修复；原缺陷无删除后果 | 非空可实施集合全部覆盖且 Add 状态确定；混合目标保留 true + partial，独立清理门不放宽 | 新增仓内 planner 与 Dry Run/正式目标回归；旧实现行为红灯与当前结果见文末补记 |
 | I8-02 | 待改，中；重试早退抹去已知观察 | 定义最后可信观察与未知，不把旧快照当最新；测部分删除→S2失败→后续S0/Add/S1早退；DNS错误在S1规划后报告，应作为已观察字段保留的对照，事件/SQLite/日志一致 | 源码 target102–107/143；历史残留探针，不将两处可兼容注释称冲突 |
 | I8-18 | 待改，中；并发提交落在四读之间 | 窄只读事务四对象；屏障提交造撕裂，正常默认值／错误出口／回滚不变；并发绿不替代确定性负控 | 当前四读源码；历史并发与故障夹具未本次重演 |
 | I8-111 | 兼容策略，未证明当前业务版本漏洞 | 分别决定重复键、大小写；合法转义默认等价；若收紧，端点零写入零发布并验证有效 v3 不受损 | 同构标准 decoder 本地探针；未调用 import 端点 |
@@ -251,7 +253,7 @@
 
 | 编号 | 争点 | 候选方案 | 影响面 |
 |---|---|---|---|
-| **Q-01** | **I8-01** `coverage_ready` 的修法 | ①按现有字段注释使用 `implementable > 0 && covered == implementable && !in.AddStateUnknown`，防止空集合真值 ②重新定义字段语义，把"不可实施"单列为 `partial` 依据 | `provider/plan.go:627-655`、Dry Run DTO、`AGENTS.md` 相关条款 |
+| **Q-01（已裁决）** | **I8-01** `coverage_ready` 的修法 | 用户 2026-10-08 确认 A：`implementable > 0 && covered == implementable && !in.AddStateUnknown`。保留可实施子集覆盖语义；不新增多状态字段。混合目标仍可 true + partial | 唯一生产逻辑改动为 `provider/plan.go`；同步字段合同与回归，详见文末补记 |
 | **Q-02** | **I8-02** failed 路径下 `cleanup_candidates`/`cleanup_deferred`/`unsupported` 如何表达（原 I8-30/30a 同一观察表达问题的合并裁决，现已撤销“两处合同必然冲突”的判断） | ①保留最后可信观察并明确它属于哪个 attempt、何时已过期 ②最终 attempt 无观察时显式输出未知，不能用零冒充无残留 ③按字段区分。两处注释原可兼容；本次未修改事件/API/schema，具体表达须用户跟进时定型 | `syncer/target.go:102-107/156/179/188`、`:168-169`、`:223-224`、`syncer/target_retry_test.go:120`、`webui/api/logwriter.go:99-104`、`RoundSummary`/事件/SQLite 详情、PT-I7-07 观察基准 |
 | **Q-03** | **I8-18** `GET /api/alerts` 撕裂窗口是否修复 | ①用一个只读事务读取四个告警对象。可复用 BeginReadOnlyTx；完整 LoadBusinessSnapshotTx 还读 settings/targets/rules，可能扩大 GET 失败面，窄事务同样合理 ②接受现状（内部使用、单客户端）并在 `alerts.go` 与 `AGENTS.md` 显式登记"读侧非原子 + 前端整体回传"边界与"不支持多写者并发编辑"前提 | `webui/api/alerts.go`、`config/store.go`、`Alerts.vue` |
 | **Q-04** | **I8-08 / I8-09** SWAS 扫描缺失集合 与 Lighthouse/CVM 扫描空响应的处置 | ①统一为保守失败 `ErrSnapshotIncomplete`（与 P3-26 的 ECS 策略一致，不覆盖缓存）②仅补 nil 守卫防 panic ③显式接受现状并文档化 | `provider/scan.go:72/113/153-156`、`webui/api/scan.go:49-69` |
@@ -302,7 +304,7 @@
 1. **I8-18、I8-08/09、I8-05**：优先跟进可达的告警配置撕裂、扫描异常覆盖缓存/请求中断、普通保存持续延迟心跳。分别先定只读一致快照、异常与有效空集合区分、等待截止时间语义。
 2. **I8-11、I8-17b、I8-12、I8-02**：完整性、IPv6 DNS 和失败展示需要改进；I8-02先裁决未知与最后可信观察的表达，再修改状态/事件/测试。
 3. **I8-03/04/102 与 §3**：完善清洁 Make 入口、无外网门禁和失败能有界变红的证据；CI 当前已先构建前端，不能误写 CI 构建缺陷。
-4. **I8-01、I8-43、I8-17f**：修 API 标志语义、错误顺序和末尾等待候选；分别守住空集合、无效请求零写入、跨轮限速。
+4. **I8-01 已本地修复**；I8-43、I8-17f 继续独立处理错误顺序和末尾等待候选，分别守住无效请求零写入、跨轮限速。
 5. **I8-06、I8-111/113、Q-11/12/13 与静态候选**：脏库防御、兼容策略、维护清理和整体预算按收益与合同决定。当前合理前置条件或理论路径不作为必须修的产品缺陷；文档修订不表示生产修复。
 
 ---
@@ -354,3 +356,15 @@
 ---
 
 > **历史整理基线说明（不是本次当前状态）**：前次台账整理时的 HEAD 为 `da644b5`（`origin/main` 仍 `938bb8b`，ahead 3、未推送）。正文全部结论针对**生产工作树内容**，复核期间被复核的生产文件在两个 revision 间逐字节相同，故当时生产定位仍可追溯；本次纠正部分推断，当前基线与证据以 §0、§1.6 为准。**本次仅修改Markdown，生产源码、测试、API/schema、依赖、部署配置零改动。**
+
+
+## I8-01 方案 A 当前实施补记（2026-10-08）
+
+- **授权与基线**：用户确认采用 A 后授权修复。实施前 `main == 本地 origin/main == 7696482243461f582342aeb78fdc2f467012f674`，工作树与暂存区干净；未 fetch。
+- **字段合同**：`coverage_ready` 表示当前完整快照已精确覆盖非空的全部可实施期望，且 Add 提交状态确定；空期望和全量 unsupported 为 false，混合目标可 true + partial。它不表示整体成功或清理授权，不新增多状态字段。
+- **实施范围**：唯一生产逻辑修改为 `provider/plan.go` 的覆盖公式：`implementable > 0 && covered == implementable && !in.AddStateUnknown`。复用现有计数，不修改能力矩阵、Desired/ToAdd 构造、canonical key、Provider、DNS、正式目标结果判定、删除定位、API/schema 或前端。同步 AGENTS §三、Issue7 §4.5、本文与 TODOLIST，共七文件。
+- **可观察变化**：unsupported-only 的 `coverage_ready` 从 true 变 false，`cleanup_deferred` 额外包含 `coverage_not_ready`；原 unsupported 原因、清理候选和零删除保留。混合目标可实施部分已覆盖时仍为 true，正式结果仍 partial，清理冻结不放宽。
+- **判别回归**：`TestPlan_CoverageReadyImplementableSubset` 的十场景覆盖空集、全量 unsupported（无匹配/有匹配）、混合缺失/Owned/External、纯 Owned/External、缺失、Add 状态未知；增强三种平台能力场景（SWAS IPv6/DROP、ECS ICMPv6）的 false/零删除断言。`TestDryRun_CoverageReadyCapabilityBoundary` 直接断言输出，而非与同源 planner 互比；同一夹具继续通过正式 `syncTarget` 验证全量 unsupported 与混合目标均 partial、保留残留、零删除。
+- **红→绿证据**：修复前，三个能力场景、全量 unsupported 两个矩阵场景及 Dry Run 全量 unsupported 按行为断言失败；无编译失败或 panic。修复后上述定向回归 `-race -count=20` 两包通过。
+- **最终门禁**：定向 `go test -race -count=20 ./provider ./syncer -run 'TestPlan_(CoverageReadyImplementableSubset|UnsupportedMatrixFreezesCleanup)|TestDryRun_CoverageReadyCapabilityBoundary'` 通过；全量 `go test -race -count=1 ./...` 十二包全部 ok；`go vet ./...`、`go build ./...`、受影响 Go 文件 gofmt 检查及最终文档后的 `git diff --check` 均通过。全量门禁含既有 TestMain 构建产品二进制的本地进程回归，不是本项专门产品进程验收；单轮全量不外推长期稳定。
+- **边界**：Go 1.27.1 darwin/arm64，使用既有 ignored 前端 dist；本轮未执行前端构建、浏览器、Linux/Docker/compose、真实云/通知链路或远端 CI/GHCR。全量默认 Go 门禁包含既有真实 DNS 查询测试（I8-04）；它们不是本项的 DNS 外部验收，网络测试可能自行 skip，不据包级 ok 宣称上游验证通过。Q-01 已裁决，I8-01 本地修复不外推长期稳定或外部验收；其余 I8/Q 项保持独立。尚未提交或推送。
