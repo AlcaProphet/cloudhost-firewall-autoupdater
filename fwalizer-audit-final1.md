@@ -1082,6 +1082,8 @@ FAIL
 - **SSE 采用 A 并细化日志安全：** 序列化失败固定 WARN，只含事件 `type` 和 `error_type`（`fmt.Sprintf("%T", err)`）；不输出 Data、不调用序列化错误的 Error()，因为自定义 MarshalJSON/MarshalText 错误可含敏感内容（正式两类负向控制证明）。跳过该事件、继续连接，后续正常帧可收到；坏事件没有帧，不写成已发送。帧格式、既有写 deadline、shutdown/context 和退订保持；不新增自定义错误事件、回放、发布端预序列化、重试或队列。多个 SSE 客户端可能各记录诊断，满 channel 丢弃边界保持，不承诺无损流。
 - **静态 health：** Write 失败只记录 Debug，不补写 500、不重试；正常静态 200、`{"status":"ok"}`、Content-Type 与无 Cache-Control 的既有边界保持，不改 operational health 或 Docker 探针。默认 info 不展示 Debug，避免正常客户端断开噪声。
 - **正式新增回归：** `config/store_open_error_test.go` 的 `TestOpenStoreFailurePreservesCloseError` 覆盖 WAL/Begin/Schema 三阶段 × Close 成功/失败六组合，验证主错误与关闭错误、错误类型/顺序、关闭一次、Schema 失败回滚和失败 DB 不可用；`TestOpenStoreSuccessKeepsDBOpen` 用真实临时 SQLite 验证初始化后业务读写。`webui/api/sync_marshal_test.go` 的 `TestSyncEventsMarshalFailureContinues` 用真实 EventBus.Publish + handler 覆盖 function/channel/NaN/cycle/自定义 MarshalJSON/map-key MarshalText/非法时间七类坏输入，随后正常帧结构化解码通过、安全 WARN 恰一次、坏事件零帧、连接保留、取消后恰好退订一次。`webui/server_health_write_test.go` 的 `TestStaticHealthWriteFailureDebug` 覆盖立即失败 writer、一次 Write/零补写状态码、恰一 Debug 及正常响应/头/零日志控制。
+- **2026-10-08 证据边界订正：** 以下 TestRenderFailureNoPublish 是历史仓外 overlay 夹具，不是仓内长期测试；本次未取回重跑。仓内无同名不能推翻历史记录，生产固定 bytes.Buffer 的错误处理属规范补齐，见 Issue8 I8-22。
+
 - **正式故障注入与负向控制：** 只在仓库外 overlay 将渲染 writer 替换为返回 `io.ErrClosedPipe` 的夹具；正式实现 `TestRenderFailureNoPublish` race 20 轮通过，证明原错误返回、零序号/ring/投递更新、无递归日志，不给生产增加测试 hook。十类负向控制分别为：Store 丢弃 Close、关闭错误覆盖主错误、误关成功 DB；SSE 静默跳过、原样记录错误、断连接；health 忽略 Write、将 Debug 升为 Warn；renderLine 丢弃错误、广播器丢弃渲染错误。全部按对应正式行为断言变红，退出码 1 均是预期控制；检查无 build failure，不以编译失败充当判别力。正式测试基于修正后的 struct map-key Marshaler 夹具，前轮 string key 未触发 MarshalText 的研究夹具错误不冒充通过。
 - **本轮门禁：** `go test ./config ./webui/api ./webui -run 'TestOpenStoreFailurePreservesCloseError|TestOpenStoreSuccessKeepsDBOpen|TestSyncEventsMarshalFailureContinues|TestStaticHealthWriteFailureDebug|TestLogBroadcaster_(Format|Replay|RingOverflow)' -race -count=20 -timeout=5m` 通过；受影响三包完整 `-race -count=1 -timeout=5m` 通过（config 14.085s / api 15.691s / webui 8.188s）。全量 12 包 `go test ./... -race -count=1 -timeout=20m` 全部 ok；其中根包 TestMain 通过 `go build -o` 构建真实产品二进制，既有进程级启动/退出/SSE/导入导出/本地 mock Push 回归随全量执行通过，不将其描述为本轮未执行真实二进制；`go vet ./...`、`go build ./...`、受影响 Go 文件 `gofmt -l`（无输出）及 `git diff --check` 均通过。单次全量绿色不外推全仓长期稳定。完整外部注入与负向控制记录保存于本轮临时实施目录；研究候选测试不冒充正式门禁。
 - **状态与证据边界：** 生产固定四文件，新增三份测试，文档仅本文/AGENTS，共九文件。Go `1.26.6 darwin/arm64`；未执行 Go 1.25/Linux、前端构建、P3-10 专门进程级故障验收/浏览器、Docker/compose、真实云/SMTP/Webhook/Uptime Kuma 或远端 CI/GHCR。P3-10 依据本地错误注入与自动化验收收口，不外推全仓长期稳定或真实外部通过；I-07 的 P3-12/P3-14/P3-13 继续未完成。
@@ -1225,7 +1227,7 @@ FAIL
 | `internal/health/health.go:153/185` `slices.Compact` | 只去**相邻**重复，当前追加序列不可能重复 → 不可达的冗余防御，且**并非通用去重**（未来新增原因来源会静默失效） |
 | `internal/health/health.go:194-198` 有 `Policy == nil` 检查，而 `Evaluate`（`:130-132`）直接调用无保护 | 防御强度不一致 |
 | `internal/health/push.go:190-196` 先 `buildPushURL` 校验后 `_ = target`，`:220` 再完整重算 | 无用计算（保留首次调用的**校验**语义，消除赋值/重算） |
-| `webui/server.go:303-306` 吞掉 `fs.Sub` 错误并按需禁用静态处理器 | 实践中不可达（embed 保证成功）；若可失败则整个 WebUI 变空，**静默降级**掩盖真实故障 |
+| `webui/server.go:305-308` 理论 fs.Sub error 未报告 | **2026-10-08 订正：当前产品缺陷判断撤销**。固定合法路径与 embed.FS 不检查内容完整性；缺 index 时 handler 仍注册并返回404，不能归因于吞error。缺可 embed 目录会编译失败，见 Issue8 I8-44-3 |
 | `internal/health/push_test.go:16-18,497-499` 的 `var _ =` | 唯一作用是让三个无用 import 通过编译，属死测试脚手架 |
 
 ### 📝 只需文档清理
@@ -1244,11 +1246,11 @@ FAIL
 | **DNS/Provider** | 仅增量 API；严格 TAG 所有权与 canonical FunctionalKey（comment 不参与身份）；普通配置发布裁剪 breaker、导入 Reset；正式 `syncTarget` 每 attempt 重新 S0/规划/Add/S1/验证/条件清理，确认进度跨 attempt 累计 | P1-01 本地核验已收口但真实云未验收；`isRetryable` 保留腾讯 SDK 无 Unwrap 所需字符串兜底；失败重试后的残留计数独立观察见 P3-07 补记 | P3-07 三个不可达旧函数已删除；P3-09 已按 A 订正 `_txlock` 注释并实现写事务提前预留（见补记） | I-09 本地收口；GetRules 有连接测试生产消费者，旧 Diff/P0-01 回归保留，不扩大清理 |
 | **告警** | 默认全关；`渠道开关 + 触发开关`同时开启才订阅；邮件与 Webhook **共用同一固定渲染器**（顺序稳定、不遍历 map）；4 在途 + 满载丢弃最新 + 安全 WARN；限流器跨热重载连续；`test-email` 8 字段契约两侧严格一致且不写库；P3-11 写库错误已能上抛 | P3-03 非空非法 URL 周期校验已本地修复（P2-04 时序亦已修复）；P2-05 已补齐三渠道响应校验与有界读取，真实 Webhook 未验收；P3-15 已本地实施丢弃日志聚合；P3-19 已按 B 本地修复 SMTP 安全错误；P3-20 已实施 MIME 编码，正式证据见补记；P3-21 已按 B 本地收口：Push 有界完整响应/安全 Close、Webhook 接受及时失败与标准库清理边界，见补记 | — | P2-05/P3-15 已本地实施；P3-03 已按独立授权补齐有下限的定时校验，真实 Uptime Kuma 仍待验收 |
 | **OperationalHealth** | **唯一计算源被三个消费者真实共用**（`supervisor` / `operational` 端点 / `pusher` 都走同一个 `*health.Checker`）；2s 非阻塞探活（`Store` 结构体**无互斥量**，不持应用锁）；`StartupGrace=10s` 三分支正确；`failed/partial` 直到被 `success/idle` 覆盖；原因稳定去重排序；30s 边沿监督器 | 判定输入来自三次独立 `Snapshot()`（`run.go:127-142`），注释自述"一致快照"但可能混用新旧 policy/interval → 30s 内一次瞬时误判，自愈 | `slices.Compact` 冗余 | 一次取 `*RuntimeState` 后派生 policy/interval |
-| **HTTP/SSE** | 严格解码齐全（未知字段/尾随/多顶层值/10 MiB/1 MiB/413）；路径 ID `strconv.Atoi` 且 >0；请求 DTO 不含 DB `id`；导出 GET 已删（实测 405）；两类 SSE 监听服务器级 `ShutdownCh` 且每次写出有 5s deadline；P3-05 已实施普通 JSON 成功/错误统一 `no-store` | `GET /api/alerts` 4 次非事务读存在撕裂窗口（PUT 单事务写，读侧可能"新 policy + 旧 email"，前端整体回传即把旧值写回） | `fs.Sub` 静默降级 | 普通 JSON 禁缓存已由 P3-05 收口；P3-14 缺失依赖 503 已本地修复；GET alerts 改只读事务取快照 |
+| **HTTP/SSE** | 严格解码齐全（未知字段/尾随/多顶层值/10 MiB/1 MiB/413）；路径 ID `strconv.Atoi` 且 >0；请求 DTO 不含 DB `id`；导出 GET 已删（实测 405）；两类 SSE 监听服务器级 `ShutdownCh` 且每次写出有 5s deadline；P3-05 已实施普通 JSON 成功/错误统一 `no-store` | `GET /api/alerts` 4 次非事务读存在撕裂窗口（PUT 单事务写，读侧可能"新 policy + 旧 email"，前端整体回传即把旧值写回） | `fs.Sub` 吞错仅理论规范候选；固定合法 embed.FS 路径下未证明此错误可达，缺index的404不是该分支后果 | 普通 JSON 禁缓存已由 P3-05 收口；P3-14 缺失依赖 503 已本地修复；GET alerts 改只读事务取快照 |
 | **前端** | 8 字段测试邮件载荷两侧严格一致（历史上真实 bug 点，现有注释+类型双重防护）；无 `console.*`/存储/cookie 泄漏；密码与 Webhook/Push URL 用 `type="password"`；导出用 `fetch`+Blob 且 `revokeObjectURL`；EventSource 单实例且卸载关闭；无 `addEventListener` 泄漏 | P3-04 已本地修复（浏览器待验）；P3-16 已按 B 本地修复并有局部浏览器证据 | 时长校验已收敛至后端 | P2-06/P2-07 已本地收口；其余逐项按 P3 收敛；**不建议**引入 Pinia/Vitest 等重型栈 |
-| **Docker/CI** | 非 root + `CGO_ENABLED=0` 静态编译 + `HEALTHCHECK` 用静态 `/api/health`（实测全部符合）；前端在 builder 阶段构建并 `COPY` 进 Go 阶段（顺序正确）；容器实测 `healthy`、`ExitCode=0` | **清洁检出裸 Go 命令 100% 失败**（P1 级构建阻断）；P1-02 已本地修复；`go get -u` 使构建不可复现（AGENTS §十 **有意设计**） | Makefile 与 CI 命令集不统一 | 给 `test`/`vet` 加 `frontend` 前置；`go get -u` 策略受强要求约束，**不建议**擅自改为锁版本 |
+| **Docker/CI** | 非 root + `CGO_ENABLED=0` 静态编译 + `HEALTHCHECK` 用静态 `/api/health`（实测全部符合）；前端在 builder 阶段构建并 `COPY` 进 Go 阶段（顺序正确）；容器实测 `healthy`、`ExitCode=0` | 清洁检出裸 Go 需真实dist是正常前置；Make test/vet/all缺前置，CI已先构建前端（2026-10-08订正）；P1-02 已本地修复；`go get -u` 使构建不可复现（AGENTS §十 **有意设计**） | Makefile 与 CI 命令集不统一 | 给 `test`/`vet` 加 `frontend` 前置；`go get -u` 策略受强要求约束，**不建议**擅自改为锁版本 |
 
-### 附：构建阻断（原 P1，已并入批次 6 但严重度仍在）
+### 附：构建入口前置（历史 P1 判断已限定为 Make 入口，CI 顺序正确）
 
 `webui/embed.go:5` 的 `//go:embed frontend/dist` 依赖被 `.gitignore:5` 忽略的目录；`Makefile:6` 的 `build` 有 `frontend` 前置，但 `Makefile:9-13` 的 `test`/`vet` **没有**。在 `git archive HEAD` 抽取的清洁副本上实测：
 
@@ -1256,7 +1258,7 @@ FAIL
 |---|---|
 | `go build ./...` / `go vet ./...` / `go test ./...` | **EXIT=1 / 1 / 1** `pattern frontend/dist: no matching files found`（root 与 `webui` 包 `[setup failed]`） |
 | `make vet` | **EXIT=2** |
-| 手动 `mkdir -p webui/frontend/dist` 后 `go build ./...` | EXIT=0 |
+| 手动 `mkdir -p webui/frontend/dist` 后 `go build ./...` | **2026-10-08 订正：EXIT=1**，空目录没有可 embed 文件；需真实前端构建产物，不能提交占位页 |
 
 **修复**：给 `test`/`vet` 加 `frontend` 前置依赖（Make 在同一次调用内对同一前置去重，`make all` 仍只跑一次 `npm ci`）。**不要**提交占位 `webui/frontend/dist/index.html`——它会被 embed 并由 `webui/server.go:305` 的 FileServer 当真实页面提供。
 
@@ -1270,23 +1272,23 @@ FAIL
 
 **弱断言 / 误导**：
 
-- `policy_test_helpers_test.go:31-35` `waitForNoSMTPData` —— **名为"断言无报文"，实为纯 `time.Sleep`，无任何断言**（4 个调用点各自补了 `rec.Data() != ""`，侥幸未失效）。**必须修正**
-- `push_test.go:443-462` —— 断言 `pub.count()==0`，但该包任何路径都不 Publish → **永真、无判别力**（成因是 `PusherDeps.bus` 只赋值不读）
-- `webui/api` 对 `AlertManager` 注入限流器这一步**零断言**（`grep InFlightLimiter webui/api/*_test.go` 零命中）→ 生产"每渠道 ≤4"接线只靠 notifier 包内**手工模拟**覆盖
+- `policy_test_helpers_test.go:31-35` `waitForNoSMTPData` —— **名为"断言无报文"，实为纯 `time.Sleep`，无任何断言**（2026-10-08 订正：3 个调用点各自补了 `rec.Data() != ""`，侥幸未失效）。**必须修正**
+- **2026-10-08 订正**：`push_test.go` 的 `pub.count()==0` 可因 Publish 变异失败，不是永真断言；实际是 Pusher Bus 未读取的残留，见 Issue8 I8-16b。
+- **2026-10-08 订正**：不能称 `webui/api` 限流接线零断言；`alertset_drop_log_test.go:40/114` 及 `alertset_subscription_test.go:28` 有引用，前者断言 Acquire 并用本地HTTP实收请求验证投递。
 
-**7 个永远无法失败的测试**（逐个读正文确认）：`dns/resolver_test.go:24-34`（`if err == nil { t.Log }`）、`:36-58`（唯一 `t.Fatal` 被 skip 保护）、`notifier/bus_test.go:108-118`、`syncer/state_test.go:411-436`、`syncer/syncer_test.go:646-670`（注释自述只靠 race detector → **不带 `-race` 时是空测试**）、`webui/api/alertset_test.go:175-179,215-217`。另 `dns/resolver_test.go:60-71` 只断言非 nil，**从未验证注释声称的"自动补 :53"**。
+**历史弱断言清单（2026-10-08 订正：不能统称“7 个永远无法失败”）**：`dns/resolver_test.go:24-34`（`if err == nil { t.Log }`）、`:36-58`（唯一 `t.Fatal` 被 skip 保护）、`notifier/bus_test.go:108-118`、`syncer/state_test.go:411-436`、`syncer/syncer_test.go:646-670`（注释自述只靠 race detector → **不带 `-race` 时是空测试**）、`webui/api/alertset_test.go:175-179,215-217`。另 `dns/resolver_test.go:60-71` 只断言非 nil，**从未验证注释声称的"自动补 :53"**。
 
-**固定数值契约没有字面量锚点** → 改错强要求数值仍全绿：`InFlightLimit=4`、`DefaultStartupGrace`、`DefaultHealthTimeout=10m`、`DefaultPushInterval=60s`、`MinPushInterval=20s` 的测试都用常量自身计算期望。对照良好范例：`push_test.go:243` 用字面量 `250`、`webui/server_test.go` 的 `TestServerTimeoutContract` 用字面量 `5s/120s`。
+**2026-10-08 订正：五个被列常量中仅 DefaultStartupGrace 未发现直接数值锚点**；InFlightLimit 有间接接线断言，其余三个默认时长在 store_v3_test.go 有字面量检查。历史StartupGrace变异记录见 Issue8 §3，不把其结果称本次复跑。对照良好范例：`push_test.go:243` 用字面量 `250`、`webui/server_test.go` 的 `TestServerTimeoutContract` 用字面量 `5s/120s`。
 
 **缺失的关键路径**：
 
-1. **前端 → 后端的载荷契约**：8 字段测试邮件与被严格解码的后端 DTO 之间**没有测试固定"前端实际发出的键集合"**（后端只测"多余字段被拒"）。历史上正是此处出过真实缺陷，当前唯一防线是两处注释
+1. **前端 → 后端的载荷契约（2026-10-08 订正）**：alerts-load.test.mjs:178–180 已深比较固定8键；旧“只有注释/没有测试”已失效，仍需构建与行为验证，不能把本次文档修订写成新增测试
 2. **构建/部署契约零守护**：`grep -rln "Dockerfile|docker-publish|Makefile|alpine:3.20|CGO_ENABLED" --include='*_test.go' .` → **0 命中**，而 AGENTS §八 用「**不得**」措辞
 3. `GET /api/zones` handler —— 历史审计未覆盖路由（`zones_test.go` 只测 `zoneData` map）；2026-10-02 P3-05 的 `TestJSONCachePolicyAPIMatrix` 已补基础路由、200/JSON 与 `no-store` 检查，不等于地域内容全量验收
-4. **零 goroutine/ticker/连接泄漏断言**（`grep NumGoroutine|goleak` 唯一命中是注释）
-5. `provider/scan.go` 四条扫描路径几乎无测试（`scan_test.go` 仅 16 行）
-6. **负面 sleep 断言会在慢 runner 假通过**：`syncer/state_test.go:174-177,204-205`、`syncer/syncer_test.go:130`；syncer 包 25 处 sleep（12 处 >200ms，最长 600ms）集中在最关键的门控用例上。`webui` 包用 `ServeStarted`/channel 做确定性同步，是正面范例
-7. `app/logutil_test.go` **完全没有 `MultiHandler` 用例**
+4. **2026-10-08 订正**：已有 `webui/server_test.go` 的 `TestShutdownNoGoroutineLeak` 与重复Shutdown的 runtime.Stack 残留检查；其余组件/FD/ticker全面覆盖尚未证明，不能称全仓零断言。
+5. **历史扫描覆盖口径已过期**：ECS已有SDK分页、结构异常与API缓存回归；本次仍未发现 Lighthouse/CVM 两条扫描的直接专项测试，见 Issue8 I8-09。
+6. **负面 sleep 断言会在慢 runner 假通过**：`syncer/state_test.go:174-177,204-205`、`syncer/syncer_test.go:130`；旧 syncer sleep 数量与最长600ms口径已过期（scheduling_test.go:421含3s）；固定sleep只证明观察窗口，不等于已证假通过。`webui` 包用 `ServeStarted`/channel 做确定性同步，是正面范例
+7. **已被后续 P3-13 取代**：自写MultiHandler删除、改标准库并有分发/隔离/错误聚合回归；不能继续称完全没有用例。
 8. `-race` 非空跑（`t.Parallel()`=0，但 24 个测试文件在用例内起 goroutine），唯一边角是上述 race-only 用例
 
 **本轮已补齐的两项**（2026-09-30 第二轮，仅测试改动）：§3「重复 Apply 订阅不累积」与 §6 中 webhook「名额保持到 Close 结束」——见 `webui/api/alertset_subscription_test.go` 与 `notifier/webhook_response_test.go` 的 `TestWebhookResponseSlotHeldUntilClose`；两者均已用「临时破坏生产语义 → 精确失败 → 恢复 → 通过」验证判别力。
@@ -1613,7 +1615,7 @@ P3-05（普通 JSON 统一 `no-store`，已本地修复）、P3-10（忽略的 e
 
 **历史批次 6 — 构建、测试与文档闭环**
 
-Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7 个永不失败的测试；补字面量锚点；补构建契约测试；补 `pidfile` 单测；清理约 12 处 "version 2" 与 §4 文档漂移
+Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；逐项改善弱断言并验证判别力（2026-10-08已撤销“7个永不失败”概括）；补字面量锚点；补构建契约测试；补 `pidfile` 单测；清理约 12 处 "version 2" 与 §4 文档漂移
 
 **依赖关系**：P1-01 的产品语义已确认，不再有配置形态决策前置。P3-25 **同步路径**已在自动清理前改为不完整快照硬失败；资源扫描路径现已按独立证据本地修复，见 I-19 / P3-26；真实云仍未验收。P2-04 代码已按 Step 0 修订的 AGENTS 发布顺序独立落地（2026-09-30，提交为 `7acf303`）；其余死代码与同文件清理应在 Issue7 Step 1～4 完成后再重新证明。
 
@@ -1625,7 +1627,7 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 |---|---|---|---|---|---|---|
 | 启动/生命周期（`main.go`,`run.go`,`app/`） | A | 主代理 | 3 生产 | `main → run → runWebUI → 启动/收尾序列` | 容器 SIGTERM 实测 `ExitCode=0`；双实例 pidfile 实测；**历史 Docker 实测曾复现 P1-02** | I-01 已覆盖残留 PID、内核锁屏障、并发、SIGKILL 重启；真实部署机 systemd 仍未执行 |
 | 配置/DB/运行时（`config/`） | A | 主代理 | 7 生产 | `OpenStore → initTables → LoadBusinessSnapshot → BuildRuntimeState` | `config` 包 `-race` 绿；驱动源码核对 | 真实旧库迁移路径 |
-| 同步/DNS/重试（`syncer/`,`dns/`,`internal/`） | **B** | **主代理 overlay 探针复现 P0-01/P1-01/P2-01** | 7 生产 | `Run → beginRound → syncAll → runRound → syncDomain → retrySyncDetailed` | `syncer`/`provider`/`dns` 包测试绿 + 3 个判别性探针 | 真实云写入 |
+| 同步/DNS/重试（`syncer/`,`dns/`,`internal/`） | **B** | **主代理 overlay 探针复现 P0-01/P1-01/P2-01** | 7 生产 | `Run → beginRound → syncAll → runRound → syncTarget → runTargetAttempt / runTargetCleanup`（2026-10-08 当前链订正；旧 syncDomain/retrySyncDetailed 已由 ba82292 删除） | `syncer`/`provider`/`dns` 包测试绿 + 3 个判别性探针 | 真实云写入 |
 | Provider（4 云） | **B** | 主代理（逐 API 调用点验证） | 8 生产 | `Provider 接口 → 四实现 → SDK 调用` | **确认零全量覆盖 API**；CVM 配额对照官方文档 | 真实云 API |
 | 通知/健康（`notifier/`,`internal/health/`） | C | 主代理（推翻 1 项误报） | 7 生产 | `Publish → OnEvent → SMTP/HTTP`；三消费者共用 Checker | `-race` 绿；stdlib `handler.go` 源码核对 | 真实 SMTP/Webhook/Uptime Kuma |
 | HTTP/API/SSE（`webui/`,`webui/api/`） | D | 主代理（推翻 1 项误读） | 20 生产 | `Register(31 路由) → handler → Coordinator`（原写 28 属自始低估：`webui/api/deps.go` 有 31 条 `mux.HandleFunc`，加 `webui/server.go:296` 的 `GET /api/health` 共 32） | `webui`/`webui/api` `-race` 绿；路由表逐一核对 | 浏览器交互 |
@@ -1634,7 +1636,7 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 
 **文件覆盖（审计快照口径）**：53/53 生产 Go 文件（root 2、app 1、config 7、dns 2、internal/health 3、internal/portconv 1、internal/tag 1、notifier 4、provider 8、syncer 4、webui 2、webui/api 18）**全部读过并归属至少一个主审**；高风险文件均有独立交叉复核。**当前为 55 个生产 Go 文件**：provider 8→9（新增 `provider/plan.go`）、syncer 4→5（新增 `syncer/target.go`），其余不变。
 
-**流程偏差如实记录**：`e38de1fb`（同步/DNS/Provider）与 `00a69dd7`（全局死代码/部署/测试）两路分派**超出合理时限未按时返回**；我已发出限时收敛请求，并**亲自完成**这两个范围的审核与验证（P0-01/P1-01/P2-01 由我自写探针复现）。因此覆盖无缺口，但这两路的"第二双眼睛"来自主代理而非独立子代理——建议后续针对 `syncer/syncer.go`（该快照 971 行，现 952 行）与 `webui/api/bundle_v3.go`（887 行）另做一次独立复核。
+**流程偏差如实记录（以下为原审计历史；2026-10-08 Issue8已记录后续独立核验，不再作为当前未完成任务）**：`e38de1fb`（同步/DNS/Provider）与 `00a69dd7`（全局死代码/部署/测试）两路分派**超出合理时限未按时返回**；我已发出限时收敛请求，并**亲自完成**这两个范围的审核与验证（P0-01/P1-01/P2-01 由我自写探针复现）。因此覆盖无缺口，但这两路的"第二双眼睛"来自主代理而非独立子代理——建议后续针对 `syncer/syncer.go`（该快照 971 行，现 952 行）与 `webui/api/bundle_v3.go`（887 行）另做一次独立复核。
 
 ---
 
@@ -1710,7 +1712,7 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 | SQLite 真实 BUSY/慢盘争用下的 2s 探活上限端到端保证 | **未执行**（仅核对驱动有 `interruptOnDone`、`Store` 无互斥量） |
 | 真实旧库迁移路径 / 生产 SQLite | **未执行** |
 | `GOOS=windows` 运行验收 | **不适用**（用户已决定移除支持，仅以构建失败为证据） |
-| 后端 `syncer/syncer.go` 与 `webui/api/bundle_v3.go` 的**第二个独立子代理**复核 | **未完成**（原分派超时，由主代理亲自覆盖替代） |
+| 后端 `syncer/syncer.go` 与 `webui/api/bundle_v3.go` 的**第二个独立子代理**复核 | **历史状态已更新**：原分派超时由主代理替代；Issue8 记录后续独立复核已完成，本次又由独立子代理复核，未新增生产修复或外部验收 |
 
 **结论**：`go test` 通过只证明对应测试覆盖的行为，**不得**外推为真实云、真实 SMTP、真实 Webhook、真实 Uptime Kuma、浏览器或远端 CI 已通过。
 

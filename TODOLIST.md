@@ -30,7 +30,7 @@
 ### TODO-001：修复 unsupported-only 计划的 `coverage_ready` 误报
 
 - **关联编号**：P1-01、P2-03。
-- **优先级**：P0 / 高。
+- **优先级**：中低（2026-10-08 文档订正；当前独立 unsupported 清理安全门冻结删除，无误删后果）。
 - **当前状态**：核心安全门已存在，但输出字段存在可达语义错误，不能保持“无保留成立”。
 - **问题**：`provider/plan.go:655` 当前主要依据 `len(plan.Desired) > 0 && !in.AddStateUnknown && len(plan.ToAdd) == 0` 判定 `CoverageReady`，没有确认存在可实施的 Desired。
 - **触发场景**：目标只配置 SWAS IPv6、SWAS DROP 或其他不支持能力的规则时：
@@ -40,8 +40,8 @@
   - `CoverageReady` 可能被错误设置为 `true`。
 - **契约依据**：`Issue7.md:321`、`:325` 要求没有任何可实施期望时 `CoverageReady=false`。
 - **安全影响**：当前 unsupported 仍会生成结构化原因码，且清理冻结仍由 `provider/plan.go:699-727` 保护，正式目标仍可判为 `partial`；主要影响是 Dry Run/API 对覆盖状态的误导。
-- **建议动作**：修正 `CoverageReady` 判定，使其依赖实际可实施期望和覆盖结果；不要放宽 unsupported 清理安全门。
-- **验收要求**：补充全量 unsupported → `coverage_ready=false` 的正向/负向判别测试，并覆盖“unsupported + 一个可实施项”的混合场景。
+- **建议动作**：修正 `CoverageReady` 判定，候选为 `implementable > 0 && covered == implementable && !AddStateUnknown`，使其依赖非空可实施期望和覆盖结果；不要放宽 unsupported 清理安全门。
+- **验收要求**：覆盖空 Desired，补充全量 unsupported → `coverage_ready=false` 的正向/负向判别测试，并覆盖“unsupported + 一个可实施项”的混合场景。
 - **外部边界**：修改后仍需将真实四云和浏览器验收独立登记，不能仅凭本地 planner 测试宣称外部通过。
 
 ### TODO-002：补齐 P2-02 ECS 删除分批测试判别力
