@@ -446,6 +446,19 @@ npm run dev
 npm run build
 ```
 
+### 告警页行为回归
+
+告警页的本地行为回归使用独立入口（先准备前端依赖）：
+
+```bash
+cd webui/frontend
+npm run test:alerts
+# 直接使用 Node 时也需保留超时参数：
+node --test --test-timeout=30000 tests/alerts-load.test.mjs
+```
+
+每项测试有 30 秒预算；加载中保存和重复保存会在等待前检查请求次数，失败时也清理挂起的模拟请求。以命令退出码 0 判绿，超时可能计入 cancelled，不能只检查 `fail=0`。该预算不对应真实 SMTP 请求时限，也不是整套测试的 30 秒总上限；同步死循环和遗留活动句柄仍不属于原生超时的硬终止保证。其他前端测试入口未统一增加预算，Make、CI 与 Docker 当前也不自动执行这组行为回归。
+
 ### 构建完整二进制（含前端）
 
 ```bash

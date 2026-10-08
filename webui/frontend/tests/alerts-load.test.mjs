@@ -60,7 +60,7 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-test('加载中与请求失败均拒绝直接保存，表单不变且无成功提示', async () => {
+test('加载中与请求失败均拒绝直接保存，表单不变且无成功提示', async (t) => {
   const pending = deferred()
   const calls = []
   const { state, mounted, messages } = mount((...args) => {
@@ -69,7 +69,15 @@ test('加载中与请求失败均拒绝直接保存，表单不变且无成功�
   })
   const before = forms(state)
   const loading = mounted()
-  await state.save()
+  const blocked = state.save()
+  // 断言失败也结算挂起夹具，等待已启动的任务结束。
+  t.after(async () => {
+    pending.reject(new Error('夹具清理'))
+    await Promise.all([loading, blocked])
+  })
+  // 先检查请求次数，避免错误 PUT 等待同一个未解 Promise 而阻塞断言。
+  assert.equal(calls.length, 1, '加载中不得发起PUT')
+  await blocked
   assert.equal(state.loadState.value, 'loading')
   assert.equal(calls.length, 1)
   pending.reject(new Error('模拟读取失败'))
@@ -137,7 +145,7 @@ test('合法空字符串与false通过；成功保存完整对象并保留敏感
   assert.equal(messages.filter((m) => m.type === 'success').length, 1)
 })
 
-test('重复保存只有一个在途PUT；失败保留编辑并允许重试', async () => {
+test('重复保存只有一个在途PUT；失败保留编辑并允许重试', async (t) => {
   const pending = deferred()
   let puts = 0
   const { state, mounted } = mount((url, opts) => {
@@ -148,7 +156,13 @@ test('重复保存只有一个在途PUT；失败保留编辑并允许重试', as
   await mounted()
   state.email.value.subject = '保留编辑'
   const saving = state.save()
-  await state.save()
+  const duplicate = state.save()
+  t.after(async () => {
+    pending.reject(new Error('夹具清理'))
+    await Promise.all([saving, duplicate])
+  })
+  assert.equal(puts, 1, '重复保存不得发起第二个PUT')
+  await duplicate
   assert.equal(puts, 1)
   pending.reject(new Error('模拟保存失败'))
   await saving
