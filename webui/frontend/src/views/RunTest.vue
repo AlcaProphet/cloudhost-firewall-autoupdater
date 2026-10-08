@@ -8,14 +8,15 @@ import { useDryRun } from '../composables/useDryRun'
 const message = useMessage()
 
 // 模拟测试：按当前云资源目标与域名规则计算变更预览，不实际写入
-const { loading, results, warnings, lastRunAt, run } = useDryRun()
+const { status, loading, results, warnings, error, lastFinishedAt, run } = useDryRun()
 
 async function runDryRun() {
+  if (loading.value) return
   try {
     await run()
-    message.success('模拟测试完成')
-  } catch (e: any) {
-    message.error(`模拟测试失败: ${e.message}`)
+    message.info('模拟测试请求完成，请查看结果与提示')
+  } catch {
+    message.error(`模拟测试失败：${error.value}`)
   }
 }
 </script>
@@ -30,11 +31,11 @@ async function runDryRun() {
       </div>
       <NSpace align="center">
         <NButton type="primary" size="large" :loading="loading" @click="runDryRun">执行模拟测试</NButton>
-        <span v-if="lastRunAt" style="font-size: 14px; color: #999">
-          上次执行：{{ lastRunAt.toLocaleTimeString() }}
+        <span v-if="lastFinishedAt" style="font-size: 14px; color: #999">
+          最近请求结束：{{ lastFinishedAt.toLocaleTimeString() }}
         </span>
       </NSpace>
-      <DryRunResults :results="results" :warnings="warnings" :has-run="lastRunAt !== null" />
+      <DryRunResults :results="results" :warnings="warnings" :status="status" :error="error" />
     </NSpace>
   </div>
 </template>

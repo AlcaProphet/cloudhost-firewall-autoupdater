@@ -550,6 +550,7 @@ DNS 失败继续发布 `EventDNSFailed`，但相同目标/host 一轮最多一�
 沿用现有 Naive UI 与 AGENTS 的 UI 规范：
 
 - 顶部统计卡：目标数、所需功能、已由 TAG 满足、已由外部满足、待新增、清理候选、无法实施、错误；
+- 模拟测试页面请求阶段固定为 `idle/running/completed/failed`；`completed` 仅表示收到可展示响应，不表示全部目标正常。每次执行清空旧 results/warnings/error；等待与失败不渲染结果统计或目标卡片，失败原因持久显示且可重试；最近请求结束时间在完成/失败均更新，不能用于推导阶段。空结果使用中性“本次未返回目标预览”并保留后端 warnings，不推导无变更或零配置；无适用规则与目标级错误/DNS/unsupported/conflicts/清理延后分区保持；完成通知用中性提示，不增加全局绿色无变更结论。
 - 每目标一个卡片，标题显示 Provider/资源 ID，副标题显示来源域名数；
 - `to_add` 用主色/信息色，`satisfied_by_external` 用中性色，`cleanup_candidates` 与 `cleanup_deferred` 用 warning，DNS/error 用 error；
 - 清理候选标题必须写“满足安全门后可清理”，不得写成确定动作；

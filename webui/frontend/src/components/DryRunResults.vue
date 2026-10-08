@@ -14,7 +14,8 @@ import { cloudLabelMap } from '../constants'
 const props = defineProps<{
   results: DryRunResult[]
   warnings: string[]
-  hasRun: boolean
+  status: 'idle' | 'running' | 'completed' | 'failed'
+  error: string
 }>()
 
 // ─── 顶部统计条（目标级口径） ───
@@ -103,11 +104,17 @@ function issueText(issue: PlanIssue): string {
 <template>
   <div>
     <!-- 空状态（按优先级） -->
-    <NAlert v-if="!hasRun" type="info" :show-icon="false">
+    <NAlert v-if="status === 'idle'" type="info" :show-icon="false">
       尚未执行模拟测试，点击上方「执行模拟测试」开始
     </NAlert>
 
-    <template v-else>
+    <NAlert v-else-if="status === 'running'" type="info" :show-icon="false">
+      正在执行模拟测试，请等待本次结果
+    </NAlert>
+    <NAlert v-else-if="status === 'failed'" type="error" :show-icon="false">
+      本次模拟测试请求失败：{{ error }}
+    </NAlert>
+    <template v-else-if="status === 'completed'">
       <NAlert v-if="warnings.length > 0" type="warning" :show-icon="false" style="margin-bottom: 12px">
         <template v-for="(w, i) in warnings" :key="i">
           <div>{{ w }}</div>
@@ -126,8 +133,8 @@ function issueText(issue: PlanIssue): string {
         <NGi><NStatistic label="错误" :value="stats.errors" /></NGi>
       </NGrid>
 
-      <NAlert v-if="results.length === 0 && warnings.length === 0" type="success" :show-icon="false">
-        无待变更规则
+      <NAlert v-if="results.length === 0" type="info" :show-icon="false">
+        本次未返回目标预览，请检查目标配置及页面提示
       </NAlert>
 
       <!-- 目标卡片：target_id 是稳定 key（同域名多规则不会再产生重复 key） -->

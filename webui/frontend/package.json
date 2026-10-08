@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "test:dryrun": "node --test tests/dryrun-state.test.mjs",
     "test:dashboard": "node --test tests/dashboard-observation.test.mjs",
     "test:alerts": "node --test tests/alerts-load.test.mjs",
     "dev": "vite",

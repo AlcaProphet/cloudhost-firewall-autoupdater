@@ -93,6 +93,8 @@
 
 **I8-113 / Q-09 后续实施状态（2026-10-08，方向 A 细化为空渠道＋单选按钮）**：用户已在引用研究聊天确认空渠道初始值、不要求旧版程序导入新增空渠道配置包并保留 version 3，随后授权正式修复及文档同步。实施前 `main / 8052015c766121b05cdaf8afe2eabd55a45aa8db`、本地 `origin/main / 7696482243461f582342aeb78fdc2f467012f674`、ahead 4，工作树与暂存区干净，未 fetch。新建与补列 DDL 引用 `DefaultWebhookChannel=""`；初始化及 reset 共用显式渠道插入，旧表不重建。仅本次新增 channel 列时把已有 id=1 配置行转换为固定历史钉钉值，保留 URL，既有 Build7 一次性启用归零规则保持；已有列/配置不覆盖，再次启动不重复转换。GET/导出保留空值，关闭允许空渠道，开启必须选择，未知/缺失/null 继续拒绝。通知器取消隐式钉钉，并在限流/HTTP 前返回安全 invalid_channel。前端渠道为必填字符串，三个单选项初始未选中、放在 URL 前，开启未选零 PUT，关闭保留输入。九个生产文件（含本聊天追加确认的 embed.go 一行修正）、十三份测试与本文件/Issue8/Build7/ProdTestList/审计五份文档，共 27 文件；新前端构建生成的下划线资源需由 `//go:embed all:frontend/dist` 完整嵌入，用户已追加授权；正式证据见 Issue8 文末与审计 I8-113 补记。本轮尚未提交或推送；真实浏览器/通知平台与当前 revision 外部验收不因本地回归升级。
 
+**I8-12 请求阶段后续实施状态（2026-10-08，推荐 A）**：用户在本聊天授权推荐方案与文档同步，基线 `main == 本地 origin/main == c3bb468`、工作树干净。三个前端文件采用四请求阶段、重试清空旧预览、持久失败原因、中性空结果/完成通知，最近请求结束时间不再充当成功标志；completed 不等于全部目标正常，现有目标级限制/错误/清理分区保持。专用 17 项真实页面/模板/请求封装行为回归及六类源码负向控制通过，完整前端 86 项与 build、Go vet/build 通过；全仓 12 包 race 一轮与最终 diff-check 通过，完整证据见 Issue8 文末补记。范围固定十文件，无后端/API/schema/依赖/同步/健康变更；真实浏览器待 ProdTestList PT-AUDIT-03，其他外部未执行/免除状态保持，不外推长期稳定或发布通过。尚未提交或推送。
+
 ## 二、核心编码原则
 
 ### 简单轻量化
@@ -298,6 +300,7 @@
 - 目标同步观察：清理与平台限制观察用 nullable 对象明确未知，记录 attempt/时间/历史来源；删除进度估计不称当前云状态。latest 与 last_complete 分存，完整新零替换旧非零。RoundSummary 四类观察汇总不影响 outcome/健康/删除授权；旧整数仅作兼容投影，日志和 Dashboard 不把跨尝试累计删除与单次快照候选拼成数量关系（Issue7 §12.9）。
 - 事件类型：全局同步完成用 `EventSyncComplete`，目标级云端写入与覆盖验证用 `EventTargetSyncComplete`，DNS 失败继续用 `EventDNSFailed`，运行健康异常边沿用 `EventOperationalUnhealthy`；`EventDomainSyncComplete` 不再承载云端增删数量
 - 同步全局开关：`POST /api/sync/pause|resume` 端点（先写 DB 后通知 Syncer）；`SyncStatus.enabled` 字段；前端「模拟测试」页（路由 `/dry-run`）承载目标级变更预览，正式同步与 Dry Run 共用同一纯规划器；至少表达 `desired`、`satisfied_by_owned`、`satisfied_by_external`、`to_add`、`cleanup_candidates`、`cleanup_deferred`、`dns_errors`、`unsupported`、`conflicts`、`coverage_ready`；连接测试保留在目标添加/编辑弹窗（`POST /api/test-connection`）
+- 模拟测试页面请求阶段固定为 `idle/running/completed/failed`；`completed` 仅表示收到可展示响应，不表示全部目标正常。每次执行清空旧 results/warnings/error；等待与失败不渲染结果统计或目标卡片，失败原因持久显示且可重试；最近请求结束时间在完成/失败均更新，不能用于推导阶段。空结果使用中性“本次未返回目标预览”并保留后端 warnings，不推导无变更或零配置；无适用规则与目标级错误/DNS/unsupported/conflicts/清理延后分区保持；完成通知用中性提示，不增加全局绿色无变更结论。
 - 地域自动补全：数据源为 `PlatformAPIDocs/PlatformZoneGuide/`（后端 `webui/api/zones.go` 提供 `GET /api/zones`，文档更新时需同步数据）；后端仅提供预填数据、不校验地域合法性（允许输入列表外值，由云 API 自行报错，符合「不过度防御」）
 - 资源扫描：`provider/scan.go` 实现四平台只读列表查询（Lighthouse `DescribeInstances`、SWAS `ListInstances`、CVM/ECS `DescribeSecurityGroups`），`webui/api/scan.go` 提供 `POST /api/scan-resources`（凭据缺失快速失败）、`GET/DELETE /api/scanned-resources`；结果按 cloud_type+region 覆盖式入库（`scanned_resources` 表），仅供添加目标自动补全，同步流程不依赖
 - 清空所有数据：`POST /api/config/reset` 只接受单一空对象 `{}`，经配置变更协调器在单事务内调 `Store.ResetAllTx()` 清空全部业务表（targets/rules/settings/sync_logs/alert_policy/alert_email/alert_webhook/uptime_kuma_push/scanned_resources），并恢复告警默认全部关闭与 `health_timeout=10m`、Push `interval=60s` 的默认值，等效重新初始化；前端入口需红色警告按钮 + 卡片式二次确认

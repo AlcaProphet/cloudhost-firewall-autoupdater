@@ -1,18 +1,19 @@
-// Dry Run 共享组合逻辑：loading / results / warnings / error / lastRunAt / run()
-import { ref } from 'vue'
+// Dry Run 请求阶段与本次预览；completed 仅表示请求完成，不代表全部目标正常。
+import { ref, computed } from 'vue'
 import { request } from '../api'
 import type { DryRunResponse } from '../types'
 
 export function useDryRun() {
-  const loading = ref(false)
+  const status = ref<'idle' | 'running' | 'completed' | 'failed'>('idle')
+  const loading = computed(() => status.value === 'running')
   const results = ref<DryRunResponse['results']>([])
   const warnings = ref<string[]>([])
   const error = ref('')
-  const lastRunAt = ref<Date | null>(null)
+  const lastFinishedAt = ref<Date | null>(null)
 
-  // 执行 Dry Run；失败时抛错由页面 message.error 展示
+  // 每次执行清空旧预览；失败状态持久展示，并抛错供页面通知。
   async function run() {
-    loading.value = true
+    status.value = 'running'
     error.value = ''
     results.value = []
     warnings.value = []
@@ -20,14 +21,15 @@ export function useDryRun() {
       const data = await request<DryRunResponse>('/api/sync/dryrun', { method: 'POST' })
       results.value = data.results || []
       warnings.value = data.warnings || []
-      lastRunAt.value = new Date()
-    } catch (e: any) {
-      error.value = e.message
+      lastFinishedAt.value = new Date()
+      status.value = 'completed'
+    } catch (e: unknown) {
+      error.value = e instanceof Error && e.message ? e.message : '模拟测试请求失败'
+      lastFinishedAt.value = new Date()
+      status.value = 'failed'
       throw e
-    } finally {
-      loading.value = false
     }
   }
 
-  return { loading, results, warnings, error, lastRunAt, run }
+  return { status, loading, results, warnings, error, lastFinishedAt, run }
 }
