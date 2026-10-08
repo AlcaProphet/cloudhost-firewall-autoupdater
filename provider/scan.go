@@ -69,15 +69,13 @@ func scanTCLighthouse(region string, pool *ClientPool) ([]ScannedCloudResource, 
 		if err != nil {
 			return nil, fmt.Errorf("查询实例列表失败: %w", err)
 		}
-		for _, inst := range resp.Response.InstanceSet {
-			resources = append(resources, ScannedCloudResource{
-				ResourceID: strVal(inst.InstanceId),
-				Name:       strVal(inst.InstanceName),
-				Region:     region,
-			})
+		page, err := decodeLighthouseScanPage(resp, region)
+		if err != nil {
+			return nil, err
 		}
-		// 返回数量 < limit 表示已到最后一页
-		if int64(len(resp.Response.InstanceSet)) < limit {
+		resources = append(resources, page...)
+		// 返回数量不足一页时结束；结构异常已由页解码拒绝。
+		if int64(len(page)) < limit {
 			break
 		}
 		offset += limit
@@ -110,14 +108,13 @@ func scanTCCVM(region string, pool *ClientPool) ([]ScannedCloudResource, error) 
 		if err != nil {
 			return nil, fmt.Errorf("查询安全组列表失败: %w", err)
 		}
-		for _, sg := range resp.Response.SecurityGroupSet {
-			resources = append(resources, ScannedCloudResource{
-				ResourceID: strVal(sg.SecurityGroupId),
-				Name:       strVal(sg.SecurityGroupName),
-				Region:     region,
-			})
+		page, err := decodeCVMScanPage(resp, region)
+		if err != nil {
+			return nil, err
 		}
-		if int64(len(resp.Response.SecurityGroupSet)) < 100 {
+		resources = append(resources, page...)
+		// 返回数量不足一页时结束；结构异常已由页解码拒绝。
+		if len(page) < 100 {
 			break
 		}
 		offset += 100
@@ -236,4 +233,42 @@ func decodeECSScanPage(resp *ecs.DescribeSecurityGroupsResponse, region string) 
 		})
 	}
 	return resources, strVal(body.NextToken), nil
+}
+
+// decodeLighthouseScanPage 校验并转换资源页；缺失集合失败，显式空数组合法。
+func decodeLighthouseScanPage(resp *lighthouse.DescribeInstancesResponse, region string) ([]ScannedCloudResource, error) {
+	if resp == nil || resp.Response == nil {
+		return nil, fmt.Errorf("%w: Lighthouse 资源扫描响应缺失", ErrSnapshotIncomplete)
+	}
+	entries := resp.Response.InstanceSet
+	if entries == nil {
+		return nil, fmt.Errorf("%w: Lighthouse 资源扫描集合缺失", ErrSnapshotIncomplete)
+	}
+	page := make([]ScannedCloudResource, 0, len(entries))
+	for _, item := range entries {
+		if item == nil || strVal(item.InstanceId) == "" {
+			return nil, fmt.Errorf("%w: Lighthouse 资源扫描资源标识缺失", ErrSnapshotIncomplete)
+		}
+		page = append(page, ScannedCloudResource{ResourceID: strVal(item.InstanceId), Name: strVal(item.InstanceName), Region: region})
+	}
+	return page, nil
+}
+
+// decodeCVMScanPage 校验并转换资源页；缺失集合失败，显式空数组合法。
+func decodeCVMScanPage(resp *vpc.DescribeSecurityGroupsResponse, region string) ([]ScannedCloudResource, error) {
+	if resp == nil || resp.Response == nil {
+		return nil, fmt.Errorf("%w: CVM 资源扫描响应缺失", ErrSnapshotIncomplete)
+	}
+	entries := resp.Response.SecurityGroupSet
+	if entries == nil {
+		return nil, fmt.Errorf("%w: CVM 资源扫描集合缺失", ErrSnapshotIncomplete)
+	}
+	page := make([]ScannedCloudResource, 0, len(entries))
+	for _, item := range entries {
+		if item == nil || strVal(item.SecurityGroupId) == "" {
+			return nil, fmt.Errorf("%w: CVM 资源扫描资源标识缺失", ErrSnapshotIncomplete)
+		}
+		page = append(page, ScannedCloudResource{ResourceID: strVal(item.SecurityGroupId), Name: strVal(item.SecurityGroupName), Region: region})
+	}
+	return page, nil
 }
