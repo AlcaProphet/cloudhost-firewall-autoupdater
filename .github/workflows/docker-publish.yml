@@ -64,6 +64,10 @@ jobs:
           go build -v ./...
           go vet ./...
 
+      # 带标签的真实上游测试只编译，不在默认 CI 访问外网 DNS。
+      - name: 编译真实 DNS 测试（不执行）
+        run: go test -tags=dnsintegration -run '^$' ./dns
+
       - name: 运行测试
         run: go test -race -v ./...
 

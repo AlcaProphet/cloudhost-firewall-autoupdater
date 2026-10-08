@@ -1,5 +1,7 @@
 # Issue8.md — 现存缺陷台账（2026-10-08 复核整理版）
 
+> **I8-04 后续实施（2026-10-08）**：已按定型 B 完成本地 DNS 回归与显式真实测试入口，Q-06 已裁决；默认完整门禁不再依赖真实 DNS 上游，正式证据与外部边界见文末。本轮尚未提交或推送。
+
 > **I8-03 后续实施（2026-10-08）**：已按用户裁决 A 补齐 Make 的共享真实前端前置，Q-05 已裁决；范围、正式回归与本地/外部证据边界见文末 I8-03 补记。以下原复核记录保留为历史。
 
 > **2026-10-08 后续实施：I8-01 已按用户裁决 A 本地修复，Q-01 已裁决；本轮实现与验证见文末补记。I8-02 另按用户裁决 C 本地实施，Q-02 已裁决。I8-18 已按用户裁决 A 本地实施，Q-03 已裁决；正式证据见文末补记。I8-111 已在用户明确无兼容性需求后按严格方案 B 本地实施，Q-08 已裁决；正式证据见文末补记。以下只读复核记录保留为历史，I8-113 已按用户定型的空渠道＋单选按钮本地实施，Q-09 已裁决；正式证据见文末补记。I8-12 已按推荐方案 A 本地实施，新增 Q-14 已裁决；本轮证据见文末补记。I8-01/I8-02/I8-18/I8-111/I8-113/I8-12 当前状态以各自补记为准。**
@@ -96,7 +98,9 @@
 - **禁止项**：**不得**提交占位 `webui/frontend/dist/index.html`——`webui/server.go:307` 会把占位页当真实 SPA 提供，占位页可以通过编译，但当前 `TestStaticAssetsServedFromEmbed` 会因缺少真实 JS 资源而失败；原“全部测试变绿”判断已订正。不得用占位页绕过真实前端构建（仅 `git add -f` 可绕过忽略规则）。
 - **修法见 §2 Q-05**。
 
-#### I8-04【中·门禁密闭性】默认测试命令会执行真实外网 DNS 查询　`②`
+#### I8-04【已本地修复·原中门禁密闭性】默认测试命令会执行真实外网 DNS 查询　`②`
+
+- **当前状态**：2026-10-08 已按定型 B 本地修复：默认随机回环 UDP 回归，真实 223.5.5.5 测试仅 dnsintegration 显式启用，CI 只编译；不统一加 -short。正式九文件与门禁证据见文末，真实上游本轮未执行。以下缺陷与报文为修复前历史。
 
 - **准确表述（订正后）**：`dns/resolver_test.go:10/29/40` 使用 `8.8.8.8:53` 且都真调 `Resolve`；其中 `TestResolve_NonExistent`(`:25-27`) 与 `TestResolve_PublicDomain`(`:37-39`) **有 `testing.Short()` 守卫**，唯一无守卫的 `TestResolve_Localhost`(`:9-22`) 经回环探针证明**根本不外发查询**（上游换死地址仍 PASS，走 hosts）。**真正的缺陷是默认门禁不传 `-short`**——`Makefile:10` 与 CI `docker-publish.yml:68` 都不过滤，**守卫因此失效**。（审计原表述"无 `testing.Short()` 守卫"不准确，见附录 B。）
 - **历史实测**：上游改指 `127.0.0.1:15353` + UDP 监听——`-short` → **0 个报文**；默认语义 → **6 个 UDP 报文**（`host.invalid`×2、`dns.google`×4），dns 包耗时 **15.1s**。全程未触碰 `8.8.8.8`。
@@ -224,7 +228,7 @@
 | I8-113 | 已按细化 A 本地修复；Q-09 已裁决 | 空初始值＋单选按钮；历史主行仅补列时转换，旧库 reset 显式未选择；外部验收保持 | 正式初始化/回滚/往返/零写入零发布/发送前拒绝/真实组件渲染及负向控制，见文末 |
 | I8-12 | 已按 A 本地修复；Q-14 已裁决 | 四请求阶段；重试清空、持久错误、中性空结果/完成通知；保留目标级明细 | 正式 17 项页面/模板/请求封装行为回归及六类负向控制；证据见文末，真实浏览器待 PT-AUDIT-03 |
 | I8-03 | 已按 A 本地修复；裸 Go 缺产物仍为正常前置 | test/vet/build 共享真实 frontend，单次 Make 只构建一次；17 项依赖/故障回归、清洁副本与正式门禁见文末；不提交占位页 | Makefile、build/makefile_test.sh；CI/Docker 原有正确顺序保持 |
-| I8-04 | 待改，网络依赖与假绿风险 | 本地 DNS 替身或明确短模式；统计本地报文，失败必须按所测合同 FAIL，默认测试不意外外发 | resolver_test24–56／Make10／CI68；本次不访问真实上游 |
+| I8-04 | 已按定型 B 本地修复；Q-06 已裁决 | 默认本地完整回归，真实测试显式 dnsintegration/223.5.5.5；CI 只编译；失败必须 FAIL | 正式 DNS race 20 轮、禁止非回环外发 race 20 轮、八类行为控制与原样 make all；见文末，真实上游未执行 |
 | I8-102 | 待改，低；未解 Promise 可挂起 | 逐用例超时；已知挂起候选有界失败且后续报告可见，正常实现通过 | package script源码；180s/15s对照是历史 |
 | I8-09 | 待改，低；异常云结构导致请求中断 | nil/结构守卫并返回可识别错误；SDK→handler 缺 Response 与有效空集合对照，旧缓存不覆盖 | scan72/113源码；历史 SDK panic 不证明进程崩溃 |
 | I8-08 | 待改，低；异常 SWAS 页被当成功 | 缺失结构保守失败、有效空集合保留合法语义；首页/中页异常保留缓存，完整/零资源可覆盖 | scan153–156与API66源码；历史临时SQLite链路 |
@@ -263,7 +267,7 @@
 | **Q-03（已裁决）** | **I8-18** GET 告警快照一致性 | 用户 2026-10-08 确认 A：只用一个只读事务读取四对象，复用现有私有 loader，保持 HTTP 默认值/字段/安全错误语义；不复用完整业务快照、不引入编辑版本冲突机制。已授权并本地实施 | 2 个生产、2 个新增测试及 4 个文档，共 8 文件；前端不变，正式证据见文末补记 |
 | **Q-04** | **I8-08 / I8-09** SWAS 扫描缺失集合 与 Lighthouse/CVM 扫描空响应的处置 | ①统一为保守失败 `ErrSnapshotIncomplete`（与 P3-26 的 ECS 策略一致，不覆盖缓存）②仅补 nil 守卫防 panic ③显式接受现状并文档化 | `provider/scan.go:72/113/153-156`、`webui/api/scan.go:49-69` |
 | **Q-05（已裁决）** | **I8-03** 构建入口契约 | 用户 2026-10-08 选择 A 并授权实施：test/vet/build 共享真实 `.PHONY frontend` 前置；完整核验推荐一次 make all，快速裸 Go 检查显式使用已准备好的 dist；不引入增量缓存 | Makefile 两条前置、一份回归脚本与 README/AGENTS/本文/审计共六文件；正式证据见文末 |
-| **Q-06** | **I8-04** `dns` 包真实外网依赖 | ①改为本地 DNS mock（最彻底，门禁密闭）②统一为默认加 `-short` 并为两种模式定合同 ③接受现状并文档化 | `dns/resolver_test.go`、`Makefile:10`、CI workflow |
+| **Q-06（已裁决）** | **I8-04** `dns` 包真实外网依赖 | 用户 2026-10-08 定型 B，撤回默认真实上游：默认本地回环 DNS，保留完整测试；真实层用 dnsintegration 标签固定 223.5.5.5，错误严格 FAIL，-short 冲突查询前报错；CI 只编译不执行。已授权并本地实施 | 三份 DNS 测试、go.mod 直接测试依赖标记、workflow 与四文档共九文件；Makefile/生产解析器不变，正式证据见文末 |
 | **Q-07** | **I8-05 + I8-06** Push 心跳的"重置语义"与"下限语义" | ①同 URL、同启用状态、同间隔的普通保存保留剩余等待；URL/启用/间隔实际变化的重新计时语义另定，Wake 须及时重读新配置，独立 Health 监督器的唤醒保持；正常路径补 MinPushInterval 防脏库 ②显式接受现状并在 `AGENTS.md`/Build7 写明代价（连续保存可推迟心跳） | `internal/health/push.go:138-178`、`webui/api/deps.go:168`、`AGENTS.md` §三/§五 |
 | **Q-08（已裁决）** | **I8-111** version 3 严格解析策略 | 用户 2026-10-08 明确无兼容性需求、允许破坏性改动后授权严格 B：全层级拒绝重复字段、只接受规定大小写、拒绝非法 Unicode，合法转义按解码后的字段名识别。已本地实施；强要求同步至 AGENTS §9.1 | 三个生产文件与两份测试，同步 AGENTS/本文/Build7/README/审计；正式证据见文末补记 |
 | **Q-09（已裁决细化 A）** | **I8-113 / I8-48** Webhook 未配置真值源 | 用户确认空渠道＋单选按钮、version 3 保留、不要求旧版导入空渠道包；初始化/reset 显式未选择，历史缺列主行仅转换一次；关闭可空、启用必选、非法渠道发送前拒绝。I8-48 仅为该行索引，不扩大到其他告警默认值 | `config.DefaultWebhookChannel`、`defaultWebhookRowSQL`、`NormalizeAlertWebhook`、GET/导出/通知器/Alerts.vue；正式证据见文末 |
@@ -309,7 +313,7 @@
 
 1. **I8-08/09、I8-05**：优先跟进扫描异常覆盖缓存/请求中断、普通保存持续延迟心跳。分别先定异常与有效空集合区分、等待截止时间语义；I8-18 已按 A 本地修复，正式证据见文末补记。
 2. **I8-11、I8-17b**：完整性与 IPv6 DNS 需要改进；I8-12 已按 A 本地修复，真实浏览器待 PT-AUDIT-03；I8-02 已按 C 本地修复，真实浏览器/云观察仍待 PT-I7-07，不再作为待裁决事项。
-3. **I8-04/102 与 §3**：继续完善无外网门禁和失败能有界变红的证据；I8-03 已按 A 本地修复，清洁 Make 入口证据见文末。CI 原有前端先行顺序正确；I8-03 收口不表示 I8-04 外网 DNS 已解决。
+3. **I8-102 与 §3**：继续完善失败能有界变红的证据；I8-04 已按 B 本地修复，默认 DNS 不依赖外网，真实上游显式入口及证据见文末；I8-03 已按 A 本地修复，清洁 Make 入口证据见文末。两项本地收口均不等于完全离线构建或远端 CI 已通过。
 4. **I8-01 已本地修复**；I8-43、I8-17f 继续独立处理错误顺序和末尾等待候选，分别守住无效请求零写入、跨轮限速。
 5. **I8-06、Q-11/12/13 与静态候选**：脏库防御、维护清理和整体预算按收益与合同决定。I8-111 已按严格 B 本地修复，Q-08 已裁决。I8-113 已按细化 A 本地修复，Q-09 已裁决，真实浏览器仍待执行。当前合理前置条件或理论路径不作为必须修的产品缺陷；文档修订不表示生产修复。
 
@@ -436,3 +440,16 @@
 - **文档闭环与历史订正**：README 推荐一次 make all，删掉完整二进制章节重复 npm build，说明单独调用的重建成本、裸 Go 前置及独立脚本入口；AGENTS 固定构建契约；本文标题/状态表/Q-05/优先级与审计对应当前状态同步。占位页可编译但当前静态资源回归会拒绝缺少 JS 的 dist，原“build/vet/test 全变绿”表述已订正，禁止占位修法保持。审计最近基线与历史指针更新，本次不回写其他缺陷的完成结论。
 - **范围与证据**：Makefile、一份新回归脚本与 README/AGENTS/Issue8/审计四份文档，共六文件；Go 业务源码、embed、前端源码、模块/前端依赖、CI/Docker、DNS 测试与 clean 策略不变。证据保存在仓外 `/private/tmp/codex-i803-implementation-xpxif0aj/`（checks.json、regression.log、各负向控制、formal-result.json/formal-all.log、clean-result.json/clean-vet-build.log）；最终六文件范围、暂存区为空及 `git diff --check` 已检查。
 - **环境与外部边界**：Go `1.27.1 darwin/arm64` 实际二进制、`GOTOOLCHAIN=local`；Node `26.7.0`、npm `11.19.0`、GNU Make `3.81`。本轮未验证 CI 固定 Node 24.21.0、Linux/Docker/compose、浏览器、原生 amd64/macOS 13、真实云/上游 DNS/SMTP/收件箱/Webhook/Uptime Kuma 或远端 CI/GHCR。I8-04 未修，其他外部未执行/免除状态保持。npm ci 输出 3 个 high 漏洞提示，未执行独立 npm audit、未修改依赖，不将历史 audit=0 写成本轮结果；依赖风险独立核验，不扩大本次修复。
+
+---
+
+## I8-04 当前实施补记（2026-10-08，定型 B：默认本地回归＋显式真实上游）
+
+- **授权与正式基线**：用户依据引用聊天《研究 I8-04 修复方案》的定型授权正式修复和文档同步；撤回默认直接访问真实 223.5.5.5 的早期选择。实施前 `main / 6df6e848e476e61e5ee2cd8b6abd3384c50eb882`，本地 `origin/main / c3bb468478f02b32361c85be1090c70743750579`，ahead 2；工作树/暂存区干净，未 fetch。准备目录 `/private/tmp/codex-i804-preparation-s9qtvlw9/` 的候选证据只作前置；下述结果来自正式工作树。
+- **实际范围**：三份 DNS 测试（修改 resolver_test.go，新增 resolver_local_test.go 与 resolver_upstream_test.go）、go.mod、.github/workflows/docker-publish.yml 与 AGENTS/README/Issue8/审计四文档，共九文件。已有 `golang.org/x/net v0.26.0` 仅改为直接测试依赖，使用 dnsmessage 编解码报文；go.sum 和全部模块版本不变。生产 Go 源码、Makefile、生产默认上游/超时、IPv6 上游、TCP 回退、SDK 更新策略、API/schema/同步/熔断/前端源码及系统网络设置均未改；I8-17b、I8-102 等继续独立追踪。
+- **正式测试合同**：默认 DNS 用例监听 `127.0.0.1:0` UDP，不转发，实际执行 NewResolver/Resolve。精确检查双栈/仅 IPv4/仅 IPv6 地址、IsIPv6、CIDR 与实际 A/AAAA 查询名称/Class；NXDOMAIN/空记录/SERVFAIL 必须失败并保留 net.DNSError；静默上游检验解析器时限、调用方期限与观测查询后取消，使用三秒测试保护上限，不调整生产时限。字面 IP 精确结果且零报文；构造器通过 Dial.RemoteAddr 验证默认补 53/保留显式端口。服务错误进入测试失败，监听器关闭后有界等待，不据此宣称全面 FD/协程泄漏证明。
+- **真实层与 CI**：`//go:build dnsintegration` 文件默认不参与编译。显式测试固定 223.5.5.5:53，以 alidns.com. 检查成功非空有效地址，以 i804-upstream-check.invalid. 检查明确不存在；网络/超时/错误成功响应 FAIL、不自动 Skip/备用，公共域名动态 IP 与双栈不固定。与 -short 联用在查询前 FAIL。默认 CI 保留完整 `go test -race -v ./...`，增加带标签 `-run '^$'` 编译检查，不执行真实函数体。
+- **正式判别证据**：DNS 整包 `go test -race -count=20 -timeout=3m ./dns` 通过（6.073s）；正式 race 测试二进制在禁止非回环外发的 sandbox-exec 环境中 `-test.count=20 -test.timeout=3m` 通过，反向外网 socket 连接被 Operation not permitted 拒绝。八类仓外源码 overlay 均按正式行为断言变红：伪造成功、只查 A、错误地址族、丢失错误链、忽略解析器时限、忽略调用方 context、错误回环上游、漏补端口；均非编译错误/panic/总命令超时。默认文件清单排除真实文件、带标签清单包含；真实函数体 panic 哨兵下，默认测试和带标签 -run '^$' 均通过，证明不执行。真实测试仅重定向至本地替身：正常成功＋NXDOMAIN PASS、静默超时 FAIL、不存在域名被返回成功地址 FAIL；真实标签与 -short 联用明确 FAIL。这些可控对照不是真实上游验收。
+- **正式完整门禁**：原样 `make all` 退出 0（54.944s），GOFLAGS 为空，未增加 -short 或改写 Make 测试命令；真实 npm ci/前端生产构建各一次、go vet ./...、全仓 12 包 `go test ./... -race -v` 完整一轮、go build -o fwalizer . 通过。完整 SQLite BusyTimeout/写锁回归及既有 TestMain 构建正式产品的本地进程回归实际执行；不称 I8-04 专项外部产品验收。另行 go build ./...、go mod tidy -diff、带标签编译检查、三个测试文件 gofmt、workflow YAML 解析与最终 git diff --check 通过。只对 DNS 进行了二十轮回归，全仓一轮不外推长期稳定。
+- **研究历史与外部边界**：引用研究阶段曾查询 223.5.5.5，alidns.com. 与 .invalid 均返回地址，路由经过 utun4；疑似本机 TUN/Fake-IP 接管，只作环境推断，不能认定阿里真实上游错误或通过。本轮未再次查询真实上游，未改代理/路由；真实 DNS、Linux/Docker/compose、浏览器、原生 amd64/macOS 13、真实云/SMTP/收件箱/Webhook/Uptime Kuma 及当前 revision 远端 CI/GHCR 未执行，ProdTestList 原未执行/免除状态保持。默认 DNS 外网依赖已消除，但 npm/Go 依赖准备不承诺离线。
+- **环境、风险与状态**：实际 Go `1.27.1 darwin/arm64` 二进制、GOTOOLCHAIN=local；PATH 默认启动器为 1.26.6，初次未固定 PATH 的检查在模块版本检查阶段即失败，随后用现有 1.27.1 正式重跑，不记初次为门禁通过。Node 26.7.0/npm 11.19.0/GNU Make 3.81；npm ci 提示 3 个 high 漏洞，未执行独立 npm audit、未修订依赖，不将历史 audit=0 当本轮结果。I8-04/Q-06 本地收口；尚未提交/推送，未 fetch，origin/main 仅本地跟踪引用。正式恢复点、overlay、入口与禁止外发控制、门禁完整日志和结果保存在 `/private/tmp/codex-i804-implementation-zqrxbh9t/`。

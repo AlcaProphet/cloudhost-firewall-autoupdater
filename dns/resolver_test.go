@@ -2,71 +2,52 @@ package dns
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 )
 
-func TestResolve_Localhost(t *testing.T) {
-	r := NewResolver("8.8.8.8:53", 10*time.Second)
-	results, err := r.Resolve(context.Background(), "localhost")
-	if err != nil {
-		t.Fatalf("解析 localhost 失败: %v", err)
-	}
-	if len(results) == 0 {
-		t.Fatal("localhost 解析结果不应为空")
-	}
-	// localhost 通常解析为 127.0.0.1 或 ::1
-	for _, ip := range results {
-		t.Logf("解析结果: %s (IPv6=%v, CIDR=%s)", ip.IP, ip.IsIPv6, ip.CIDR())
-	}
-}
-
-func TestResolve_NonExistent(t *testing.T) {
-	if testing.Short() {
-		t.Skip("跳过网络测试")
-	}
-	// 使用 RFC 2606 保留的不可解析 TLD
-	r := NewResolver("8.8.8.8:53", 5*time.Second)
-	_, err := r.Resolve(context.Background(), "host.invalid")
-	if err == nil {
-		t.Log("注意: .invalid TLD 被解析（可能系统 DNS 有特殊配置）")
+// TestResolve_IPLiteral 验证地址字面量不触发 DNS 报文，也不依赖本机 hosts。
+func TestResolve_IPLiteral(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "::1"} {
+		t.Run(host, func(t *testing.T) {
+			s := newLocalDNS(t, "silent")
+			r := NewResolver(s.conn.LocalAddr().String(), time.Second)
+			got, err := r.Resolve(context.Background(), host)
+			if err != nil || len(got) != 1 {
+				t.Fatalf("地址字面量解析结果=%v 错误=%v", got, err)
+			}
+			if !got[0].IP.Equal(net.ParseIP(host)) || got[0].IsIPv6 != (host == "::1") {
+				t.Fatalf("地址或地址族错误: %v", got)
+			}
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if len(s.queries) != 0 {
+				t.Fatalf("地址字面量不应发出查询: %v", s.queries)
+			}
+		})
 	}
 }
 
-func TestResolve_PublicDomain(t *testing.T) {
-	if testing.Short() {
-		t.Skip("跳过网络测试")
-	}
-	r := NewResolver("8.8.8.8:53", 10*time.Second)
-	results, err := r.Resolve(context.Background(), "dns.google")
-	if err != nil {
-		t.Skipf("无法访问 8.8.8.8（可能网络受限）: %v", err)
-	}
-	if len(results) == 0 {
-		t.Fatal("dns.google 解析结果不应为空")
-	}
-	// dns.google 应解析为 8.8.8.8 和 8.8.4.4
-	found := false
-	for _, ip := range results {
-		if ip.IP.String() == "8.8.8.8" || ip.IP.String() == "8.8.4.4" {
-			found = true
-		}
-	}
-	if !found {
-		t.Logf("dns.google 解析结果: %v", results)
-	}
-}
-
+// TestNewResolver_PortAppend 观察实际 Dial 上游，只建立回环 UDP socket，不发送报文。
 func TestNewResolver_PortAppend(t *testing.T) {
-	// 测试不带端口时自动补 :53
-	r := NewResolver("8.8.8.8", 10*time.Second)
-	if r == nil {
-		t.Fatal("NewResolver 不应返回 nil")
-	}
-	// 测试带端口时不重复添加
-	r2 := NewResolver("8.8.8.8:53", 10*time.Second)
-	if r2 == nil {
-		t.Fatal("NewResolver 不应返回 nil")
+	for _, addr := range []string{"127.0.0.1", "127.0.0.1:5353"} {
+		r := NewResolver(addr, time.Second)
+		c, err := r.resolver.Dial(context.Background(), "udp", "ignored.example:53")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := c.RemoteAddr().String()
+		if err := c.Close(); err != nil {
+			t.Fatal(err)
+		}
+		want := addr
+		if addr == "127.0.0.1" {
+			want = "127.0.0.1:53"
+		}
+		if got != want {
+			t.Errorf("Dial 上游=%s 期望=%s", got, want)
+		}
 	}
 }
 
@@ -94,8 +75,8 @@ func TestHasPort(t *testing.T) {
 		addr string
 		want bool
 	}{
-		{"8.8.8.8:53", true},
-		{"8.8.8.8", false},
+		{"223.5.5.5:53", true},
+		{"223.5.5.5", false},
 		{"[::1]:53", true},
 		{"::1", false},
 	}

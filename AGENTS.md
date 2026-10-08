@@ -97,6 +97,8 @@
 
 **I8-03 构建入口后续修复状态（2026-10-08，用户裁决 A）**：用户确认共享真实前端前置后授权实施与文档同步；基线 `main / bb8e301`、本地 `origin/main / c3bb468`、ahead 1，实施前工作树/暂存区干净。Makefile 只补 test/vet 的 frontend 依赖；新增 17 项本地依赖/故障回归，五类仓外负向控制被检出。正式工作树真实前端构建、Go vet/build 与全仓 12 包 race 短模式一轮通过（外部测试包装器追加 `-short -timeout=5m`，Makefile 原测试命令不改）；无 dist/node_modules 的当前输入副本真实 `make -j4 vet build` 通过，各自安装/构建一次。README/本文/Issue8/审计同步，共六文件；最终语法、范围与 diff-check 通过。I8-03 本地收口、Q-05 已裁决，I8-04 和外部验收保持；无 Go 业务/embed/前端源码/依赖/CI/Docker 改动，不引入缓存或占位页。Go 1.27.1、Node 26.7.0、GNU Make 3.81；未执行 Linux/Docker、CI 固定 Node、浏览器或真实云/通知链路及远端 CI，单轮不外推稳定或外部通过。尚未提交或推送，未 fetch；完整证据见 Issue8 文末补记。
 
+**I8-04 默认 DNS 门禁后续修复状态（2026-10-08，定型方案 B）**：用户依据引用研究聊天定型授权实施与文档同步；基线 `main / 6df6e848e476e61e5ee2cd8b6abd3384c50eb882`，本地 `origin/main / c3bb468478f02b32361c85be1090c70743750579`，ahead 2，实施前工作树/暂存区干净。默认 DNS 回归通过随机回环 UDP 服务运行真实 NewResolver/Resolve，不转发；完整测试命令保留，未加全仓 -short。真实上游测试仅在 dnsintegration 标签下显式执行，固定 223.5.5.5:53，网络/超时/不存在域名错误解析均 FAIL；与 -short 联用先报错，CI 默认只编译不执行。三份 DNS 测试、go.mod 直接测试依赖标记、workflow 及四份文档共九文件；生产源码、Makefile、go.sum 与模块版本不变。正式 DNS 包 race 20 轮、禁止非回环外发的默认 DNS 二进制 race 20 轮、八类行为负向控制、入口哨兵和真实测试本地正反对照通过；原样 make all 完成真实前端构建、vet、全仓 12 包完整 race 一轮及产品构建，另行 Go build/tidy-diff、格式/YAML/diff-check 通过。Go 1.27.1 darwin/arm64、Node 26.7.0；npm ci 提示 3 个 high 漏洞，未独立 audit 或改依赖。I8-04/Q-06 本地收口，不外推长期稳定、完整离线构建或真实上游/外部验收；Linux/Docker/浏览器、真实云/通知及当前 revision 远端 CI/GHCR 未执行。尚未提交/推送，未 fetch；正式证据见 Issue8 文末。
+
 ## 二、核心编码原则
 
 ### 简单轻量化
@@ -293,7 +295,14 @@
 - `make test`、`make vet`、`make build` 必须共享 `.PHONY frontend` 前置，先成功执行真实 `npm ci && npm run build` 再运行 Go 命令；前端失败时不得执行消费者，不以占位 dist、目录存在或旧 index.html 绕过构建。
 - 完整本地核验推荐一次 `make all`；同一次 Make 调用共享一次前端构建，分别调用会分别重建。`make -j4 all` 允许前端完成后的 Go 检查/测试/构建并行，任一失败返回非零，不承诺其他并行任务从未运行或多个独立 Make 进程互斥。
 - 裸 Go 命令使用已准备好的真实 dist，不自动生成前端；前端源码/配置/锁文件变化后重新构建。默认无参数 `make` 仍只构建前端，不引入增量缓存或新的 Make 版本要求。
-- 依赖顺序与失败传播回归使用 `sh build/makefile_test.sh`，仅用隔离目录与本地命令替身；真实前端、静态嵌入与 Go 门禁需另行验证。默认 Go 测试的外网 DNS 边界仍见 Issue8 I8-04，不将本项收口写成离线门禁或远端 CI/Docker 已通过。
+- 依赖顺序与失败传播回归使用 `sh build/makefile_test.sh`，仅用隔离目录与本地命令替身；真实前端、静态嵌入与 Go 门禁需另行验证。默认 DNS 测试已按 I8-04 定型 B 使用本地回环服务；完整构建仍可能下载 npm/Go 依赖，不将本地收口写成完全离线或远端 CI/Docker 已通过。
+
+### DNS 测试门禁（I8-04 / Q-06，2026-10-08 定型 B）
+
+- 默认 DNS 回归使用本地随机回环 UDP 服务，不转发查询，执行真实 `NewResolver → Resolve`；检查实际 A/AAAA 报文、地址/地址族/CIDR、错误链、时限与取消。完整默认 Go 测试不依赖真实 DNS 上游，不以全仓 `-short` 代替完整回归。
+- 真实上游测试放在 `//go:build dnsintegration` 文件中，仅显式启用时访问 `223.5.5.5:53`；超时、网络错误、不存在域名被成功解析均 FAIL，不自动 Skip 或切换上游。显式真实验收与 `-short` 冲突时，在任何查询前报错；公共域名不固定动态 IP、不要求双栈。
+- 默认 CI 增加 `go test -tags=dnsintegration -run '^$' ./dns`，只编译带标签测试，不执行其函数体；真实验收命令见 README，结果单独登记为通过、失败或未执行。
+- 本合同只消除默认 DNS 用例的外网依赖；npm/Go 依赖准备仍可能访问网络，不等同整个构建离线或真实 DNS/云/通知/发布验收通过。生产 DNS 设置、默认超时与其他 DNS 语义仍以 §四为准。
 
 ## 十一、代码规范
 

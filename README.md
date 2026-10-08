@@ -411,7 +411,19 @@ make all
 
 `make test`、`make vet`、`make build` 均会先执行 `npm ci` 和前端生产构建，清洁检出可直接使用；需要 Go 1.27.1+、Node.js 和 npm。同一次 Make 调用中的多个目标共享一次前端构建，分别执行三次 Make 则会构建三次。`make -j4 all` 同样先完成前端，再并行执行 Go 检查、测试与构建；任一阶段失败会使 Make 非零退出。
 
-日常只检查 Go 时，可以先执行 `make frontend`，随后直接运行 `go test ./... -race` 或 `go vet ./...`。裸 Go 命令不会生成前端产物；前端源码、配置或锁文件变化后应重新执行 `make frontend`。默认 Go 测试仍包含既有外网 DNS 用例，需要跳过它们时显式使用 `go test ./... -race -short`（Issue8 I8-04 继续独立追踪）。
+日常只检查 Go 时，可以先执行 `make frontend`，随后直接运行 `go test ./... -race` 或 `go vet ./...`。裸 Go 命令不会生成前端产物；前端源码、配置或锁文件变化后应重新执行 `make frontend`。默认 DNS 测试通过本地随机回环 UDP 服务运行真实解析器，不转发查询；普通完整 Go 测试与默认 CI 不访问真实 DNS 上游，无需为了避开 DNS 使用全仓 `-short`。npm/Go 依赖准备仍可能访问网络，这不等同整个构建离线。
+
+真实 DNS 上游检查使用专用 `dnsintegration` 标签，固定查询 `223.5.5.5:53`，结果与默认本地回归分别记录：
+
+```bash
+# 仅编译真实上游测试，不发送 DNS 查询（默认 CI 执行此项）
+go test -tags=dnsintegration -run '^$' ./dns
+
+# 显式真实上游验收；每次 DNS 调用 5 秒，命令总保护上限 20 秒
+go test -race -tags=dnsintegration -run '^TestResolve_Upstream223$' -count=1 -timeout=20s ./dns
+```
+
+显式真实验收不能与 `-short` 联用，冲突时会在查询前失败。超时、网络错误、公共域名无有效地址或 `.invalid` 被成功解析均 FAIL，不自动 Skip 或切换上游；不固定公共域名的动态 IP，也不要求双栈。代理/TUN/Fake-IP 或出口限制可能使真实检查失败，应独立核对实际网络路径；默认本地回归或带标签编译通过都不能证明真实上游通过。
 
 构建入口的本地替身回归可单独运行，不安装前端依赖、不执行真实 Go 测试：
 
