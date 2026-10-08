@@ -53,6 +53,8 @@ func TestScanECSTokenProgress(t *testing.T) {
 		{"正常两页", []string{"T1", ""}, false},
 		{"未推进", []string{"T1", "T1"}, true},
 		{"历史环路", []string{"T1", "T2", "T1"}, true},
+		{"不透明空格", []string{" T+/= ", "T+/=", ""}, false},
+		{"不透明大小写", []string{"Token", "token", ""}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -81,8 +83,15 @@ func TestScanECSTokenProgress(t *testing.T) {
 				if !errors.Is(err, ErrSnapshotIncomplete) || resources != nil {
 					t.Fatalf("resources=%+v err=%v", resources, err)
 				}
-			} else if err != nil || len(resources) != 2 || resources[0].ResourceID != "sg-0" || resources[1].ResourceID != "sg-1" {
-				t.Fatalf("resources=%+v err=%v", resources, err)
+			} else {
+				if err != nil || len(resources) != len(tc.tokens) {
+					t.Fatalf("resources=%+v err=%v，预期 %d 项", resources, err, len(tc.tokens))
+				}
+				for i, resource := range resources {
+					if want := "sg-" + strconv.Itoa(i); resource.ResourceID != want {
+						t.Fatalf("第 %d 项=%+v，预期资源 %q", i, resource, want)
+					}
+				}
 			}
 			if len(m.recorded()) != len(tc.tokens) {
 				t.Fatalf("请求次数=%d，预期 %d", len(m.recorded()), len(tc.tokens))

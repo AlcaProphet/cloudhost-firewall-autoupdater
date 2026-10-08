@@ -5,15 +5,24 @@
 | 仓库 | `/Users/kyle/Desktop/Repo/cloudhost-firewall-autoupdater` |
 | 审计快照分支 / HEAD | `main` / `11918fb945fe9dfe2a86ead5bc833b14dd156a68` |
 | 审计快照开始前工作树 | **干净**（0 tracked 改动、0 非忽略未跟踪文件）；这是历史审计快照，不表示当前工作树状态 |
-| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-10-05 P3-24 恢复边沿）」** |
+| 历史复核基线（2026-09-30 批次） | `main` / `d6d208edd86187e1795318ed555e8e96c5219df9`；该批次复核开始时 `main == origin/main`、工作树干净（仅 `webui/frontend/dist/`、`webui/frontend/node_modules/` 为既有 ignored 产物）。**该行是历史批次记录，不代表当前 HEAD；当前状态见下方「最近实施基线（2026-10-08 P3-25 测试与文档补强）」** |
 | 审核性质 | 原始全量代码审核为**只读**；2026-09-30 批次只静态核验既有修复并更新本文与 `Issue7.md`，未修改代码，未运行构建、测试或格式化（属该批次记录） |
 | 审核方式 | 8 路并行子代理分模块审核 + 主代理亲自覆盖超时范围 + 判别性探针独立复现 + 交叉复核裁决 |
 | 审核范围（审计快照值） | 快照 `11918fb` 口径：233 个 tracked 文件；**53/53 生产 Go 文件**（10,890 行）；62 个测试文件（20,457 行）；18 个前端源文件（2,212 行）；6 个构建/部署/CI 文件；8 份合同文档。**报告早期复核快照值（非本轮统计）为 244 tracked / 55 生产 Go（12,606 行）/ 69 测试文件（24,896 行）/ 18 前端源（2,361 行）/ 同样 6 个构建文件与 8 份合同文档**（新增 `provider/plan.go`、`syncer/target.go`） |
 | 报告版本 | final1（已剔除全部被驳回/误报项，并纳入用户 7 项决策） |
 
-> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-10-05 P3-24 恢复边沿）」小节为准**。各日期实施补记（包括文末“当前实施补记”）中的“本轮/尚未提交”均指该批次当时；后续提交事实以段首提交标记与 §0.2 状态索引为准。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
+> **阅读规则（2026-09-30 第二轮更新）**：本报告同时保留“审计快照事实”“后续状态补记”和“定案前历史分析”。当前强约束以 [AGENTS.md](./AGENTS.md) 为准；P1-01 当前设计与实施证据入口以 [Issue7.md](./Issue7.md) 为准；[Design5.md](./Design5.md) 记录当前设计方向。本报告用于保存审计证据与整理剩余问题，不建立第二套实施合同。正文各独立 finding 中写作“当前基线 `34aa9b8`”“当前基线 `d6d208e`”的段落均是相应批次的历史快照，不是现时 HEAD；**现时基线一律以下方「最近实施基线（2026-10-08 P3-25 测试与文档补强）」小节为准**。各日期实施补记（包括文末“当前实施补记”）中的“本轮/尚未提交”均指该批次当时；后续提交事实以段首提交标记与 §0.2 状态索引为准。源码、测试与 `AGENTS.md` 的行号均属引用时快照，后续定位应同时使用 finding ID、符号名与测试名；执行改动后行号会整体位移，请按符号检索而非按行号定位。
 
-### 最近实施基线（2026-10-05 P3-24 恢复边沿）
+### 最近实施基线（2026-10-08 P3-25 测试与文档补强）
+
+- **实施前基线与授权：** `main == 本地 origin/main == 938bb8bac0a41ea285597ba454b34e727003d7ba`，工作树/暂存区干净；用户确认本聊天 P3-25 只读核验结论后授权优化剩余内容。未 fetch、提交或 push，本地跟踪引用不保证远端现时状态。
+- **范围与状态：** 生产代码零改动。修改 `provider/snapshot_test.go`、`provider/scan_ecs_test.go`，新增 `syncer/ecs_pagination_test.go`，同步 AGENTS/本文，共五文件。原 P3-25 同步修复 `28559ed` 和扫描/P3-26 修复 `901d642` 均已提交并保留；本轮固化额外判别性测试并统一历史提交状态，门禁见文末「P3-25 当前补强记录」。
+- **语义与研究边界：** 重复/环路硬失败，不返回半截结果；token 原值不 Trim/折叠大小写；合法空页按 token 继续。S0 异常零增删；S1 异常可保留已确认新增、但零删除并 failed。整个分页操作的总预算是独立候选，未实施，未改生产超时、SDK/依赖、接口/schema、前端或目标状态机。
+- **证据边界：** 本机 Go `1.27.1 darwin/arm64`，使用既有 ignored 前端 dist；真实 SDK 指向 loopback mock，SQLite 使用既有临时测试库。本轮外部/人工未执行状态保持，不能外推为真实云或发布验收；本轮测试/文档尚未提交。
+
+### 前序实施基线（2026-10-05 P3-24 恢复边沿，历史批次，已提交 `938bb8b`）
+
+> 以下保留当时记录；该批次源码/测试/文档已提交为 `938bb8b`。
 
 - **实施前基线与授权：** `main == 本地 origin/main == 9dd5d34df2ec36dde4156eb349d4e65d521e8d78`，工作树/暂存区干净；前序 P3-23 已提交 `9dd5d34`。用户依据引用研究聊天确认的细化 C 授权修复和文档同步，五文件基线哈希、生产调用链与锁顺序均已重新核对。未 fetch、提交或 push，本地 origin/main 不代表远端服务器最新状态。
 - **范围与状态：** 唯一生产 `syncer/syncer.go`，新增 `control_transition_test.go`、更新 `scheduling_test.go`、AGENTS/本文，共五文件。P3-24/I-06 本地修复闭环；25 个 P3-24 与其余 23 个 P3-23 调度场景 race 20 轮、既有 API 导入/协调器暂停恢复 race 20 轮、syncer 整包 race、全仓 12 包 race 连续 3 轮、vet/build/格式/diff-check 通过。旧实现和五类正式源码错误候选均按行为变红，详细证据见文末「P3-24 当前实施补记」。
@@ -77,7 +86,7 @@
 ### 前序实施基线（2026-10-03 P3-17 测试版本表述，历史批次，已提交 `5860cef`）
 
 - **实施前基线**：`main / 396885f362faa37c84a5e5ca633bbb74d9c6fbdd`，本地 `origin/main / 5e1d79c2b3378f31079e3240c75777b174c30781`，ahead 4；工作树与暂存区干净，前序 P3-16 已提交。用户在本聊天授权按研究推荐 B 正式修复与同步文档；本轮未 fetch、提交或 push，本地跟踪引用不保证远端现时状态。
-- **范围与状态**：七个既有测试文件及 AGENTS/本文，共九文件。12 处陈旧版本标签已清理，合法旧版本拒绝与历史说明保留；P3-17 本地文字修复已实施，I-11 的 P3-18 保持未完成。生产源码、JSON 夹具、断言条件、API/schema/依赖与前端不改。
+- **范围与状态**：七个既有测试文件及 AGENTS/本文；**提交 `5860cef` 实为十文件（该提交同时新增 `TODOLIST.md`，2026-10-08 复核订正）**。12 处陈旧版本标签已清理，合法旧版本拒绝与历史说明保留；P3-17 本地文字修复已实施，I-11 的 P3-18 保持未完成。生产源码、JSON 夹具、断言条件、API/schema/依赖与前端不改。
 - **正式证据**：实施前快照与正式工作树 Go token 比对确认仅两个非注释标签字符串改变，剩余四处 version 2 均属合法拒绝/历史说明；全量 12 包 `go test ./... -race -count=1 -timeout=10m`、`go vet ./...`、`go build ./...` 与受影响 Go 格式检查通过，最终文档后 diff-check 见文末 P3-17 当前实施补记。前序候选 overlay 证据不替代正式工作树门禁。
 - **边界**：Go `1.27.1 darwin/arm64`，使用既有 ignored 前端 dist；本项不新增真实云/通知、浏览器或远端 CI/GHCR 通过结论。
 
@@ -254,6 +263,8 @@
 
 ### 0.2 当前问题状态索引
 
+> **状态口径（2026-10-08 复核更新）：** 本表"当前状态"列以 **HEAD `938bb8b` + 5 个未提交文件** 为基线，**逐行以 Git 事实为准**；各 finding 正文与实施补记中的"本轮/尚未提交"只指该批次当时。**仍未闭环的问题、待裁决事项、未派发专项与外部验收边界统一登记在 [Issue8.md](./Issue8.md)**，本表不再重复枚举。
+
 | 范围 | 当前状态 | 当前入口 |
 |---|---|---|
 | P0-01 | ✅ 已由 `108e528` 修复；原证据与回归必须保留 | Issue7 Step 1 重构 functional key 时保持绿色回归 |
@@ -272,7 +283,7 @@
 | P2-07 | ✅ 按定型方案本地修复，组件与真实二进制/浏览器/API/临时 SQLite 联合验收通过；已提交为 `ec82d10` | I-04 / P2-07 实施补记；不外推其他页面、真实云或远端验收 |
 | P3-06 | ✅ 已按独立授权方案 B 本地修复：入站计数、完整性判断与数组下界；旧“四方向合计不是过度保守”的判断已被官方配额正文更正 | 见 P3-06 当前实施补记；已提交 `c08f2e1`；真实响应/模板统计/提额情况待 PT-I7-03 |
 | P3-07 | ✅ 已按 B 删除三个不可达旧函数，有效回归迁到现生产目标链，旧专属测试/夹具已清理；已提交 `ba82292` | I-09 本地收口；12 个目标场景、描述回归、六类负向控制与正式门禁见补记 |
-| P3-25（同步路径） | ✅ 已实施（重复/未推进 token 立即 `snapshot_incomplete`，本 attempt 零删除） | Issue7 Step 1 |
+| P3-25（同步路径） | ✅ 已提交 `28559ed`；2026-10-08 固化历史环路、原值/空页及真实 SDK 目标链安全回归，生产零改动 | Issue7 Step 1；文末 P3-25 当前补强记录 |
 | P3-25（资源扫描路径） | ✅ ECS 范围已本地修复并提交 `901d642`；重复/未推进/环路返回 ErrSnapshotIncomplete，不返回半截资源 | I-19；TestScanECSTokenProgress 与 API 缓存回归 |
 | P3-26（新增，ECS 资源扫描分页中途空响应） | ✅ 已本地修复并提交 `901d642`；结构异常失败并保留缓存，有效空数组按 token 分页 | 见 P3-26 实施补记；独立于 P3-25 |
 | P3-11 与 Dry Run 相关 P3-16 | ✅ 已实施（目标级日志上抛写库错误；Dry Run 每目标一次快照；`RunTest.vue` 44px 已修复） | Issue7 Step 4 |
@@ -292,7 +303,7 @@
 | P3-21 | ✅ 按定型 B 本地修复 Push 有界完整响应与安全 Close；Webhook 接受及时失败/标准库清理边界；已提交 `9f46529` | I-08 本地闭环；正式门禁/八类控制见文末补记，真实 Kuma 仍未执行 |
 | P3-22 | ✅ 原逐规则重复快照已由 Issue7 Step 4 修复；后续 B 冷却改进已本地完成，已提交 `333451d` | 每平台跨调用保留冷却、读取前补足剩余等待、取消末尾等待；正式 12 场景/七类控制/门禁见文末补记与 Issue7 §12.8 |
 | P3-23 | **✅ 已按定型 B 本地修复并提交 `9dd5d34`；本轮 P3-24 修复后 I-06 本地闭环。** | 原 24 场景中的合并恢复范围控制已升级为 P3-24 回归；其余 23 个断言保持并通过正式门禁 |
-| P3-24 | **✅ 按细化 C 本地修复（2026-10-05），尚未提交。** | 同锁保存/消费 pendingResume，25 场景及五类负向控制；正式全仓 race 连续 3 轮，见文末补记 |
+| P3-24 | **✅ 按细化 C 本地修复（2026-10-05），已提交 `938bb8b`**（该批"尚未提交"为当时记录，2026-10-08 复核订正）。 | 同锁保存/消费 pendingResume，25 场景及五类负向控制；正式全仓 race 连续 3 轮，见文末补记 |
 | 其余 P3 | 🔵/⏳ 未修复、文档清理或待真实验证 | 按 0.4 的独立队列处理 |
 
 ### 0.3 当前唯一串行主线：Issue7
@@ -315,7 +326,7 @@
 - [x] **I-03｜P2-06**：按用户确认的完善方案 A 本地修复；三态加载、完整响应验证、整体赋值、保存入口与按钮双重守卫、重复提交保护已落地。组件测试与独立临时数据库的浏览器/API 联合验证通过，已提交为 `064b794`；证据见 P2-06。
 - [x] **I-04｜P2-07**：目标与规则删除已增加卡片式确认、四阶段状态/对象快照、列表请求顺序保护与焦点恢复；20 项组件回归、前端构建与真实二进制/浏览器/API/临时 SQLite 联合验收通过，已提交 `ec82d10`。详见 P2-07。
 - [x] **I-05｜P2-05**：已按推荐方案 A 本地实施三渠道明确成功响应校验、16 KiB 有界读取与安全错误；门禁结果见 P2-05 补记，已提交为 `93e0e4b`；真实 Webhook 仍未验收。
-- [x] **I-06｜P3-23、P3-24**：**本地修复闭环（2026-10-05）**。P3-23 已提交 `9dd5d34`；本轮细化 C 正式修复恢复边沿合并，25 场景及其余 23 个 P3-23 断言、API 兼容回归与全仓 race 连续 3 轮通过。生产仅 Syncer 状态发布/局部调度，未改 Issue7 目标状态机；本轮尚未提交，外部验收状态保持，证据见文末补记。
+- [x] **I-06｜P3-23、P3-24**：**本地修复闭环（2026-10-05）**。P3-23 已提交 `9dd5d34`；本轮细化 C 正式修复恢复边沿合并，25 场景及其余 23 个 P3-23 断言、API 兼容回归与全仓 race 连续 3 轮通过。生产仅 Syncer 状态发布/局部调度，未改 Issue7 目标状态机；该批"尚未提交"为当时记录，**现由提交 `938bb8b` 替代**（2026-10-08 复核订正）；外部验收状态保持，证据见文末补记。
 - [x] **I-07｜P3-12、P3-14、P3-10、P3-13**：**本地修复闭环（2026-10-03）**。P3-05（`82ad2dc`）、P3-11（Issue7 Step 4）、P3-10（`99f3fe2`）、P3-12（`5e1d79c`）、P3-13（`0818197`）已有独立本地修复证据；P3-14 按细化 A 完成并通过正式门禁，已提交 `5c16116`。既有生产实现、状态记录与提交祖先已核对；本项只关闭本地修复队列，浏览器/真实外部验收及当前 revision 远端 CI/GHCR 状态保持，详见 P3-14 当前实施补记。
 - [x] **I-08｜P3-01、P3-02、P3-21、P3-15**：**本地修复闭环（2026-10-03）**。P3-01 `ac0ee62`、P3-02 `88154cd`、P3-15 `ce3eeaa` 的提交祖先、现源码与各自正式证据已核对；P3-21 按定型 B 完成 Push 有界完整响应与安全收尾，Webhook 接受及时失败/标准库有界清理且异常连接不保证复用。正式门禁见 P3-21 当前实施补记，该批次已提交 `9f46529`；只关闭本地队列，真实通知/云/浏览器与远端 CI/GHCR 状态保持。
 - [x] **I-09｜P3-07**：2026-10-02 按独立授权方案 B 本地收口：再次证明现生产入口不调用旧链，删除 `retrySync` / `retrySyncDetailed` / `truncateDesc`，迁移有效回归并清理过期测试与夹具；正式门禁及六类负向控制通过，已提交 `ba82292`。详见 P3-07 当前实施补记与 Issue6 §7.9 / Issue7 §12.7；独立残留计数观察不由本项关闭。
@@ -362,7 +373,7 @@
   **2026-09-30 实施补记：** I-17/R7-06、I-18/R7-07 与 I-15/R7-04 已提交为 `b19d271`：accepted connections 均持有至 cleanup 并有界回收；私有 `cleanupResult` 直接传递实际删除与最终残留，可信 S2 planner 成为 `cleanup_deferred` 唯一最终来源。I-16/R7-05 随后按测试-only 边界修复并与文档回写提交为 `d6d208e`，结构化数组合同与逐字段负向控制均成立，未修改生产代码。提交中记录的两个 GOGC 压力门禁、两包 `-race -count=20`、全量 race 连续 3 次、vet、build、前端 build、diff-check 均本地通过；本次只读核验未重跑。真实云、浏览器与当前 revision 远端 CI/GHCR 仍未执行。
 
   **回归边界：** 必须继续保留四条阿里云构造路径、150ms 下限、`assertAliTimeout` 应用层 timeout 断言，以及生产 `newAliOpenAPIConfig` 的 10s `ConnectTimeout` / 30s `ReadTimeout` 正向默认值控制；不得修改生产超时、SDK、请求调用链或超时分类。本项与 R7-06 同属 accepted connection 生命周期根因，但继续保持独立文件、符号、断言与证据，不能合并成单一结论。
-- [x] **I-19｜P3-25（资源扫描路径）**：✅ **已本地修复，尚未提交**（2026-09-30，实施前 `ec82d10`）。用户确认 P3-26 研究方案后授权同时加入已验证的 token 保护。`scanAliECS` 维护历史 token 集合，原样比较/传递 token，重复或未推进即返回 `nil, ErrSnapshotIncomplete`，不返回半截结果；不增加页数上限，不修改同步路径、SDK、API 或缓存 schema。
+- [x] **I-19｜P3-25（资源扫描路径）**：✅ **已本地修复并提交 `901d642`**（2026-09-30，实施前 `ec82d10`）。用户确认 P3-26 研究方案后授权同时加入已验证的 token 保护。`scanAliECS` 维护历史 token 集合，原样比较/传递 token，重复或未推进即返回 `nil, ErrSnapshotIncomplete`，不返回半截结果；不增加页数上限，不修改同步路径、SDK、API 或缓存 schema。
 
   **独立判别性证据：** `TestScanECSTokenProgress` 覆盖正常两页、`T1 → T1` 与 `T1 → T2 → T1`，分别断言两次正常请求、两次/三次后失败、错误哨兵及 nil 资源。mock 超出预期页后固定返回 400，让缺陷路径必然结束，避免靠超时判定；临时副本恢复 HEAD 原实现后重复/环路回归变红。`TestScanECSCacheIntegrity` 的 token 子项走实际 SDK/API/SQLite，证明 `success:false` 与旧缓存全部记录不变。
 
@@ -836,7 +847,7 @@ FAIL
 
 ### P2-07｜目标与规则的行内删除缺少二次确认（已本地修复）
 
-- **当前状态**：✅ **I-04 本地修复与验收已收口，尚未提交**。实施前基线为 `064b794`；研究时仓库外原型不算修复证据，本节记录的是实际生产页面修改后的验收。
+- **当前状态**：✅ **I-04 本地修复与验收已收口，已提交 `ec82d10`**（该批"尚未提交"为当时记录，2026-10-08 复核订正）。实施前基线为 `064b794`；研究时仓库外原型不算修复证据，本节记录的是实际生产页面修改后的验收。
 - **原问题与影响（历史）**：两页的行内按钮分别直接进入 `deleteTarget(row)` / `deleteRule(row)` 并发送 DELETE，没有待删除对象、取消路径与提交中守卫；一次误触即可删除 SQLite 配置。目标引用 409 仅保护显式 `rules.targets` 引用，不提供前端确认；空数组表示适用于全部目标，不构成某个 ID 的显式引用。规则删除没有该引用兜底。
 - **已实施方案**：
   1. 两页各自使用 `NModal preset="card"` 与红色大号确认按钮。行内删除只打开弹窗；目标显示数据库 ID/中文云产品/资源 ID/地域，规则显示数据库 ID/域名/协议/端口/动作/IP 版本/适用目标。摘要采用类型明确的副本，规则目标数组独立复制；请求固定使用确认时捕获的 ID。
@@ -853,7 +864,7 @@ FAIL
   - 默认取消焦点与成功回退添加按钮已浏览器确认；375×812 视口下长资源 ID/长域名及显式适用目标完整换行，两页确认框均为 **343px**，左右边界为 **16/359px**，`scrollWidth == clientWidth`，按钮可见；视口已恢复。
 - **门禁与产物**：`npm run test:delete`、`npm run test:alerts`（5/5）、`npm run build`、`go test -race ./webui/api ./config`、`go vet ./...`、`go build ./...`、`git diff --check` 本地通过。浏览器截图、代理请求记录与临时数据库位于本轮临时验收目录；实例及浏览器页在验收后关闭，不写入用户原有配置。
 - **范围与残余边界**：生产仅修改两页与前端测试脚本入口；后端 DELETE、目标引用 409、404/成功事务语义、ConfigCoordinator、Schema、Syncer、Provider 和强要求文档不变。确认不构成 API 授权，也不提供跨标签页版本校验、回收站或云规则撤销。本轮未执行全量 race、Docker、真实云/通知服务及远端 CI/GHCR；不把本项局部浏览器结果外推为 PT-B7/PT-I7 全项通过。
-- **停止条件结论**：取消零 DELETE、确认单请求、目标引用保护、正常删除、失败恢复、前端构建和真实浏览器/API/SQLite 证据均已取得，满足 P2-07 本地收口条件。当前无本项待修代码，仍待用户后续安排提交/推送与产品整体外部验收。
+- **停止条件结论**：取消零 DELETE、确认单请求、目标引用保护、正常删除、失败恢复、前端构建和真实浏览器/API/SQLite 证据均已取得，满足 P2-07 本地收口条件。当前无本项待修代码，**已提交 `ec82d10`**（2026-10-08 复核订正），产品整体外部验收仍待人工执行。
 
 ---
 
@@ -883,7 +894,7 @@ FAIL
 
 ---
 
-### P3-26｜ECS 资源扫描结构异常 → 静默截断并覆盖缓存（✅ 已本地修复，尚未提交）
+### P3-26｜ECS 资源扫描结构异常 → 静默截断并覆盖缓存（✅ 已本地修复并提交 `901d642`）
 
 **来源与原问题：** 2026-09-30 第二轮核验新增。原 `scanAliECS` 遇到缺失 Body/集合便在 token 检查前 `break`，随后返回此前累计的资源和 nil 错误；API 据此覆盖当前云产品+地域的缓存。首页结构缺失会清空旧缓存；后续页缺失/null 会用半截结果替换缓存；数组 null 元素还可能 panic。原报告“丢弃已累计 resources”措辞不准确，实际是丢弃后续查询机会并把已累计部分当完整结果返回。扫描缓存只服务展示与自动补全，不参与防火墙同步写入。
 
@@ -911,6 +922,8 @@ FAIL
 
 ### P3 清单（原 25 项 + 新增 P3-26，确认但低风险）
 
+> **状态口径（2026-10-08 复核更新）：** 本表"结论"列已逐行对齐 Git 事实；早于后续提交的行保留其"尚未提交/未修复"原文并就地标注订正。**仍未闭环的 P3 子项见 [Issue8.md](./Issue8.md) §1/§2。**
+
 | ID | 结论 | 关键证据 | 备注 |
 |---|---|---|---|
 | P3-01 | **✅ 已提交 `ac0ee62`**：成功即删除，普通发布按新配置域名复制正数计数 | RecordSuccess 使用 delete；CloneForDomains 遍历配置域名并用 DomainKey 查找正数计数，重建新 map 且不按历史大小预分配；BuildRuntimeState 从 published.DomainRules 提取域名；导入保持 Reset | 成功清理、配置裁剪、阈值与快照隔离、并发回归均覆盖；详见下方 **P3-01 实施补记** |
@@ -920,7 +933,7 @@ FAIL
 | P3-05 | ✅ 已按用户确认的本次方案 B 本地修复；本子项已收口；I-07 后续已本地闭环，见 P3-14 补记 | `GET /api/settings` 返回四个凭据的既有合同保持；所有经 `writeJSON` 输出的普通 JSON 成功与错误响应，在提交头前统一设置单一 `Cache-Control: no-store` | 唯一生产文件 `webui/api/deps.go`；两份新增测试与本文、AGENTS 配套回写。SSE 成功 `no-cache`、导出独立 `no-store`、静态响应与 mux 自动错误边界保持。正式门禁与负向控制见下方实施补记；本轮已提交为 `82ad2dc` |
 | P3-05（历史研究） | **历史只读研究记录（已由 2026-10-02 本次方案 B 实施替代）**：当时问题真实存在、未修复，继续保留在 I-07。 已修复/不存在结论均不成立。本轮仅更新审计记录，未修改源码、测试或依赖，未运行构建、测试或格式化 | **当前基线**：HEAD `34aa9b859c38904e701a19d672dcc4f65435b31c`（**历史基线，非当前 HEAD；当前见头部「最近核验基线」小节**），`main == origin/main`；工作树原有修改仅涉及本报告。`webui/api/deps.go:213-220` 注册 `GET /api/settings`；`webui/api/settings.go:15-20` 定义并在 `:33-50` 复制 `tc_access_id`、`tc_access_key`、`ali_access_id`、`ali_access_key` 到响应，再经 `writeJSON` 返回；`webui/api/deps.go:229-240` 的 `writeJSON` 只设置 `Content-Type`，不设置 `Cache-Control`。全仓生产代码中 `no-store` 仅见于 operational health、alerts、config export 等其他端点，未发现为 settings 补头的全局 middleware。现有 `webui/api/settings_alerts_test.go:13-52` 验证键集合/默认值/凭据回显，`redact_test.go:98-110` 验证既有脱敏契约，但均未判定缓存头。Issue7 已将本项留在 I-07，且 2026-09-29 用户裁决确认本轮越界不修复 | **后续设计与决策项（尚未授权实施）**：**A（推荐）**：仅在 `webui/api/settings.go` 的 `handleGetSettings` 入口设置 `w.Header().Set("Cache-Control", "no-store")`，使成功和数据库读取失败响应都保持禁缓存语义；新增/扩展本地 HTTP 测试精确断言该值。保持四个凭据字段的既有回显契约，不修改通用 `writeJSON`，避免扩大所有 JSON API 的缓存策略；不改前端、存储、配置导入导出或认证边界。**B**：接受现状，依赖浏览器/中间件配置或后续统一 HTTP 缓存策略；不建议，因为当前没有全局补头证据，敏感设置响应仍可能被缓存。是否授权单独处理 I-07/P3-05 需用户决策，本记录不擅自裁决。**影响文件**：实施时必改 `webui/api/settings.go`；建议改 `webui/api/settings_alerts_test.go`（或新增同包测试）。明确不改 `webui/api/deps.go` 的通用 `writeJSON`/路由、`Settings.vue`、数据库 schema、Provider、DNS、告警和配置包逻辑 | **判别性验收**：L0 静态确认 `no-store` 只加在 settings handler，未改变通用 JSON 响应策略、凭据字段或导入导出行为；L1 本地 HTTP 用例同时断言 `GET /api/settings` 为 200、JSON `Content-Type` 不变、四个凭据 sentinel 仍按既有契约返回，且 `Cache-Control` **恰为** `no-store`，并保留失败响应也带该头的控制；L2 运行受影响包测试，随后按项目门禁执行 race、vet、build 与 `git diff --check`；L3 可选地用真实本地二进制 `curl -i /api/settings` 核对最终响应头。当前所有实施/门禁命令均未执行，不得提前写成通过 | **风险、外部边界与停止条件**：风险低，改变仅影响浏览器和中间缓存，可能增加设置页重新请求，但不会移除响应中的凭据、清理 Vue 内存/DevTools/服务端日志，也不替代认证或脱敏。无需真实云、DNS、SMTP、Webhook、Uptime Kuma、浏览器或远端 CI/GHCR；本地 handler/HTTP 测试足以证明本项，浏览器 DevTools 只能补充，不能替代判别性测试。不要额外加入 `Pragma`/`Expires`、移除 GET 凭据回显、统一重构所有敏感 API 或引入认证。如果修复扩大到通用 `writeJSON`、凭据产品契约、认证/会话、配置导入导出或其他 I-07 项，停止并重新确认范围；在用户裁决、判别性 HTTP 回归测试及受影响门禁完成前，保持 P3-05/I-07 未修复，不得把本地通过外推为外部链路通过。 |
 | P3-06 | **✅ 已按 B 本地修复（2026-10-02）**：出站不占入站额度，缺失计数停止新增 | `checkRuleLimit` 仅用两个完整入站统计，取其合计与 Ingress 条目数的较大值；不完整统计回退明确数组；无可用计数或缺失响应返回 `ErrSnapshotIncomplete`。官方默认入站/出站各 100 条，见下方补记 | 90 无 WARN、91～100 WARN 且允许、超过 100 整批拒绝；保持 S0 创建版本、S1 删除定位与先增后验。正式 SDK/目标链回归及负向控制见补记；真实云未执行，已提交 `c08f2e1` |
-| P3-06（历史订正） | **📚 已由 2026-10-02 官方正文与用户决策替代，以下保留当时判断，不再作为当前合同。🔵 结论已订正（2026-09-30 第二轮核验）：原"实际配额为每方向 100"不成立，"只统计入站"的修法已撤销——现有合计判定与合同及官方定义一致，不属过度保守** | `provider/tc_cvm.go:262-268` 的 `checkRuleLimit` 把 `IngressIPv4+IngressIPv6+EgressIPv4+EgressIPv6` 相加与 100 比较（原引 `:234-241` 为快照行号）。**`AGENTS.md:85` 强要求写"腾讯云 CVM 安全组规则上限 **100 条**"，无方向限定词**；`PlatformAPIDocs/TencentCVMAPIGuide/查询用户安全组配额.md:58-63` 的 `SecurityGroupLimitSet` 只有**单一** `"SecurityGroupPolicyLimit": 100`，无任何方向字段；官方 API 定义该字段为 "Maximum number of rules under the security group"（**安全组内规则上限**，非每方向）。仓内所有"单个方向"表述（`安全组添加规则.md:18`、`删除安全组规则.md:36`、`批量修改安全组规则.md:6`、`替换单条安全组规则.md:6`）均为**请求形态**约束（一次请求只能操作一个方向），**不是配额口径**；`创建安全组和规则.md:19` 还明确"请求中可以同时指定入站和出站" | **订正结论**：合计判定与 `AGENTS.md:85` 及官方定义**一致**，不是过度保守；**撤销"修法：只统计入站计数"**——按原建议改动会使安全组规则总数可能超过云端 100 上限并被 API 拒绝。**残余未知**：若腾讯另存在**叠加**于安全组级上限之外的每方向上限，则可放行更多入站；该口径由 **PT-I7-03**（真实账号）确认。**未取得"每方向 100"的官方依据**：官方"使用限制/配额"叙述页在本环境 DNS 不可达（`cloud.tencent.com`/`www.tencentcloud.com`/`intl.cloud.tencent.com` 等均解析到非公网 IP），本轮仅取得可检索的官方 API 字段定义；**未确认前不改 CVM 代码** |
+| P3-06（历史订正） | **📚 本行整体已被 2026-10-02 官方正文与用户决策替代，仅作历史追溯，不得据此实施。⚠️ 其中原"🔵 结论已订正（2026-09-30 第二轮核验）：原『实际配额为每方向 100』不成立、『只统计入站』的修法已撤销、现有合计判定与合同及官方定义一致、不属过度保守"亦已被推翻**——2026-10-02 取得 CVM 官方配额正文（默认**入站、出站各 100**）后确认：**只统计入站是正确的当前合同**（`AGENTS.md:145`），合计判定才是过度保守。当前实现（`checkRuleLimit` 只数两个入站统计、不含 Egress）见上行 P3-06 与文末 P3-06 当前实施补记** | `provider/tc_cvm.go:262-268` 的 `checkRuleLimit` 把 `IngressIPv4+IngressIPv6+EgressIPv4+EgressIPv6` 相加与 100 比较（原引 `:234-241` 为快照行号）。**`AGENTS.md:85` 强要求写"腾讯云 CVM 安全组规则上限 **100 条**"，无方向限定词**；`PlatformAPIDocs/TencentCVMAPIGuide/查询用户安全组配额.md:58-63` 的 `SecurityGroupLimitSet` 只有**单一** `"SecurityGroupPolicyLimit": 100`，无任何方向字段；官方 API 定义该字段为 "Maximum number of rules under the security group"（**安全组内规则上限**，非每方向）。仓内所有"单个方向"表述（`安全组添加规则.md:18`、`删除安全组规则.md:36`、`批量修改安全组规则.md:6`、`替换单条安全组规则.md:6`）均为**请求形态**约束（一次请求只能操作一个方向），**不是配额口径**；`创建安全组和规则.md:19` 还明确"请求中可以同时指定入站和出站" | **订正结论**：合计判定与 `AGENTS.md:85` 及官方定义**一致**，不是过度保守；**撤销"修法：只统计入站计数"**——按原建议改动会使安全组规则总数可能超过云端 100 上限并被 API 拒绝。**残余未知**：若腾讯另存在**叠加**于安全组级上限之外的每方向上限，则可放行更多入站；该口径由 **PT-I7-03**（真实账号）确认。**未取得"每方向 100"的官方依据**：官方"使用限制/配额"叙述页在本环境 DNS 不可达（`cloud.tencent.com`/`www.tencentcloud.com`/`intl.cloud.tencent.com` 等均解析到非公网 IP），本轮仅取得可检索的官方 API 字段定义；**未确认前不改 CVM 代码** |
 | P3-07 | **✅ 已按 B 本地清理（2026-10-02）**：删除不可达旧流程，回归迁入生产链 | `retrySync`、`retrySyncDetailed`、`truncateDesc` 与专属 imports 已删除；三份旧测试删除 15 项旧入口回归和专属夹具，12 个目标链场景及共享描述回归正式落地。保留现用重试判定/超时夹具/GetRules/旧 Diff | 当前正式链为 `syncAll → runRound → syncTarget → runTargetAttempt / runTargetCleanup`；机械替换方案已改为按现生产语义迁移。完整对照见 Issue6 §7.9，门禁与负向控制见下方补记；I-09 本地收口，已提交 `ba82292` |
 | P3-08 | ✅ 已随 P1-02/I-01 修复并提交为 `7aaa3f2` | 原 PID 判活的身份误判与 TOCTOU 已由同一文件上的非阻塞独占 `flock` 取代；真实内核锁屏障、GC、并发、SIGKILL/重启均有判别证据 | 详细实现、重复门禁和 Linux/amd64 Docker 证据见 P1-02 实施补记 | 网络文件系统、旧 PID-only 版本混跑不保证；已有文件/目录/DB 权限迁移仍属 P3-12 |
 | P3-09 | **✅ 已按 A 本地修复（2026-10-02），已提交为 `f6b3757`**：DSN 独立 `_txlock=immediate`，在读之前预留写事务 | 当前驱动对 `ReadOnly=true` 跳过 beginMode；正式 Store/协调器先读后写、真实日志/扫描写入、只读并行快照与取消回收均覆盖 | 保持单一 busy_timeout PRAGMA、一次性 WAL、现有发布顺序；5 秒写锁超时仍可能 BUSY，重试不保证成功；见下方当前实施补记 |
@@ -939,7 +952,7 @@ FAIL
 | P3-16 | 前端 UI/状态偏离（AGENTS §十一）——**六子项已本地收口，原五项历史证据保留** | ✅ ~~`RunTest.vue:32` 缺 `size="large"`（唯一漏网，**属明确漏改**）~~ **已修复**：`RunTest.vue:32` 现有 `size="large"`（与 §0.2 一致）；**2026-10-03 剩余五项已按 B 本地修复，见文末；以下保留修复前证据**：`App.vue:10/67` 侧边栏高亮不随路由（刷新/深链后停在"仪表盘"）；`Targets.vue:106-121/210`、`Rules.vue:71-84/165` 保存按钮无 in-flight 守卫（双击产生重复行）；`Settings.vue:127-141` 把不可见的 `theme` 当隐藏字段回传（与侧边栏主题开关**双写**，导致主题静默回退）；`useScannedResources.ts:36-41`（`catch { /* 失败静默 */ }`）+`Settings.vue:98-105` 清空扫描失败仍无条件提示"已清空"；`Settings.vue:14` 前端正则 `/^\d+(ms|s|m|h)$/` 比后端 `time.ParseDuration` 更严（合法 `1h30m` 被拦） | 均为可静态判定；`theme` 双写与"清空误报成功"影响用户可观察状态 |
 | P3-17 | **✅ 已按推荐 B 本地修复（2026-10-03），已提交 `5860cef`。** 原陈旧 `version 2` 实为 10 处/6 文件，加两处 `v2` 后为 12 处/7 文件 | 七测试仅清理注释/子测试名称/失败提示；完整配置包明确 version 3，业务设置与 ID 映射去掉不必要的版本绑定；实际 version 3 缺 monitoring 的用例改名“monitoring 缺失”；四处合法旧版本拒绝/历史说明保留 | `export_test.go:461` 原仍有 `v2`，此前完整串搜索造成“已修复”误判；当前已清理。正式 token 比对及该批次门禁见文末补记；P3-18 后续按 B 本地收口，见其独立补记 |
 | P3-17（修复前历史证据） | **原统计及 export_test 判断已由 2026-10-03 补记更正；以下保留旧记录，不作为当前状态。** 陈旧 "version 2" 表述残留（核验后为 **10 处 / 10 个测试文件**；全仓 `_test.go` 内共 14 处命中） | 陈旧标签：`config/runtime_test.go:27,66`、`main_test.go:732`、`webui/api/testenv_test.go:216`、`import_runtime_test.go:90`（原引 `:82`）、`import_test.go:11,20,111`、`redact_test.go:111,116`。**已修复**：`export_test.go:461` 已不含该串。**属合法负向控制、不应改**：`main_test.go:907,912`（断言 version 2 导入必须 400）、`alerts_v3_test.go:14,154`（历史说明 + 真实 `{"version":2}` 拒绝夹具） | `import_test.go:111` 仍用 map key `"version 2"` 承载 `{"version":3,...}`，属陈旧标识 |
-| P3-18 | **✅ 已按推荐 B 本地修复（2026-10-03），尚未提交** | Build6/Issue5 当前入口、Issue6 固定历史基线与提交角色、Design5 R7 状态、Build7 实施前基线、人工清单当前源码引用及 constants.ts 两处注释已对账；审计/TODOLIST/AGENTS 同步 | 原问题与更正证据见文末补记；I-11 仅本地文档/注释闭环，不关闭其他业务或真实外部验收 |
+| P3-18 | **✅ 已按推荐 B 本地修复（2026-10-03），已提交 `f0997cd`**（该行"尚未提交"为当时记录，2026-10-08 复核订正） | Build6/Issue5 当前入口、Issue6 固定历史基线与提交角色、Design5 R7 状态、Build7 实施前基线、人工清单当前源码引用及 constants.ts 两处注释已对账；审计/TODOLIST/AGENTS 同步 | 原问题与更正证据见文末补记；I-11 仅本地文档/注释闭环，不关闭其他业务或真实外部验收 |
 | P3-19 | **✅ 已按定型 B 本地修复（2026-10-03），已提交 `974cb20`**：整个 SMTP 会话共 11 个失败出口统一生成安全错误 | `notifier/email.go` 的 `send`/`safeSMTPError` 仅保留固定阶段、200～599 SMTP 数字码或固定中文类别，不复制服务器/底层原文，不保留原始 cause/Unwrap；测试邮件 JSON/WARN 与自动邮件 EventBus WARN 共用边界 | 正式定向 race 20 轮、两包/全仓 race、vet/build 与五类负向控制及两个外部故障出口证据见当前实施补记；Build7 完整诊断旧约定已明确替代。I-10 仅本项收口，真实 SMTP/浏览器未执行，P3-20/P3-21 独立 |
 | P3-19（修复前历史证据与更正） | 原 finding：邮件 AUTH 失败保留 SMTP 诊断文本（含 535 回显），当时标为“理论风险、未验证、可调试性取舍” | 原引用 `notifier/email.go:219-221`、API `:78-82`、测试 `:293-295` 均为历史行号；研究基线 `f0997cd` 的 AUTH 包装实际位于 `email.go:232`，且会话共有 11 个底层错误包装出口。既有 AUTH/RCPT/DATA 测试只检查 535/550/554 数字码，原“显式断言保留诊断”应收窄，未要求供应商自由文本 | 本地合成 SMTP 回显实际 AUTH PLAIN 载荷后，旧实现可将其送入 API JSON、WARN 与日志回放，风险已本地复现；原“标准 SMTP 不会这样做”不构成普遍安全保证。真实供应商是否出现此行为仍未知；当前安全输出保留数字码、舍弃自由诊断与详细证书信息 |
 | P3-20 | **✅ 已实施推荐的 B 编码主题 + Base64 正文（2026-10-03），已本地收口并提交 `ee39f08`** | `notifier/email.go` 的 `send → buildEmailMessage` 为自动告警与测试邮件共用出口；MIME-Version/CTE、首词与词间折行、CRLF 规范化、76 字符正文行长 | 新增 18 场景及 API/产品进程解码语义回归，五类正式负向控制见文末补记；本地协议正确不等于真实收件箱已通过，I-10 整体不关闭 |
@@ -950,11 +963,11 @@ FAIL
 | P3-22（原始审计快照） | Dry Run 对每条规则各发一次 `GetRules` 并 sleep 一个厂商限速间隔（审计快照） | `syncer/syncer.go:604-640` 内层 for rule 里 `p.GetRules()` + `time.Sleep(rateLimitInterval(...))`，注释写"与 syncAll 一致"（实际 `syncAll` 每 provider 只 sleep 一次，`:805-817`） | ✅ 已由 Issue7 Step 4 修复：Dry Run 按目标取一次完整快照并在内存中规划，目标间保留限速；原 20 条规则约 100 秒/20 次 Describe 的风险仅作历史证据 |
 | P3-23 | **✅ 已按本次 B 本地修复（2026-10-05），已提交 `9dd5d34`。** | Run 的同间隔配置通知不 Reset，实际 interval 变化才 Reset；定时/手动轮结束按最新间隔重置并保留失败轮等待；暂停不 Reset，恢复继续立即轮 | 仅 Run 局部调度 + 24 个虚拟时间真实目标链回归 + AGENTS/本文，共四文件；本次 B 不同于旧兼容模式 B。启动/恢复计时与 select 无优先级保持；P3-24 已由后续细化 C 独立修复，正式证据见文末 |
 | P3-23（修复前历史证据） | **以下保留前序只读批次；当前由上行及文末 2026-10-05 B 实施补记替代，历史 A 与旧兼容 B 不再作为施工合同。**  **核心问题真实存在，当前未修复；审计条目的两条附加依据需要降级或删除。** `true → true` 分支无条件 `ticker.Reset(latest.Config.Interval)`，因此不影响调度的主题、告警或其他配置保存也会重新计时；保存频率持续高于 interval 时，周期同步可能被无限推迟，并进一步触发运行健康的“距最近完成时间超过 `interval + health_timeout`”判据。`false → false` 对已停止 ticker 调用 `Reset` **不是 Go API 误用**；这是 Go 支持的重新激活方式，但暂停期间没有必要做此操作。按项目 `go.mod` 的 Go 1.25 合同，`Stop`/`Reset` 后的同步 ticker channel 语义也不支持直接断言“旧 tick 必然残留”，因此 stale-tick 子结论目前证据不足。状态：**部分成立，当前不能关闭**。 | **真实缺陷证据：** `syncer/syncer.go:295-297` 的 `true → true` 无条件 Reset；`ApplyState` 每次状态发布都会通知 Run（`:133-147`），普通目标、规则、settings、alerts、pause/resume 写入口经协调器 commit 后最终调用 `Syncer.ApplyState`（`webui/api/coordinator.go:71-87`、`webui/api/deps.go:130-161`）。当前基线为 HEAD `34aa9b859c38904e701a19d672dcc4f65435b31c`（**历史基线，非当前 HEAD；当前见头部「最近核验基线」小节**）、`main == origin/main`；工作树原有未提交修改仅为本报告，源码/测试未由本轮修改，本轮未运行构建、测试或格式化。`go.mod:3` 为 Go 1.25.0；停止后可 Reset 见 [Go time.Ticker 文档](https://pkg.go.dev/time#Ticker.Stop)，Go 1.23 起同步 timer/ticker channel 的 stale value 语义见 [Go 1.23 release notes](https://go.dev/doc/go1.23)。现有 `syncer/state_test.go:168-191` 只证明 interval 改变后会按新 interval 触发，不能证明同 interval 更新不会重新计时。 | **后续最小设计（推荐选项 A）：** 只改 `syncer/syncer.go` 的局部调度状态，创建 ticker 时保存 `tickerInterval := state.Config.Interval`；`false → true` 始终按最新 interval Reset、更新 `tickerInterval` 并保留恢复后的立即同步；`true → true` 仅当 `latest.Config.Interval != tickerInterval` 时 Reset 并更新记录；`true → false` Stop；`false → false` 不操作 ticker，暂停期间的最新 interval 由恢复时使用。不要加入 stale-tick drain、`time.Timer` 重写或时钟抽象。测试重点为 `syncer/state_test.go`：同 interval 的连续 ApplyState 不重新计时；高频保存非调度配置时周期同步仍发生；interval 实际变化仍重新计时；暂停期间修改 interval 后恢复使用最新值；保留 P3-24 的 pause→resume 通知合并控制。受影响范围限定为 `syncer/syncer.go` 与调度测试；不得修改 Provider、RuntimeManager、ConfigCoordinator、OperationalHealth、ApplyState 通知合并机制或外部链路。**选项 B**：额外承诺 `GODEBUG=asynctimerchan=1` 旧 timer channel 兼容，需要定义支持范围、补兼容测试并重新设计 Stop/Reset 后处理，超出本项最小修复范围，暂不推荐。 | **判别性验收与停止条件：** 静态确认 `true → true` 不再无条件 Reset、`false → false` 不再 Reset、`false → true` 仍 Reset，且没有新增 stale-tick drain；保留 P3-24 独立未处理。定向用例至少覆盖：①同 interval 更新后下一轮按原 ticker 剩余时间到期，而非从保存时重新等待完整 interval；②保存频率高于 interval 时仍能发生 ticker 驱动同步；③interval 改变时按新值重新计时；④暂停期间改 interval、恢复后立即同步且后续使用最新值；⑤旧语义下相应测试能判别失败。修复授权后再执行 `go test ./syncer -race -count=1`、`go test ./... -race -count=1`、`go vet ./...`、`go build ./...` 及项目要求的多轮门禁；本轮均未执行，不能预先写成通过。若修改生产范围超出 ticker 局部状态、引入未裁决的旧 timer 兼容承诺、把 P3-24 合并处理、误删恢复立即轮、比较初始而非当前实际 interval，或把单次绿色外推为稳定绿色，应立即停止并回到方案审查。**外部边界：** 本项仅依赖本地 Go 1.25、Syncer、ticker 和测试 Provider；不依赖真实腾讯云/阿里云、DNS、SMTP、Webhook、Uptime Kuma、浏览器、Docker 或远端 CI/GHCR。本地通过只能证明当前 Go 合同下的调度行为，不能外推真实外部链路已验收。 |
-| P3-24 | **✅ 已按细化 C 本地修复（2026-10-05），尚未提交；I-06 本地闭环。** | ApplyState 仅对真实 false→true 设置标记；与状态/镜像同锁发布，Run 同锁读最终状态并起轮前消费。一次消费前多个恢复合并一轮，最终暂停抑制补轮，之后新边沿留下一批 | 细化 C 补足 bool 的线性化合同，替代历史推荐 A；无需完整队列或 generation。启动消费与普通准入前检查避免重复，latest interval/trigger 清理/Stop/P3-23 计时保持 | 五文件范围，25 个 P3-24 场景与正式负向控制/全仓门禁见文末；以下原 A/B/C 比较和缺陷证据仅供历史追溯 |
+| P3-24 | **✅ 已按细化 C 本地修复（2026-10-05），已提交 `938bb8b`（= 当前 HEAD）；I-06 本地闭环。**（该批"尚未提交"为当时记录，2026-10-08 复核订正） | ApplyState 仅对真实 false→true 设置标记；与状态/镜像同锁发布，Run 同锁读最终状态并起轮前消费。一次消费前多个恢复合并一轮，最终暂停抑制补轮，之后新边沿留下一批 | 细化 C 补足 bool 的线性化合同，替代历史推荐 A；无需完整队列或 generation。启动消费与普通准入前检查避免重复，latest interval/trigger 清理/Stop/P3-23 计时保持 | 五文件范围，25 个 P3-24 场景与正式负向控制/全仓门禁见文末；以下原 A/B/C 比较和缺陷证据仅供历史追溯 |
 | P3-24（修复前历史证据） | **以下为前序只读批次及 P3-23 批次当时的证据/方案；未修复、推荐 A/不推荐 C 的措辞已由上行细化 C 正式结果替代。**  **真实存在，当前未修复；继续保留在独立队列 I-06。** 本轮仅补充审计记录，未修改源码或测试，未构建、未运行测试。轮内 `pause → resume` 的控制通知可被容量为 1 的 `controlCh` 合并，导致 Run 只观察到 `true → true`，恢复不触发按合同要求的立即同步一轮。 | **当前基线与缺陷证据：** HEAD 为 `34aa9b859c38904e701a19d672dcc4f65435b31c`，`main == origin/main`；工作树既有修改仅为本报告。`syncer/syncer.go:133-147` 的 `ApplyState` 发布新状态后向容量为 1 的 `controlCh` 非阻塞投递，已有通知时合并；`:217-221` 的 Run 使用本地循环相位 `enabled` 形成 `wasEnabled`；`:270-305` 只在 `false → true` 分支立即调用 `syncAll()`，`:295-297` 的 `true → true` 只 Reset ticker。可达交错为：当前相位为 `true` 时，在 Run 消费前连续 `ApplyState(false)`、`ApplyState(true)`；RuntimeManager 最终只读到 `true`，于是得到 `true → true`，恢复轮被静默跳过。暂停/恢复入口分别为 `webui/api/sync.go:35-52`、`:55-72`，均经 `webui/api/deps.go:122-161` 的协调器发布；协调器只串行化单次提交，不能保证 Run 在两次提交之间消费第一条通知。Build6 §12.5 要求 `false → true` 立即同步；Issue6 A7 修复的是已发布镜像先推进导致恢复边沿丢失的另一种交错，不覆盖本项。现有 `syncer/state_test.go:147-166` 只测初始 `false → true`，`:168-191` 只测正常 `true → true`，`syncer/syncer_test.go:197-237` 使用固定等待，均不能判别本项。 | **后续设计与待决策选项：** 需要在不恢复完整中间状态队列的前提下，保留最终状态语义并记住被合并的恢复边沿。**A（推荐）**：在 `Syncer` 内以 `s.mu` 保护 `resumeGeneration` 与 `handledResumeGeneration`；`ApplyState` 在线性化发布 `next` 时仅对真实 `false → true` 递增 generation，Run 消费控制通知时同锁取得最新 `RuntimeState`、读取并标记已观察 generation。最终 `Enabled=false` 时绝不启动同步；最终为 `true` 且存在未处理恢复 generation 时补发恰好一轮立即同步；普通 `true → true` 仍只按既有 ticker 规则处理，保留 `controlCh` 容量 1 合并语义。**B**：把控制通道改为携带每次状态或边沿的显式事件并逐条排队；语义直观但可能执行已过期的中间状态、扩大队列/生命周期范围，当前不推荐。**C**：仅增加 `pendingResume bool`；改动最小但在多个连续恢复边沿、消费与发布并发时更难证明不丢失或重复，除非补足线性化合同，当前不推荐。上述为后续设计，不是本轮实施授权；需用户在 A/B/C 中裁决后再改代码。 | **影响文件、判别性验收、风险与停止条件：** 生产影响应限定为 `syncer/syncer.go` 的状态字段、`ApplyState`、Run 控制消费与必要中文注释；测试影响为 `syncer/state_test.go`，必要时新建 `syncer/control_transition_test.go`。原则上不改 `RuntimeManager`、`ConfigCoordinator`、`webui/api/sync.go`、Provider、DNS、告警、OperationalHealth、Issue7 目标级状态机或外部 API。必须补确定性用例：①当前轮被 Provider 阻塞时连续 `true → false → true`，放行后断言首轮之外恰好再执行一轮立即同步；②连续 `true → false → true → false` 后最终暂停，断言不启动第二轮；③普通 `true → true` 不触发恢复轮；④正常单次 `false → true` 仍只触发一轮；⑤既有 queued trigger/paused ticker 回归继续成立。用 Provider 阻塞与 release channel 控制时序，不以固定 `Sleep` 猜竞态。主要风险是恢复 generation 被提前清除、最终暂停仍误启动、ticker/trigger 与恢复边沿重复跑两轮，或为保留中间状态扩大为无界队列；这些任一情况均应停止并回到方案审查。该项只依赖本地 Syncer、容量为 1 的控制 channel、可控 Provider 与确定性屏障，不依赖真实云、DNS、SMTP、Webhook、Uptime Kuma、浏览器、Docker 或远端 CI/GHCR。取得用户裁决、判别性回归测试、`go test ./syncer -race -count=1`、全量多轮 race、`go vet ./...`、`go build ./...`、gofmt/diff-check 及文档闭环前，保持 P3-24/I-06 未修复；不得把单次本地绿色或 P3-23 的修复外推为本项关闭。 |
-| P3-25（同步路径） | ECS 同步 `NextToken` 分页缺"token 未推进即退出"守卫（审计快照） | 审计快照 `provider/ali_ecs.go:96-102` 仅判空不判重复（**当前实现为 `:107-113`**：未推进与历史重复 token 均返回 `ErrSnapshotIncomplete`） | ✅ 已由 Issue7 Step 1 修复：重复/未推进 token 返回 `snapshot_incomplete`，目标失败且本 attempt 零删除；不再列入待修复 |
-| P3-25（资源扫描路径） | ECS 扫描缺 token 推进与环路保护 | scanAliECS 历史 token 集合；异常返回 nil 资源与 ErrSnapshotIncomplete | ✅ 已本地修复，尚未提交；I-19 独立回归与缓存整链证据 |
-| **P3-26（新增）** | ECS 扫描结构异常被当成功并覆盖缓存 | 原缺失集合 break 返回半截列表；首屏缺失也可清空旧缓存 | ✅ 已本地修复，尚未提交；decodeECSScanPage + 实际 API/SQLite 回归，兼容性边界见 P3-26 |
+| P3-25（同步路径） | ECS 同步 `NextToken` 分页缺"token 未推进即退出"守卫（审计快照） | 审计快照 `provider/ali_ecs.go:96-102` 仅判空不判重复（**当前实现为 `:107-113`**：未推进与历史重复 token 均返回 `ErrSnapshotIncomplete`） | ✅ 已由 Issue7 Step 1 修复：重复/未推进 token 返回 `snapshot_incomplete`，目标失败且本 attempt 零删除；2026-10-08 正式 SDK 目标链回归补强见文末，不再列入待修复 |
+| P3-25（资源扫描路径） | ECS 扫描缺 token 推进与环路保护 | scanAliECS 历史 token 集合；异常返回 nil 资源与 ErrSnapshotIncomplete | ✅ 已本地修复并提交 `901d642`；I-19 独立回归与缓存整链证据，2026-10-08 补 token 原值测试 |
+| **P3-26（新增）** | ECS 扫描结构异常被当成功并覆盖缓存 | 原缺失集合 break 返回半截列表；首屏缺失也可清空旧缓存 | ✅ 已本地修复并提交 `901d642`；decodeECSScanPage + 实际 API/SQLite 回归，兼容性边界见 P3-26 |
 
 > 说明：第 9 节的决策表使用 #1..#7 编号（你实际决策的 7 项）；本 P3 表使用 P3-nn 编号，两套编号相互独立。P3-08 已合并原先拆分的两类 pidfile 失效（TOCTOU 漏判 / PID 复用误判），实施时由 flock 一次解决。
 
@@ -1549,7 +1562,7 @@ FAIL
 | 1 | P1-01 规则身份 | ✅ **已实施（本地，`28559ed`）** | 采用目标级完整期望集、TAG 唯一操作授权、comment 纯可读、先增后验、平台化条件删除与可接受残留；不收紧 TAG 48、不需要迁移。详见第 8 节与 Issue7 Step 1～5 |
 | 2 | P1-02 容器 pidfile | **改用 flock 文件锁替代 PID 判活** | 见 P1-02 章节；顺带消除 P3-08（TOCTOU 漏判 + PID 复用误判） |
 | 3 | P2-04 唤醒顺序 | **改代码：`ApplyState` 提到两次 `Wake()` 之前，并同步修订 AGENTS.md:216** | 见 P2-04 章节；`coordinator.go:50-53` 注释同步 |
-| 4 | P2-07 删除确认 | **补卡片式二次确认，满足 AGENTS §十一** | 已按定型方案实施两页卡片确认、四阶段状态、列表顺序保护和焦点恢复；本地联合验收通过、尚未提交；**不改强要求文档** |
+| 4 | P2-07 删除确认 | **补卡片式二次确认，满足 AGENTS §十一** | 已按定型方案实施两页卡片确认、四阶段状态、列表顺序保护和焦点恢复；本地联合验收通过、**已提交 `ec82d10`**（2026-10-08 复核订正）；**不改强要求文档** |
 | 5 | P2-03 静默跳过 | 📚 **审计快照中的旧决策：先只补 WARN 日志 + Dry Run 展示，不计入 skipped** | **已被当前强合同取代**：能力限制进入结构化 `unsupported`，目标结论为 `partial` 并冻结清理；见 P2-03 当前实施补记与 Issue7 Step 1。此行仅用于追溯，不得据此实施 |
 | 6 | P3-01 熔断器淘汰 | **细化后的 A 已提交 `ac0ee62`，后由 P3-02 统一域名身份** | 成功删除、普通发布按配置域名复制正数计数并重建紧凑 map（后由 P3-02 统一身份）、新旧快照独立、导入 Reset；C 单独裁剪已可阻止历史累积，但缺少成功即时清理，原评价已订正 |
 | 7 | P3-12 文件权限 | **收敛为 0700/0600，已按细化 A 本地实施** | 最终目录显式0700；主库在SQLite首次访问前0600，已有WAL/SHM打开前及初始化后迁移；同FD持锁后锁文件0600；失败即退出；取消默认路径`.`回退。正式证据见当前实施补记 |
@@ -1572,7 +1585,7 @@ FAIL
 
 ### 10.2 当前独立问题入口
 
-与 Issue7 正交的 P1-02/P3-08 已本地收口，P2-04 与 P3-03 亦已独立本地收口，P2-05 已按方案 A 修复并提交为 `93e0e4b`，P2-06 已按完善后的方案 A 本地收口（已提交为 `064b794`），P2-07 已按定型方案本地收口（尚未提交），其余 P3 继续按第 0.4 节的 I-01～I-11 排队；P1-01 完整复核及后续研究形成的 R7-01～R7-07 对应 I-12～I-18。该编号只表示 backlog 顺序，不改变 finding 严重级别，也不构成代码实施授权。
+与 Issue7 正交的 P1-02/P3-08 已本地收口，P2-04 与 P3-03 亦已独立本地收口，P2-05 已按方案 A 修复并提交为 `93e0e4b`，P2-06 已按完善后的方案 A 本地收口（已提交为 `064b794`），P2-07 已按定型方案本地收口并**已提交 `ec82d10`**（2026-10-08 复核订正），其余 P3 继续按第 0.4 节的 I-01～I-11 排队（未闭环项见 [Issue8.md](./Issue8.md)）；P1-01 完整复核及后续研究形成的 R7-01～R7-07 对应 I-12～I-18。该编号只表示 backlog 顺序，不改变 finding 严重级别，也不构成代码实施授权。
 
 ### 10.3 历史批次计划（与 Issue7 重叠部分已被取代）
 
@@ -1705,7 +1718,7 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 
 ## 14. 审计快照的 Git 完整性（历史记录与当前复核）
 
-> 本节前四列保留原始审计快照，不应被误读为当前 HEAD。**当前基线见头部「最近核验基线（2026-09-30 第二轮）」小节**：`main` / `b84531b10a9dbbf1321b4eb131f8391a6eea0c4a`，`origin/main` = `d6d208e`（**ahead 7**），工作树干净。下述"当前复核（2026-09-30）"行是**该批次**记录，其"`main == origin/main`"当时为真、现已过期。
+> 本节前四列保留原始审计快照，不应被误读为当前 HEAD。**现时基线见头部「最近实施基线（2026-10-08 P3-25 测试与文档补强）」小节**：`main` / `938bb8bac0a41ea285597ba454b34e727003d7ba`，本地 `origin/main` 同值（**ahead 0**），工作树含该批 5 个未提交文件（**非干净**）。**历史说明（2026-09-30 第二轮批次，勿当作现时）**：该批基线为 `main` / `b84531b10a9dbbf1321b4eb131f8391a6eea0c4a`、`origin/main` = `d6d208e`、ahead 7、工作树干净。下述"当前复核（2026-09-30）"行是**该批次**记录，其"`main == origin/main`"当时为真、现已过期。
 
 | 项 | 审核前 | 审核后 |
 |---|---|---|
@@ -1740,7 +1753,7 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 | 方法学更正 | P1-02 首次测试（`--volumes-from`）未能复现，改用持久命名卷后确认；已在正文如实记录 |
 | 纳入决策 | 用户 7 项决策写入第 9 节与相应 finding |
 | P1-01 状态继续更新 | 2026-09-28 的“待决策/已冻结”已于 2026-09-29 被第 8 节最终方案取代；Step 0～5 主体提交为 `28559ed`，F1/F5 补强提交为 `38bdc19`，R7-01～R7-04/R7-06/R7-07 已提交为既有修复链，R7-05 与文档回写已提交为 `d6d208e`；`maxTagRunes` 仍为 48，SWAS `Remark` 上限仍登记为 PT-B7-09 |
-| 历史复核状态（2026-09-30） | 该批次基线为 `main == origin/main == d6d208e`、复核开始时工作树干净；R7-01～R7-07 的提交祖先关系、生产符号与判别性测试已静态复核保留，该批次未重跑门禁；P3-11/P3-22 已修复；P3-25 拆分为同步路径已修复、资源扫描路径未修复；外部/人工验收登记为 PT-B7 9 项 + PT-I7 7 项。**当前基线为 `main` / `b84531b`、`origin/main` / `d6d208e`、ahead 7**（见头部「最近核验基线」小节）；第二轮核验另新增 P3-26（资源扫描分页中途空响应）并订正 P3-06 结论 |
+| 历史复核状态（2026-09-30） | 该批次基线为 `main == origin/main == d6d208e`、复核开始时工作树干净；R7-01～R7-07 的提交祖先关系、生产符号与判别性测试已静态复核保留，该批次未重跑门禁；P3-11/P3-22 已修复；P3-25 拆分为同步路径已修复、资源扫描路径未修复；外部/人工验收登记为 PT-B7 9 项 + PT-I7 7 项。**该行"当前基线"为 2026-09-30 批次的历史表述**；**现时基线为 `main` / `938bb8ba`、本地 `origin/main` 同值、ahead 0、工作树含该批 5 个未提交文件**（见头部「最近实施基线（2026-10-08 P3-25 测试与文档补强）」小节与 [Issue8.md](./Issue8.md)）；第二轮核验另新增 P3-26（资源扫描分页中途空响应）并订正 P3-06 结论 |
 
 | 第二轮核验与更正（2026-09-30） | 只读真实性核验后按用户批准方案回写：新增「最近核验基线」小节；当时订正 P3-06（撤销"每方向 100"与"只统计入站"；此历史判断后已由 2026-10-02 官方正文与 B 实施替代）、P3-07（死代码集合扩为 `retrySync`+`retrySyncDetailed`+`truncateDesc`，生产链改指 `syncTarget`）、P3-16（`RunTest.vue` 44px 已修复）、P3-17（当时记录 10 处标签、`export_test.go:461` 已修复；2026-10-03 更正为陈旧标签共 12 处/7 文件、export_test 当时仍有 `v2`，现已清理）、P3-21（Webhook drain 部分已修复 / Push 无字节上限未修复）、P2-08 与 P2-09 补状态横幅、§4 Dashboard 行改标已修复、§6 pidfile 单测改标已补齐、§3 的 `io.ReadAll` 计数与 `IdleConnTimeout` 证据边界、§11 路由数 28→31、`AGENTS.md` 行号引用订正；新增 **P3-26** 独立 finding；另新增两个判别性测试（见 §6 与 §3 对应行）。所有"通过"仍属历史执行记录，本轮门禁结果见文末回写 |
 
@@ -1827,7 +1840,7 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 - **失败用例命名**：`TestConfigImportInvalidInputNoWriteNoReload` 原 map key “version 2”的载荷实际是 version 3，完整 settings/alerts 但缺 monitoring；正式只改名为“monitoring 缺失”，JSON 原样保留。真正的 version 2 拒绝覆盖继续由 `TestImportRejectsVersion1And2AndOthers` 的完整夹具、400/零写入/零发布断言及真实进程用例承担，不把该载荷改成 version 2、不新增重复测试。
 - **保留控制与范围证明**：正式扫描七份改动测试及 `alerts_v3_test.go` 后，完整串 `version 2` 只剩四处，分别为 `main_test.go:907,912` 的拒绝说明/提示及 `alerts_v3_test.go:14,151` 的历史说明/真实拒绝夹具；七份改动文件已无陈旧 `v2`。SDK `/v2` 为依赖版本，保持原样。仓库外用 Go scanner 忽略注释、逐 token 对比实施前快照与正式工作树的七文件：只有一个子测试名称及一个失败提示字符串发生允许的变化，JSON 夹具、断言条件、函数名和其余非注释 token 全部一致。该静态证据直接验证文字-only 边界；未新增文字匹配测试、lint、版本常量或夹具重构。
 - **正式工作树门禁**：Go `1.27.1 darwin/arm64`，使用既有 ignored 前端 dist。`go test ./... -race -count=1 -timeout=10m` 全量 12 包通过，包含 TestMain 构建真实产品二进制的既有进程回归（根包 12.435s、config 28.118s、API 17.560s、syncer 37.493s、health 43.368s）；`go vet ./...`、`go build ./...`、七个受影响 Go 文件的 gofmt 检查与最终文档后的 `git diff --check` 均通过。前序研究阶段的当前源码/候选 overlay 下 11 个定向测试 race 单轮通过只作为研究记录，不替代以上正式门禁。文本清理未要求新增行为回归，未重复跑 20 轮或以单轮全量绿色外推长期稳定。
-- **文档与状态**：固定九文件，七测试加 AGENTS/本文；本文最新基线、状态索引、P3-17 finding、I-11、文档清理清单及历史更正说明同步更新，前序 P3-16 标为历史批次已提交 `396885f`。P3-17 本地修复闭环，尚未提交；P3-18 继续独立未完成，I-11 整体不勾选。无生产源码、API/schema/依赖、前端或部署变更，未修改 Build6/Issue5/Issue6 的其他历史措辞，不扩展到 P3-18。
+- **文档与状态**：**连同该提交新增的 `TODOLIST.md`，提交 `5860cef` 实为十文件**（7 测试 + AGENTS + 本文 + 新增 TODOLIST；2026-10-08 复核订正，原文"固定九文件"为当时记录）；本文最新基线、状态索引、P3-17 finding、I-11、文档清理清单及历史更正说明同步更新，前序 P3-16 标为历史批次已提交 `396885f`。P3-17 本地修复闭环，**该批改动已提交 `5860cef`**（原文"尚未提交"为当时记录，2026-10-08 复核订正）；P3-18 继续独立未完成，I-11 整体不勾选。无生产源码、API/schema/依赖、前端或部署变更，未修改 Build6/Issue5/Issue6 的其他历史措辞，不扩展到 P3-18。
 - **证据与外部边界**：实施前九文件快照、原候选补丁、token 核验工具及 race/vet/build 日志保存在仓库外 `/var/folders/1x/ngps27d54l1791wzj_qlqv980000gn/T/fwalizer-p317-implementation-mokfpd1b`。未执行 Linux/Docker/compose、前端构建、浏览器、真实腾讯云/阿里云、SMTP/收件箱/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR；既有人工未执行/免除状态不变，不外推长期稳定或真实外部通过。
 
 ### P3-18 当前实施补记（2026-10-03，推荐方案 B：当前入口与历史证据逐项对账）
@@ -1921,5 +1934,22 @@ Makefile `test`/`vet` 加 `frontend` 前置；修 `waitForNoSMTPData`；消灭 7
 - **正式红→绿证据：** 先在工作树加入最终测试，旧生产执行 `go test ./syncer -race -run '^TestP324' -count=20 -timeout=3m` 持续按轮数/时间线断言失败；无编译失败、超时或数据竞争报告。应用 C 后 `go test ./syncer -race -run '^TestP32[34]' -count=20 -timeout=3m` 通过（1.814s）。这是正式工作树结果，不使用研究 overlay 通过状态替代。
 - **正式负向控制：** 从本轮正式源码生成五类仓库外 overlay：删除普通准入前检查、忽略最终暂停、每次 true 发布均置位、启动不消费、轮后才清标记。各执行 P3-24 race 20 轮，全部由行为断言检出，无编译失败/超时/panic/数据竞争。分别证明普通唤醒不重复、最终暂停抑制、真实边沿识别、启动不叠加及下一批恢复不丢失。
 - **正式兼容/完整门禁：** `go test ./webui/api -race -run '^Test(ConfigImportSyncEnabledRuntimeConsistency|PauseResumeThroughCoordinator)$' -count=20 -timeout=5m` 通过（16.928s）；`go test ./syncer -race -count=1 -timeout=10m` 通过（29.979s），含既有控制、A7/A13、Stop、Started、快照一致性回归。`go test ./... -race -count=1 -timeout=10m` 顺序连续执行三次，每次 12 包全部通过；根包 TestMain 的 go build 直接构建正式工作树产品，既有本地进程回归随全仓执行。`go vet ./...`、`go build ./...`、受影响三份 Go 文件 gofmt 检查与最终文档后的 `git diff --check` 通过。
-- **证据目录与复跑：** `/Users/kylechen/Desktop/Repo/2026-10-05/gen-2/work/p324/` 保留 baseline-red/scheduling-green/api-compatibility/syncer-package/all-race-1～3/vet/build 日志、五类错误源码/overlay/log 与结果 JSON。从仓库运行上述命令可复跑；负向控制预期非零并命中行为断言，不应作为正式修复失败。全仓三次工具墙钟耗时：46.705s、45.08s、45.528s。
-- **状态与未执行边界：** P3-24 与 I-06 本地修复闭环，源码/测试/文档尚未提交；未 fetch/push。Go `1.27.1 darwin/arm64`，使用既有 ignored 前端 dist；本轮未执行 P3-24 专项产品进程验收、Linux/Docker/compose、前端构建/浏览器、真实云/DNS 上游/SMTP/收件箱/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR。既有人工未执行/免除状态保持；三轮全仓绿色不外推长期稳定、外部验收通过或已发布。
+- **证据目录与复跑：** ⚠️ 以下为**他机路径，本机不可复现**（2026-10-08 复核标注）；`/Users/kylechen/Desktop/Repo/2026-10-05/gen-2/work/p324/` 保留 baseline-red/scheduling-green/api-compatibility/syncer-package/all-race-1～3/vet/build 日志、五类错误源码/overlay/log 与结果 JSON。从仓库运行上述命令可复跑；负向控制预期非零并命中行为断言，不应作为正式修复失败。全仓三次工具墙钟耗时：46.705s、45.08s、45.528s。
+- **状态与未执行边界：** P3-24 与 I-06 本地修复闭环；该批"尚未提交"为当时记录，**现由提交 `938bb8b` 替代**（2026-10-08 复核订正）；未 fetch/push。Go `1.27.1 darwin/arm64`，使用既有 ignored 前端 dist；本轮未执行 P3-24 专项产品进程验收、Linux/Docker/compose、前端构建/浏览器、真实云/DNS 上游/SMTP/收件箱/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR。既有人工未执行/免除状态保持；三轮全仓绿色不外推长期稳定、外部验收通过或已发布。
+
+### P3-25 当前补强记录（2026-10-08，测试与文档）
+
+- **授权与基线：** 用户确认本聊天只读核验结论并要求“开始优化剩余内容”。实施前 `main == 本地 origin/main == 938bb8bac0a41ea285597ba454b34e727003d7ba`、工作树/暂存区干净，未 fetch/提交/push。生产保护已由 `28559ed`（同步）及 `901d642`（扫描、P3-26）实施；本轮再次确认提交祖先关系，未重写既有算法。
+- **正式范围：** 五文件，生产源码零改动。`provider/snapshot_test.go` 新增 `TestSnapshot_ECSTokenProgress` 的历史环路、空格与大小写不同的 opaque token、合法空中间页四场景；检查请求 token 原值、完整末页 RuleID、错误哨兵、空快照与精确请求次数。`provider/scan_ecs_test.go` 为既有 `TestScanECSTokenProgress` 加入空格/大小写两场景，按逐项 ResourceID 验证成功结果。新增 `syncer/ecs_pagination_test.go` 的 `TestTargetRound_ECSPaginationSafety` 五场景：S0/S1 各重复与历史环路，以及正常多页 → Add → S1 → Delete → S2 对照。其余文件为 AGENTS/本文，订正 P3-25/P3-26/I-19 历史提交状态并保留原批次证据。
+- **目标链判别力：** 使用真实 ECS SDK 与 `provider.NewProvider`、当前 `syncAll`/目标链；S0 异常必须两/三次 Describe 后 failed、零增删；S1 异常保留一次确认新增但零删除。异常 S1 页故意同时含全部期望功能与陈旧 TAG 候选，防止“半截成功”因无覆盖而碰巧安全；正常对照必须确认一次旧规则删除，四次 Describe 中包含强制 S2。每类异常夹具超出预期请求即返回固定 HTTP 400，证明失败来自行为断言，不依赖测试超时。无新增生产测试 hook，现有确定性 DNS/退避夹具继续复用。
+- **正式负向控制：** 仓库外 overlay 分别构造删除同步历史集合检查、重复/环路改为 break 后半截成功、同步 Trim token、同步折叠 token 大小写、空中间页提前退出、删除扫描历史集合检查、扫描 Trim token、扫描折叠 token 大小写。全部按错误类型、请求次数、内容或真实写入行为断言变红，无编译失败/超时/panic/数据竞争；其中半截成功候选在 S1 异常下真实发出一次 Revoke，正式用例明确检出。overlay 从当前正式源码生成，不回写生产文件。
+- **正式门禁：** `go test -race ./provider ./webui/api ./syncer -run '^(TestSnapshot_ECS|TestScanECS|TestDecodeECSScanPage|TestTargetRound_ECSPaginationSafety)' -count=20 -timeout=5m` 通过；原扫描/API/SQLite 完整性与异常缓存不变回归继续通过。全仓 `go test -race ./... -count=3 -timeout=10m` 的 12 个包全部通过（每项测试重复三次，是一条命令，并非三次独立全仓运行）；`go vet ./...`、`go build ./...`、三份 Go 测试的 gofmt 检查与最终 `git diff --check` 通过。不得把有限重复外推长期稳定。
+- **证据与状态：** 错误候选源码、overlay 与行为失败日志保留于仓库外 `/var/folders/wb/5y2c_tcs37x1_z5bb99wpd500000gn/T/fwalizer-p325-improvement-u2uutk74/`；正式测试可按上行命令复跑，负向控制预期非零。Go `1.27.1 darwin/arm64`、既有 ignored 前端 dist；全仓根包 TestMain 继续构建产品二进制运行既有本地进程测试，不是本项专门真实云/产品验收。本轮测试/文档尚未提交。未执行前端构建/浏览器、Linux/Docker/compose、真实云/DNS 上游/SMTP/收件箱/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR，PT-I7-05 等原人工状态保持。
+
+#### 整个分页操作总预算的研究边界（独立候选，未实施）
+
+- **问题与范围：** 两条 ECS 路径已有重复/环路硬失败；持续返回全新非空 token 的服务仍没有整个分页操作的总时限。当前单页显式 Connect 10s / Read 30s（SDK HTTP 总超时为二者之和）不等于整个分页预算。本轮不改变这些默认值、目标重试分类、API/schema 或云快照完整性合同，也不选择任意固定页数/资源上限。
+- **固定依赖源码证据：** ECS SDK v7.9.2 的两个 `Describe…WithOptions` 接口可按调用传入 `RuntimeOptions`，默认 wrapper 传空 options；OpenAPI v2.2.4 以 options 覆盖 Client 的 Connect/Read，但请求走 `dara.DoRequest`，这条调用链没有可直接传入的操作 context。底层 tea v1.5.2 虽另有 `DoRequestWithCtx`，上层当前调用未使用；不能以底层函数存在宣称已支持操作级取消。
+- **发现的额外取舍：** tea/dara 的 `getClientTag` 含 Read/Connect 超时值，`getDaraClient` 使用全局 `sync.Map` 缓存且该路径无淘汰。若每页把剩余预算精确到毫秒并传入 options，可能扩大 SDK 全局客户端键空间；也不能直接修改共享 `ClientPool` 中 Client 的 timeout/HttpClient，把扫描预算污染同步请求。该风险来自当前固定版本源码，不代表已观察到生产泄漏。
+- **候选比较：** ①页间检查总预算、保留固定单页超时：简单且不增加缓存键，但只能承诺允许在途单页完成的有界超出，不能宣称严格截止；还需核对 SDK 重试/退避和解码时间。②按剩余预算限制每页：更接近严格时限，必须解决上述客户端缓存问题、毫秒零值回退和跨页 SDK 重试预算，不能只缩短 Read；不使用“开 goroutine 等外层超时后返回”的泄漏方案。③隔离操作级 HTTP 客户端并传递 deadline：取消边界更清楚，但需额外验证 SDK 客户端隔离、Transport/响应体回收、代理/TLS 兼容及并发语义，范围大于本轮测试与文档补强。
+- **后续定型条件：** 先决定所需保证是允许单页有界超出的软预算还是严格操作 deadline，再确定正常账号规模与预算值、扫描和同步是否同值、预算耗尽是否进入整目标重试。推荐两路径各自独立计时、耗尽返回不完整错误且零半截结果、扫描保留缓存、S0/S1 禁止后续删除；S2 耗尽沿现有 failed 与保守残留合同。必须以持续新 token、末页挂起、耗尽后零下一页、正常多页、共享客户端不受污染与资源回收回归证明后再实施。总预算本轮仍未实施，原 P3-25 的本地修复结论不因此撤销，也不宣称这项扩展已完成。

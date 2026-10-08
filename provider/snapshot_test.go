@@ -323,3 +323,61 @@ func TestSnapshot_ECSNextTokenDoesNotAdvance(t *testing.T) {
 		t.Fatalf("快照失败时不得返回半截规则: %+v", rules)
 	}
 }
+
+// TestSnapshot_ECSTokenProgress 保护历史环路、token 原值与合法空页的分页语义。
+func TestSnapshot_ECSTokenProgress(t *testing.T) {
+	cases := []struct {
+		name      string
+		tokens    []string
+		emptyPage int
+		failed    bool
+	}{
+		{"history_cycle", []string{"T1", "T2", "T1"}, -1, true},
+		{"opaque_whitespace", []string{" T+/= ", "T+/=", ""}, -1, false},
+		{"opaque_case", []string{"Token", "token", ""}, -1, false},
+		{"empty_middle", []string{"T1", "T2", ""}, 1, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock, host := newMockCloudAPI(t)
+			mock.reply = func(i int, req recordedRequest) (int, string) {
+				// 没有保护的候选也会结束；判别力来自错误类型与请求次数，而非超时。
+				if i >= len(tc.tokens) {
+					return http.StatusBadRequest, `{"Code":"InvalidParameter","Message":"fixture stop"}`
+				}
+				want := ""
+				if i > 0 {
+					want = tc.tokens[i-1]
+				}
+				if got := req.query("NextToken"); got != want {
+					t.Errorf("请求 token=%q，预期原值 %q", got, want)
+				}
+				if i == tc.emptyPage {
+					return http.StatusOK, fmt.Sprintf(`{"Permissions":{"Permission":[]},"NextToken":%q}`, tc.tokens[i])
+				}
+				return http.StatusOK, ecsRulePage(fmt.Sprintf("sgr-%d", i), "1.1.1.1/32", tc.tokens[i])
+			}
+			snap, err := mockECS(t, host).GetSnapshot()
+			if tc.failed {
+				if !errors.Is(err, ErrSnapshotIncomplete) || len(snap.Rules) != 0 || snap.Revision != "" {
+					t.Fatalf("必须不带回半截快照: snapshot=%+v err=%v", snap, err)
+				}
+			} else {
+				wantRules := len(tc.tokens)
+				if tc.emptyPage >= 0 {
+					wantRules--
+				}
+				if err != nil || len(snap.Rules) != wantRules {
+					t.Fatalf("snapshot=%+v err=%v，预期 %d 条规则", snap, err, wantRules)
+				}
+				// 空中间页仍须取得末页，不能只以数量掩盖重复读取。
+				if snap.Rules[len(snap.Rules)-1].RuleID != "sgr-2" {
+					t.Fatalf("未取得末页规则: %+v", snap.Rules)
+				}
+			}
+			if got := len(mock.recorded()); got != len(tc.tokens) {
+				t.Fatalf("请求次数=%d，预期 %d", got, len(tc.tokens))
+			}
+		})
+	}
+}
