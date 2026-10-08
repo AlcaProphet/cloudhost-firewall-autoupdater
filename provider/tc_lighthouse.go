@@ -1,10 +1,12 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
@@ -60,11 +62,29 @@ func (p *TCLighthouse) TargetIndex() int {
 	return p.targetIndex
 }
 
+// 单次完整快照操作的额度，包含分页与版本重读；不代表整个目标或同步轮预算。
+const (
+	lighthouseSnapshotBudget      = 120 * time.Second
+	lighthouseSnapshotMaxRequests = 100
+)
+
 // GetSnapshot 查询当前所有防火墙规则（分页）并携带 FirewallVersion。
 //
 // Issue7 §6.1：FirewallVersion 必须进入快照；分页期间版本变化说明读取不一致，
 // 必须先重读整个快照，仍不一致则按快照不完整失败，绝不退化为无版本写入。
 func (p *TCLighthouse) GetSnapshot() (RuleSnapshot, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), lighthouseSnapshotBudget)
+	defer cancel()
+	return p.getSnapshotBounded(ctx, lighthouseSnapshotMaxRequests)
+}
+
+// getSnapshotBounded 复用同一上下文和查询额度；私有参数允许回归缩短预算，生产入口固定使用上述常量。
+func (p *TCLighthouse) getSnapshotBounded(ctx context.Context, maxRequests int) (RuleSnapshot, error) {
+	// 计数必须位于版本重读循环之外，重读不重新获得额度。
+	requests := 0
+	budgetError := func() error {
+		return fmt.Errorf("%w: Lighthouse 快照读取预算耗尽: %w", ErrSnapshotIncomplete, ctx.Err())
+	}
 	const maxVersionRetries = 2
 	offset := int64(0)
 	limit := int64(100)
@@ -75,12 +95,23 @@ func (p *TCLighthouse) GetSnapshot() (RuleSnapshot, error) {
 		firstVersion, lastVersion := "", ""
 
 		for {
+			if ctx.Err() != nil {
+				return RuleSnapshot{}, budgetError()
+			}
+			if requests >= maxRequests {
+				return RuleSnapshot{}, fmt.Errorf("%w: Lighthouse 快照查询次数达到上限", ErrSnapshotIncomplete)
+			}
+			requests++
 			req := lighthouse.NewDescribeFirewallRulesRequest()
 			req.InstanceId = common.StringPtr(p.instanceID)
 			req.Offset = common.Int64Ptr(offset)
 			req.Limit = common.Int64Ptr(limit)
 
-			resp, err := p.client.DescribeFirewallRules(req)
+			resp, err := p.client.DescribeFirewallRulesWithContext(ctx, req)
+			// SDK 网络错误不保留 Unwrap；自身预算耗尽时显式保留 deadline 身份，沿用整目标超时重试。
+			if ctx.Err() != nil {
+				return RuleSnapshot{}, budgetError()
+			}
 			if err != nil {
 				return RuleSnapshot{}, fmt.Errorf("查询防火墙规则失败: %w", err)
 			}
@@ -116,6 +147,9 @@ func (p *TCLighthouse) GetSnapshot() (RuleSnapshot, error) {
 			offset += limit
 		}
 
+		if ctx.Err() != nil {
+			return RuleSnapshot{}, budgetError()
+		}
 		if firstVersion == lastVersion {
 			return RuleSnapshot{Rules: allRules, Revision: lastVersion}, nil
 		}

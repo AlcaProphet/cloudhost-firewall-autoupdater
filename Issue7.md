@@ -442,6 +442,7 @@ total == ok + changed + failed + skipped
 ### 6.1 Tencent Lighthouse
 
 - `DescribeFirewallRules` 的 `FirewallVersion` 必须进入 snapshot；分页所有页必须属于同一次可证明一致的读取。若 API 无法保证跨页同版本，至少比较首末版本；变化则重读整个快照；
+- Lighthouse 完整快照额度（I8-10 / Q-16，2026-10-09 用户裁决 B）：每次 `GetSnapshot` 固定共用 120 秒请求 context 与最多 100 次 `DescribeFirewallRules` 分页查询，版本重读不重置额度；第 100 次若完整结束仍可成功，需要第 101 次才失败。额度耗尽返回空快照；次数耗尽返回 `ErrSnapshotIncomplete` 且不整目标重试，时间耗尽同时保留 `context.DeadlineExceeded` 并沿用现有超时重试，其他 SDK 错误链保持。S0/S1 不可信的 attempt 不得授权删除；后续可信 attempt 可恢复，S2 失败保持既有观察与计数合同。此为单次快照网络预算，不是整目标/整轮上限或强制终止 Go 计算的硬墙钟保证；不修改共享客户端 60 秒超时、SDK 重试配置、分页终止/版本保护或增删安全门；当前默认内部重试为零，未来改变 SDK 退避配置须重新验证取消。
 - Create 必须传 S0 `FirewallVersion`；版本不匹配重新整个目标 attempt；
 - Delete 必须传 S1 `FirewallVersion`；不得降级为不传版本；
 - Lighthouse 无稳定 RuleID，删除按完整规则值匹配。因此只有当候选 FunctionalKey 在 S1 全部规则中恰好出现一次、且该唯一项严格 Owned 时才可删除；重复、Owned/External 同 key 并存或字段不足一律 deferred；
@@ -1117,3 +1118,7 @@ SQLite 继续使用现有详情列，分行写累计确认操作、S1 候选来�
 范围为 7 个生产/前端文件、6 个测试文件与 5 个文档，共 18 文件。仓内 `TestI802_*` 覆盖部分删除→S2失败→S0/Add/S1早退、恢复、可信新零替换、unknown/S1零/S2零/估计零/NotFound失败、latest不完整与last_complete历史/完整空替换、混合四类目标、nullable JSON、Run→EventBus→SQLite，以及真实 HTTP 状态/SSE。Dashboard 新增 8 项真实组件 setup/模板渲染回归。六类仓外 Go overlay 与两类前端负向控制守护历史保留、零更新、估计分类、完整明细、汇总/事件、旧展示与零估计提示。
 
 门禁结果见 [Issue8.md 的 I8-02 当前实施补记](./Issue8.md#i8-02-当前实施补记2026-10-08方案-c)。真实浏览器、真实四云/通知链路、Linux/Docker/compose、原生 amd64/macOS 13 与当前 revision 远端 CI/GHCR 未执行；PT-I7-07 只补观察合同，人工未执行/免除状态不变。全仓默认 Go 门禁含既有真实 DNS 测试（I8-04），不把其包级 ok 或自行 skip 称本项真实上游验收。源码/测试/文档尚未提交。
+
+### 12.10 I8-10 Lighthouse 完整快照额度（2026-10-09，用户裁决 B）
+
+已按本聊天明确授权正式修复 `provider/tc_lighthouse.go`，同步 §6.1 与 AGENTS 的 120 秒 / 100 次查询合同；私有辅助方法只为回归传入短预算，不新增导出接口或生产配置项。两份正式回归覆盖 Provider 边界与真实 Lighthouse SDK → 正式目标链；正式门禁、外部负向控制、短预算目标重试验证与外部边界见 [Issue8 文末 I8-10 补记](./Issue8.md)。Q-12 的 ECS 部分仍未裁决，TotalCount/重复页、资源扫描与全目标预算独立；真实云和当前 revision 外部验收状态不变。

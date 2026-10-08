@@ -2105,3 +2105,14 @@ I8-03 的 Makefile `test`/`vet` 前置与配套依赖/故障回归已本地收�
 ### I8-08 后续独立候选：SWAS 扫描分页完整性（未修复、未定型）
 
 研究期真实 SDK→handler→临时 SQLite 对照确认：TotalCount=2 但短页仅返回一条时直接 success/count=1；TotalCount=0 但数组含一条时仍 success/count=1。结构校验修复不改变这两个行为。后续与 I8-11（ListFirewallRules 规则快照，属于不同调用路径）协调研究：总数可用时的终止/进度依据、跨页总数变化、提前空页/短页、重复 ID，以及资源增删期间的失败/重扫语义；不可直接复制 I8-11 现有判据。页数/总预算与 Q-12 同属需另定合同的研究方向，不在本次实施，不能把 Q-04 本地收口写成 SWAS 扫描完整性全面收口。
+
+## I8-10 当前实施补记（2026-10-09，用户裁决 B / Q-16）
+
+- **授权与基线**：用户选择 B，经本聊天仓库外候选验证后明确授权正式修复与文档同步。实施前 `main == 本地 origin/main == 36f77454107cc6fa6b28e2cb80c2cb8e5de41af3`，工作树与暂存区干净；未 fetch、提交或 push。
+- **实际范围**：唯一生产逻辑文件 `provider/tc_lighthouse.go`；新增 `provider/lighthouse_budget_test.go`、`syncer/lighthouse_budget_test.go`，同步 AGENTS/Issue7/Issue8/审计，共七文件。正式入口固定 120 秒 context 与最多 100 次 DescribeFirewallRules 分页查询；私有辅助方法只允许回归传入短预算，不新增导出接口或生产配置项。两个额度位于版本重读循环之外；第 100 次返回终止页且版本一致时成功，需要第 101 次才失败。查询前、SDK 返回后与快照成功返回前检查自身 context，SDK 使用 WithContext，不修改共享客户端超时。
+- **失败与安全合同**：额度耗尽返回空快照，不带回累计规则；次数耗尽为 ErrSnapshotIncomplete，固定错误不命中现有重试；时间耗尽同时保留 ErrSnapshotIncomplete 与 context.DeadlineExceeded，避免腾讯 SDK 无 Unwrap 的网络错误形状丢失自身 deadline 身份，沿用现有整目标重试。未到自身 deadline 的普通 SDK 错误继续保留原错误链、类型与分类。S0/S1 不可信的 attempt 不授权删除；后续可信 attempt 可以恢复。S2 失败保持既有已确认删除和观察合同，不抹去计数。
+- **正式回归**：查询次数、终止页边界、版本重读共用额度、Offset/Limit、响应头/响应体挂起、跨重读总时间、共享 SDK client 请求互不影响、普通 SDK 错误类型保留、查询前预算已过期均有仓内回归；正式默认入口实际执行 100 次上限。真实 Lighthouse SDK → syncAll → 当前目标链分别证明 S0 次数失败为 100/0/0 次 Describe/Add/Delete、S1 为 101/1/0、S2 为 102/1/1 且 failed，正常对照 3/1/1 且 success。`go test ./provider ./syncer -run '^(TestI810|TestSnapshot_Lighthouse)' -race -count=20 -timeout=2m` 两包均通过。
+- **正式负向控制**：六类仓库外 source overlay 均按正式断言变红，不依赖测试超时或编译失败判定：移除次数上限实际查询 101 次后遇到夹具哨兵；重读时重置计数错误返回 101 条成功快照；移除 HTTP context 挂起请求约 1 秒才返回；重读重置 deadline 约 866ms 才结束（共享预算为 500ms）；移除 deadline 错误身份不再满足 errors.Is；达到次数上限后错误返回 300 条半截成功快照。故障源码与日志只在仓库外，不混入正式代码。
+- **目标超时补充证据**：仓库外 overlay 仅把正式常量 120 秒缩短为 100ms，并挂入本聊天的本地真实 SDK 目标链夹具；S0/S1 持续超时保留三次整目标重试且零删除，S1 保留一次已确认新增；S2 超时后重试读取到完整干净状态可恢复 success，保持一次已确认删除且不重复删除。该组 race 20 轮通过，属于补充外部 overlay 证据，不冒称其测试文件已入仓，也不宣称专门等待默认 120 秒进行了墙钟验收。
+- **完整门禁**：正式 `make all` 退出 0，执行真实 npm ci / vue-tsc / Vite build、go vet ./...、全仓 12 包完整 go test ./... -race -v 一轮、产品构建。另行 go build ./...、受影响 Go 文件 gofmt 检查与 git diff --check 通过。单轮全量不外推全仓长期稳定。npm ci 仍提示既有 3 项 high，本轮未独立 audit 或升级依赖，不登记为漏洞检查通过。
+- **边界与剩余事项**：Go 1.27.1 darwin/arm64、Node 26.7.0。未执行 Linux/Docker/compose、真实云、浏览器、通知外部链路或当前 revision 远端 CI/GHCR，真实验收清单状态不变。120 秒是一次快照网络分页预算，不是全目标/整轮上限，也不是强制终止 Go 计算的硬墙钟保证；当前 SDK 默认内部重试为零，未来改变 SDK 退避配置需复核取消。保留现有短页终止、首末版本保护、单页 60 秒客户端超时、isRetryable、增删安全门、API/schema/前端/依赖与调度；TotalCount、重复页/规则、集合结构完整性、资源扫描及全目标预算独立。Q-16 已裁决且 I8-10 本地收口；Q-12 ECS 部分保持未决。源码、测试与本轮文档尚未提交或推送。

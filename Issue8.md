@@ -138,9 +138,11 @@
 - **历史范围**：P3-26 只覆盖 ECS 扫描路径；当时审计与 `AGENTS.md` 均未声明 SWAS 扫描已修。与 `provider/scan.go:217-239`（ECS 路径返回 `ErrSnapshotIncomplete`）**策略相反**。
 - **处置见 §2 Q-04**。
 
-#### I8-10【低·无界循环】Lighthouse `GetSnapshot` 无页数上限 / 进度守卫　`①`
+#### I8-10【已本地修复·原低无界循环】Lighthouse `GetSnapshot` 无页数上限 / 进度守卫　`①`
 
-- **现象**：`provider/tc_lighthouse.go:67-124` 仅有 Offset 递增与"本页不足一页即结束"两个判据，**无页数上限或整个分页操作的时间预算**（Offset 会递增，不能直接套用 token 校验）；服务端持续返回满页时循环无界（仅受网络与 SDK 超时约束）。
+- **当前状态（2026-10-09，用户裁决 B / Q-16）**：完整快照共用 120 秒 context 与最多 100 次分页查询，两个额度包含版本重读；额度耗尽不返回半截快照，时间耗尽保留超时重试，次数耗尽不整目标重试。正式证据见文末；以下保留修复前历史。
+
+- **历史现象**：`provider/tc_lighthouse.go:67-124` 仅有 Offset 递增与"本页不足一页即结束"两个判据，**无页数上限或整个分页操作的时间预算**（Offset 会递增，不能直接套用 token 校验）；服务端持续返回满页时循环无界（仅受网络与 SDK 超时约束）。
 - **范围**：P3-25 与"分页总预算"候选均只覆盖 ECS 两条路径；Lighthouse 未被任何 finding 覆盖，`AGENTS.md` 亦未要求。属**同类保护不对称**（ECS 同步与扫描有历史 token 集合，但均无页数上限；100 页上限属于 SWAS `GetSnapshot`）。
 
 #### I8-11【低·完整性判定】SWAS 分页：跨页更小/为 0 的 `TotalCount` 会提前 `proven`　`②`
@@ -240,7 +242,7 @@
 | I8-102 | 已按 B 本地修复；Q-15 已裁决 | 逐项 30 秒预算＋等待前请求断言＋失败路径夹具清理；总命令硬上限/其他入口/CI 接线仍独立 | 正式 npm 入口、守卫与清理负向控制、超时/后续哨兵，见文末；180s/15s 为历史 |
 | I8-09 | 已按 A 本地修复；真实云/浏览器未验收 | typed 页解码 + 整次失败，结构异常不覆盖缓存；SDK 错误分类保持，显式 [] 合法 | TestDecodeTencentScanPage / TestScanTencentErrorClassification / TestScanTencentCacheIntegrity；92 场景 race 20 轮与五类正式负向控制见文末 |
 | I8-08 | 已按 A 本地修复；外部未验收 | 结构异常整次 nil/error，旧缓存保留；显式空数组合法，SDK 错误分类与 HTTP 契约保持；分页策略独立 | 正式 typed helper、真实 SDK→handler→SQLite 专项与文末实施补记 |
-| I8-10 | 加固候选，低；服务持续满页 | 定整操作预算／页数或进度策略；本地持续满页必须有界失败且无删除，不用 ECS 有上限作依据 | Lighthouse67–124源码；ECS只有历史token守卫 |
+| I8-10 | 已按 B 本地修复；Q-16 已裁决，外部未验收 | 120 秒＋100 次查询跨版本重读共享；失败返回空快照；S0/S1 失败 attempt 零删除；后续可信 attempt 可恢复 | 正式 Provider / Lighthouse SDK→目标链回归与负向控制见文末；Q-12 ECS 部分保持未决 |
 | I8-11 | 待改，低；云页统计自相矛盾 | 不允许后页小 TotalCount 降级完整性证明；测3→1、0+非空、正常稳定分页及失败零删除 | SWAS95–113源码；历史异常响应探针，真实云未复现 |
 | I8-17b | 待改，低；配置裸 IPv6 上游 | JoinHostPort 前识别已有端口与IPv6；本地IPv4/IPv6/主机名/显式端口矩阵，不访问外部DNS | resolver33–35及 SplitHostPort 地址行为；本次 `go test ./dns -short -run 'TestNewResolver_PortAppend|TestHasPort|TestResolvedIP_CIDR' -count=1` PASS（0.696s），仅构造/格式，非整包或IPv6实际解析通过 |
 | I8-05 | 待改，中低；同配置频繁保存 | 保存保留剩余截止时间；虚拟时间多次Wake及url/启用/间隔变化、Stop取消，真实Kuma另验 | push152–165/deps168源码；400ms吞心跳是历史本地mock |
@@ -281,10 +283,11 @@
 | **Q-09（已裁决细化 A）** | **I8-113 / I8-48** Webhook 未配置真值源 | 用户确认空渠道＋单选按钮、version 3 保留、不要求旧版导入空渠道包；初始化/reset 显式未选择，历史缺列主行仅转换一次；关闭可空、启用必选、非法渠道发送前拒绝。I8-48 仅为该行索引，不扩大到其他告警默认值 | `config.DefaultWebhookChannel`、`defaultWebhookRowSQL`、`NormalizeAlertWebhook`、GET/导出/通知器/Alerts.vue；正式证据见文末 |
 | **Q-10** | **I8-17d / I8-41** `Syncer.Pause()/Resume()` 的去留与并发语义（"是否保留"与"保留后如何正确"是两个问题） | ①设计同锁原子更新辅助方法；**不得持 s.mu 直接调用 ApplyState**，后者自己加锁会死锁 ②改非导出仅减少误用面，不修包内丢失更新③登记为"已知残留风险（当前无生产调用方）"并在 `AGENTS.md` 注明 | `syncer/syncer.go:365-390`、`webui/api/deps.go` |
 | **Q-11** | **I8-31 / TODO-003** CVM `DescribeSecurityGroupPolicies` 调用失败的错误分类 | 现状区分 SDK 调用失败与成功响应结构不完整是合理分类。保留 SDK 错误链及现有 retry；若要统一包装，须先验证错误分类和重试后果，不默认作为缺陷修复 | `provider/tc_cvm.go:248-250` vs `:254/:262` |
-| **Q-12** | **I8-38** 分页操作总预算（**未实施的研究候选**；实现前先定操作预算、失败类型与契约边界） | ①页间检查总预算（只能限制继续起下一页，不硬限制已在途页的耗时）②按剩余预算限制每页（**机制上必然**扩大 SDK 全局池键空间，`dara/core.go:71` 池无 Delete/TTL/容量，且 `:349-357` 每请求覆写共享 `httpClient.Timeout` 存在同 tag 并发覆写窗口 ⇒ 不建议直接实施）③隔离操作级 HTTP 客户端（需自证隔离与回收） | `provider/ali_ecs.go`、`provider/scan.go`、SDK `RuntimeOptions`、`getDaraClient` 全局 `sync.Map` |
+| **Q-12（ECS 部分未裁决；Lighthouse 见 Q-16）** | **I8-38** 分页操作总预算（**未实施的研究候选**；实现前先定操作预算、失败类型与契约边界） | ①页间检查总预算（只能限制继续起下一页，不硬限制已在途页的耗时）②按剩余预算限制每页（**机制上必然**扩大 SDK 全局池键空间，`dara/core.go:71` 池无 Delete/TTL/容量，且 `:349-357` 每请求覆写共享 `httpClient.Timeout` 存在同 tag 并发覆写窗口 ⇒ 不建议直接实施）③隔离操作级 HTTP 客户端（需自证隔离与回收） | `provider/ali_ecs.go`、`provider/scan.go`、SDK `RuntimeOptions`、`getDaraClient` 全局 `sync.Map` |
 | **Q-13** | **I8-42** 清理类改动**是否实施**（本身不是缺陷，仅为"可安全清理清单"） | 原引用的 §4 清单已从本文移除，不能仅凭八/五/二/十四等历史计数承诺安全或零成本。具体符号清单缺失，待逐符号列出调用者、兼容边界、测试影响后再决定；本次未捏造或实施清理 | `config/config.go`、`notifier/bus.go`、`provider/provider.go`、前端 `types.ts`/composables |
 | **Q-14（已裁决）** | **I8-12 / I8-13** 请求阶段与历史预览保留策略 | 用户 2026-10-08 授权推荐 A：四请求阶段，重试清空旧结果；失败持久提示，空结果中性展示并保留 warnings；请求完成不代表全部目标正常；时间只显示最近请求结束，不保留历史预览 | 三个前端生产文件、专用回归/命令入口与五份文档；无后端/API/schema/依赖改动；正式证据见文末 |
 | **Q-15（已裁决）** | **I8-102** 告警测试预算与失败收尾范围 | 用户 2026-10-08 授权推荐 B：仅 test:alerts 逐项 30 秒原生超时，关键请求断言提前，t.after 结算挂起夹具并等待任务；不新增进程监督、不统一其他五入口或接入 CI | package.json 与 alerts-load.test.mjs，同步 AGENTS/README/本文/审计共六文件；正式证据见文末 |
+| **Q-16（已裁决、本地修复）** | **I8-10** Lighthouse 完整快照额度 | 用户 2026-10-09 选择 B 并经候选验证后授权正式修复：120 秒 context＋最多 100 次分页查询，跨版本重读共享；次数耗尽为不可重试 ErrSnapshotIncomplete，时间耗尽同时保留 context.DeadlineExceeded 并沿用整目标重试 | 仅 Lighthouse 快照生产逻辑、两份回归与四份文档；不关闭 Q-12 ECS 部分，不新增 TotalCount/重复页/全目标预算合同 |
 
 ---
 
@@ -499,3 +502,14 @@
 ### I8-08 后续独立候选：SWAS 扫描分页完整性（未修复、未定型）
 
 研究期真实 SDK→handler→临时 SQLite 对照确认：TotalCount=2 但短页仅返回一条时直接 success/count=1；TotalCount=0 但数组含一条时仍 success/count=1。结构校验修复不改变这两个行为。后续与 I8-11（ListFirewallRules 规则快照，属于不同调用路径）协调研究：总数可用时的终止/进度依据、跨页总数变化、提前空页/短页、重复 ID，以及资源增删期间的失败/重扫语义；不可直接复制 I8-11 现有判据。页数/总预算与 Q-12 同属需另定合同的研究方向，不在本次实施，不能把 Q-04 本地收口写成 SWAS 扫描完整性全面收口。
+
+## I8-10 当前实施补记（2026-10-09，用户裁决 B / Q-16）
+
+- **授权与基线**：用户选择 B，经本聊天仓库外候选验证后明确授权正式修复与文档同步。实施前 `main == 本地 origin/main == 36f77454107cc6fa6b28e2cb80c2cb8e5de41af3`，工作树与暂存区干净；未 fetch、提交或 push。
+- **实际范围**：唯一生产逻辑文件 `provider/tc_lighthouse.go`；新增 `provider/lighthouse_budget_test.go`、`syncer/lighthouse_budget_test.go`，同步 AGENTS/Issue7/Issue8/审计，共七文件。正式入口固定 120 秒 context 与最多 100 次 DescribeFirewallRules 分页查询；私有辅助方法只允许回归传入短预算，不新增导出接口或生产配置项。两个额度位于版本重读循环之外；第 100 次返回终止页且版本一致时成功，需要第 101 次才失败。查询前、SDK 返回后与快照成功返回前检查自身 context，SDK 使用 WithContext，不修改共享客户端超时。
+- **失败与安全合同**：额度耗尽返回空快照，不带回累计规则；次数耗尽为 ErrSnapshotIncomplete，固定错误不命中现有重试；时间耗尽同时保留 ErrSnapshotIncomplete 与 context.DeadlineExceeded，避免腾讯 SDK 无 Unwrap 的网络错误形状丢失自身 deadline 身份，沿用现有整目标重试。未到自身 deadline 的普通 SDK 错误继续保留原错误链、类型与分类。S0/S1 不可信的 attempt 不授权删除；后续可信 attempt 可以恢复。S2 失败保持既有已确认删除和观察合同，不抹去计数。
+- **正式回归**：查询次数、终止页边界、版本重读共用额度、Offset/Limit、响应头/响应体挂起、跨重读总时间、共享 SDK client 请求互不影响、普通 SDK 错误类型保留、查询前预算已过期均有仓内回归；正式默认入口实际执行 100 次上限。真实 Lighthouse SDK → syncAll → 当前目标链分别证明 S0 次数失败为 100/0/0 次 Describe/Add/Delete、S1 为 101/1/0、S2 为 102/1/1 且 failed，正常对照 3/1/1 且 success。`go test ./provider ./syncer -run '^(TestI810|TestSnapshot_Lighthouse)' -race -count=20 -timeout=2m` 两包均通过。
+- **正式负向控制**：六类仓库外 source overlay 均按正式断言变红，不依赖测试超时或编译失败判定：移除次数上限实际查询 101 次后遇到夹具哨兵；重读时重置计数错误返回 101 条成功快照；移除 HTTP context 挂起请求约 1 秒才返回；重读重置 deadline 约 866ms 才结束（共享预算为 500ms）；移除 deadline 错误身份不再满足 errors.Is；达到次数上限后错误返回 300 条半截成功快照。故障源码与日志只在仓库外，不混入正式代码。
+- **目标超时补充证据**：仓库外 overlay 仅把正式常量 120 秒缩短为 100ms，并挂入本聊天的本地真实 SDK 目标链夹具；S0/S1 持续超时保留三次整目标重试且零删除，S1 保留一次已确认新增；S2 超时后重试读取到完整干净状态可恢复 success，保持一次已确认删除且不重复删除。该组 race 20 轮通过，属于补充外部 overlay 证据，不冒称其测试文件已入仓，也不宣称专门等待默认 120 秒进行了墙钟验收。
+- **完整门禁**：正式 `make all` 退出 0，执行真实 npm ci / vue-tsc / Vite build、go vet ./...、全仓 12 包完整 go test ./... -race -v 一轮、产品构建。另行 go build ./...、受影响 Go 文件 gofmt 检查与 git diff --check 通过。单轮全量不外推全仓长期稳定。npm ci 仍提示既有 3 项 high，本轮未独立 audit 或升级依赖，不登记为漏洞检查通过。
+- **边界与剩余事项**：Go 1.27.1 darwin/arm64、Node 26.7.0。未执行 Linux/Docker/compose、真实云、浏览器、通知外部链路或当前 revision 远端 CI/GHCR，真实验收清单状态不变。120 秒是一次快照网络分页预算，不是全目标/整轮上限，也不是强制终止 Go 计算的硬墙钟保证；当前 SDK 默认内部重试为零，未来改变 SDK 退避配置需复核取消。保留现有短页终止、首末版本保护、单页 60 秒客户端超时、isRetryable、增删安全门、API/schema/前端/依赖与调度；TotalCount、重复页/规则、集合结构完整性、资源扫描及全目标预算独立。Q-16 已裁决且 I8-10 本地收口；Q-12 ECS 部分保持未决。源码、测试与本轮文档尚未提交或推送。

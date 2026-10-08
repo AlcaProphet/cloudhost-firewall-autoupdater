@@ -107,6 +107,8 @@
 
 **I8-08 SWAS 资源扫描后续修复状态（2026-10-08，方案 A）**：用户确认研究推荐并授权正式修复及文档同步；实施前 `main / d3b3c4d65dfc34c4a35d843052f9afef7374aa09`、本地 `origin/main / bf2730320bbb53df5f6345fbfb9b7933b135b101`、ahead 2，工作树/暂存区干净，未 fetch。唯一生产文件 provider/scan.go 新增私有 typed 页解码并接入 SWAS 扫描；响应/Body/集合/元素/ID 异常整次 nil/error，保留旧缓存，零计数不豁免缺集合，显式空数组合法，名称可空、原值保持，SDK 错误分类不变。两份新增测试与本文/Issue8/审计/ProdTestList，共七文件。定向 `go test ./provider ./webui/api -run '^(TestDecodeSWASScanPage|TestScanSWAS)' -race -count=20`、五类正式 overlay 负向控制、真实 `make frontend`（npm ci + vue-tsc/Vite build）、全仓 12 包 `go test ./... -race -count=1`、`go vet ./...`、`go build ./...`、受影响 Go 文件 gofmt 检查与 `git diff --check` 均本地通过。全仓一轮包含受影响两包完整回归，单轮全量不外推长期稳定。本机 Go 1.27.1 darwin/arm64。npm ci/build 成功，但额外 npm audit 报 3 条 high（两个底层公告），独立记录于 Issue8 补记，未改依赖。Q-04 两部分本地收口；SWAS 总数一致性/短页/重复页与分页预算保持独立研究，不外推分页完整性。真实云/浏览器、Linux/Docker/compose 与当前 revision 远端 CI/GHCR 未执行，PT-AUDIT-05 保持未执行；源码/测试/本轮文档尚未提交或推送。
 
+**I8-10 Lighthouse 完整快照后续修复状态（2026-10-09，用户裁决 B / Q-16）**：实施前 main 与本地 origin/main 均为 `36f7745`、工作树/暂存区干净。唯一生产逻辑文件 tc_lighthouse.go 固定 120 秒 context＋100 次分页查询，包含版本重读；额度耗尽返回空快照，次数耗尽不整目标重试，时间耗尽保留 deadline 身份并沿用超时重试。两份正式回归与本文/Issue7/Issue8/审计共七文件；定向两包 race 20 轮、六类正式负向控制、仓库外短预算真实 SDK 目标重试 race 20 轮、真实 make all（前端构建、全仓 12 包 race 一轮、vet、产品构建）、go build ./...、格式/diff-check 均本地通过，正式证据见 Issue8 文末。补充短预算目标测试在仓库外，不冒称已入仓或专门等待默认 120 秒验收。npm ci 仍提示既有三项 high，未独立 audit/升级。Q-12 ECS 部分、TotalCount/重复页/集合完整性与全目标预算独立；真实云/浏览器/Linux/Docker/通知/远端 CI 未执行，不外推外部通过或全仓长期稳定。尚未提交/推送，未 fetch。
+
 ## 二、核心编码原则
 
 ### 简单轻量化
@@ -206,6 +208,7 @@
 ## 六、乐观锁与重试
 
 - 每次写入前重新拉取最新规则状态；每次重试都从整个云目标的 Describe/规划重新开始，不沿用上一 attempt 的删除定位
+- Lighthouse 完整快照额度（I8-10 / Q-16，2026-10-09 用户裁决 B）：每次 `GetSnapshot` 固定共用 120 秒请求 context 与最多 100 次 `DescribeFirewallRules` 分页查询，版本重读不重置额度；第 100 次若完整结束仍可成功，需要第 101 次才失败。额度耗尽返回空快照；次数耗尽返回 `ErrSnapshotIncomplete` 且不整目标重试，时间耗尽同时保留 `context.DeadlineExceeded` 并沿用现有超时重试，其他 SDK 错误链保持。S0/S1 不可信的 attempt 不得授权删除；后续可信 attempt 可恢复，S2 失败保持既有观察与计数合同。此为单次快照网络预算，不是整目标/整轮上限或强制终止 Go 计算的硬墙钟保证；不修改共享客户端 60 秒超时、SDK 重试配置、分页终止/版本保护或增删安全门；当前默认内部重试为零，未来改变 SDK 退避配置须重新验证取消。
 - Lighthouse 和 CVM 的增删必须传入与当次快照一致的 `FirewallVersion` / `Version`；版本不匹配时重新 Describe/规划，不得降级为无版本保护删除
 - 写入失败自动重试（最多 3 次，指数退避）
 - SWAS 与 ECS 使用当次重读快照中的稳定 RuleID 删除；Lighthouse 只在功能 key 唯一且当前 TAG 归属唯一时删除；CVM 使用同一快照的 `PolicyIndex + Version` 定位并避免逐条删除导致索引漂移
