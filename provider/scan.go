@@ -134,7 +134,7 @@ func scanAliSWAS(region string, pool *ClientPool) ([]ScannedCloudResource, error
 	}
 	s := client.(*swas.Client)
 
-	var resources []ScannedCloudResource
+	resources := make([]ScannedCloudResource, 0)
 	pageNumber := int32(1)
 	pageSize := int32(100)
 	for {
@@ -147,21 +147,39 @@ func scanAliSWAS(region string, pool *ClientPool) ([]ScannedCloudResource, error
 		if err != nil {
 			return nil, fmt.Errorf("查询实例列表失败: %w", err)
 		}
-		body := resp.Body
-		if body == nil || body.Instances == nil {
-			break
+		page, err := decodeSWASScanPage(resp, region)
+		if err != nil {
+			return nil, err
 		}
-		for _, inst := range body.Instances {
-			resources = append(resources, ScannedCloudResource{
-				ResourceID: strVal(inst.InstanceId),
-				Name:       strVal(inst.InstanceName),
-				Region:     region,
-			})
-		}
-		if int32(len(body.Instances)) < pageSize {
+		resources = append(resources, page...)
+		// 返回数量不足一页时结束；结构异常已由页解码拒绝。
+		if int32(len(page)) < pageSize {
 			break
 		}
 		pageNumber++
+	}
+	return resources, nil
+}
+
+// decodeSWASScanPage 校验并转换实例页；缺失集合失败，显式空数组合法。
+// TotalCount 为零不豁免结构校验，名称允许为空，资源 ID 与名称保持原值。
+func decodeSWASScanPage(resp *swas.ListInstancesResponse, region string) ([]ScannedCloudResource, error) {
+	if resp == nil || resp.Body == nil {
+		return nil, fmt.Errorf("%w: SWAS 资源扫描响应缺失", ErrSnapshotIncomplete)
+	}
+	if resp.Body.Instances == nil {
+		return nil, fmt.Errorf("%w: SWAS 资源扫描集合缺失", ErrSnapshotIncomplete)
+	}
+	resources := make([]ScannedCloudResource, 0, len(resp.Body.Instances))
+	for _, inst := range resp.Body.Instances {
+		if inst == nil || strVal(inst.InstanceId) == "" {
+			return nil, fmt.Errorf("%w: SWAS 资源扫描资源标识缺失", ErrSnapshotIncomplete)
+		}
+		resources = append(resources, ScannedCloudResource{
+			ResourceID: strVal(inst.InstanceId),
+			Name:       strVal(inst.InstanceName),
+			Region:     region,
+		})
 	}
 	return resources, nil
 }

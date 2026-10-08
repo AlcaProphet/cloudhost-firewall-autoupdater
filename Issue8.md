@@ -1,6 +1,7 @@
 # Issue8.md — 现存缺陷台账（2026-10-08 复核整理版）
 
-> **I8-09 后续实施（2026-10-08）**：已按用户确认的 A 本地修复腾讯两条资源扫描路径，结构异常失败且不覆盖缓存；Q-04 仅腾讯部分已裁决，SWAS/I8-08 仍待处理。正式证据见文末；真实云/浏览器未执行，本轮尚未提交或推送。
+> **I8-08 后续实施（2026-10-08）**：已按用户确认的 A 本地修复 SWAS 资源页结构异常，失败不覆盖缓存；Q-04 两部分均已裁决并本地修复，分页完整性另行研究。正式证据见文末；真实云/浏览器未执行，本轮尚未提交或推送。
+> **I8-09 前序实施（2026-10-08，已提交 `d3b3c4d`）**：腾讯两条资源扫描结构异常失败且不覆盖缓存；以下 I8-09 文末补记保留当时状态，当前 SWAS 状态见 I8-08 补记。
 
 > **I8-04 后续实施（2026-10-08）**：已按定型 B 完成本地 DNS 回归与显式真实测试入口，Q-06 已裁决；默认完整门禁不再依赖真实 DNS 上游，正式证据与外部边界见文末。本轮尚未提交或推送。
 
@@ -129,11 +130,12 @@
 - **对照**：同步 Provider 同类路径**已守卫**（`provider/tc_lighthouse.go:88`、`provider/tc_cvm.go:82`）。属**同类保护不对称**。
 - **处置见 §2 Q-04**。
 
-#### I8-08【低·数据正确性】SWAS 资源扫描对结构缺失静默截断并覆盖缓存　`②`
+#### I8-08【已本地修复·原低数据正确性】SWAS 资源扫描对结构缺失静默截断并覆盖缓存　`②`
 
-- **现象**：`provider/scan.go:153-156`（`scanAliSWAS`）对 `body`/`Instances` 缺失直接 `break`，返回**累计结果 + `nil` error** → `webui/api/scan.go:66` 覆盖写缓存。
+- **当前状态（2026-10-08，方案 A）**：SWAS 新增私有 typed 页解码；响应/Body/Instances 缺失或 null、null 元素与缺失/null/空 ID 整次失败，返回 nil/error 并保留旧缓存，显式空数组合法；零计数不豁免缺失集合。SDK 错误分类与 handler 契约保持，名称可空、原值保留。正式证据见文末。以下为修复前历史。
+- **历史现象**：`provider/scan.go:153-156`（`scanAliSWAS`）对 `body`/`Instances` 缺失直接 `break`，返回**累计结果 + `nil` error** → `webui/api/scan.go:66` 覆盖写缓存。
 - **历史实测（真实 SDK → handler → 临时 SQLite）**：首页 `{}` → `success=true count=0`，**旧缓存被清空**；首页 100 条满页 + 次页 `{}` → `success=true count=100`，**旧缓存被截断列表替换**。
-- **范围**：P3-26 只覆盖 ECS 扫描路径；审计与 `AGENTS.md` 均未声明 SWAS 扫描已修。与 `provider/scan.go:217-239`（ECS 路径返回 `ErrSnapshotIncomplete`）**策略相反**。
+- **历史范围**：P3-26 只覆盖 ECS 扫描路径；当时审计与 `AGENTS.md` 均未声明 SWAS 扫描已修。与 `provider/scan.go:217-239`（ECS 路径返回 `ErrSnapshotIncomplete`）**策略相反**。
 - **处置见 §2 Q-04**。
 
 #### I8-10【低·无界循环】Lighthouse `GetSnapshot` 无页数上限 / 进度守卫　`①`
@@ -237,7 +239,7 @@
 | I8-04 | 已按定型 B 本地修复；Q-06 已裁决 | 默认本地完整回归，真实测试显式 dnsintegration/223.5.5.5；CI 只编译；失败必须 FAIL | 正式 DNS race 20 轮、禁止非回环外发 race 20 轮、八类行为控制与原样 make all；见文末，真实上游未执行 |
 | I8-102 | 已按 B 本地修复；Q-15 已裁决 | 逐项 30 秒预算＋等待前请求断言＋失败路径夹具清理；总命令硬上限/其他入口/CI 接线仍独立 | 正式 npm 入口、守卫与清理负向控制、超时/后续哨兵，见文末；180s/15s 为历史 |
 | I8-09 | 已按 A 本地修复；真实云/浏览器未验收 | typed 页解码 + 整次失败，结构异常不覆盖缓存；SDK 错误分类保持，显式 [] 合法 | TestDecodeTencentScanPage / TestScanTencentErrorClassification / TestScanTencentCacheIntegrity；92 场景 race 20 轮与五类正式负向控制见文末 |
-| I8-08 | 待改，低；异常 SWAS 页被当成功 | 缺失结构保守失败、有效空集合保留合法语义；首页/中页异常保留缓存，完整/零资源可覆盖 | scan153–156与API66源码；历史临时SQLite链路 |
+| I8-08 | 已按 A 本地修复；外部未验收 | 结构异常整次 nil/error，旧缓存保留；显式空数组合法，SDK 错误分类与 HTTP 契约保持；分页策略独立 | 正式 typed helper、真实 SDK→handler→SQLite 专项与文末实施补记 |
 | I8-10 | 加固候选，低；服务持续满页 | 定整操作预算／页数或进度策略；本地持续满页必须有界失败且无删除，不用 ECS 有上限作依据 | Lighthouse67–124源码；ECS只有历史token守卫 |
 | I8-11 | 待改，低；云页统计自相矛盾 | 不允许后页小 TotalCount 降级完整性证明；测3→1、0+非空、正常稳定分页及失败零删除 | SWAS95–113源码；历史异常响应探针，真实云未复现 |
 | I8-17b | 待改，低；配置裸 IPv6 上游 | JoinHostPort 前识别已有端口与IPv6；本地IPv4/IPv6/主机名/显式端口矩阵，不访问外部DNS | resolver33–35及 SplitHostPort 地址行为；本次 `go test ./dns -short -run 'TestNewResolver_PortAppend|TestHasPort|TestResolvedIP_CIDR' -count=1` PASS（0.696s），仅构造/格式，非整包或IPv6实际解析通过 |
@@ -271,7 +273,7 @@
 | **Q-01（已裁决）** | **I8-01** `coverage_ready` 的修法 | 用户 2026-10-08 确认 A：`implementable > 0 && covered == implementable && !in.AddStateUnknown`。保留可实施子集覆盖语义；不新增多状态字段。混合目标仍可 true + partial | 唯一生产逻辑改动为 `provider/plan.go`；同步字段合同与回归，详见文末补记 |
 | **Q-02（已裁决）** | **I8-02** failed 路径的观察表达 | 用户选择 C + 追加字段保留旧整数类型，并分别保留 latest/last_complete；历史来源、估计、未知明确区分，可信零可替换；已授权正式修复 | 目标事件、RoundSummary、SQLite 详情、Dashboard 与字段合同；无 schema/配置包迁移；实施见文末与 Issue7 §12.9 |
 | **Q-03（已裁决）** | **I8-18** GET 告警快照一致性 | 用户 2026-10-08 确认 A：只用一个只读事务读取四对象，复用现有私有 loader，保持 HTTP 默认值/字段/安全错误语义；不复用完整业务快照、不引入编辑版本冲突机制。已授权并本地实施 | 2 个生产、2 个新增测试及 4 个文档，共 8 文件；前端不变，正式证据见文末补记 |
-| **Q-04（腾讯部分已裁决，SWAS 待裁决）** | **I8-09 / I8-08 分项处理** | 用户确认 I8-09 为 A 并授权正式修复：腾讯结构异常返回 ErrSnapshotIncomplete、整次失败、不覆盖缓存；明确零计数不豁免缺失集合，已本地实施。I8-08 SWAS 尚未裁决/修复，仍保留①保守失败②最小守卫③接受现状的候选；不关闭整个 Q-04 | 腾讯仅 provider/scan.go 两个页解码/循环，handler 契约不变；SWAS 范围保持 |
+| **Q-04（两部分已裁决、本地修复）** | **I8-09 / I8-08 分项处理** | 用户分别确认腾讯与 SWAS 为 A 并授权修复：结构异常返回 ErrSnapshotIncomplete、整次 nil/error、保留旧缓存；显式空数组合法，零计数不豁免缺失集合。腾讯已提交 d3b3c4d，SWAS 本轮本地实施。真实零资源格式/浏览器仍未验收；分页完整性另行研究 | 唯一生产文件 provider/scan.go，新增 typed 页解码与既有循环接入；handler/Store/分页策略保持 |
 | **Q-05（已裁决）** | **I8-03** 构建入口契约 | 用户 2026-10-08 选择 A 并授权实施：test/vet/build 共享真实 `.PHONY frontend` 前置；完整核验推荐一次 make all，快速裸 Go 检查显式使用已准备好的 dist；不引入增量缓存 | Makefile 两条前置、一份回归脚本与 README/AGENTS/本文/审计共六文件；正式证据见文末 |
 | **Q-06（已裁决）** | **I8-04** `dns` 包真实外网依赖 | 用户 2026-10-08 定型 B，撤回默认真实上游：默认本地回环 DNS，保留完整测试；真实层用 dnsintegration 标签固定 223.5.5.5，错误严格 FAIL，-short 冲突查询前报错；CI 只编译不执行。已授权并本地实施 | 三份 DNS 测试、go.mod 直接测试依赖标记、workflow 与四文档共九文件；Makefile/生产解析器不变，正式证据见文末 |
 | **Q-07** | **I8-05 + I8-06** Push 心跳的"重置语义"与"下限语义" | ①同 URL、同启用状态、同间隔的普通保存保留剩余等待；URL/启用/间隔实际变化的重新计时语义另定，Wake 须及时重读新配置，独立 Health 监督器的唤醒保持；正常路径补 MinPushInterval 防脏库 ②显式接受现状并在 `AGENTS.md`/Build7 写明代价（连续保存可推迟心跳） | `internal/health/push.go:138-178`、`webui/api/deps.go:168`、`AGENTS.md` §三/§五 |
@@ -295,6 +297,7 @@
 | **I8-24** P1-01 的独立 overlay 判别力 | 历史复核记录，本次未重演； **E（自评）**。独立复核只做了 20 个自建探针（19 绿 / 1 红为其自身断言错误），**无独立红→绿 overlay** |
 | **I8-25** 全量门禁的完整复现 | 历史复核记录，本次未重演； **部分**。构建专项因安全边界**整包排除 `dns`**，只跑 11 包 race；各组普遍只做 `-count=1` 或定向 `-count=20`；审计声称的"全仓 12 包 race 连续 3 轮"**本轮未复跑**。⇒ 单次绿色不外推长期稳定；`dns` 包不得登记为通过 |
 | **I8-17g** `TestStateAppliedHookFiresOncePerApplyState` 偶发红灯根因 | 本次源码确认 Add(1) 先于 enabledAtHook.Store，读者仅观察计数存在窗口；以下次数为历史复核记录、本次未重演： 夹具观察竞争：hook 内 `Add(1)` 与 Store 之间**无同步** + 轮询式观察。确定性复刻探针在 channel 同步重写后 **50/50 绿**；隔离 `-count=200` **0 失败** vs 重载 `-count=20` **恰 1 次红** ⇒ **"单项 20 轮通过"不构成稳定证据**（与 I8-25 同口径） |
+| `provider/scan.go` SWAS 扫描路径 | I8-08 已补原生 nil/结构校验、SDK 错误分类与正式 handler/SQLite 缓存专项，证据见文末；分页完整性独立，真实云仍未验证 |
 | `provider/scan.go` 腾讯两条扫描路径 | I8-09 已补 typed helper 原生 nil/结构回归、实际 SDK 错误分类与正式 handler/SQLite 缓存专项；92 个场景 race 20 轮与五类正式负向控制本地通过，真实云仍未验证 |
 | goroutine / fd / ticker 泄漏断言 | **撤销全仓 0 处**：`webui/server_test.go:732 TestShutdownNoGoroutineLeak` 及 :759–776 的重复 Shutdown 检查用 runtime.Stack 观察 Server 残留。已有 HTTP Server 专项，不等于 Syncer/Push/Supervisor/FD/ticker 全面覆盖；后续按组件补确定性退出证据，不以单次 goroutine 数量等同全面泄漏证明。 |
 | `DefaultStartupGrace` 字面量锚点 | **所列五个常量中唯一未发现直接数值锚点者**（历史 `10s→12s` 后 `./internal/health/` 全绿 42.4s，本次未复跑）——它是 Build7 Step 7 的合同值，属低成本数值锚点缺口，不能据此称风险最高。其余四个常量均有（间接或直接）锚点：`InFlightLimit=4`（`alertset_drop_log_test.go:41` 字面量）、`DefaultHealthTimeout=10m`/`DefaultPushInterval=60s`/`MinPushInterval=20s`（`config/store_v3_test.go:430`） |
@@ -318,7 +321,7 @@
 
 ## 5. 处理优先级建议
 
-1. **I8-08/09、I8-05**：优先跟进扫描异常覆盖缓存/请求中断、普通保存持续延迟心跳。分别先定异常与有效空集合区分、等待截止时间语义；I8-18 已按 A 本地修复，正式证据见文末补记。
+1. **I8-05**：优先跟进普通保存持续延迟心跳，先定等待截止时间语义；I8-08/09 结构异常已按 A 本地修复，真实扫描待 PT-AUDIT-04/05；I8-18 已按 A 本地修复，正式证据见文末补记。
 2. **I8-11、I8-17b**：完整性与 IPv6 DNS 需要改进；I8-12 已按 A 本地修复，真实浏览器待 PT-AUDIT-03；I8-02 已按 C 本地修复，真实浏览器/云观察仍待 PT-I7-07，不再作为待裁决事项。
 3. **§3 的独立证据缺口**继续处理；I8-102 已按 B 本地修复，异步超时与后续报告有正式证据，总命令硬上限/其他前端入口/CI 接线仍独立。I8-04 已按 B 本地修复，默认 DNS 不依赖外网，真实上游显式入口及证据见文末；I8-03 已按 A 本地修复，清洁 Make 入口证据见文末。本地收口均不等于完全离线构建或远端 CI 已通过。
 4. **I8-01 已本地修复**；I8-43、I8-17f 继续独立处理错误顺序和末尾等待候选，分别守住无效请求零写入、跨轮限速。
@@ -472,7 +475,7 @@
 - **检查、外部与状态**：正式 Node 语法检查、package JSON/入口参数检查及 `git diff --check` 通过，六文件范围与生产零差异经检查；未执行 Go 全量/race/vet/build、npm ci/audit、Linux/Docker/compose、浏览器、原生 amd64/macOS 13、真实云/DNS 上游/SMTP/收件箱/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR，原人工未执行/免除状态保持。不把本地相同 Node 版本回归写成真实远端 CI 通过。尚未提交/推送，未 fetch。正式日志与可重演负向控制副本位于 `/private/tmp/codex-i8102-implementation-1uaxgr6t/`。
 
 
-## I8-09 当前实施补记（2026-10-08，用户确认方案 A）
+## I8-09 当前实施补记（2026-10-08，用户确认方案 A，历史批次已提交 d3b3c4d）
 
 - **授权与基线**：用户确认 A，进一步研究定型后授权“开始执行修复，修复后需同步更新文档”。实施前 `main / b5dab987f997daba10b9a83e7f7791a2221968a4`、本地 `origin/main / bf2730320bbb53df5f6345fbfb9b7933b135b101`、ahead 1，工作树/暂存区干净；未 fetch/提交/push。
 - **固定范围**：七文件。唯一生产文件 `provider/scan.go`；新增 `provider/scan_tencent_test.go`、`webui/api/scan_tencent_test.go`；同步 AGENTS/本文/审计/ProdTestList。仅腾讯资源扫描，不改 handler、Store、前端、API/schema、SDK/依赖、客户端池、超时、正式同步或阿里扫描。
@@ -481,3 +484,18 @@
 - **正式判别力**：仓外 overlay 依次移除响应/集合/元素/ID 校验，或令异常页返回累计成功；对两个产品分别选择 missing-response / missing-list / null-entry / missing-id / later-missing-list 正式 API 子场景，全部退出 1。响应/元素控制触发 nil panic，其他控制因 success、缓存及 JSON 输出断言变红；未用编译失败或外部超时冒充判别力。研究期原实现 34 个失败场景仍仅作历史对照，不称正式全量重演。
 - **本地门禁**：定向 92 个场景 `-race -count=20`、五类正式 overlay 负向控制、真实 `make frontend`（`npm ci`/build）、全仓 12 包 `go test ./... -race -count=1`、`go vet ./...`、`go build ./...`、受影响 Go 文件 gofmt 检查及 `git diff --check` 均本地通过。全仓一轮包含受影响两包完整回归；不把定向 20 轮外推为全仓 20 轮。前端前置使用任务级 npm cache，未修改 package/锁文件。
 - **外部与残余边界**：真实腾讯云零资源响应格式、真实云扫描/浏览器、Linux/Docker/compose 与当前 revision 远端 CI/GHCR 未执行；单轮全量绿色不外推长期稳定或外部通过。I8-08 SWAS、跨页 TotalCount 一致性与分页总预算保持独立未处理。本项是结构校验，不证明整个分页期间资源不变化；不新增 ID 正则/Trim、去重、重试、全局 recover 或通用分页框架。Q-04 只登记腾讯部分本地收口，SWAS 不因此关闭；人工检查见 ProdTestList PT-AUDIT-04。本轮七文件尚未提交或推送。
+
+## I8-08 SWAS 资源扫描当前实施补记（2026-10-08，方案 A）
+
+- **授权与基线**：用户确认研究推荐 A 并授权正式修复与同步文档。实施前 `main / d3b3c4d65dfc34c4a35d843052f9afef7374aa09`、本地 `origin/main / bf2730320bbb53df5f6345fbfb9b7933b135b101`、ahead 2，工作树/暂存区干净；前序 I8-09 已提交 d3b3c4d。未 fetch，本轮未提交或推送。研究 overlay 与以下正式工作树门禁分开记录。
+- **实际范围**：唯一生产文件 `provider/scan.go`，新增私有 `decodeSWASScanPage` 并接入现有 SWAS 扫描循环，成功结果初始化为空非 null slice。两份新增测试 `provider/scan_swas_test.go`、`webui/api/scan_swas_test.go`，同步 AGENTS/Issue8/审计/ProdTestList，共七文件。无 handler/Store、前端源码、SDK/依赖/锁文件、API/schema、客户端池、超时或正式同步修改。
+- **固定合同**：resp/Body/Instances 缺失或 null、null 元素与缺失/null/空 InstanceId 返回包装 ErrSnapshotIncomplete 的错误；整页校验后才累计，任一页失败外层返回 nil/error，不带回部分资源、不覆盖旧缓存。显式 [] 合法且可清空对应地域；TotalCount=0 不豁免缺失集合。名称可缺失/null/空，ID 与名称保持原值。SDK 调用/JSON 解码错误沿既有包装保留原错误链及分类；HTTP 200 + success=false/error + no-store 与 cloud_type+region 覆盖合同保持。
+- **正式回归**：typed helper 覆盖原生 nil、缺失/null Body/集合/元素/ID、零计数缺集合、valid-then-invalid、显式空页、可空名称与原值保留；真实 SDK 首页/后续页业务错误、非法 JSON 和结构异常检查错误分类、nil 结果、请求参数与次数。正式 handler→临时 SQLite 覆盖首页/后续页异常旧缓存不变、失败响应无 resources/count、正常/零资源/满页后空末页/满页后短末页覆盖、其他地域与 ECS 产品缓存不变、成功 resources 非 null 数组及实际缓存资源内容。
+- **正式门禁**：定向 `go test ./provider ./webui/api -run '^(TestDecodeSWASScanPage|TestScanSWAS)' -race -count=20`、五类正式 overlay 负向控制、真实 `make frontend`（npm ci + vue-tsc/Vite build）、全仓 12 包 `go test ./... -race -count=1`、`go vet ./...`、`go build ./...`、受影响 Go 文件 gofmt 检查与 `git diff --check` 均本地通过。全仓一轮包含受影响两包完整回归，单轮全量不外推长期稳定。工具链为 Go 1.27.1 darwin/arm64。
+- **判别力**：仓外 overlay 恢复旧扫描循环时，正式 API 的首页/后续页缺集合断言检出误成功与缓存变化；放行 TotalCount=0 缺集合时，正式 typed helper 的两个零计数场景失败；移除 null 元素守卫时 panic；移除空 ID 守卫时三个 ID 场景返回错误资源而失败；异常页返回累计资源+error 时，正式后续页错误分类回归检出非 nil 部分结果。五类控制均退出 1，失败来自行为断言或 panic，非编译错误/超时；正式测试无 recover、环境分支或历史计数开关。
+- **独立依赖发现**：真实 npm ci/build 成功，但安装提示 3 项 high；额外 `npm audit --json` 退出 1，列出 @vue/server-renderer（GHSA-g2v6-rqmx-r4w6）、其上游 vue 条目及 source-map-js（GHSA-68fv-2mgg-jv7q），共三条 high、两个底层公告。本项未升级依赖，不登记为 npm audit 通过，实际产品可达性尚未裁决，不将它作为本次扫描改动引入的缺陷。
+- **外部与残余边界**：真实 SWAS 零资源响应格式、真实云扫描/浏览器、Linux/Docker/compose、当前 revision 远端 CI/GHCR 未执行；PT-AUDIT-05 保持未执行。Q-04 两部分均本地修复，外部未验收。现有 PageNumber/PageSize 与短页终止方式保持；TotalCount 一致性、重复页/ID 与分页预算仍为独立研究候选，本项不证明分页期间资源不变或整个列表完整。
+
+### I8-08 后续独立候选：SWAS 扫描分页完整性（未修复、未定型）
+
+研究期真实 SDK→handler→临时 SQLite 对照确认：TotalCount=2 但短页仅返回一条时直接 success/count=1；TotalCount=0 但数组含一条时仍 success/count=1。结构校验修复不改变这两个行为。后续与 I8-11（ListFirewallRules 规则快照，属于不同调用路径）协调研究：总数可用时的终止/进度依据、跨页总数变化、提前空页/短页、重复 ID，以及资源增删期间的失败/重扫语义；不可直接复制 I8-11 现有判据。页数/总预算与 Q-12 同属需另定合同的研究方向，不在本次实施，不能把 Q-04 本地收口写成 SWAS 扫描完整性全面收口。
