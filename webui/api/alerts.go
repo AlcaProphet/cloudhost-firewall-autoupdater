@@ -52,26 +52,13 @@ func toPushResponse(p config.UptimeKumaPushConfig) alertPushResponse {
 }
 
 func (d *Deps) handleGetAlerts(w http.ResponseWriter, r *http.Request) {
-	policy, err := d.Store.GetAlertPolicy()
+	snapshot, err := d.Store.LoadAlertsSnapshot(r.Context())
 	if err != nil {
 		writeInternalError(w, "读取告警配置失败", err)
 		return
 	}
-	emailCfg, err := d.Store.GetAlertEmail()
-	if err != nil {
-		writeInternalError(w, "读取告警配置失败", err)
-		return
-	}
-	webhookCfg, err := d.Store.GetAlertWebhook()
-	if err != nil {
-		writeInternalError(w, "读取告警配置失败", err)
-		return
-	}
-	pushCfg, err := d.Store.GetUptimeKumaPush()
-	if err != nil {
-		writeInternalError(w, "读取告警配置失败", err)
-		return
-	}
+	policy, emailCfg := &snapshot.Policy, &snapshot.Email
+	webhookCfg, pushCfg := &snapshot.Webhook, &snapshot.UptimeKumaPush
 
 	// 空库/未配置时补齐固定默认值：前端表单会把 GET 结果原样回传，
 	// 而 PUT 要求每个字段都是合法值（Build7 §4.6）

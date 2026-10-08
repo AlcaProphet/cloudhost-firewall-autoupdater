@@ -35,9 +35,9 @@ func (s *Store) BeginTx(ctx context.Context) (*sql.Tx, error) {
 	return s.db.BeginTx(ctx, nil)
 }
 
-// BeginReadOnlyTx 开启 SQLite 只读事务（version 3 导出使用，Build6 §12.7）。
+// BeginReadOnlyTx 开启 SQLite 只读事务（完整业务快照与告警快照共用）。
 //
-// 导出全部读取都传该 tx，保证配置包快照内部一致，且不进入变更锁。
+// 所有快照读取都传该 tx，保证内部一致，且不进入配置变更锁或预留写锁。
 func (s *Store) BeginReadOnlyTx(ctx context.Context) (*sql.Tx, error) {
 	return s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 }
@@ -781,7 +781,7 @@ func (s *Store) SetSettingTx(ctx context.Context, tx *sql.Tx, key, value string)
 	return err
 }
 
-// GetAlertEmail 获取邮件告警配置
+// GetAlertEmail 非事务读取单项邮件配置；四项一致读取使用 LoadAlertsSnapshot。
 func (s *Store) GetAlertEmail() (*AlertEmailConfig, error) {
 	cfg, err := loadAlertEmail(context.Background(), s.db)
 	if err != nil {
@@ -833,7 +833,7 @@ func (s *Store) SaveAlertEmailTx(ctx context.Context, tx *sql.Tx, cfg *AlertEmai
 	return err
 }
 
-// GetAlertWebhook 获取 Webhook 告警配置
+// GetAlertWebhook 非事务读取单项 Webhook 配置；四项一致读取使用 LoadAlertsSnapshot。
 func (s *Store) GetAlertWebhook() (*AlertWebhookConfig, error) {
 	cfg, err := loadAlertWebhook(context.Background(), s.db)
 	if err != nil {
@@ -890,7 +890,7 @@ func boolToInt(v bool) int {
 	return 0
 }
 
-// GetAlertPolicy 获取告警触发策略（GET /api/alerts 与测试使用）。
+// GetAlertPolicy 非事务读取单项触发策略；四项一致读取使用 LoadAlertsSnapshot。
 func (s *Store) GetAlertPolicy() (*AlertPolicyConfig, error) {
 	cfg, err := loadAlertPolicy(context.Background(), s.db)
 	if err != nil {
@@ -954,13 +954,59 @@ func (s *Store) SaveAlertPolicyTx(ctx context.Context, tx *sql.Tx, cfg *AlertPol
 	return err
 }
 
-// GetUptimeKumaPush 获取 Uptime Kuma Push 配置（GET /api/alerts 与测试使用）。
+// GetUptimeKumaPush 非事务读取单项 Push 配置；四项一致读取使用 LoadAlertsSnapshot。
 func (s *Store) GetUptimeKumaPush() (*UptimeKumaPushConfig, error) {
 	cfg, err := loadUptimeKumaPush(context.Background(), s.db)
 	if err != nil {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// AlertsSnapshot 是同一 SQLite 只读事务内取得的四项告警配置。
+// 邮件与 Webhook 保留数据库原值，表单默认值仍由 HTTP 层补齐。
+type AlertsSnapshot struct {
+	Policy         AlertPolicyConfig
+	Email          AlertEmailConfig
+	Webhook        AlertWebhookConfig
+	UptimeKumaPush UptimeKumaPushConfig
+}
+
+// LoadAlertsSnapshot 只读取四项告警配置，不依赖 targets、rules 或 settings。
+// 事务在返回前结束，响应编码与发送不持有事务；读取失败不返回半截快照。
+func (s *Store) LoadAlertsSnapshot(ctx context.Context) (*AlertsSnapshot, error) {
+	tx, err := s.BeginReadOnlyTx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.Error("回滚告警只读事务失败", "error", rbErr)
+		}
+	}()
+
+	policy, err := loadAlertPolicy(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	email, err := loadAlertEmail(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	webhook, err := loadAlertWebhook(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	push, err := loadUptimeKumaPush(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &AlertsSnapshot{
+		Policy: policy, Email: email, Webhook: webhook, UptimeKumaPush: push,
+	}, nil
 }
 
 // loadUptimeKumaPush 读取 Push 配置（事务内可复用；无行或空间隔使用固定默认值）。

@@ -381,6 +381,7 @@ GET/PUT 顶层固定为四个完整对象：
 - 四部分在同一个 `ConfigCoordinator` 写事务内覆盖保存，任一步失败全部回滚；
 - transaction 内构造包含 RuntimeState、AlertSet、OperationalSupervisorConfig 与 UptimeKumaPushConfig 的完整候选；
 - commit 后只替换内存配置和唤醒对应循环，不在 HTTP handler/协调器锁内等待 SMTP、Webhook 或 Uptime Kuma；
+- GET 四对象由 `Store.LoadAlertsSnapshot` 在一个窄只读事务内读取，共用现有 loader；事务在返回前结束，不读取 targets/rules/settings 或进入协调器，默认值仍由 HTTP 层补齐；只保证单次响应内部一致，不新增编辑冲突检测（I8-18 于 2026-10-08 按用户方案 A 修复）。
 - GET 为现有告警表单返回完整敏感对象的既有边界，仍会返回 SMTP 密码、Webhook URL 和 Push URL；响应必须 `Cache-Control: no-store`，不得被日志中间件记录 body。
 
 ### 4.7 告警页面布局
@@ -931,3 +932,9 @@ GET 响应字段已逐字段核对，其余 18 处对齐）。
 - **正式本地验证：** 正式新增 12 个顶层响应测试定向 `-race -count=20 -timeout=5m`、health/notifier 两包完整 race 一轮、全量 12 包 `go test ./... -race -count=1 -timeout=20m`、`go vet ./...`、`go build ./...` 均通过；旧源码 overlay 与八类负向控制均按行为断言变红，无编译失败。受影响 Go 格式与最终文档后的 diff-check 见审计补记。
 - **测试含义：** 成功必须读到真实 EOF；超大未知字段及尾随空白受限，尾随垃圾/第二个 JSON 拒绝，true 后 null 不成功；真实 HTTP 截断、gzip 解压超限、正文停滞与 shutdown 取消，Read/Close 两阶段名额保持、成功 HTTP/1 即时复用与失败后周期继续均覆盖。Close 失败只安全警告，已确认接受不改判；不保证所有异常响应连接复用。
 - **状态与外部边界：** P3-21 与 I-08 本地修复闭环；具体正式证据、祖先核对与研究/正式区分见审计 P3-21 当前实施补记。Go `1.27.1 darwin/arm64`，使用既有 ignored 前端 dist；未执行 Linux/Docker/compose、前端构建/真实浏览器、真实云/SMTP/收件箱/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR。PT-B7-03 人工免除仍非通过，PT-B7-05 仍未执行；单轮全仓绿色不外推长期稳定或外部验收。源码/测试/文档尚未提交，未 fetch/push。
+
+### I8-18 后续实施补记（2026-10-08，方案 A）
+
+- **范围与行为**：生产仅 config/store.go、webui/api/alerts.go，新增 config/API 两份快照测试，同步 AGENTS/Issue8/本文/审计，共 8 文件；四项窄只读快照、事务结束后返回，四对象响应和既有默认值/错误出口保持，前端与写侧不变。
+- **基线与正式证据**：`main / 3f50f3821c86d04ee19b67a1d280a28069880194`，本地 `origin/main / 7696482243461f582342aeb78fdc2f467012f674`，ahead 2；实施前工作树/暂存区干净，未 fetch、提交或 push。正式定向两包 race 20 轮、受影响两包完整 race、vet/build 与五类行为负向控制通过；`go test ./... -race -count=3 -timeout=20m` 全仓 12 包通过（单条命令将每项测试重复三次，不称三次独立执行）；四个受影响 Go 文件的 gofmt 检查与最终 `git diff --check` 通过。全仓包含既有 TestMain 构建当前正式产品二进制的进程回归，不是 I8-18 专项产品验收。完整回归、夹具边界与命令见 Issue8 当前实施补记。
+- **外部边界**：Go `1.27.1 darwin/arm64`，Go 门禁使用本轮开始时既有 ignored 前端 dist（未重建前端）。未执行 I8-18 专项产品进程/浏览器、Linux/Docker/compose、原生 amd64/macOS 13、真实云/SMTP/收件箱/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR；原人工未执行/免除状态保持。既有全仓门禁含 I8-04 网络 DNS 测试，包级 ok/自行 skip 不作为本项外部通过证据。本地重复回归不外推长期稳定或外部验收。源码/测试/文档尚未提交或推送。
