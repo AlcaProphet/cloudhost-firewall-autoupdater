@@ -43,18 +43,21 @@
 ### I8-03 【中】清洁检出构建阻断（= §5 附"构建阻断"）
 
 - **问题**：`webui/embed.go:5` 的 `//go:embed frontend/dist` 依赖被 `.gitignore:5` 忽略的目录，而 `Makefile:9-13` 的 `test`/`vet` **无 `frontend` 前置**（`build` 有）。
-- **实测（清洁检出）**：`go build ./...` / `go vet ./...` / `go test ./...` = **EXIT 1/1/1**（`webui/embed.go:5:12: pattern frontend/dist: no matching files found`）；根包与 `webui` 包 `[setup failed]`；`make vet` = EXIT 2。
-- **对照（当前工作树）**：存在 ignored `webui/frontend/dist` → 全部 EXIT 0。
+- **实测（清洁检出 = `git archive HEAD`）**：`go build ./...` / `go vet ./...` / `go test ./...` = **EXIT 1/1/1**（`webui/embed.go:5:12: pattern frontend/dist: no matching files found`）；根包与 `webui` 包 `[setup failed]`；`make vet` = EXIT 2；`make all` 在第一个前置 `vet` 就中止（**EXIT=2，`frontend` 目标从未被触达**）。
+- **对照（当前工作树）**：存在 ignored `webui/frontend/dist` → `go build ./...` EXIT 0。
+- **⚠️ 根因不是"目录存在"**：手动 `mkdir -p webui/frontend/dist` 后 `go build ./...` **仍 EXIT 1**（`contains no embeddable files`）；**必须目录内有 ≥1 个可 embed 文件**才 EXIT 0。审计 §5 附表原写的"手动建目录后 EXIT=0"**已证伪，不得据此修**。
+- **附带新发现**：清洁检出中 **`go list ./...` 本身就失败**（非 0 且无输出）⇒ 任何 `go test $(go list ./...)` 脚本会**静默退化成"只跑当前目录"**；须用 `go list -e ./...`。
+- **包级结果口径**：实测 **2 包 `[setup failed]`（root 与 `webui`）+ 9 包真跑全 ok + `dns` 包未跑**（授权禁止真实外网解析，仅验证到编译层）⇒ **不得主张"清洁检出可通过"，也不得主张清洁检出里 12 包全绿**。
 - **影响**：**所有"本地门禁绿色"都以一个未入库文件为前提**；Docker/CI 因各自先构建前端而不受影响。
-- **禁止项**：**不得**提交占位 `webui/frontend/dist/index.html`（会被 embed 当真实页面提供）。
-- **状态**：**仍存在**；修法（给 `test`/`vet` 加前置）属待办。
+- **禁止项**：**不得**提交占位 `webui/frontend/dist/index.html`——一旦提交，`webui/server.go:307` 会把占位页当真实 SPA 提供，且 build/vet/test 全变绿，**静默掩盖真实故障**（当前风险低：已忽略 + 未跟踪 + 任何 ref 从未提交 + `git add -A` 暂存不到，仅 `git add -f` 可绕过）。
+- **状态**：**仍存在**；修法（给 `test`/`vet` 加前置）属待办，见 I8-36。
 
-### I8-04 【中】门禁非密闭：默认测试命令访问真实 DNS 上游
+### I8-04 【中】门禁非密闭：默认测试命令**会执行真实外网 DNS 查询**
 
-- **问题**：`dns/resolver_test.go` 使用 `NewResolver("8.8.8.8:53", …)`，其中 `TestResolve_Localhost` **无 `testing.Short()` 守卫**且解析失败直接 `t.Fatalf`；另两个用例虽有守卫，但默认门禁命令（`Makefile:10`、CI `docker-publish.yml:68`、历史 `go test ./... -race`）**不带 `-short`**。
-- **影响**：① 无外网/出口受限环境门禁必然变红，且失败点与被测产品无关；② 历史"全量 12 包 race 绿"**包含真实外网 I/O**，不能表述为纯本地密闭门禁。
-- **证据等级**：静态证据充分；CI 实际执行日志未取得（属推论）。
-- **状态**：**仍存在**。
+- **问题**：`dns/resolver_test.go:10/29/40` 使用 `8.8.8.8:53` 且都真调 `Resolve`；`TestResolve_NonExistent`(`:25-27`) 与 `TestResolve_PublicDomain`(`:37-39`) **有 `testing.Short()` 守卫**，但**默认门禁命令（`Makefile:10` 的 `go test ./... -race -v`、CI `docker-publish.yml:68`）都不传 `-short`** ⇒ 守卫失效、真实外网查询被执行。唯一无守卫的 `TestResolve_Localhost`(`:9-22`) 经回环探针证明**根本不外发查询**（上游换死地址仍 PASS，走 hosts 文件）。
+- **实测**：把上游改指 `127.0.0.1:15353` 并挂 UDP 监听后——`-short` → **0 个报文**；默认语义 → **6 个 UDP 报文**（`host.invalid`×2、`dns.google`×4），dns 包耗时 **15.1s**（5s PASS + 10s SKIP）。全程未触碰 `8.8.8.8`。
+- **影响**：① 无外网/出口受限环境门禁必然变红，且失败点与被测产品无关 ② 历史"全量 12 包 race 绿"**包含真实外网 I/O**，不能表述为纯本地密闭门禁 ③ 清洁检出下 `dns` 包的运行结果**未验证**（只到编译层）。
+- **订正说明**：审计原表述"无 `testing.Short()` 守卫"**不准确**（2 个用例有守卫，另 1 个不外发）；准确表述是"**默认门禁不过滤 `-short`，导致守卫失效、真实外网查询被执行**"。
 
 ### I8-05 【中低】Push 心跳等待被任意配置保存整段重置
 
