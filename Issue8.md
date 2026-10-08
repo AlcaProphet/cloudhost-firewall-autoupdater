@@ -1,6 +1,6 @@
 # Issue8.md — 现存缺陷台账（2026-10-08 复核整理版）
 
-> **2026-10-08 后续实施：I8-01 已按用户裁决 A 本地修复，Q-01 已裁决；本轮实现与验证见文末补记。以下只读复核记录保留为历史，I8-01 当前状态以补记为准。**
+> **2026-10-08 后续实施：I8-01 已按用户裁决 A 本地修复，Q-01 已裁决；本轮实现与验证见文末补记。I8-02 另按用户裁决 C 本地实施，Q-02 已裁决。以下只读复核记录保留为历史，I8-01/I8-02 当前状态以各自补记为准。**
 >
 > **本文档保留问题追踪编号，明确区分真实待修问题、合理前置条件、维护候选、已撤销判断、证据缺口与外部验收边界。本次只修订文档，生产与测试均未修改。**
 > 正文保留本次核验过的原单元并显式标候选/撤销，以便后续跟进；既有历史误判与已完成专项索引见 [附录 A](#附录-a已撤销的误判与不再登记的条目)，对审计报告与 TODOLIST 的待回写事实订正见 [附录 B](#附录-b审计报告与-todolist-待回写的订正)。
@@ -36,14 +36,14 @@
 - **用户可见性**：前端仅在 `webui/frontend/src/types.ts:148` 声明 `coverage_ready: boolean`，**无任何组件读取该字段**。⇒ 实际后果是 **API 输出字段语义错误**，不是"可能误删"。
 - **历史只读结论（已由文末实施补记替代）**：逻辑错误成立；当时将 TODOLIST 的 TODO-001 从 P0/高订正为中低，生产缺陷尚未修复。现有 `provider/plan.go:137-138` 明确无可实施期望时为 false；最小候选须包含 `implementable > 0`，仅 `covered == implementable` 会让空集仍为 true（见 Q-01）。
 
-#### I8-02【中·可观测性】失败 attempt 抹平已确认的清理/不支持明细　`②`　（= TODO-008；呼应 Issue7 §12.7 与审计 `:990`）
+#### I8-02【已本地修复·原中可观测性】失败 attempt 抹平已确认的清理/不支持明细　`②`　（= TODO-008；呼应 Issue7 §12.7 与审计 `:990`）
 
-- **现象**：目标首次 attempt 已产生可信残留（部分删除/幂等 NotFound）后，后续 attempt 在 S0 失败，或 Add/S1 早退、未建立新的可信清理观察时，`cleanup_candidates`/`cleanup_deferred` 被零值覆盖；`unsupported` 也被本 attempt 结果替换，S0 早退时为空，Add 失败时则可能保留本 attempt 已知平台限制；`cleanup_deleted` 仍保留累加值。
+- **历史现象（已由文末 I8-02 实施补记替代）**：目标首次 attempt 已产生可信残留（部分删除/幂等 NotFound）后，后续 attempt 在 S0 失败，或 Add/S1 早退、未建立新的可信清理观察时，`cleanup_candidates`/`cleanup_deferred` 被零值覆盖；`unsupported` 也被本 attempt 结果替换，S0 早退时为空，Add 失败时则可能保留本 attempt 已知平台限制；`cleanup_deleted` 仍保留累加值。
 - **证据**：`syncer/target.go:102-107` 中 `added`/`deleted`/`cleanupDeleted` 为 `+=`，而 `:104` `unsupported`、`:105` `cleanupCandidates`、`:107` `cleanupDeferred` 为**覆盖赋值**；`runTargetAttempt` 每次进入以零值初始化（`:143`），早退路径 `:156`（S0 失败）、`:179`（Add 失败）、`:188`（S1 失败）直接返回该零值结果。
 - **历史复现**：`outcome=failed added=1 deleted=1 cleanup_candidates=0 cleanup_deleted=1 cleanup_deferred=0`，而云端**仍存 1 条陈旧规则**；对照"仅 1 个 attempt"场景正确保留 `2/1/1`。
 - **下游放大**：`webui/api/logwriter.go:99-104` 的详情行以 `candidates > 0` 为门槛 ⇒ `candidates=0` 时整行"清理候选…"被完全抑制，只剩 `deleted=1`，出现 `deleted(1) > candidates(0)` 的自相矛盾输出。
-- **合同缺口（见 Q-02）**：`syncer/target.go:168-169` 描述同一个 attempt 的 Add 失败仍保留已规划 unsupported；`target_retry_test.go:120` 描述后续 attempt 重新规划后采用最终明细，两者可以兼容，不能据此声称合同冲突。尚缺的是后续 attempt 在取得可信观察之前失败时，如何保留最后可信观察、标明其时间与未知状态。旧观察不得无标记宣称为最新云状态。
-- **结论**：行为与输出矛盾**确定成立**；**非 R7-04 引入**（`git show b19d271 -- syncer/target.go` 显示这两行属未改动的上下文），修复前即存在。争点只是**表达方式**（保留并标明前次可信残留 vs 显式表达"未知"），不是"是否存在"。
+- **历史合同缺口（现已由 Q-02 裁决与 Issue7 §12.9 补齐）**：`syncer/target.go:168-169` 描述同一个 attempt 的 Add 失败仍保留已规划 unsupported；`target_retry_test.go:120` 描述后续 attempt 重新规划后采用最终明细，两者可以兼容，不能据此声称合同冲突。尚缺的是后续 attempt 在取得可信观察之前失败时，如何保留最后可信观察、标明其时间与未知状态。旧观察不得无标记宣称为最新云状态。
+- **历史结论**：行为与输出矛盾**确定成立**；**非 R7-04 引入**（`git show b19d271 -- syncer/target.go` 显示这两行属未改动的上下文），修复前即存在。争点只是**表达方式**（保留并标明前次可信残留 vs 显式表达"未知"），不是"是否存在"。
 
 #### I8-18【中·读一致性】`GET /api/alerts` 由 4 次非事务读拼装，可返回自相矛盾快照　`②`
 
@@ -213,7 +213,7 @@
 | 单元 | 本次结论／可达性 | 最小跟进方向与所需验证 | 本次证据 |
 |---|---|---|---|
 | I8-01 | 已按 A 本地修复；原缺陷无删除后果 | 非空可实施集合全部覆盖且 Add 状态确定；混合目标保留 true + partial，独立清理门不放宽 | 新增仓内 planner 与 Dry Run/正式目标回归；旧实现行为红灯与当前结果见文末补记 |
-| I8-02 | 待改，中；重试早退抹去已知观察 | 定义最后可信观察与未知，不把旧快照当最新；测部分删除→S2失败→后续S0/Add/S1早退；DNS错误在S1规划后报告，应作为已观察字段保留的对照，事件/SQLite/日志一致 | 源码 target102–107/143；历史残留探针，不将两处可兼容注释称冲突 |
+| I8-02 | 已按 C 本地修复；Q-02 已裁决 | 追加 nullable 观察与四类汇总；保留整数类型；最新与最近完整规划分存；实际目标/事件/日志/状态/SSE/组件回归 | 仓内 TestI802_* 与 Dashboard 8 项回归，门禁和负向控制见文末补记；外部未执行 |
 | I8-18 | 待改，中；并发提交落在四读之间 | 窄只读事务四对象；屏障提交造撕裂，正常默认值／错误出口／回滚不变；并发绿不替代确定性负控 | 当前四读源码；历史并发与故障夹具未本次重演 |
 | I8-111 | 兼容策略，未证明当前业务版本漏洞 | 分别决定重复键、大小写；合法转义默认等价；若收紧，端点零写入零发布并验证有效 v3 不受损 | 同构标准 decoder 本地探针；未调用 import 端点 |
 | I8-113 | 维护候选；当前默认值一致 | 统一默认真值源或断言新建／升级一致；先测当前相同与改常量负控，不清理转换兜底 | DDL／ALTER／常量源码；变值差异是历史探针 |
@@ -249,12 +249,12 @@
 
 ## 2. 待裁决事项
 
-> 均为"改动前需要你定方向"的争点；只读研究结论已附在候选方案内。纯代码整洁事项本身**不登记为缺陷**，只保留一项"是否实施清理"的开关式裁决（Q-13）。
+> 未标“已裁决”的项目为"改动前需要你定方向"的争点；只读研究结论已附在候选方案内。纯代码整洁事项本身**不登记为缺陷**，只保留一项"是否实施清理"的开关式裁决（Q-13）。
 
 | 编号 | 争点 | 候选方案 | 影响面 |
 |---|---|---|---|
 | **Q-01（已裁决）** | **I8-01** `coverage_ready` 的修法 | 用户 2026-10-08 确认 A：`implementable > 0 && covered == implementable && !in.AddStateUnknown`。保留可实施子集覆盖语义；不新增多状态字段。混合目标仍可 true + partial | 唯一生产逻辑改动为 `provider/plan.go`；同步字段合同与回归，详见文末补记 |
-| **Q-02** | **I8-02** failed 路径下 `cleanup_candidates`/`cleanup_deferred`/`unsupported` 如何表达（原 I8-30/30a 同一观察表达问题的合并裁决，现已撤销“两处合同必然冲突”的判断） | ①保留最后可信观察并明确它属于哪个 attempt、何时已过期 ②最终 attempt 无观察时显式输出未知，不能用零冒充无残留 ③按字段区分。两处注释原可兼容；本次未修改事件/API/schema，具体表达须用户跟进时定型 | `syncer/target.go:102-107/156/179/188`、`:168-169`、`:223-224`、`syncer/target_retry_test.go:120`、`webui/api/logwriter.go:99-104`、`RoundSummary`/事件/SQLite 详情、PT-I7-07 观察基准 |
+| **Q-02（已裁决）** | **I8-02** failed 路径的观察表达 | 用户选择 C + 追加字段保留旧整数类型，并分别保留 latest/last_complete；历史来源、估计、未知明确区分，可信零可替换；已授权正式修复 | 目标事件、RoundSummary、SQLite 详情、Dashboard 与字段合同；无 schema/配置包迁移；实施见文末与 Issue7 §12.9 |
 | **Q-03** | **I8-18** `GET /api/alerts` 撕裂窗口是否修复 | ①用一个只读事务读取四个告警对象。可复用 BeginReadOnlyTx；完整 LoadBusinessSnapshotTx 还读 settings/targets/rules，可能扩大 GET 失败面，窄事务同样合理 ②接受现状（内部使用、单客户端）并在 `alerts.go` 与 `AGENTS.md` 显式登记"读侧非原子 + 前端整体回传"边界与"不支持多写者并发编辑"前提 | `webui/api/alerts.go`、`config/store.go`、`Alerts.vue` |
 | **Q-04** | **I8-08 / I8-09** SWAS 扫描缺失集合 与 Lighthouse/CVM 扫描空响应的处置 | ①统一为保守失败 `ErrSnapshotIncomplete`（与 P3-26 的 ECS 策略一致，不覆盖缓存）②仅补 nil 守卫防 panic ③显式接受现状并文档化 | `provider/scan.go:72/113/153-156`、`webui/api/scan.go:49-69` |
 | **Q-05** | **I8-03** 构建阻断的修法 | ①给 `Makefile` 的 `test`/`vet` 加 `frontend` 前置（`build` 已有，overlay 验证前置生效且 `npm ci` 只跑一次）②在 CI/文档中明确"裸 Go 命令需先构建前端" ③其他 | `Makefile:9-13`、`webui/embed.go:5`、`.gitignore:5`、`AGENTS.md` §八 |
@@ -302,7 +302,7 @@
 ## 5. 处理优先级建议
 
 1. **I8-18、I8-08/09、I8-05**：优先跟进可达的告警配置撕裂、扫描异常覆盖缓存/请求中断、普通保存持续延迟心跳。分别先定只读一致快照、异常与有效空集合区分、等待截止时间语义。
-2. **I8-11、I8-17b、I8-12、I8-02**：完整性、IPv6 DNS 和失败展示需要改进；I8-02先裁决未知与最后可信观察的表达，再修改状态/事件/测试。
+2. **I8-11、I8-17b、I8-12**：完整性、IPv6 DNS 和失败展示需要改进；I8-02 已按 C 本地修复，真实浏览器/云观察仍待 PT-I7-07，不再作为待裁决事项。
 3. **I8-03/04/102 与 §3**：完善清洁 Make 入口、无外网门禁和失败能有界变红的证据；CI 当前已先构建前端，不能误写 CI 构建缺陷。
 4. **I8-01 已本地修复**；I8-43、I8-17f 继续独立处理错误顺序和末尾等待候选，分别守住无效请求零写入、跨轮限速。
 5. **I8-06、I8-111/113、Q-11/12/13 与静态候选**：脏库防御、兼容策略、维护清理和整体预算按收益与合同决定。当前合理前置条件或理论路径不作为必须修的产品缺陷；文档修订不表示生产修复。
@@ -368,3 +368,13 @@
 - **红→绿证据**：修复前，三个能力场景、全量 unsupported 两个矩阵场景及 Dry Run 全量 unsupported 按行为断言失败；无编译失败或 panic。修复后上述定向回归 `-race -count=20` 两包通过。
 - **最终门禁**：定向 `go test -race -count=20 ./provider ./syncer -run 'TestPlan_(CoverageReadyImplementableSubset|UnsupportedMatrixFreezesCleanup)|TestDryRun_CoverageReadyCapabilityBoundary'` 通过；全量 `go test -race -count=1 ./...` 十二包全部 ok；`go vet ./...`、`go build ./...`、受影响 Go 文件 gofmt 检查及最终文档后的 `git diff --check` 均通过。全量门禁含既有 TestMain 构建产品二进制的本地进程回归，不是本项专门产品进程验收；单轮全量不外推长期稳定。
 - **边界**：Go 1.27.1 darwin/arm64，使用既有 ignored 前端 dist；本轮未执行前端构建、浏览器、Linux/Docker/compose、真实云/通知链路或远端 CI/GHCR。全量默认 Go 门禁包含既有真实 DNS 查询测试（I8-04）；它们不是本项的 DNS 外部验收，网络测试可能自行 skip，不据包级 ok 宣称上游验证通过。Q-01 已裁决，I8-01 本地修复不外推长期稳定或外部验收；其余 I8/Q 项保持独立。尚未提交或推送。
+
+
+## I8-02 当前实施补记（2026-10-08，方案 C）
+
+- **授权与基线**：根据引用研究聊天中用户的三项裁决开始正式修复并同步文档。实施前 `main / 256a7b365cfa1759ae6e51dcaa2686422c9dfd00`、本地 `origin/main / 7696482243461f582342aeb78fdc2f467012f674`、ahead 1，工作树/暂存区干净；未 fetch/push。I8-01 的生产修复已包含在该基线，保持原样。
+- **实现**：目标增加 attempts、nullable cleanup_observation/unsupported_observation；有效新观察（包括零）替换，后续早退保留来源并标历史。清理依据区分 s1/s2/delete_progress；最新规划与最近完整规划分存，不完整空列表不抹去完整历史。原增删/cleanup_deleted 累计确认，候选/残留保留整数类型为最近观察的兼容投影。整轮四类互斥汇总只累加 observed 数量，Dashboard 与 SQLite 分开累计操作与候选/残留观察。完整字段和更新合同见 [Issue7 §12.9](./Issue7.md#129-i8-02-观察表达修复2026-10-08用户裁决-c)。
+- **回归**：仓内实际目标链覆盖 S2失败后的S0/Add/S1早退与恢复、新零替换、未知/估计零/可信零/NotFound、latest不完整保留last_complete与完整空替换、混合四类目标及JSON；正式 Run→publisher→EventBus→SQLite 验证历史/恢复/估计/未知，状态 API 与真实 HTTP SSE 保留 nullable 和汇总字段；前端真实 Dashboard setup/模板渲染 8 项回归。
+- **负向控制**：六类仓外正式源码 overlay（清空历史、拒绝零更新、提升估计、覆盖完整历史、汇总估计作观察、删除事件观察）均按行为断言变红，无编译失败/超时/数据竞争；旧 Dashboard 与忽略零估计提示两类前端候选按行为断言变红。临时证据属于本轮仓外验证，不新增长期错误实现。
+- **门禁**：`go test ./syncer ./webui/api -race -run '^TestI802_' -count=20 -timeout=10m` 两包通过；`go test ./... -race -count=3 -timeout=20m` 全仓 12 包通过（单条命令将每项测试重复三次，不称三次独立执行）。`go vet ./...`、`go build ./...`、9 个受影响 Go 文件的 gofmt 检查、`git diff --check` 通过；前端 `npm run test:dashboard` 8 项、`node --test tests/*.test.mjs` 全部 66 项及 `npm run build` 通过，最终 Go 门禁使用本轮构建的真实 ignored dist。全仓门禁包含既有 TestMain 构建正式产品二进制的进程回归，不是 I8-02 专项产品浏览器/云验收。
+- **范围与边界**：7 个生产/前端、6 个测试与 AGENTS/Issue7/Issue8/TODOLIST/ProdTestList 共 18 文件。Provider/SDK、DNS策略/超时、重试次数、版本保护、先增后删、清理安全门、outcome/健康、数据库 schema、配置包版本、依赖与通知固定详情保持。旧客户端忽略新增字段仍不能识别未知，历史日志不回填。Go `1.27.1 darwin/arm64`；未执行真实浏览器、Linux/Docker/compose、真实云/SMTP/收件箱/Webhook/Uptime Kuma、原生 amd64/macOS 13 或当前 revision 远端 CI/GHCR；人工未执行/免除状态保持。本地门禁不外推长期稳定或外部通过；默认全仓门禁含 I8-04 的既有网络 DNS 测试，其包级 ok/自行 skip 不是本项外部验收。源码/测试/文档尚未提交或推送。

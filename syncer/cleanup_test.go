@@ -560,3 +560,67 @@ func TestCleanup_PartialDeleteKeepsConfirmedAndDefersRest(t *testing.T) {
 		t.Fatalf("deleted = %d, want 100（只统计云端确认的实际删除）", sum.Deleted)
 	}
 }
+
+// I8-02：未知、S1零观察、删除估计零和可信S2零必须可区分。
+func TestI802_CleanupEvidence(t *testing.T) {
+	for _, mode := range []string{"unknown", "s1_zero", "s2_zero", "estimated_zero", "notfound_s2_fail"} {
+		t.Run(mode, func(t *testing.T) {
+			p := newProbeProvider(config.CloudAliECS, 1)
+			if mode != "unknown" && mode != "s1_zero" {
+				p.rules = []config.RuleInfo{staleRule("TCP", "80", "10.0.0.1/32", "stale", "")}
+			}
+			if mode == "unknown" {
+				p.snapshotErrs = []error{errors.New("permission denied")}
+			}
+			if mode == "estimated_zero" {
+				p.snapshotErrs = []error{nil, nil, errors.New("permission denied")}
+			}
+			if mode == "notfound_s2_fail" {
+				p.deleteErr = errors.New("ResourceNotFound.FirewallRulesNotFound")
+				p.snapshotErrs = []error{nil, nil, errors.New("permission denied")}
+			}
+			rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+			s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+			state := s.runtime.Snapshot()
+			round := newDNSRound(state)
+			res := s.syncTarget(state, p, rules, round)
+			round.finish()
+			o := res.cleanupObservation
+			if mode == "unknown" {
+				if o != nil || res.unsupportedObservation != nil || res.attempts != 1 {
+					t.Fatalf("首次未知: %+v", res)
+				}
+				return
+			}
+			if o == nil || o.Historical || !o.DesiredComplete || o.Attempt != 1 {
+				t.Fatalf("缺少本次观察: %+v", o)
+			}
+			basis := "s2"
+			if mode == "s1_zero" {
+				basis = "s1"
+			}
+			if mode == "estimated_zero" || mode == "notfound_s2_fail" {
+				basis = "delete_progress"
+			}
+			deferred := 0
+			if mode == "notfound_s2_fail" {
+				deferred = 1
+			}
+			if o.Basis != basis || o.Deferred != deferred {
+				t.Fatalf("依据/残留: %+v", o)
+			}
+			sum := CleanupObservationSummary{}
+			sum.add(res)
+			if basis == "delete_progress" {
+				if sum.Complete || sum.EstimatedTargets != 1 || res.outcome != TargetFailed {
+					t.Fatalf("估计误作可信: %+v / %+v", sum, res)
+				}
+			} else if !sum.Complete || sum.ObservedTargets != 1 {
+				t.Fatalf("可信零被忽略: %+v", sum)
+			}
+			if mode == "notfound_s2_fail" && res.deleted != 0 {
+				t.Fatal("NotFound虚增删除")
+			}
+		})
+	}
+}

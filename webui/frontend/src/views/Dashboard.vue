@@ -41,13 +41,19 @@ async function fetchStatus() {
   } catch { /* 轮询失败忽略 */ }
 }
 
-// 同步健康提示（Issue7 §7.4）：只依据后端 outcome 与 cleanup 计数展示，
-// 绝不用「last_success 落后于 last_sync」推导失败（那会把 idle 误报成异常）。
-//   - idle：无目标或无适用规则，属正常，不提示；
-//   - failed：红色；
-//   - partial：黄色，明确是平台无法实施（OperationalHealth 仍为 unhealthy）；
-//   - success + cleanup_deferred：黄色提示「所需权限已确认，陈旧规则清理延后」；
-//   - success 且无残留：不提示。
+// 清理观察独立于累计操作；历史、估计和未知都不能作为完整当前残留。
+const cleanupHint = computed(() => {
+  const round = status.value.last_round
+  if (!round) return '暂无记录'
+  if (round.total === 0) return '无适用目标'
+  const o = round.cleanup_observation_summary
+  if (!o) return '当前残留未确认（缺少观察信息）'
+  if (o.complete) return `最终尝试 S1 候选 ${o.observed_candidates} 条；已观察残留 ${o.observed_deferred} 条`
+  const pending = o.estimated_targets + o.historical_targets + o.unknown_targets
+  return `已观察部分残留 ${o.observed_deferred} 条；另有 ${pending} 个目标当前残留未确认（估计 ${o.estimated_targets}、历史 ${o.historical_targets}、未知 ${o.unknown_targets}）`
+})
+
+// 失败和部分实施仍由 outcome 决定；观察完整性只用于清理提示。
 const healthHint = computed(() => {
   if (!status.value.enabled) return null
   const round = status.value.last_round
@@ -60,10 +66,14 @@ const healthHint = computed(() => {
   if (round.outcome === 'partial') {
     return { type: 'warning' as const, text: `最近一轮同步部分完成：共 ${round.total} 个目标，其中 ${round.skipped} 个目标存在平台无法实施的规则（已确认的权限不受影响）。` }
   }
-  if ((round.cleanup_deferred ?? 0) > 0) {
-    return { type: 'warning' as const, text: `所需权限已确认，陈旧规则清理延后：仍有 ${round.cleanup_deferred} 条残留候选（本次已清理 ${round.cleanup_deleted ?? 0} 条）。` }
+  if (round.outcome === 'idle') return null
+  const observation = round.cleanup_observation_summary
+  if (!observation || !observation.complete) {
+    return { type: 'warning' as const, text: `所需权限已确认，清理状态尚未最终确认。${cleanupHint.value}` }
   }
-  // idle（无目标/无适用规则）与无残留的 success 都不产生提示
+  if (observation.observed_deferred > 0) {
+    return { type: 'warning' as const, text: `所需权限已确认，陈旧规则清理延后：已观察残留 ${observation.observed_deferred} 条（本轮累计确认清理 ${round.cleanup_deleted} 条）。` }
+  }
   return null
 })
 
@@ -164,7 +174,8 @@ onUnmounted(() => {
             <div style="font-size: 20px">云资源目标 <b style="font-size: 28px">{{ stats.targets }}</b> 个</div>
             <div style="font-size: 20px">域名规则 <b style="font-size: 28px">{{ stats.rules }}</b> 条</div>
             <div style="font-size: 20px">最近同步 新增 <b style="font-size: 28px">{{ status.last_round?.added ?? 0 }}</b> / 删除 <b style="font-size: 28px">{{ status.last_round?.deleted ?? 0 }}</b></div>
-            <div style="font-size: 20px">清理候选 <b style="font-size: 28px">{{ status.last_round?.cleanup_candidates ?? 0 }}</b> / 已清理 <b style="font-size: 28px">{{ status.last_round?.cleanup_deleted ?? 0 }}</b> / 残留 <b style="font-size: 28px">{{ status.last_round?.cleanup_deferred ?? 0 }}</b></div>
+            <div style="font-size: 20px" data-testid="cleanup-operations">本轮累计确认清理 {{ status.last_round ? `${status.last_round.cleanup_deleted} 条` : '暂无记录' }}</div>
+            <div style="font-size: 16px" data-testid="cleanup-observation">{{ cleanupHint }}</div>
           </NSpace>
         </NCard>
       </NGi>

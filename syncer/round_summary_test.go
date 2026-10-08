@@ -1,7 +1,9 @@
 package syncer
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -500,5 +502,104 @@ func TestDryRunDoesNotListSWASDropAsToAdd(t *testing.T) {
 	}
 	if len(r.CleanupCandidates) != 0 {
 		t.Errorf("CleanupCandidates 数量 = %d, want 0", len(r.CleanupCandidates))
+	}
+}
+
+// 四类目标经真实目标链汇总，兼容整数不能冒充完整当前残留。
+func TestI802_RoundObservationSummary(t *testing.T) {
+	retryErr := errors.New("RequestLimitExceeded")
+	observed := newProbeProvider(config.CloudAliECS, 1, staleRule("TCP", "80", "10.0.0.1/32", "obs", ""))
+	estimated := newProbeProvider(config.CloudAliECS, 2, staleRule("TCP", "80", "10.0.0.1/32", "est", ""))
+	estimated.deleteErr = errors.New("permission denied")
+	historical := &targetDeleteProgressProbe{newProbeProvider(config.CloudAliECS, 3, staleRule("TCP", "80", "10.0.0.1/32", "h1", ""), staleRule("TCP", "81", "10.0.0.2/32", "h2", ""))}
+	historical.snapshotErrs = []error{nil, nil, retryErr, retryErr, retryErr}
+	unknown := newProbeProvider(config.CloudAliECS, 4)
+	unknown.snapshotErrs = []error{errors.New("permission denied")}
+	rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+	s := newTargetSyncer(t, []provider.Provider{observed, estimated, historical, unknown}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+	events := make(chan notifier.Event, 1)
+	s.bus.Subscribe(notifier.EventSyncComplete, roundEventSink{ch: events})
+	s.syncAll()
+	sum := s.Status().LastRound
+	want := CleanupObservationSummary{ObservedTargets: 1, EstimatedTargets: 1, HistoricalTargets: 1, UnknownTargets: 1, ObservedCandidates: 1, ObservedDeferred: 0, Complete: false}
+	if sum.Total != 4 || sum.CleanupObservationSummary != want || sum.CleanupCandidates != 4 || sum.CleanupDeferred != 2 || sum.Deleted != 2 || sum.CleanupDeleted != 2 || sum.Outcome != RoundFailed {
+		t.Fatalf("混合汇总: %+v want=%+v", sum, want)
+	}
+	select {
+	case ev := <-events:
+		if ev.Data["cleanup_observation_summary"] != want {
+			t.Fatalf("事件汇总: %+v", ev.Data)
+		}
+		raw, err := json.Marshal(ev.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded struct {
+			Cleanup CleanupObservationSummary `json:"cleanup_observation_summary"`
+		}
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded.Cleanup != want {
+			t.Fatalf("JSON丢失完整性: %s", raw)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("缺少整轮事件")
+	}
+}
+
+func TestI802_TargetEventJSON(t *testing.T) {
+	for _, known := range []bool{false, true} {
+		t.Run(fmt.Sprint(known), func(t *testing.T) {
+			p := newProbeProvider(config.CloudTCCVM, 1)
+			if !known {
+				p.snapshotErrs = []error{errors.New("permission denied")}
+			}
+			rules := []config.DomainRule{staticRule(1, "a.example.com", "TCP", "443")}
+			s := newTargetSyncer(t, []provider.Provider{p}, rules, map[string]string{"a.example.com": "1.1.1.1/32"})
+			events := make(chan notifier.Event, 1)
+			kind := notifier.EventTargetSyncComplete
+			if !known {
+				kind = notifier.EventSyncError
+			}
+			s.bus.Subscribe(kind, roundEventSink{ch: events})
+			s.syncAll()
+			select {
+			case ev := <-events:
+				raw, err := json.Marshal(ev.Data)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var data map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &data); err != nil {
+					t.Fatal(err)
+				}
+				if string(data["attempts"]) != "1" {
+					t.Fatalf("尝试次数: %s", raw)
+				}
+				for _, field := range []string{"cleanup_observation", "unsupported_observation"} {
+					value, exists := data[field]
+					if !exists || (string(value) == "null") == known {
+						t.Fatalf("%s 未知/观察不分: %s", field, raw)
+					}
+				}
+				if known {
+					var o UnsupportedObservation
+					if err := json.Unmarshal(data["unsupported_observation"], &o); err != nil {
+						t.Fatal(err)
+					}
+					if o.Latest.Issues == nil || o.LastComplete.Issues == nil {
+						t.Fatalf("空数组为null: %s", raw)
+					}
+				}
+			case <-time.After(time.Second):
+				t.Fatal("缺少目标事件")
+			}
+		})
+	}
+	s := newTargetSyncer(t, nil, nil, nil)
+	s.syncAll()
+	if o := s.Status().LastRound; o.Outcome != RoundIdle || !o.CleanupObservationSummary.Complete || o.Total != 0 {
+		t.Fatalf("空轮: %+v", o)
 	}
 }

@@ -19,7 +19,7 @@ import (
 // 本文件实现 Issue7 Step 2 的目标级同步主流程：
 //
 //	Resolve（按 host 去重）→ S0 → Plan → Add(S0 版本) → S1 → 同一 planner 验证覆盖
-//	→ 清理安全门（本 Step 恒不删除，候选全部 cleanup_deferred）
+//	→ 清理安全门 → 条件删除 → 必要时 S2 验证
 //
 // 不可破坏不变量：任何 Add 都必须在 Delete 之前；覆盖验证失败、快照失败或
 // 提交状态未知时，旧规则必须全部保留。
@@ -38,18 +38,21 @@ const (
 
 // targetResult 单个目标的同步结果（RoundSummary 的统计单元）。
 type targetResult struct {
-	targetID          int
-	provider          string
-	domains           []string
-	outcome           TargetOutcome
-	added             int
-	deleted           int
-	unsupported       []provider.PlanIssue
-	cleanupCandidates int
-	cleanupDeleted    int
-	cleanupDeferred   int
-	durationMS        int64
-	err               error
+	attempts               int
+	cleanupObservation     *CleanupObservation
+	unsupportedObservation *UnsupportedObservation
+	targetID               int
+	provider               string
+	domains                []string
+	outcome                TargetOutcome
+	added                  int
+	deleted                int
+	unsupported            []provider.PlanIssue
+	cleanupCandidates      int
+	cleanupDeleted         int
+	cleanupDeferred        int
+	durationMS             int64
+	err                    error
 }
 
 // retryableCleanupError 标记「本 attempt 已由 S1 证明所需功能存在，只有 Delete
@@ -66,8 +69,10 @@ func (e *retryableCleanupError) Unwrap() error { return e.err }
 // cleanupResult 是一次清理尝试对外需要的最小结果：实际确认删除数与最终残留数。
 // Resolved 只属于 Provider 删除响应的中间语义，不再泄漏给调用方间接推导 S2 状态。
 type cleanupResult struct {
-	deleted  int
-	deferred int
+	deleted    int
+	deferred   int
+	basis      string
+	deferredAt time.Time
 }
 
 // syncTarget 执行一个目标的完整同步：最多 maxRetries 次整目标 attempt。
@@ -101,10 +106,8 @@ func (s *Syncer) syncTarget(state *RuntimeState, p provider.Provider, rules []co
 		attemptRes, err := s.runTargetAttempt(state, p, rules, dnsFailedHosts, round)
 		res.added += attemptRes.added
 		res.deleted += attemptRes.deleted
-		res.unsupported = attemptRes.unsupported
-		res.cleanupCandidates = attemptRes.cleanupCandidates
+		res.mergeObservations(attemptRes, attempt+1)
 		res.cleanupDeleted += attemptRes.cleanupDeleted
-		res.cleanupDeferred = attemptRes.cleanupDeferred
 
 		if err == nil {
 			res.outcome = attemptRes.outcome
@@ -167,7 +170,8 @@ func (s *Syncer) runTargetAttempt(
 	})
 	// S0 已经确定的平台能力限制必须立即进入 attempt 结果；若后续 Add 失败，
 	// 最终 failed 事件仍需保留这些 unsupported 明细（Issue7 §5.3、§7.2）。
-	res.unsupported = plan0.Unsupported
+	complete := desiredInputComplete(rules, resolved, dnsErrors)
+	res.observeUnsupported(plan0.Unsupported, "s0", complete)
 
 	// 4) Add：永远先于任何删除；携带 S0 快照做版本保护
 	if len(plan0.ToAdd) > 0 {
@@ -197,7 +201,9 @@ func (s *Syncer) runTargetAttempt(
 		DNSErrors: dnsErrors,
 		Snapshot:  s1,
 	})
-	res.unsupported = plan1.Unsupported
+	res.observeUnsupported(plan1.Unsupported, "s1", complete)
+	observedAt := time.Now()
+	res.cleanupObservation = &CleanupObservation{Candidates: len(plan1.CleanupCandidates), CandidatesAt: observedAt, Deferred: len(plan1.CleanupCandidates), DeferredAt: observedAt, Basis: "s1", DesiredComplete: complete}
 	res.cleanupCandidates = len(plan1.CleanupCandidates)
 	// 未执行可信 S2 前，S1 的全部候选都是保守残留。
 	res.cleanupDeferred = len(plan1.CleanupCandidates)
@@ -222,6 +228,11 @@ func (s *Syncer) runTargetAttempt(
 	res.cleanupDeleted = cleanup.deleted
 	res.deleted += cleanup.deleted
 	res.cleanupDeferred = cleanup.deferred
+	if cleanup.basis != "" {
+		res.cleanupObservation.Basis = cleanup.basis
+		res.cleanupObservation.DeferredAt = cleanup.deferredAt
+	}
+	res.cleanupObservation.Deferred = cleanup.deferred
 	if err != nil {
 		return res, err
 	}
@@ -287,8 +298,10 @@ func (s *Syncer) runTargetCleanup(
 
 	delRes, delErr := p.DeleteRules(s1, deletable)
 	result := cleanupResult{
-		deleted:  delRes.Deleted,
-		deferred: len(plan1.CleanupCandidates) - delRes.Resolved,
+		deleted:    delRes.Deleted,
+		deferred:   len(plan1.CleanupCandidates) - delRes.Resolved,
+		basis:      "delete_progress",
+		deferredAt: time.Now(),
 	}
 
 	switch {
@@ -299,6 +312,8 @@ func (s *Syncer) runTargetCleanup(
 			return result, err
 		}
 		result.deferred = finalDeferred
+		result.basis = "s2"
+		result.deferredAt = time.Now()
 	case isIdempotentDelete(delErr):
 		// 「已不存在」视为清理成功但不计 Deleted；仍需 S2 确认覆盖
 		slog.Warn("清理候选已不存在，按幂等处理", "provider", p.Name())
@@ -307,6 +322,8 @@ func (s *Syncer) runTargetCleanup(
 			return result, err
 		}
 		result.deferred = finalDeferred
+		result.basis = "s2"
+		result.deferredAt = time.Now()
 	case isVersionMismatch(delErr):
 		// 版本竞争：整目标重新 attempt（绝不无版本重发）
 		return result, &retryableCleanupError{
@@ -496,18 +513,21 @@ func ruleHosts(rules []config.DomainRule) []string {
 func (s *Syncer) publishTargetResult(res targetResult) {
 	unsupported := append([]provider.PlanIssue{}, res.unsupported...)
 	data := map[string]any{
-		"provider":           res.provider,
-		"target_id":          res.targetID,
-		"domains":            res.domains,
-		"domain":             strings.Join(res.domains, ", "),
-		"added":              res.added,
-		"deleted":            res.deleted,
-		"outcome":            string(res.outcome),
-		"unsupported":        unsupported,
-		"cleanup_candidates": res.cleanupCandidates,
-		"cleanup_deleted":    res.cleanupDeleted,
-		"cleanup_deferred":   res.cleanupDeferred,
-		"duration_ms":        res.durationMS,
+		"attempts":                res.attempts,
+		"cleanup_observation":     res.cleanupObservation,
+		"unsupported_observation": res.unsupportedObservation,
+		"provider":                res.provider,
+		"target_id":               res.targetID,
+		"domains":                 res.domains,
+		"domain":                  strings.Join(res.domains, ", "),
+		"added":                   res.added,
+		"deleted":                 res.deleted,
+		"outcome":                 string(res.outcome),
+		"unsupported":             unsupported,
+		"cleanup_candidates":      res.cleanupCandidates,
+		"cleanup_deleted":         res.cleanupDeleted,
+		"cleanup_deferred":        res.cleanupDeferred,
+		"duration_ms":             res.durationMS,
 		// skipped 仅保留目标事件的既有计数表达；结构化明细唯一以 unsupported 为准。
 		"skipped": len(unsupported),
 	}

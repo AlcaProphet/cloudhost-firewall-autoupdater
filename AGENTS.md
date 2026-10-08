@@ -82,6 +82,10 @@
 
 ---
 
+**I8-02 观察表达后续修复状态（2026-10-08，用户裁决 C）**：根据引用研究聊天的三项裁决授权实施，基线 `main / 256a7b3`、本地 `origin/main / 7696482`、ahead 1，工作树/暂存区干净。目标追加实际 attempts 与 nullable 清理/平台限制观察，S0/Add/S1早退保留历史来源，可信零可替换；清理区分 S1、可信 S2、delete_progress 估计，最新与最近完整规划分存。旧增删/cleanup_deleted 跨尝试累计，候选/残留整数为最近观察兼容投影；整轮追加 observed/estimated/historical/unknown 四类互斥汇总，只有 observed 参与已观察数量。Dashboard/SQLite 分开累计操作与候选观察，成功但估计零也提示清理未确认；outcome/健康与删除安全不变。范围固定 7 个生产/前端、6 个测试、5 个文档共 18 文件，无 schema/配置包/依赖变动，旧客户端忽略新增字段仍不能识别未知。定向两包 TestI802_* race 20 轮、全仓 12 包 race 每项重复三次（单条 -count=3 命令）、Dashboard 8 项与前端全部 66 项回归、前端 build、vet/Go build、格式/diff-check 已通过，门禁证据与字段合同见 Issue8 实施补记、Issue7 §12.9；真实浏览器/四云/通知链路、Linux/Docker/compose、原生 amd64/macOS 13 与当前 revision 远端 CI/GHCR 未执行，不外推外部验收或长期稳定。源码/测试/文档尚未提交，未 fetch/push。Q-02 与 TODO-008 的本地语义/修复已收口，其余台账独立保持。
+
+---
+
 ## 二、核心编码原则
 
 ### 简单轻量化
@@ -282,6 +286,7 @@
 - 项目交付范围仅包含 WebUI 单二进制 + SQLite 以及 Docker/服务器部署；不包含 `.env` Headless 业务模式、CLI 子命令、桌面托盘、开机自启或原生桌面打包计划
 - 日志多路复用使用标准库 `slog.NewMultiHandler`，只在 `app/logutil.go` 统一装配 stdout 与 WebUI；全部启用路按顺序分发，每路 `Record.Clone()`，错误由标准库聚合，调用方通过 `errors.Is/As` 识别，不依赖单错误直接相等。`slog.Logger` 丢弃 Handler 返回错误，不承诺自动告警。
 - WebUI 模式通过 pidfile（`config/pidfile.go` + 平台文件（linux/darwin））防止多实例运行
+- 目标同步观察：清理与平台限制观察用 nullable 对象明确未知，记录 attempt/时间/历史来源；删除进度估计不称当前云状态。latest 与 last_complete 分存，完整新零替换旧非零。RoundSummary 四类观察汇总不影响 outcome/健康/删除授权；旧整数仅作兼容投影，日志和 Dashboard 不把跨尝试累计删除与单次快照候选拼成数量关系（Issue7 §12.9）。
 - 事件类型：全局同步完成用 `EventSyncComplete`，目标级云端写入与覆盖验证用 `EventTargetSyncComplete`，DNS 失败继续用 `EventDNSFailed`，运行健康异常边沿用 `EventOperationalUnhealthy`；`EventDomainSyncComplete` 不再承载云端增删数量
 - 同步全局开关：`POST /api/sync/pause|resume` 端点（先写 DB 后通知 Syncer）；`SyncStatus.enabled` 字段；前端「模拟测试」页（路由 `/dry-run`）承载目标级变更预览，正式同步与 Dry Run 共用同一纯规划器；至少表达 `desired`、`satisfied_by_owned`、`satisfied_by_external`、`to_add`、`cleanup_candidates`、`cleanup_deferred`、`dns_errors`、`unsupported`、`conflicts`、`coverage_ready`；连接测试保留在目标添加/编辑弹窗（`POST /api/test-connection`）
 - 地域自动补全：数据源为 `PlatformAPIDocs/PlatformZoneGuide/`（后端 `webui/api/zones.go` 提供 `GET /api/zones`，文档更新时需同步数据）；后端仅提供预填数据、不校验地域合法性（允许输入列表外值，由云 API 自行报错，符合「不过度防御」）

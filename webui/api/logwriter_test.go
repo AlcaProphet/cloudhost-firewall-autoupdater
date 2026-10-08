@@ -438,10 +438,139 @@ func TestStoreLogWriter_ErrorDetail(t *testing.T) {
 		t.Fatalf("GetSyncLogs = %v, err = %v, want 1 条", logs, err)
 	}
 	l := logs[0]
-	if l.Result != "failed" || l.Error != "请求超时" {
+	if l.Result != "failed" || !strings.HasPrefix(l.Error, "请求超时") {
 		t.Errorf("日志 = result:%s error:%s, want failed/请求超时", l.Result, l.Error)
 	}
 	if l.Added != 2 || l.Deleted != 1 {
 		t.Errorf("失败记录计数 = added:%d deleted:%d, want 2/1", l.Added, l.Deleted)
+	}
+}
+
+// 使用正式 Run/EventBus/SQLite 链验证历史保留、未知和恢复，Provider 只在本地模拟。
+type i802ChainProvider struct {
+	*logWriterChainProvider
+	snapshots int
+	mode      string
+}
+
+func (p *i802ChainProvider) GetSnapshot() (provider.RuleSnapshot, error) {
+	p.snapshots++
+	if p.mode == "unknown" {
+		return provider.RuleSnapshot{}, errors.New("permission denied")
+	}
+	if p.snapshots == 3 || (p.mode == "historical" && p.snapshots > 3) {
+		if p.mode == "estimated" {
+			return provider.RuleSnapshot{}, errors.New("permission denied")
+		}
+		return provider.RuleSnapshot{}, errors.New("RequestLimitExceeded")
+	}
+	return p.logWriterChainProvider.GetSnapshot()
+}
+func (p *i802ChainProvider) DeleteRules(snap provider.RuleSnapshot, rules []config.RuleInfo) (provider.DeleteResult, error) {
+	if len(rules) == 1 {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		p.rules = p.rules[:1]
+		return provider.DeleteResult{Deleted: 1, Resolved: 1}, nil
+	}
+	return p.logWriterChainProvider.DeleteRules(snap, rules)
+}
+func TestI802_ProductionLogChain(t *testing.T) {
+	for _, mode := range []string{"historical", "recover", "estimated", "unknown"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newTestEnv(t)
+			p := &i802ChainProvider{mode: mode, logWriterChainProvider: &logWriterChainProvider{rules: []config.RuleInfo{
+				{Protocol: "TCP", Port: "443", CidrBlock: "127.0.0.1/32", Action: "ACCEPT", Description: "[auto-dns]", RuleID: "desired"},
+				{Protocol: "TCP", Port: "80", CidrBlock: "10.0.0.1/32", Action: "ACCEPT", Description: "[auto-dns]", RuleID: "old1"},
+				{Protocol: "TCP", Port: "81", CidrBlock: "10.0.0.2/32", Action: "ACCEPT", Description: "[auto-dns]", RuleID: "old2"},
+			}}}
+			state, err := syncer.BuildRuntimeState(nil, config.RuntimeConfig{Tag: "auto-dns", Interval: time.Hour, DNS: "8.8.8.8", DNSTimeout: time.Second, DNSFailThreshold: 5, LogLevel: "info", SyncEnabled: true, Theme: "light", DomainRules: []config.DomainRule{{ID: 1, Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT"}}}, syncer.BreakerReset)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.Providers = []provider.Provider{p}
+			s := syncer.New(syncer.NewRuntimeManager(state))
+			targetEvents := make(chan notifier.Event, 1)
+			roundEvents := make(chan notifier.Event, 1)
+			kind := notifier.EventSyncError
+			if mode == "recover" {
+				kind = notifier.EventTargetSyncComplete
+			}
+			s.EventBus().Subscribe(kind, &StoreLogWriter{Store: e.store})
+			s.EventBus().Subscribe(kind, eventCapture{ch: targetEvents})
+			s.EventBus().Subscribe(notifier.EventSyncComplete, eventCapture{ch: roundEvents})
+			go s.Run()
+			t.Cleanup(func() { s.Stop(); s.Wait() })
+			var ev notifier.Event
+			select {
+			case ev = <-targetEvents:
+			case <-time.After(6 * time.Second):
+				t.Fatal("目标事件超时")
+			}
+			var round notifier.Event
+			select {
+			case round = <-roundEvents:
+			case <-time.After(3 * time.Second):
+				t.Fatal("整轮事件超时")
+			}
+			logs, err := e.store.GetSyncLogs(10)
+			if err != nil || len(logs) != 1 {
+				t.Fatalf("日志: %+v %v", logs, err)
+			}
+			sum := round.Data["cleanup_observation_summary"].(syncer.CleanupObservationSummary)
+			o := ev.Data["cleanup_observation"].(*syncer.CleanupObservation)
+			text := logs[0].Error
+			if strings.Contains(text, "条：已确认清理") {
+				t.Fatalf("仍把快照与累计量拼成数量关系: %s", text)
+			}
+			switch mode {
+			case "unknown":
+				if o != nil || sum.UnknownTargets != 1 || logs[0].Deleted != 0 || !strings.Contains(text, "清理观察未知") {
+					t.Fatalf("未知: %+v / %s", sum, text)
+				}
+			case "historical":
+				if o == nil || !o.Historical || o.Attempt != 1 || ev.Data["attempts"] != 3 || o.Deferred != 1 || sum.HistoricalTargets != 1 || logs[0].Deleted != 1 || !strings.Contains(text, "历史观察；当前残留未知") || !strings.Contains(text, "删除进度估计") {
+					t.Fatalf("历史: %+v %+v / %s", o, sum, text)
+				}
+			case "estimated":
+				if o == nil || o.Historical || o.Basis != "delete_progress" || sum.EstimatedTargets != 1 || logs[0].Deleted != 1 || !strings.Contains(text, "当前残留未确认") {
+					t.Fatalf("估计: %+v / %s", sum, text)
+				}
+			case "recover":
+				if o == nil || o.Historical || o.Basis != "s2" || o.Attempt != 2 || o.Candidates != 1 || o.Deferred != 0 || logs[0].Deleted != 2 || !sum.Complete || !strings.Contains(text, "S2 已观察残留：延后 0 条") || !strings.Contains(text, "累计已确认新增 0 条、已确认清理 2 条") {
+					t.Fatalf("恢复: %+v / %s", sum, text)
+				}
+			}
+			if s.Status().LastRound.CleanupObservationSummary != sum {
+				t.Fatal("状态与整轮事件不同")
+			}
+			if logs[0].Deleted != toInt(ev.Data["cleanup_deleted"]) {
+				t.Fatal("落库确认数丢失")
+			}
+		})
+	}
+}
+
+func TestI802_LogSeparateUnsupportedScopes(t *testing.T) {
+	e := newTestEnv(t)
+	now := time.Now()
+	ev := notifier.Event{Type: notifier.EventSyncError, Timestamp: now, Data: map[string]any{
+		"provider": "ali_ecs(sg-test)", "error": "DNS failed", "added": 1, "cleanup_deleted": 0,
+		"unsupported_observation": &syncer.UnsupportedObservation{
+			Latest:       &syncer.PlanObservation{Attempt: 2, Stage: "s1", ObservedAt: now, Complete: false, Issues: []provider.PlanIssue{}},
+			LastComplete: &syncer.PlanObservation{Attempt: 1, Stage: "s0", ObservedAt: now.Add(-time.Second), Complete: true, Historical: true, Issues: []provider.PlanIssue{{Code: "unsupported", Message: "不支持 IPv6"}}},
+		},
+	}}
+	if err := (&StoreLogWriter{Store: e.store}).OnEvent(ev); err != nil {
+		t.Fatal(err)
+	}
+	logs, err := e.store.GetSyncLogs(10)
+	if err != nil || len(logs) != 1 {
+		t.Fatalf("日志 %v %v", logs, err)
+	}
+	for _, want := range []string{"最新规划：第 2 次尝试 s1", "范围不完整，仅已知部分", "本规划范围内无法实施项 0 条", "最近完整规划：第 1 次尝试 s0", "历史观察", "不支持 IPv6"} {
+		if !strings.Contains(logs[0].Error, want) {
+			t.Fatalf("缺少 %s: %s", want, logs[0].Error)
+		}
 	}
 }

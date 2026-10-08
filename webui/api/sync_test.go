@@ -3,12 +3,14 @@ package api
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -362,6 +364,92 @@ func TestAPISyncerInterfaceHasNoPauseResume(t *testing.T) {
 	for _, required := range []string{"func (s *Syncer) Pause()", "func (s *Syncer) Resume()", "func (s *Syncer) Runtime()"} {
 		if !strings.Contains(implText, required) {
 			t.Errorf("syncer 侧必须保留实现方法 %s", required)
+		}
+	}
+}
+
+// 状态和SSE处理器直接传递新增值类型汇总/nullable观察，不改原整数类型。
+type i802StatusStub struct {
+	*stubSyncer
+	summary syncer.RoundSummary
+}
+
+func (s *i802StatusStub) Status() syncer.SyncStatus {
+	return syncer.SyncStatus{Running: true, Enabled: true, LastRound: &s.summary}
+}
+func TestI802_StatusAndSSEJSON(t *testing.T) {
+	sum := syncer.RoundSummary{Total: 4, Failed: 2, Changed: 2, Outcome: syncer.RoundFailed, CleanupCandidates: 4, CleanupDeleted: 2, CleanupDeferred: 2,
+		CleanupObservationSummary: syncer.CleanupObservationSummary{ObservedTargets: 1, EstimatedTargets: 1, HistoricalTargets: 1, UnknownTargets: 1, ObservedCandidates: 1}}
+	sub := newCountingEventSubscriber()
+	d := &Deps{Syncer: &i802StatusStub{stubSyncer: &stubSyncer{}, summary: sum}, EventBus: sub}
+	mux := http.NewServeMux()
+	d.Register(mux)
+	status := httptest.NewRecorder()
+	mux.ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/sync/status", nil))
+	if status.Code != 200 || status.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("状态响应: %d %v", status.Code, status.Header())
+	}
+	var decoded syncer.SyncStatus
+	if err := json.Unmarshal(status.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.LastRound == nil || *decoded.LastRound != sum {
+		t.Fatalf("状态JSON丢失汇总: %s", status.Body.String())
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(srv.URL + "/api/sync/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("SSE: %d %v", resp.StatusCode, resp.Header)
+	}
+	waitForSSESubscribe(t, sub)
+	now := time.Now()
+	o := &syncer.CleanupObservation{Attempt: 1, Candidates: 2, CandidatesAt: now, Deferred: 1, DeferredAt: now, Basis: "delete_progress", DesiredComplete: true, Historical: true}
+	events := []notifier.Event{
+		{Type: notifier.EventSyncError, Timestamp: now, Data: map[string]any{"attempts": 3, "cleanup_observation": o, "unsupported_observation": (*syncer.UnsupportedObservation)(nil), "cleanup_candidates": 2, "cleanup_deleted": 1, "cleanup_deferred": 1}},
+		{Type: notifier.EventSyncError, Timestamp: now, Data: map[string]any{"attempts": 1, "cleanup_observation": (*syncer.CleanupObservation)(nil), "unsupported_observation": (*syncer.UnsupportedObservation)(nil), "cleanup_candidates": 0, "cleanup_deferred": 0}},
+		{Type: notifier.EventSyncComplete, Timestamp: now, Data: sum.Data()},
+	}
+	reader := bufio.NewReader(resp.Body)
+	for _, ev := range events {
+		sub.bus.Publish(ev)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			t.Fatalf("不是data帧: %q", line)
+		}
+		var got notifier.Event
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &got); err != nil {
+			t.Fatal(err)
+		}
+		wantJSON, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotJSON, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wantValue, gotValue any
+		if err := json.Unmarshal(wantJSON, &wantValue); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(gotJSON, &gotValue); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(wantValue, gotValue) {
+			t.Fatalf("SSE丢失语义:\n%s\n%s", wantJSON, gotJSON)
+		}
+		line, err = reader.ReadString('\n')
+		if err != nil || line != "\n" {
+			t.Fatalf("帧边界: %q %v", line, err)
 		}
 	}
 }

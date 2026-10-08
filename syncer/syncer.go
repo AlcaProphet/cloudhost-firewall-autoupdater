@@ -790,31 +790,34 @@ type RoundSummary struct {
 	Skipped    int       `json:"skipped"`
 	Added      int       `json:"added"`
 	Deleted    int       `json:"deleted"`
-	// 清理可观测性（Issue7 §5.4）：S1 候选数 / 实际确认清理数 / 最终残留候选数。
+	// 候选/残留整数是各目标最近观察的兼容投影（可含历史/估计/未知零）。
+	// 当前完整性和已观察数量由 CleanupObservationSummary 表达；确认清理量跨尝试累计。
 	// 本 Issue 内 deleted 与 cleanup_deleted 数值相同，但保留两者以区分「总写入」与「清理」语义。
-	CleanupCandidates int          `json:"cleanup_candidates"`
-	CleanupDeleted    int          `json:"cleanup_deleted"`
-	CleanupDeferred   int          `json:"cleanup_deferred"`
-	DurationMS        int64        `json:"duration_ms"`
-	Outcome           RoundOutcome `json:"outcome"`
+	CleanupObservationSummary CleanupObservationSummary `json:"cleanup_observation_summary"`
+	CleanupCandidates         int                       `json:"cleanup_candidates"`
+	CleanupDeleted            int                       `json:"cleanup_deleted"`
+	CleanupDeferred           int                       `json:"cleanup_deferred"`
+	DurationMS                int64                     `json:"duration_ms"`
+	Outcome                   RoundOutcome              `json:"outcome"`
 }
 
 // Data 返回事件负载形态的汇总（EventSyncComplete.Data 增加同一汇总）。
 func (r RoundSummary) Data() map[string]any {
 	return map[string]any{
-		"finished_at":        r.FinishedAt,
-		"total":              r.Total,
-		"ok":                 r.OK,
-		"changed":            r.Changed,
-		"failed":             r.Failed,
-		"skipped":            r.Skipped,
-		"added":              r.Added,
-		"deleted":            r.Deleted,
-		"cleanup_candidates": r.CleanupCandidates,
-		"cleanup_deleted":    r.CleanupDeleted,
-		"cleanup_deferred":   r.CleanupDeferred,
-		"duration_ms":        r.DurationMS,
-		"outcome":            string(r.Outcome),
+		"cleanup_observation_summary": r.CleanupObservationSummary,
+		"finished_at":                 r.FinishedAt,
+		"total":                       r.Total,
+		"ok":                          r.OK,
+		"changed":                     r.Changed,
+		"failed":                      r.Failed,
+		"skipped":                     r.Skipped,
+		"added":                       r.Added,
+		"deleted":                     r.Deleted,
+		"cleanup_candidates":          r.CleanupCandidates,
+		"cleanup_deleted":             r.CleanupDeleted,
+		"cleanup_deferred":            r.CleanupDeferred,
+		"duration_ms":                 r.DurationMS,
+		"outcome":                     string(r.Outcome),
 	}
 }
 
@@ -885,7 +888,8 @@ func (s *Syncer) syncAll() {
 		"added", summary.Added, "deleted", summary.Deleted,
 		"cleanup_candidates", summary.CleanupCandidates,
 		"cleanup_deleted", summary.CleanupDeleted,
-		"cleanup_deferred", summary.CleanupDeferred)
+		"cleanup_deferred", summary.CleanupDeferred,
+		"cleanup_observation_summary", summary.CleanupObservationSummary)
 }
 
 // outcomeOf 依据目标级口径计算整轮结论。
@@ -917,6 +921,8 @@ func (s *Syncer) runRound(state *RuntimeState, total int) RoundSummary {
 	// 按云厂商分组，跨云并行；同一云厂商内目标串行（共享配额）
 	groups := s.groupByCloud(state.Providers)
 	var wg sync.WaitGroup
+	var observationMu sync.Mutex
+	observations := CleanupObservationSummary{Complete: true}
 	for ct, ps := range groups {
 		wg.Add(1)
 		go func(ct config.CloudType, ps []provider.Provider) {
@@ -946,6 +952,9 @@ func (s *Syncer) runRound(state *RuntimeState, total int) RoundSummary {
 				cleanupCandidates.Add(int32(res.cleanupCandidates))
 				cleanupDeleted.Add(int32(res.cleanupDeleted))
 				cleanupDeferred.Add(int32(res.cleanupDeferred))
+				observationMu.Lock()
+				observations.add(res)
+				observationMu.Unlock()
 
 				// 同一云厂商内目标之间限速（AGENTS §七）
 				s.sleep(rateLimitInterval(ct))
@@ -955,16 +964,17 @@ func (s *Syncer) runRound(state *RuntimeState, total int) RoundSummary {
 	wg.Wait()
 
 	return RoundSummary{
-		Total:             total,
-		OK:                int(ok.Load()),
-		Changed:           int(changed.Load()),
-		Failed:            int(failed.Load()),
-		Skipped:           int(skipped.Load()),
-		Added:             int(added.Load()),
-		Deleted:           int(deleted.Load()),
-		CleanupCandidates: int(cleanupCandidates.Load()),
-		CleanupDeleted:    int(cleanupDeleted.Load()),
-		CleanupDeferred:   int(cleanupDeferred.Load()),
+		CleanupObservationSummary: observations,
+		Total:                     total,
+		OK:                        int(ok.Load()),
+		Changed:                   int(changed.Load()),
+		Failed:                    int(failed.Load()),
+		Skipped:                   int(skipped.Load()),
+		Added:                     int(added.Load()),
+		Deleted:                   int(deleted.Load()),
+		CleanupCandidates:         int(cleanupCandidates.Load()),
+		CleanupDeleted:            int(cleanupDeleted.Load()),
+		CleanupDeferred:           int(cleanupDeferred.Load()),
 	}
 }
 

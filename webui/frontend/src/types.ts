@@ -41,6 +41,42 @@ export interface DomainRule {
 //   - changed 目标 success 且确认发生增删
 //   - failed  目标最终 failed
 //   - skipped 目标未失败但存在 unsupported（部分实施目标数，字段名保留以兼容）
+// 目标事件新增的可空观察对象，旧整数仍为兼容投影。
+export interface CleanupObservation {
+  attempt: number
+  candidates: number
+  candidates_at: string
+  deferred: number
+  deferred_at: string
+  basis: 's1' | 's2' | 'delete_progress'
+  desired_complete: boolean
+  historical: boolean
+}
+
+export interface PlanObservation {
+  attempt: number
+  stage: 's0' | 's1'
+  observed_at: string
+  complete: boolean
+  issues: PlanIssue[]
+  historical: boolean
+}
+
+export interface UnsupportedObservation {
+  latest: PlanObservation
+  last_complete: PlanObservation | null
+}
+
+export interface CleanupObservationSummary {
+  observed_targets: number
+  estimated_targets: number
+  historical_targets: number
+  unknown_targets: number
+  observed_candidates: number
+  observed_deferred: number
+  complete: boolean
+}
+
 export interface RoundSummary {
   finished_at: string
   total: number
@@ -50,7 +86,8 @@ export interface RoundSummary {
   skipped: number
   added: number
   deleted: number
-  // 清理可观测性：候选数 / 实际确认清理数 / 最终残留候选数
+  // 候选/残留整数为最近观察的兼容投影；完整当前数量只读观察汇总。
+  cleanup_observation_summary: CleanupObservationSummary
   cleanup_candidates: number
   cleanup_deleted: number
   cleanup_deferred: number

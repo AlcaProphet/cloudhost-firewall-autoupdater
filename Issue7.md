@@ -422,7 +422,7 @@ total == ok + changed + failed + skipped
 - `failed`：目标最终 failed；
 - `skipped`：目标没有 failed，但存在 unsupported，亦即目标 partial；保留字段名以避免无必要 Schema/API 扩张，其注释和 UI 必须改为“部分实施目标数”；
 - `added/deleted`：云端明确确认的实际写入总数；幂等已存在/不存在不计数；
-- 新增 `cleanup_candidates/cleanup_deleted/cleanup_deferred`：分别为 S1 候选数、实际确认清理数、最终残留候选数；`deleted` 与 `cleanup_deleted` 在本 Issue 中数值相同，但保留前者兼容总写入语义、后者用于清理可观测性；
+- 新增 `cleanup_candidates/cleanup_deleted/cleanup_deferred`：分别为最近清理观察的 S1 候选数、跨尝试累计实际确认清理数、最近观察/估计的残留兼容投影；当前完整性由 §12.9 新观察汇总表达；`deleted` 与 `cleanup_deleted` 在本 Issue 中数值相同，但保留前者兼容总写入语义、后者用于清理可观测性；
 - `outcome`：`total==0 → idle`；否则 failed>0 → failed；否则 skipped>0 → partial；否则 success；
 - 只有 success 刷新 `last_success`；带 cleanup_deferred 的 success 仍刷新。
 
@@ -520,7 +520,7 @@ total == ok + changed + failed + skipped
 EventTargetSyncComplete EventType = "target:sync_complete"
 ```
 
-事件 Data 至少包含：provider、target_id、domains、outcome、added、deleted、unsupported、cleanup_candidates、cleanup_deleted、cleanup_deferred、duration_ms；失败时还包含稳定 error。`EventDomainSyncComplete` 不再承载云端增删数量，新代码不得同时发布两套完成事件造成重复日志。
+事件 Data 至少包含：provider、target_id、domains、outcome、added、deleted、unsupported、cleanup_candidates、cleanup_deleted、cleanup_deferred、duration_ms；I8-02 另追加 attempts/cleanup_observation/unsupported_observation（§12.9）；失败时还包含稳定 error。`EventDomainSyncComplete` 不再承载云端增删数量，新代码不得同时发布两套完成事件造成重复日志。
 
 DNS 失败继续发布 `EventDNSFailed`，但相同目标/host 一轮最多一次。目标最终失败继续使用 `EventSyncError` 或等价目标失败事件；若保留 `EventSyncError`，Data 必须明确 target_id/domains，不能伪装成单域名结果。
 
@@ -537,12 +537,12 @@ DNS 失败继续发布 `EventDNSFailed`，但相同目标/host 一轮最多一�
 
 ### 7.4 Dashboard 与 OperationalHealth
 
-- Dashboard 只依据后端 `last_round.outcome` 和 cleanup 计数展示；不得用 `outcome != success` 推导失败；
+- Dashboard 依据后端 `last_round.outcome` 与 `cleanup_observation_summary` 展示（I8-02，§12.9）；不得用 `outcome != success` 推导失败；
 - idle：中性信息或不展示异常，不能出现“最近一轮未完整成功”；
 - partial：黄色，明确是平台无法实施；OperationalHealth 仍按 Build7 既有合同 unhealthy；
 - failed：红色；OperationalHealth unhealthy；
 - success + cleanup_deferred：黄色提示“所需权限已确认，陈旧规则清理延后”，OperationalHealth healthy；
-- success 且无 deferred：正常绿色/中性成功；
+- success 且观察完整、已观察残留为零：正常绿色/中性成功；存在估计/历史/未知时提示清理状态尚未最终确认，仍 healthy；
 - `/api/health/operational` 继续只消费 Syncer 的单一 `RoundOutcome`，不得在前端或清理器中建立第二套健康算法。
 
 ### 7.5 Dry Run 页面样式
@@ -1078,7 +1078,7 @@ R7-04 实施时必须同时满足以下口径，避免为了让三个数字表�
 - 描述边界归位共享实现所在的 `provider/plan_test.go`，直接测试 `RenderDescription` / `TruncateDescription`；Lighthouse 仅更正一处描述渲染注释。完整旧→新对照见 Issue6 §7.9，正式门禁和负向控制见审计报告 P3-07 当前实施补记。
 - 生产目标链仍为 `Run → syncAll → runRound → syncTarget → runTargetAttempt / runTargetCleanup`；`GetRules` 仍用于连接测试，旧 Diff/buildDesired 与 P0-01、planner 端口收敛、TAG/Provider 快照与 R7-06/R7-07 夹具继续保留。未修改目标状态机、Provider 增删、DNS、健康、API/schema、前端或 SDK。
 
-本项只关闭 P3-07/I-09 的本地不可达代码与测试迁移问题，不新增 ProdTestList 人工要求，不改变 PT-I7/PT-B7/PT-AUDIT 的未执行/免除边界。部分删除后 S2 失败且后续 S0 耗尽时，前次残留被空 attempt 覆盖为 0 的观察独立记录、尚未定语义，本次不修复也不把 0 固定为正确值。**该观察已于 2026-10-08 复核被两个独立小组确定性复现，语义裁决登记为 [Issue8.md](./Issue8.md) I8-30 / I8-02（不并入本项结论）。** Go 1.26.6 / macOS arm64；该批"源码/测试/文档尚未提交"为当时记录，**现由提交 `ba82292` 替代**（2026-10-08 复核订正），未 fetch/push。未执行 Go 1.25/Linux、前端构建、产品真实二进制/浏览器、Docker、真实云/通知链路或当前 revision 远端 CI/GHCR，不外推长期稳定或外部验收。
+本项只关闭 P3-07/I-09 的本地不可达代码与测试迁移问题，不新增 ProdTestList 人工要求，不改变 PT-I7/PT-B7/PT-AUDIT 的未执行/免除边界。部分删除后 S2 失败且后续 S0 耗尽时，前次残留被空 attempt 覆盖为 0 的观察独立记录、尚未定语义，本次不修复也不把 0 固定为正确值。**该观察已于 2026-10-08 复核被两个独立小组确定性复现，语义裁决登记为 [Issue8.md](./Issue8.md) I8-02 / Q-02；后续按 C 独立修复见 §12.9，不改写本项历史结论。** Go 1.26.6 / macOS arm64；该批"源码/测试/文档尚未提交"为当时记录，**现由提交 `ba82292` 替代**（2026-10-08 复核订正），未 fetch/push。未执行 Go 1.25/Linux、前端构建、产品真实二进制/浏览器、Docker、真实云/通知链路或当前 revision 远端 CI/GHCR，不外推长期稳定或外部验收。
 
 
 ### 12.8 P3-22 后续冷却改进（2026-10-03，方案 B）
@@ -1091,3 +1091,28 @@ R7-04 实施时必须同时满足以下口径，避免为了让三个数字表�
 - 正式新增/强化回归 race 20 轮、全部 Dry Run/数组回归 race 20 轮、vet/build 通过；全量 12 包 race 一轮、受影响 Go 格式与最终文档后的 diff-check 通过。旧 DryRun、遗漏等待、失败不记冷却、每次清空、缩短间隔、平台共用冷却、从读取开始计时七类正式 overlay 均按行为断言变红，无编译失败或 panic；最终门禁/格式/diff-check 见审计 P3-22 当前实施补记。
 
 本项只改 Dry Run 快照操作的等待位置，不修改正式同步、Provider分页/增删/超时、DNS解析、API/schema、前端、依赖或暂停/恢复状态机，不增加跨平台并发、全局请求限流、取消合同或持久化。Go `1.27.1 darwin/arm64`，使用既有 ignored 前端 dist；未执行 Linux/Docker/compose、前端构建/浏览器、真实云/通知链路或远端 CI/GHCR，不变更人工清单未执行/免除状态，也不外推长期稳定或外部通过。该批"源码/测试/文档尚未提交"为当时记录，**现由提交 `333451d` 替代**（2026-10-08 复核订正）。
+
+
+### 12.9 I8-02 观察表达修复（2026-10-08，用户裁决 C）
+
+用户在引用聊天《研究 I8-02 修复方案》选定 C、追加兼容字段，并补充选择分别保留最新规划与最近完整规划；本聊天授权正式实施与文档回写。实施前 `main / 256a7b365cfa1759ae6e51dcaa2686422c9dfd00`、本地 `origin/main / 7696482243461f582342aeb78fdc2f467012f674`、ahead 1，工作树/暂存区干净。未 fetch/push。该项修正目标结果与展示，不改变 Provider 调用顺序、整目标重试、版本保护、删除安全门、目标 outcome 或 OperationalHealth。
+
+**新增字段与兼容合同**
+
+- 目标完成/失败事件追加 `attempts`（实际尝试次数，从 1 开始）、`cleanup_observation` 与 `unsupported_observation`。没有建立相应观察时明确为 `null`，不能把占位零解读为无残留或无限制。
+- `cleanup_observation`：`attempt`、S1 候选 `candidates/candidates_at`、残留 `deferred/deferred_at`、`basis`、`desired_complete`、`historical`。`deferred_at` 是残留依据时间，估计形成时间不称云端残留观察时间。`basis=s1` 表示 S1 规划后没有发起删除；`s2` 表示取得 S2 且通过现有覆盖验证；`delete_progress` 表示已发起删除但无可信 S2，只是沿用既有 Provider 进度计算的保守估计（含估计零）。
+- S0/Add/S1 早退不建立新清理观察；已有记录保留。S1 成功规划总是建立新观察，包含零值，后续覆盖验证/DNS 失败也不抹去；S2 验证成功直接采用 S2 planner 残留。候选与残留可来自不同阶段，分别记录时间。`historical` 只比较观察 attempt 与最终 `attempts`，不引入时间阈值。
+- `unsupported_observation` 分别记录 `latest` 与 `last_complete`；每份含 `attempt/stage/observed_at/complete/issues/historical`，`stage` 为 `s0/s1`，`issues` 总是非 null 数组。新规划更新 latest；只有所有适用规则解析成功且非空、完整进入规划才更新 last_complete。完整空明细清空旧完整记录，不完整空明细保留前次完整记录。两份列表不求并集、不累加、不用于重判 outcome。完整性仅指输入范围，不代表覆盖或删除授权。
+- `added/deleted/cleanup_deleted` 继续跨 attempt 累计确认；旧 `cleanup_candidates/cleanup_deferred` 从最近清理观察派生，无观察时为兼容占位零；旧 `unsupported` 为 latest.issues 的兼容投影。原字段类型不变，失败早退的数值语义有意修正；旧客户端忽略新增字段时仍不能识别未知。历史 SQLite 日志不回填。
+
+**整轮、日志与 Dashboard**
+
+`RoundSummary`、整轮事件与 `/api/sync/status.last_round` 追加值类型 `cleanup_observation_summary`：`observed_targets/estimated_targets/historical_targets/unknown_targets` 互斥且合计等于 total；历史优先于估计分类。最终 attempt 完整输入且依据为 s1/s2 的目标属 observed；最终 attempt 只有删除进度估计或输入不完整属 estimated；只有前次观察属 historical；从未建立清理观察属 unknown。`observed_candidates/observed_deferred` 仅对 observed 求和；`complete` 当且仅当全部统计目标属 observed。零目标 complete=true、outcome=idle，页面显示“无适用目标”；该布尔值不参与成功/健康判定。
+
+SQLite 继续使用现有详情列，分行写累计确认操作、S1 候选来源与时间、S2 残留或进度估计、历史与当前未知、最新规划及前次完整明细；移除“候选 X 条：已清理 Y 条”的数量关系。Dashboard 分开累计清理与候选观察；未完整时显示已观察部分和估计/历史/未知目标数，成功但估计为零仍提示清理未确认；failed/partial 提示仍优先，暂停不提示，暂无轮记录显示“暂无记录”。状态/SSE handler 的生产逻辑、数据库 schema、配置包版本、依赖与通知固定详情合同均不改。
+
+**实施与验证**
+
+范围为 7 个生产/前端文件、6 个测试文件与 5 个文档，共 18 文件。仓内 `TestI802_*` 覆盖部分删除→S2失败→S0/Add/S1早退、恢复、可信新零替换、unknown/S1零/S2零/估计零/NotFound失败、latest不完整与last_complete历史/完整空替换、混合四类目标、nullable JSON、Run→EventBus→SQLite，以及真实 HTTP 状态/SSE。Dashboard 新增 8 项真实组件 setup/模板渲染回归。六类仓外 Go overlay 与两类前端负向控制守护历史保留、零更新、估计分类、完整明细、汇总/事件、旧展示与零估计提示。
+
+门禁结果见 [Issue8.md 的 I8-02 当前实施补记](./Issue8.md#i8-02-当前实施补记2026-10-08方案-c)。真实浏览器、真实四云/通知链路、Linux/Docker/compose、原生 amd64/macOS 13 与当前 revision 远端 CI/GHCR 未执行；PT-I7-07 只补观察合同，人工未执行/免除状态不变。全仓默认 Go 门禁含既有真实 DNS 测试（I8-04），不把其包级 ok 或自行 skip 称本项真实上游验收。源码/测试/文档尚未提交。
