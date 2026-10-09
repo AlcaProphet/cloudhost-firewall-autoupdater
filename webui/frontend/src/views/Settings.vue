@@ -1,14 +1,19 @@
 <script setup lang="ts">
 import { NForm, NFormItem, NInput, NSelect, NButton, NSpace, NCard, NGrid, NGi, NModal, useMessage, useThemeVars } from 'naive-ui'
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
-import { request } from '../api'
+import { request, RequestError, type MissingFieldsDetails } from '../api'
 import { useZones } from '../composables/useZones'
 import { useScannedResources } from '../composables/useScannedResources'
 
 const settings = ref<Record<string, string>>({})
 const saving = ref(false)
 let pageActive = true
-onUnmounted(() => { pageActive = false })
+let importReloadTimer: ReturnType<typeof setTimeout> | undefined
+onUnmounted(() => {
+  pageActive = false
+  if (importReloadTimer !== undefined) clearTimeout(importReloadTimer)
+  pendingImport.value = null
+})
 const message = useMessage()
 // 主题感知变量：明暗模式下文字/分隔线颜色自动切换（修复暗色模式扫描结果不可读）
 const themeVars = useThemeVars()
@@ -243,47 +248,70 @@ async function doExport() {
 }
 
 const showImportConfirm = ref(false)
-const pendingImport = ref<any>(null)
+// 预检查不改写上传内容，保留原始重复字段与编码供后端严格解码。
+const pendingImport = ref<File | null>(null)
 const importFilename = ref('')
-
+const readingImport = ref(false)
+const importing = ref(false)
+const showImportFailure = ref(false)
+const importFailure = ref<MissingFieldsDetails | null>(null)
+function cancelImport() {
+  showImportConfirm.value = false
+  pendingImport.value = null
+}
 async function importConfig(e: Event) {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
-  if (!file) return
-  // 前端只做 JSON 语法预检查：结构、字段与引用校验的唯一边界在后端
-  let data: any
-  try {
-    data = JSON.parse(await file.text())
-  } catch {
-    message.error('JSON 格式错误')
-    input.value = ''
-    return
-  }
-  pendingImport.value = data
-  importFilename.value = file.name
-  showImportConfirm.value = true
-  input.value = '' // 重置文件选择，允许再次选择同一文件
-}
-
-async function confirmImport() {
+  input.value = ''
+  if (!file || !pageActive || readingImport.value || importing.value) return
+  readingImport.value = true
+  pendingImport.value = null
   showImportConfirm.value = false
-  const data = pendingImport.value
-  if (!data) return
+  showImportFailure.value = false
+  importFailure.value = null
+  try {
+    // 仅作本地语法预检查；实际 POST 直接发送 File 原始字节。
+    JSON.parse(await file.text())
+    if (!pageActive) return
+    pendingImport.value = file
+    importFilename.value = file.name
+    showImportConfirm.value = true
+  } catch {
+    if (pageActive) message.error('JSON 格式错误')
+  } finally {
+    readingImport.value = false
+  }
+}
+async function confirmImport() {
+  if (!pageActive || readingImport.value || importing.value || !showImportConfirm.value || !pendingImport.value) return
+  const file = pendingImport.value
+  pendingImport.value = null
+  showImportConfirm.value = false
+  showImportFailure.value = false
+  importFailure.value = null
+  importing.value = true
+  let accepted = false
   try {
     await request('/api/config/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: file,
     })
+    if (!pageActive) return
+    accepted = true
+    message.success('导入成功，正在刷新页面…')
+    importReloadTimer = setTimeout(() => { if (pageActive) window.location.reload() }, 600)
   } catch (err: any) {
-    // 失败时保持当前页面与运行时旧状态：不 reload
-    message.error(`导入失败: ${err.message}`)
-    return
+    if (!pageActive) return
+    if (err instanceof RequestError && err.missingFields) {
+      importFailure.value = err.missingFields
+      showImportFailure.value = true
+    } else {
+      message.error(`导入失败: ${err.message}`)
+    }
+  } finally {
+    if (!accepted) importing.value = false
   }
-  message.success('导入成功，正在刷新页面…')
-  // 成功后整页 reload，使主题、凭据、设置、告警、目标、规则与扫描缓存统一刷新
-  setTimeout(() => window.location.reload(), 600)
 }
+
 </script>
 
 <template>
@@ -418,8 +446,8 @@ async function confirmImport() {
           <!-- 导出确认（卡片式弹窗） -->
           <NButton size="large" @click="showExportConfirm = true">导出配置</NButton>
           <label>
-            <NButton tag="span" size="large">导入配置</NButton>
-            <input type="file" accept=".json" style="display: none" @change="importConfig" />
+            <NButton tag="span" size="large" :disabled="readingImport || importing" :loading="readingImport || importing">导入配置</NButton>
+            <input type="file" accept=".json" :disabled="readingImport || importing" style="display: none" @change="importConfig" />
           </label>
           <!-- 清空所有数据（卡片式确认弹窗） -->
           <NButton type="error" tertiary size="large" @click="showResetConfirm = true">清空所有数据</NButton>
@@ -450,7 +478,7 @@ async function confirmImport() {
     </NModal>
 
     <!-- 导入确认弹窗（危险操作：覆盖式替换全部业务配置） -->
-    <NModal v-model:show="showImportConfirm" preset="card" title="确认导入完整配置" style="width: 460px">
+    <NModal v-model:show="showImportConfirm" preset="card" title="确认导入完整配置" @update:show="(show) => { if (!show) cancelImport() }" style="width: 460px">
       <p style="margin: 0 0 8px; line-height: 1.7">
         导入将<b>整体覆盖</b>当前全部业务配置：目标、规则、设置、云凭据与告警。
       </p>
@@ -463,9 +491,18 @@ async function confirmImport() {
         待导入文件：{{ importFilename }}
       </p>
       <NSpace justify="end">
-        <NButton size="large" @click="showImportConfirm = false">取消</NButton>
-        <NButton type="error" size="large" @click="confirmImport">确认导入</NButton>
+        <NButton size="large" @click="cancelImport">取消</NButton>
+        <NButton type="error" size="large" :disabled="importing" :loading="importing" @click="confirmImport">确认导入</NButton>
       </NSpace>
+    </NModal>
+
+    <NModal v-model:show="showImportFailure" preset="card" title="导入失败" style="width: min(640px, calc(100vw - 32px))">
+      <p v-if="importFailure">配置包有 {{ importFailure.total }} 项必填内容缺失或为 null，请修正后重新导入。</p>
+      <p v-if="importFailure?.truncated">当前列出前 100 项，共 {{ importFailure.total }} 项；修正后请重新导入检查。</p>
+      <ol v-if="importFailure" style="max-height: 50vh; overflow-y: auto; overflow-wrap: anywhere">
+        <li v-for="path in importFailure.fields" :key="path">{{ path }}</li>
+      </ol>
+      <NSpace justify="end"><NButton size="large" @click="showImportFailure = false">关闭</NButton></NSpace>
     </NModal>
 
     <!-- 清空扫描结果确认弹窗（厂商级，红色警告按钮） -->

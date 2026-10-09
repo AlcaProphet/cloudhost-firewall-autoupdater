@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "test:delete": "node --test tests/delete-confirm.test.mjs",
     "test:logs": "node --test tests/logs-stream.test.mjs",
-    "test:state": "node --test tests/p316-state.test.mjs"
+    "test:state": "node --test tests/p316-state.test.mjs",
+    "test:import": "node --test --test-timeout=30000 tests/import-presence.test.mjs"
   },
   "dependencies": {
     "naive-ui": "^2.38.0",

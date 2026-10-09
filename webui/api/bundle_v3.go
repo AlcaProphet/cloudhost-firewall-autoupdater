@@ -271,13 +271,13 @@ type bundleV3WireAlerts struct {
 // 必需 scalar 用指针、必需 object 用指针、必需 array 用 presenceSlice，
 // 因此「字段缺失」「显式 null」与「合法零值/空数组」可以严格区分。
 type bundleV3Wire struct {
-	Version    *int                              `json:"version"`
-	Metadata   *bundleV3WireMetadata             `json:"metadata"`
-	Targets    presenceSlice[bundleV3WireTarget] `json:"targets"`
-	Rules      presenceSlice[bundleV3WireRule]   `json:"rules"`
-	Settings   *bundleV3WireSettings             `json:"settings"`
-	Alerts     *bundleV3WireAlerts               `json:"alerts"`
-	Monitoring *bundleV3WireMonitoring           `json:"monitoring"`
+	Version    *int                               `json:"version"`
+	Metadata   *bundleV3WireMetadata              `json:"metadata"`
+	Targets    presenceSlice[*bundleV3WireTarget] `json:"targets"`
+	Rules      presenceSlice[*bundleV3WireRule]   `json:"rules"`
+	Settings   *bundleV3WireSettings              `json:"settings"`
+	Alerts     *bundleV3WireAlerts                `json:"alerts"`
+	Monitoring *bundleV3WireMonitoring            `json:"monitoring"`
 }
 
 // checkedBundleV3 是预校验通过、已归一化的 version 3 配置包。
@@ -421,6 +421,7 @@ func toBundleV3(snapshot *config.BusinessSnapshot, exportedAt time.Time) bundleV
 // ─── 导入预校验与归一化 ───
 
 // validateAndNormalizeBundle 在打开写事务之前完成全部纯数据校验：
+// 先确认 version 3，再集中汇总必填结构；结构完整才进入领域归一化。
 // version、metadata、必需字段、枚举、时长、TAG、DNS、告警、export_id 唯一性与引用闭包。
 //
 // 校验全部复用 config 包已实现的领域校验函数，不建立第二套更宽松或重复的规则
@@ -434,47 +435,20 @@ func validateAndNormalizeBundle(wire *bundleV3Wire) (*checkedBundleV3, error) {
 		return nil, badRequest(fmt.Sprintf("不支持的配置版本: %d", *wire.Version))
 	}
 
+	if err := checkBundleV3Presence(wire); err != nil {
+		return nil, err
+	}
+
 	// metadata.exported_at：必须存在且为 RFC3339；仅用于审计，不参与运行配置
-	if wire.Metadata == nil {
-		return nil, badRequest("metadata 字段缺失")
-	}
-	if wire.Metadata.ExportedAt == nil {
-		return nil, badRequest("metadata.exported_at 字段缺失")
-	}
 	exportedAt, err := time.Parse(time.RFC3339, *wire.Metadata.ExportedAt)
 	if err != nil {
 		return nil, badRequest("metadata.exported_at 必须是 RFC3339 时间")
-	}
-
-	if !wire.Targets.Provided {
-		return nil, badRequest("targets 字段缺失或为 null")
-	}
-	if !wire.Rules.Provided {
-		return nil, badRequest("rules 字段缺失或为 null")
-	}
-	if wire.Settings == nil {
-		return nil, badRequest("settings 字段缺失")
-	}
-	if wire.Alerts == nil {
-		return nil, badRequest("alerts 字段缺失")
-	}
-	if wire.Alerts.Policy == nil {
-		return nil, badRequest("alerts.policy 字段缺失")
-	}
-	if wire.Monitoring == nil {
-		return nil, badRequest("monitoring 字段缺失")
-	}
-	if wire.Monitoring.UptimeKumaPush == nil {
-		return nil, badRequest("monitoring.uptime_kuma_push 字段缺失")
 	}
 
 	// targets：export_id 正数且全局唯一，cloud_type/region/resource_id 复用领域校验
 	targets := make([]bundleV3Target, 0, len(wire.Targets.Values))
 	seenExportID := make(map[int]bool, len(wire.Targets.Values))
 	for i, t := range wire.Targets.Values {
-		if t.ExportID == nil {
-			return nil, badRequest(fmt.Sprintf("targets[%d].export_id 字段缺失", i))
-		}
 		if *t.ExportID <= 0 {
 			return nil, badRequest(fmt.Sprintf("targets[%d].export_id 必须是正数", i))
 		}
@@ -482,16 +456,6 @@ func validateAndNormalizeBundle(wire *bundleV3Wire) (*checkedBundleV3, error) {
 			return nil, badRequest(fmt.Sprintf("targets[%d].export_id 重复: %d（不静默去重）", i, *t.ExportID))
 		}
 		seenExportID[*t.ExportID] = true
-
-		if t.CloudType == nil {
-			return nil, badRequest(fmt.Sprintf("targets[%d].cloud_type 字段缺失", i))
-		}
-		if t.Region == nil {
-			return nil, badRequest(fmt.Sprintf("targets[%d].region 字段缺失", i))
-		}
-		if t.ResourceID == nil {
-			return nil, badRequest(fmt.Sprintf("targets[%d].resource_id 字段缺失", i))
-		}
 		normalized, err := config.NormalizeTarget(config.TargetConfig{
 			CloudType:  config.CloudType(*t.CloudType),
 			Region:     *t.Region,
@@ -508,30 +472,9 @@ func validateAndNormalizeBundle(wire *bundleV3Wire) (*checkedBundleV3, error) {
 		})
 	}
 
-	// rules：字段 presence、数组元素正数与组内唯一、引用闭包
+	// rules：结构已完整，继续检查引用元素正数、组内唯一与引用闭包
 	rules := make([]bundleV3Rule, 0, len(wire.Rules.Values))
 	for i, r := range wire.Rules.Values {
-		if r.Host == nil {
-			return nil, badRequest(fmt.Sprintf("rules[%d].host 字段缺失", i))
-		}
-		if r.Protocol == nil {
-			return nil, badRequest(fmt.Sprintf("rules[%d].protocol 字段缺失", i))
-		}
-		if r.Ports == nil {
-			return nil, badRequest(fmt.Sprintf("rules[%d].ports 字段缺失", i))
-		}
-		if r.Action == nil {
-			return nil, badRequest(fmt.Sprintf("rules[%d].action 字段缺失", i))
-		}
-		if r.Comment == nil {
-			return nil, badRequest(fmt.Sprintf("rules[%d].comment 字段缺失", i))
-		}
-		if r.EnableIPv6 == nil {
-			return nil, badRequest(fmt.Sprintf("rules[%d].enable_ipv6 字段缺失", i))
-		}
-		if !r.TargetExportIDs.Provided {
-			return nil, badRequest(fmt.Sprintf("rules[%d].target_export_ids 字段缺失或为 null", i))
-		}
 
 		refs, err := config.NormalizeTargetIDs(r.TargetExportIDs.Values)
 		if err != nil {
@@ -602,20 +545,8 @@ func validateAndNormalizeBundle(wire *bundleV3Wire) (*checkedBundleV3, error) {
 }
 
 // normalizeBundlePolicy 校验并归一化配置包触发策略（三个开关与 health_timeout 都必须存在）。
+// 调用前由 checkBundleV3Presence 保证全部必填对象与字段已提供。
 func normalizeBundlePolicy(w *bundleV3WirePolicy) (config.AlertPolicyConfig, error) {
-	if w == nil {
-		return config.AlertPolicyConfig{}, badRequest("alerts.policy 字段缺失")
-	}
-	for name, present := range map[string]bool{
-		"dns_failed_enabled":        w.DNSFailedEnabled != nil,
-		"sync_error_enabled":        w.SyncErrorEnabled != nil,
-		"operational_error_enabled": w.OperationalErrorEnabled != nil,
-		"health_timeout":            w.HealthTimeout != nil,
-	} {
-		if !present {
-			return config.AlertPolicyConfig{}, badRequest("alerts.policy." + name + " 字段缺失")
-		}
-	}
 	cfg := config.AlertPolicyConfig{
 		DNSFailedEnabled:        *w.DNSFailedEnabled,
 		SyncErrorEnabled:        *w.SyncErrorEnabled,
@@ -630,19 +561,8 @@ func normalizeBundlePolicy(w *bundleV3WirePolicy) (config.AlertPolicyConfig, err
 }
 
 // normalizeBundlePush 校验并归一化配置包 Push 配置（字段必须存在，禁用时允许空 URL）。
+// 调用前由 checkBundleV3Presence 保证全部必填对象与字段已提供。
 func normalizeBundlePush(w *bundleV3WirePush) (config.UptimeKumaPushConfig, error) {
-	if w == nil {
-		return config.UptimeKumaPushConfig{}, badRequest("monitoring.uptime_kuma_push 字段缺失")
-	}
-	if w.Enabled == nil {
-		return config.UptimeKumaPushConfig{}, badRequest("monitoring.uptime_kuma_push.enabled 字段缺失")
-	}
-	if w.URL == nil {
-		return config.UptimeKumaPushConfig{}, badRequest("monitoring.uptime_kuma_push.url 字段缺失")
-	}
-	if w.Interval == nil {
-		return config.UptimeKumaPushConfig{}, badRequest("monitoring.uptime_kuma_push.interval 字段缺失")
-	}
 	normalized, err := config.NormalizeUptimeKumaPush(config.UptimeKumaPushConfig{
 		Enabled:      *w.Enabled,
 		URL:          *w.URL,
@@ -667,30 +587,9 @@ func wrapBundleField(prefix string, err error) error {
 }
 
 // normalizeBundleSettings 校验并归一化配置包设置（复用同一组领域校验函数）。
+// 调用前由 checkBundleV3Presence 保证全部必填对象与字段已提供。
 func normalizeBundleSettings(w *bundleV3WireSettings) (checkedBundleV3Settings, error) {
 	var out checkedBundleV3Settings
-
-	if w.Credentials == nil {
-		return out, badRequest("settings.credentials 字段缺失")
-	}
-	if w.Credentials.Tencent == nil {
-		return out, badRequest("settings.credentials.tencent 字段缺失")
-	}
-	if w.Credentials.Tencent.SecretID == nil {
-		return out, badRequest("settings.credentials.tencent.secret_id 字段缺失")
-	}
-	if w.Credentials.Tencent.SecretKey == nil {
-		return out, badRequest("settings.credentials.tencent.secret_key 字段缺失")
-	}
-	if w.Credentials.Aliyun == nil {
-		return out, badRequest("settings.credentials.aliyun 字段缺失")
-	}
-	if w.Credentials.Aliyun.AccessKeyID == nil {
-		return out, badRequest("settings.credentials.aliyun.access_key_id 字段缺失")
-	}
-	if w.Credentials.Aliyun.AccessKeySecret == nil {
-		return out, badRequest("settings.credentials.aliyun.access_key_secret 字段缺失")
-	}
 	// 凭据按原值保存，允许空字符串（明确清除旧凭据）
 	out.Credentials = config.Credentials{
 		TencentSecretID:       *w.Credentials.Tencent.SecretID,
@@ -698,69 +597,37 @@ func normalizeBundleSettings(w *bundleV3WireSettings) (checkedBundleV3Settings, 
 		AliyunAccessKeyID:     *w.Credentials.Aliyun.AccessKeyID,
 		AliyunAccessKeySecret: *w.Credentials.Aliyun.AccessKeySecret,
 	}
-
-	if w.Tag == nil {
-		return out, badRequest("settings.tag 字段缺失")
-	}
 	tag, err := config.NormalizeTag(*w.Tag)
 	if err != nil {
 		return out, err
 	}
 	out.Tag = tag
-
-	if w.Interval == nil {
-		return out, badRequest("settings.interval 字段缺失")
-	}
 	interval, _, err := config.ParsePositiveDuration("interval", *w.Interval)
 	if err != nil {
 		return out, err
 	}
 	out.Interval = interval
-
-	if w.DNS == nil {
-		return out, badRequest("settings.dns 字段缺失")
-	}
 	dnsAddr, err := config.NormalizeDNSAddress(*w.DNS)
 	if err != nil {
 		return out, err
 	}
 	out.DNS = dnsAddr
-
-	if w.DNSTimeout == nil {
-		return out, badRequest("settings.dns_timeout 字段缺失")
-	}
 	dnsTimeout, _, err := config.ParsePositiveDuration("dns_timeout", *w.DNSTimeout)
 	if err != nil {
 		return out, err
 	}
 	out.DNSTimeout = dnsTimeout
-
-	if w.DNSFailThreshold == nil {
-		return out, badRequest("settings.dns_fail_threshold 字段缺失")
-	}
 	threshold, _, err := config.NormalizeDNSFailThreshold(strconv.Itoa(*w.DNSFailThreshold))
 	if err != nil {
 		return out, err
 	}
 	out.DNSFailThreshold = threshold
-
-	if w.LogLevel == nil {
-		return out, badRequest("settings.log_level 字段缺失")
-	}
 	logLevel, err := config.NormalizeLogLevel(*w.LogLevel)
 	if err != nil {
 		return out, err
 	}
 	out.LogLevel = logLevel
-
-	if w.SyncEnabled == nil {
-		return out, badRequest("settings.sync_enabled 字段缺失")
-	}
 	out.SyncEnabled = *w.SyncEnabled
-
-	if w.Theme == nil {
-		return out, badRequest("settings.theme 字段缺失")
-	}
 	theme, err := config.NormalizeTheme(*w.Theme)
 	if err != nil {
 		return out, err
@@ -771,20 +638,8 @@ func normalizeBundleSettings(w *bundleV3WireSettings) (checkedBundleV3Settings, 
 }
 
 // normalizeBundleEmail 校验并归一化配置包邮件告警（禁用状态下全部字段仍必须存在）。
+// 调用前由 checkBundleV3Presence 保证全部必填对象与字段已提供。
 func normalizeBundleEmail(w *bundleV3WireEmail) (config.AlertEmailConfig, error) {
-	if w == nil {
-		return config.AlertEmailConfig{}, badRequest("alerts.email 字段缺失")
-	}
-	for name, present := range map[string]bool{
-		"enabled": w.Enabled != nil, "host": w.Host != nil, "port": w.Port != nil,
-		"username": w.Username != nil, "password": w.Password != nil,
-		"from_addr": w.FromAddr != nil, "to_addr": w.ToAddr != nil,
-		"subject": w.Subject != nil, "body": w.Body != nil,
-	} {
-		if !present {
-			return config.AlertEmailConfig{}, badRequest("alerts.email." + name + " 字段缺失")
-		}
-	}
 	normalized, err := config.NormalizeAlertEmail(config.AlertEmailConfig{
 		Enabled:  *w.Enabled,
 		Host:     *w.Host,
@@ -803,19 +658,8 @@ func normalizeBundleEmail(w *bundleV3WireEmail) (config.AlertEmailConfig, error)
 }
 
 // normalizeBundleWebhook 校验并归一化配置包 Webhook 告警（禁用状态下字段仍必须存在）。
+// 调用前由 checkBundleV3Presence 保证全部必填对象与字段已提供。
 func normalizeBundleWebhook(w *bundleV3WireWebhook) (config.AlertWebhookConfig, error) {
-	if w == nil {
-		return config.AlertWebhookConfig{}, badRequest("alerts.webhook 字段缺失")
-	}
-	if w.Enabled == nil {
-		return config.AlertWebhookConfig{}, badRequest("alerts.webhook.enabled 字段缺失")
-	}
-	if w.URL == nil {
-		return config.AlertWebhookConfig{}, badRequest("alerts.webhook.url 字段缺失")
-	}
-	if w.Channel == nil {
-		return config.AlertWebhookConfig{}, badRequest("alerts.webhook.channel 字段缺失")
-	}
 	return config.NormalizeAlertWebhook(config.AlertWebhookConfig{
 		Enabled: *w.Enabled,
 		URL:     *w.URL,

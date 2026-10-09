@@ -115,6 +115,8 @@
 
 **I8-17f 正式同步冷却后续本地修复（2026-10-09，定型 A / Q-19）**：按用户授权在唯一生产 syncer.go 以现有 s.mu 保护 CloudType 跨轮时间表，目标 DNS/执行前补剩余冷却，完整目标 success/partial/failed 返回后推进，首次/末尾无空等；保留 5s/200ms、Run 调度与已准入轮完成。新增正式 44 场景与准确退避断言；取消末尾等待暴露 I8-02 日志测试将整轮事件误当落库完成，仅修测试为有界等待真实记录，生产日志不改。共七文件，八类正式源码负向控制、延迟落库夹具对照、定向 race 20 轮、修复后 make all 和禁缓存全仓 12 包 race 一轮通过；详见 Issue8/审计同名补记。npm ci 仍报告既有 3 项 high，未升级；未执行 Linux/Docker、浏览器、真实云/通知链路与当前 revision 远端 CI/GHCR，不外推稳定或外部验收。本轮尚未提交或推送。
 
+**I8-43 后续修复状态（2026-10-09，研究定型 B / Q-20）**：用户依据研究聊天《研究 I8-43 修复方案》授权正式修复与文档同步，实施前 `main / e4543cb79ec4fbfeebb44afb67fb1cfdb21485f1`、本地 `origin/main / 36f77454107cc6fa6b28e2cb80c2cb8e5de41af3`、ahead 5，工作树/暂存区干净，未 fetch。必填结构集中汇总，原文件上传与持久失败列表同步实施；固定合同见 §9.1，正式证据见 Issue8 文末 I8-43 补记。无效输入在协调器前拒绝，配置包仍为 version 3；真实浏览器待 PT-AUDIT-06，外部验收不据本地测试外推。本轮改动尚未提交或推送。
+
 ## 二、核心编码原则
 
 ### 简单轻量化
@@ -261,6 +263,8 @@
 
 - 配置包只接受 version 3；version 1/2 及其他版本一律 HTTP 400，不迁移、不补全、不兼容；version 3 固定包含 `metadata`、`targets`、`rules`、`settings`、`alerts`（`policy`/`email`/`webhook`）与 `monitoring.uptime_kuma_push` 全字段，数组与对象不得为 `null`
 - 配置导入使用独立的标准库 JSON v2 严格解码：字段名大小写必须精确匹配，任意对象内拒绝重复字段（同值也拒绝），拒绝非法 UTF-8 与孤立代理项；合法 JSON 转义按解码后名称判断，`version` 与 `\u0076ersion` 同时出现仍为重复。先完成 10 MiB 有界读取，超限统一 413；其余解析/字段错误为安全 400，仅返回固定原因与必要字段路径，不回显原始错误或字段值。全部解码与领域校验完成后才进入配置写事务，非法输入零写入零发布；普通 API 不随本项切换解析器。（I8-111，用户确认当前无兼容性需求，采用严格方案 B。）
+- 导入必填诊断（I8-43 / Q-20，2026-10-09 定型 B）：有界读取与严格解码成功后先检查 version，缺失/null 或不支持版本只返回原有版本错误；只有 version 3 才集中汇总必填缺失/null。按 DTO 声明顺序 `metadata → targets → rules → settings → alerts → monitoring`，数组按输入索引升序；父对象缺失只报父路径，targets/rules 中 null 元素报元素路径，已提供的 false/0/空字符串/[] 不算缺失。统计全部问题、最多返回前 100 条路径，HTTP 400 + no-store，响应为 `error`、非空 `missing_fields`、准确 `missing_fields_total`、`missing_fields_truncated`（总数大于返回条数）；单项保留原文案，多项使用固定总数摘要。路径仅含固定字段名和索引，无字段值或请求体。结构完整才执行现有领域校验，再进入协调器；解析/版本/领域/内部错误保持原响应形状，target_export_ids 元素仍由领域校验检查。不维护第二套分散 presence 检查。
+- 设置页导入保留本地 JSON 语法预检查，POST 直接发送选中的 File 原始字节，不重新序列化。请求封装仅在 HTTP 400 且列表/总数/截断相互一致时携带缺失详情；设置页以持久 `NModal preset="card"` 展示总数、滚动路径与截断提示，关闭保留页面内存详情，新选择清空。读取/提交在途拒绝重复或替换；取消清除待提交 File；成功后的 600ms 刷新窗口持续锁定，卸载清理刷新计时并抑制晚到提示/弹窗/刷新。普通错误沿用既有提示，守卫仅针对导入流程。前端回归入口为 `npm run test:import`（逐项 30 秒预算），不接入 Make/CI/Docker。
 - 告警配置持久化固定为 `alert_policy`（三个触发开关 + `health_timeout`）、`alert_email`（含 `subject`/`body`）、`alert_webhook`、`uptime_kuma_push` 四张单行表；现有数据库执行一次性最小显式迁移，保证各单行表至多一行且业务 ID 固定为 1，不得依赖 `CREATE TABLE IF NOT EXISTS` 自动补列，也不得在每次启动重复重置用户配置
 - 告警默认值固定全部关闭：`email.enabled`、`webhook.enabled`、三个触发开关与 `uptime_kuma_push.enabled` 的初始值与迁移结果均为 false；只有“渠道开关 + 对应触发开关”同时开启才安装该事件订阅；只开启触发条件但不启用渠道、或只启用渠道但不开启触发条件，都不发送自动通知；测试邮件独立于这些开关
 - Webhook 未配置状态统一为关闭、空 URL、`channel=""`。新建/无主配置行/reset 显式使用 `DefaultWebhookChannel`，不采用旧表保存的渠道默认值；已有配置保留，只有本次新增 channel 列时转换已有主行的历史钉钉行为。GET/导出原样保留空渠道。`channel` 必填字符串，关闭允许空或合法渠道，开启必须选择 dingtalk/feishu/slack 并填写 host 非空的绝对 HTTP/HTTPS URL；未知、缺失、null 均拒绝。配置包仍为 version 3，新程序接受原有合法包，旧程序可能拒绝新增关闭空渠道包，用户已接受该兼容边界。通知器不隐式选渠道，相关事件的非法渠道在限流/HTTP 前安全拒绝；前端单选组初始未选中，关闭不清空输入。（I8-113 / Q-09。）

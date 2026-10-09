@@ -106,7 +106,17 @@ func (d *Deps) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 	// 全部纯数据校验必须在打开写事务之前完成（非法配置包零写入、零 apply）
 	bundle, err := validateAndNormalizeBundle(&wire)
 	if err != nil {
-		writeRequestError(w, err)
+		var presence *bundleV3PresenceError
+		if errors.As(err, &presence) {
+			writeJSON(w, http.StatusBadRequest, struct {
+				Error     string   `json:"error"`
+				Fields    []string `json:"missing_fields"`
+				Total     int      `json:"missing_fields_total"`
+				Truncated bool     `json:"missing_fields_truncated"`
+			}{presence.Error(), presence.Fields, presence.Total, presence.Total > len(presence.Fields)})
+		} else {
+			writeRequestError(w, err)
+		}
 		return
 	}
 
