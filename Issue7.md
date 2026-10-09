@@ -461,6 +461,7 @@ total == ok + changed + failed + skipped
 ### 6.3 Aliyun SWAS
 
 - S0/S1 必须完整遍历 PageNumber，页失败即 snapshot 失败；
+- I8-11 / Q-17（2026-10-09 用户裁决 B）：单次 `GetSnapshot` 的首个可用非负 `TotalCount` 固定为基准，后页可用值必须一致，增长/下降均失败；缺失/null 不清除已有基准，中途首次总数约束全部累计规则。累计精确相等才完成，超过或不足却遇空页返回空快照与 `ErrSnapshotIncomplete`；不足但非空短页继续，始终无总数保留短页回退。100 页上限与 PageSize=100 保持，第 100 页可正常证明完成。不自动重扫、不改现有重试分类或 SDK 错误链；S0/S1/S2 各自建立基准，正常增删允许三次总数不同。S0/S1 不可信不授权删除，S2 失败保留已确认删除及估计观察；本项不证明原子快照，不处理重复 ID/集合结构、资源扫描或分页总预算。正式证据见 Issue8 当前实施补记。
 - IPv6 与 DROP 等平台无法表达项统一由能力矩阵产生 `unsupported`，不得在 `buildDesired` 和 `CreateRules` 两层各自静默过滤；Provider 可保留最后一道防御，但返回值必须与规划一致；
 - External 精确等价规则可以满足期望，但永远不改 Remark、不启停、不删除；
 - cleanup 只使用 S1 回读的非空 RuleId；缺 RuleId 的候选 deferred；

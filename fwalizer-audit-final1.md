@@ -2104,7 +2104,7 @@ I8-03 的 Makefile `test`/`vet` 前置与配套依赖/故障回归已本地收�
 
 ### I8-08 后续独立候选：SWAS 扫描分页完整性（未修复、未定型）
 
-研究期真实 SDK→handler→临时 SQLite 对照确认：TotalCount=2 但短页仅返回一条时直接 success/count=1；TotalCount=0 但数组含一条时仍 success/count=1。结构校验修复不改变这两个行为。后续与 I8-11（ListFirewallRules 规则快照，属于不同调用路径）协调研究：总数可用时的终止/进度依据、跨页总数变化、提前空页/短页、重复 ID，以及资源增删期间的失败/重扫语义；不可直接复制 I8-11 现有判据。页数/总预算与 Q-12 同属需另定合同的研究方向，不在本次实施，不能把 Q-04 本地收口写成 SWAS 扫描完整性全面收口。
+研究期真实 SDK→handler→临时 SQLite 对照确认：TotalCount=2 但短页仅返回一条时直接 success/count=1；TotalCount=0 但数组含一条时仍 success/count=1。结构校验修复不改变这两个行为。I8-11 的 ListFirewallRules 规则快照计数已按定型 B 本地修复（见文末）；此处 ListInstances 属于不同调用路径，仍需独立研究：总数可用时的终止/进度依据、跨页总数变化、提前空页/短页、重复 ID，以及资源增删期间的失败/重扫语义；不可直接复制 I8-11 现有判据。页数/总预算与 Q-12 同属需另定合同的研究方向，不在本次实施，不能把 Q-04 本地收口写成 SWAS 扫描完整性全面收口。
 
 ## I8-10 当前实施补记（2026-10-09，用户裁决 B / Q-16）
 
@@ -2116,3 +2116,14 @@ I8-03 的 Makefile `test`/`vet` 前置与配套依赖/故障回归已本地收�
 - **目标超时补充证据**：仓库外 overlay 仅把正式常量 120 秒缩短为 100ms，并挂入本聊天的本地真实 SDK 目标链夹具；S0/S1 持续超时保留三次整目标重试且零删除，S1 保留一次已确认新增；S2 超时后重试读取到完整干净状态可恢复 success，保持一次已确认删除且不重复删除。该组 race 20 轮通过，属于补充外部 overlay 证据，不冒称其测试文件已入仓，也不宣称专门等待默认 120 秒进行了墙钟验收。
 - **完整门禁**：正式 `make all` 退出 0，执行真实 npm ci / vue-tsc / Vite build、go vet ./...、全仓 12 包完整 go test ./... -race -v 一轮、产品构建。另行 go build ./...、受影响 Go 文件 gofmt 检查与 git diff --check 通过。单轮全量不外推全仓长期稳定。npm ci 仍提示既有 3 项 high，本轮未独立 audit 或升级依赖，不登记为漏洞检查通过。
 - **边界与剩余事项**：Go 1.27.1 darwin/arm64、Node 26.7.0。未执行 Linux/Docker/compose、真实云、浏览器、通知外部链路或当前 revision 远端 CI/GHCR，真实验收清单状态不变。120 秒是一次快照网络分页预算，不是全目标/整轮上限，也不是强制终止 Go 计算的硬墙钟保证；当前 SDK 默认内部重试为零，未来改变 SDK 退避配置需复核取消。保留现有短页终止、首末版本保护、单页 60 秒客户端超时、isRetryable、增删安全门、API/schema/前端/依赖与调度；TotalCount、重复页/规则、集合结构完整性、资源扫描及全目标预算独立。Q-16 已裁决且 I8-10 本地收口；Q-12 ECS 部分保持未决。源码、测试与本轮文档尚未提交或推送。
+
+## I8-11 当前实施补记（2026-10-09，研究定型 B / Q-17）
+
+- **授权与基线**：用户在本聊天选择推荐 B、确认进一步研究定型后，明确授权正式修复与同步文档。实施前 `main / 5452db17fd32dd9e43103104dee7fdaa335ac1da`、本地 `origin/main / 36f77454107cc6fa6b28e2cb80c2cb8e5de41af3`、ahead 1，工作树/暂存区干净；前序 I8-10 已提交为 5452db1。未 fetch；本轮七文件未提交或推送。研究 overlay 与以下正式证据分开记录。
+- **实际范围**：唯一生产逻辑文件 `provider/ali_swas.go`；新增 `provider/swas_totalcount_test.go`、`syncer/swas_totalcount_test.go`，同步 AGENTS/Issue7/Issue8/审计，共七文件。无资源扫描、SDK/依赖、API/schema、前端源码、客户端超时、同步状态机、重试函数或分页预算改动。
+- **固定合同**：单次 GetSnapshot 首个可用非负 TotalCount 复制为固定基准；后页可用值不一致，无论增减都失败。缺失/null 不清除已有基准；中途首次出现总数约束此前全部累计规则，始终不可用保留短页回退。int64 比较累计条数，超过失败、精确相等完成、不足且空页失败、不足且非空短页继续；零总数非空失败。保留 PageSize=100 与 100 页上限，第 100 页正常证明完整可成功，不额外请求探测页。计数矛盾返回空快照＋ErrSnapshotIncomplete，不新增重扫/整目标重试；普通 SDK 业务/解码错误链与现有分类保留。
+- **正式 Provider 回归**：25 个新场景覆盖下降/归零/增长、负数与零值、首页/后页超额、稳定多短页、合法显式空数组、总数缺失/null、已知→null→变化、晚出现总数约束此前累计、100 页完整/不足以及后页 SDK 业务/解码错误。断言请求次数、页码/大小、成功规则数与失败无部分规则；业务错误用 errors.As 检查 SDK 类型与 code。旧有 TestSnapshot_SWAS* 一并保留。
+- **正式目标链回归**：真实 SWAS SDK→syncAll→当前目标链，共 19 场景；六种计数异常分别发生于 S0/S1/S2，另有正常对照。实际 List/Create/Delete 次数证明矛盾不进入整目标重试；S0 零新增/删除，S1 保留已确认新增且零删除，S2 failed 但保留 added/deleted/cleanup_deleted 与 estimated 观察，不伪装可信 S2。正常对照 S0 总数 1→Add→S1 总数 2→Delete→S2 总数 1 成功，四次 List、一次 Create、一次 Delete，删除参数仅为旧规则 ID；三次快照的计数基准独立。观察分类使用结构化断言。
+- **正式判别力**：仓库外 source overlay 挂入正式仓内测试：恢复 HEAD 旧生产实现时 18 个异常目标子场景全部按行为断言变红，正常对照未变红；另四种控制（忽略总数变化、放行超额、缺失总数清除基准、矛盾时返回部分规则）分别被正式 Provider 子场景检出。五类控制均退出 1，非编译失败/超时，故障源码与日志不进入仓库。研究期的 22 个 Provider 探针与旧研究夹具仅属前序证据，不冒称其全部直接入仓。
+- **本地门禁**：`go test ./provider ./syncer -run '^(TestI811SWAS|TestSnapshot_SWAS)' -race -count=20 -timeout=2m` 两包通过。正式 `make all` 退出 0，包含真实 npm ci/vue-tsc/Vite build、go vet、全仓 race 测试与产品构建；其中七个未受影响包命中测试缓存。随后单独 `go test ./... -race -count=1 -timeout=20m` 全仓 12 包全部通过，明确禁用测试缓存；另行 `go build ./...`、三个受影响 Go 文件 gofmt 检查、最终 git diff --check 通过。不将 Make 与追加的一次全仓执行表述为两轮无缓存全量，亦不外推长期稳定。
+- **边界与剩余事项**：Go 1.27.1 darwin/arm64、Node 26.7.0。npm ci 仍提示既有 3 项 high，本轮未独立 audit/升级，不登记为漏洞检查通过。未执行 Linux/Docker/compose、专项产品进程/真实浏览器、真实云/通知链路或当前 revision 远端 CI/GHCR，人工验收状态保持。只拒绝已观察计数矛盾，不保证分页期间无等量替换/重复 ID/遗漏；集合结构与零总数缺失/null 规则数组不在本项，合法零控制使用显式 []。ListInstances 扫描完整性、重复 ID/规则结构及分页总预算继续独立；Q-04/Q-12/Q-16 不因本项扩大结论。I8-11 本地收口、Q-17 已裁决。

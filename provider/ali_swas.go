@@ -58,8 +58,8 @@ func (p *AliSWAS) TargetIndex() int {
 
 // GetSnapshot 查询防火墙规则（分页）并证明遍历完整。
 //
-// Issue7 §6.3：必须完整遍历 PageNumber，页失败即 snapshot 失败；TotalCount 可用时
-// 以它作为完整性判据（返回条数少于总数即视为不完整），不可用时退回「本页不足一页」判据。
+// Issue7 §6.3 / I8-11：首次可用 TotalCount 固定本次遍历基准，后页可用总数必须一致，
+// 累计条数精确相等才完成；缺失总数不清除基准，始终不可用时保留短页终止。
 func (p *AliSWAS) GetSnapshot() (RuleSnapshot, error) {
 	var allRules []config.RuleInfo
 	pageNumber := int32(1)
@@ -93,7 +93,17 @@ func (p *AliSWAS) GetSnapshot() (RuleSnapshot, error) {
 
 		body := resp.Body
 		if body.TotalCount != nil {
-			totalCount = body.TotalCount
+			if *body.TotalCount < 0 {
+				return RuleSnapshot{}, fmt.Errorf("%w: SWAS 返回负数总条数", ErrSnapshotIncomplete)
+			}
+			if totalCount != nil && *totalCount != *body.TotalCount {
+				return RuleSnapshot{}, fmt.Errorf("%w: SWAS 分页总条数发生变化", ErrSnapshotIncomplete)
+			}
+			if totalCount == nil {
+				// 保存数值，不持有某一页响应字段作为可变基准。
+				count := *body.TotalCount
+				totalCount = &count
+			}
 		}
 		for _, r := range body.FirewallRules {
 			info := config.RuleInfo{
@@ -107,10 +117,13 @@ func (p *AliSWAS) GetSnapshot() (RuleSnapshot, error) {
 			allRules = append(allRules, info)
 		}
 
-		// TotalCount 可用时以它为权威判据（服务端可能返回少于 PageSize 的中间页）；
-		// 不可用时退回「本页不足一页即最后一页」的既有判据。
+		// 已获得总数时即使后页缺失该字段也继续使用基准；非空短页不能提前结束。
+		// 只检查计数一致性，不保证云端分页期间不存在等量替换或重复规则。
 		if totalCount != nil {
-			if int32(len(allRules)) >= *totalCount {
+			if int64(len(allRules)) > int64(*totalCount) {
+				return RuleSnapshot{}, fmt.Errorf("%w: SWAS 已读条数超出声明总数", ErrSnapshotIncomplete)
+			}
+			if int64(len(allRules)) == int64(*totalCount) {
 				proven = true
 				break
 			}
