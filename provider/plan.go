@@ -150,7 +150,8 @@ type TargetPlanInput struct {
 	// DNSErrors 以本地 rule ID 为键，值为安全可展示的稳定错误
 	DNSErrors map[int]string
 	Snapshot  RuleSnapshot
-	// AddStateUnknown 表示本 attempt 存在提交状态未知的 Add（S1 验证时必须为 false）
+	// AddStateUnknown 表示调用方尚未确认 Add 提交状态，置 true 时冻结覆盖与清理。
+	// 当前正式目标链对普通 Add 错误早退，幂等错误仍须经 S1 覆盖验证，故无需置 true。
 	AddStateUnknown bool
 }
 
@@ -739,7 +740,8 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 //
 //   - Lighthouse：无稳定 RuleID，按完整规则值匹配；只有当候选的每个 key 在该快照的
 //     全部规则中恰好出现一次、且该唯一项严格 Owned 时才可删除，否则歧义 → deferred；
-//   - CVM：必须使用同一快照的 PolicyIndex；缺失/不可解析 → deferred，候选间索引重复 → deferred；
+//   - CVM：必须使用同一快照的 PolicyIndex；缺失/不可解析 → deferred；候选间索引重复
+//     由 Provider 在批量删除前拒绝，返回错误且不发送删除请求；
 //   - SWAS/ECS：必须使用同一快照回读的非空 RuleId/SecurityGroupRuleId，缺失 → deferred。
 func cleanupLocatorIssue(
 	ct config.CloudType,

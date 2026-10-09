@@ -1,5 +1,7 @@
 # Issue8.md — 现存缺陷台账（2026-10-08 复核整理版）
 
+> **I8-15 后续整理（2026-10-09，用户定型 A）**：a/b 注释与 c 死赋值已整理；d 澄清并保留安全字段和测试，Q-01/Q-07 不变。Q-13 仅新增本项范围已裁决，正式门禁见文末。
+
 > **I8-43 后续实施（2026-10-09，研究定型 B / Q-20）**：必填结构有序汇总、前 100 项＋总数＋截断标记、原 File 上传与持久失败弹窗已本地实施；正式证据见文末，真实浏览器待 PT-AUDIT-06。
 
 > **I8-05/I8-06 后续实施（2026-10-09，定型 A / Q-07）**：已按授权修复 Push 截止时间与统一间隔下限；研究与正式门禁分别记录于文末，真实 Kuma 未执行。
@@ -204,14 +206,16 @@
 - **回归迁移**：移除 15 个旧入口测试与专属 mockProvider；有效行为由现有正式 planner 判别性回归和新增六组 `TestI814Plan*` 保护。覆盖 TCP+UDP 四平台精确内容/回读收敛/部分覆盖、SWAS 混合 unsupported 冻结清理、IPv4 ICMP 端口等价、实际阿里云端口归一化往返、S0/S1/S2 纯规划安全门、严格 TAG 与模板保护；保留六个凭据池/摘要测试。
 - **判别力与范围**：研究期禁用拆分时原 TestPlan_* 仍绿，正式新回归可检出该行为回退；正式八类仓外 overlay 与本地门禁见文末补记。删除后旧符号引用编译失败，不新增符号黑名单。此为维护清理与测试补强，不新增产品合同或外部验收通过结论；Q-13 仅此具体范围已裁决，I8-42 其他清理继续独立。
 
-#### I8-15【低·维护性】注释/死赋值与实现不符　`①`
+#### I8-15【低·维护性】注释/死赋值与实现不符（已按 A 本地整理）　`①`
+
+- **当前状态（2026-10-09，用户裁决 A）**：a/b 注释已同步实际实现；c 仅去除死赋值并修正返回值注释，保留 URL 早期校验与两次构造；d 澄清并保留字段及既有安全测试，不是生产安全漏洞修复。正式证据见文末补记，以下为修复前记录。
 
 | 项 | 位置 | 问题 |
 |---|---|---|
 | a | `webui/api/export.go:88-95` | 注释仍是 P2-04 修复**前**的顺序（"→ 发布 RuntimeState → 返回成功"写在唤醒之后），与现行"先发布后唤醒"相反 |
 | b | `provider/plan.go:742` | 注释称 CVM"候选间索引重复 → deferred"，实际在 `provider/tc_cvm.go:213-215` 返回**硬错误**（"拒绝删除"） |
 | c | `internal/health/push.go:210-216` | 首次 `buildPushURL` 的返回值被 `_ = target` 丢弃（仅作占位校验，死赋值） |
-| d | `provider/plan.go:153-154,655` | `TargetPlanInput.AddStateUnknown` 全仓**从未被置 true**，合同子句无执行点 |
+| d | `provider/plan.go:153-154,655` | **订正**：生产调用方未置 true，但 `TestPlan_CoverageReadyImplementableSubset/unknown` 实际使用 true 并验证冻结覆盖与清理；当前正式链对普通 Add 错误早退，幂等错误经 S1 验证，无需置 true。不能据此认定合同无执行点或删除安全漏洞 |
 
 #### I8-16【低·测试与规范候选】测试夹具、文案与清理错误处理（Extension 误判撤销）　`①`
 
@@ -261,10 +265,10 @@
 | I8-17f | 已按 A 本地修复；Q-19 已裁决 | 正式目标按 CloudType 跨轮冷却，执行前补剩余时间，成功/partial/失败结束后更新；首次/末尾零空等 | 正式 44 场景及退避断言，负向控制与门禁见文末；真实云未验收 |
 | I8-43 | 已按定型 B 本地修复，Q-20 已裁决；真实浏览器待验 | 全包有序缺失列表、100 项上限/准确总数、原文件上传与持久失败弹窗；400 零写入零发布 | 正式 handler/SQLite/组件模板回归与负向控制见文末；PT-AUDIT-06 |
 | I8-14 | 已按 A 本地修复；旧链删除 | 15 个旧入口测试迁移至正式 planner；六组 TestI814Plan*，保留有效共享内容 | 正式八类负向控制与本地门禁见文末；真实云未验收 |
-| I8-15a | 注释待改，低 | 后续代码注释同步实际先发布后唤醒，行为不变 | export88–95源码；本次不改Go注释 |
-| I8-15b | 注释待改，低 | 同步CVM重复索引为硬失败的真实行为，保留拒删测试 | plan742/tc_cvm213–215源码 |
-| I8-15c | 整洁候选 | 保留URL校验作用，仅移除死返回值时验证非法URL周期路径 | push210–216源码 |
-| I8-15d | 合理防御字段／低收益 | Add失败早退与S1确认已守安全；未来入口若使用未知态，补明确场景，不按未置true认定安全缺口 | 当前目标链源码 |
+| I8-15a | 已按 A 整理 | 注释同步先发布 RuntimeState 再唤醒，行为不变 | 正式发布顺序 race 20 次，见文末 |
+| I8-15b | 已按 A 整理 | planner 缺失/不可解析索引 deferred；Provider 拒绝任何解析后重复索引，整批零删除请求 | 正式 CVM 拒删 race 20 次及负向控制，见文末 |
+| I8-15c | 已按 A 整理 | 仅去除死赋值；保留 URL 早期校验、健康检查后构造与调度；修正返回值注释 | 正式 Push 回归 race 20 次及负向控制，见文末 |
+| I8-15d | 已澄清并保留 | 普通 Add 错误早退、幂等错误经 S1 验证；字段/覆盖公式/未知态测试保留，非安全漏洞 | 正式 planner/目标链 race 20 次及未知态负向控制，见文末 |
 | I8-16a | 测试改进，低 | 夹具持有 acceptedConn 并有界回收，断言deadline而非任意错误；压力复验 | inflight89–132源码，宽断言不能证明永不flaky |
 | I8-16b | 整洁／测试候选 | Bus未读取属残留，Publish零计数断言可失败；加正向控制或清理字段须复核调用者 | push48/run155–164；旧永真断言已撤销 |
 | I8-16c | 文案待改，低 | 后续Go测试文案 want2，与断言一致，行为不变 | stop_gate_test215–216 |
@@ -295,7 +299,7 @@
 | **Q-10** | **I8-17d / I8-41** `Syncer.Pause()/Resume()` 的去留与并发语义（"是否保留"与"保留后如何正确"是两个问题） | ①设计同锁原子更新辅助方法；**不得持 s.mu 直接调用 ApplyState**，后者自己加锁会死锁 ②改非导出仅减少误用面，不修包内丢失更新③登记为"已知残留风险（当前无生产调用方）"并在 `AGENTS.md` 注明 | `syncer/syncer.go:365-390`、`webui/api/deps.go` |
 | **Q-11** | **I8-31 / TODO-003** CVM `DescribeSecurityGroupPolicies` 调用失败的错误分类 | 现状区分 SDK 调用失败与成功响应结构不完整是合理分类。保留 SDK 错误链及现有 retry；若要统一包装，须先验证错误分类和重试后果，不默认作为缺陷修复 | `provider/tc_cvm.go:248-250` vs `:254/:262` |
 | **Q-12（ECS 部分未裁决；Lighthouse 见 Q-16）** | **I8-38** 分页操作总预算（**未实施的研究候选**；实现前先定操作预算、失败类型与契约边界） | ①页间检查总预算（只能限制继续起下一页，不硬限制已在途页的耗时）②按剩余预算限制每页（**机制上必然**扩大 SDK 全局池键空间，`dara/core.go:71` 池无 Delete/TTL/容量，且 `:349-357` 每请求覆写共享 `httpClient.Timeout` 存在同 tag 并发覆写窗口 ⇒ 不建议直接实施）③隔离操作级 HTTP 客户端（需自证隔离与回收） | `provider/ali_ecs.go`、`provider/scan.go`、SDK `RuntimeOptions`、`getDaraClient` 全局 `sync.Map` |
-| **Q-13（I8-14 已裁决；其他候选未裁决）** | **I8-42 / I8-14 分项** 清理类改动**是否实施**（本身不是缺陷，仅为"可安全清理清单"） | 原引用的 §4 清单已从本文移除，不能仅凭八/五/二/十四等历史计数承诺安全或零成本。I8-42 其他候选的具体符号清单缺失，仍须逐符号确认后决定；I8-14 已按用户 2026-10-09 定型 A 单独实施，删除旧链并迁移有效回归，不扩大其他清理范围 | I8-14：common.go/provider.go 与正式 planner 回归；其他候选：config/config.go、notifier/bus.go、provider/provider.go、前端 types.ts/composables |
+| **Q-13（I8-14 / I8-15 已裁决；其他候选未裁决）** | **I8-42 / I8-14 / I8-15 分项** 清理类改动**是否实施**（本身不是缺陷，仅为"可安全清理清单"） | 原引用的 §4 清单已从本文移除，不能仅凭八/五/二/十四等历史计数承诺安全或零成本。I8-42 其他候选的具体符号清单缺失，仍须逐符号确认后决定；I8-14 已按用户定型 A 实施。用户 2026-10-09 另授权 I8-15 方案 A：注释同步、去除 Push 死赋值，保留 AddStateUnknown/Q-01 与 Push/Q-07；不做单次解析重构或提前 planner 检测，不扩大其他清理 | I8-15：export.go、plan.go、tc_cvm.go、push.go；既有回归不改；其他 I8-42 候选继续独立未裁决 |
 | **Q-14（已裁决）** | **I8-12 / I8-13** 请求阶段与历史预览保留策略 | 用户 2026-10-08 授权推荐 A：四请求阶段，重试清空旧结果；失败持久提示，空结果中性展示并保留 warnings；请求完成不代表全部目标正常；时间只显示最近请求结束，不保留历史预览 | 三个前端生产文件、专用回归/命令入口与五份文档；无后端/API/schema/依赖改动；正式证据见文末 |
 | **Q-15（已裁决）** | **I8-102** 告警测试预算与失败收尾范围 | 用户 2026-10-08 授权推荐 B：仅 test:alerts 逐项 30 秒原生超时，关键请求断言提前，t.after 结算挂起夹具并等待任务；不新增进程监督、不统一其他五入口或接入 CI | package.json 与 alerts-load.test.mjs，同步 AGENTS/README/本文/审计共六文件；正式证据见文末 |
 | **Q-16（已裁决、本地修复）** | **I8-10** Lighthouse 完整快照额度 | 用户 2026-10-09 选择 B 并经候选验证后授权正式修复：120 秒 context＋最多 100 次分页查询，跨版本重读共享；次数耗尽为不可重试 ErrSnapshotIncomplete，时间耗尽同时保留 context.DeadlineExceeded 并沿用整目标重试 | 仅 Lighthouse 快照生产逻辑、两份回归与四份文档；不关闭 Q-12 ECS 部分，不新增 TotalCount/重复页/全目标预算合同 |
@@ -600,3 +604,14 @@
 - **本地门禁**：`go test ./provider -run '^(TestI814|TestPlan_|TestClientPool|TestProviderFactoryUsesPoolCredentials|TestRuleChange)' -race -count=20 -timeout=3m` 通过；`go test ./provider ./syncer -race -count=1 -timeout=5m` 两包完整回归通过。真实 `make all` 退出0，包含 npm ci、vue-tsc/Vite、go vet、全仓race与产品构建，部分未变包命中缓存；随后 `go test ./... -race -count=1 -timeout=5m` 禁缓存，全仓12包全部ok。另行 `go build ./...`、十个受影响Go文件gofmt检查与最终 `git diff --check` 通过。证据目录为 `/Users/kyle/.codex/outputs/i8-14-2026-10-09-tjvxqmmw/`，包含 affected-race/full-race/make-all/build 日志、八类负向日志与 test-migration.json。
 - **文档与状态**：同步 AGENTS/Issue8/Issue7/审计/TODOLIST，共五份文档；本轮共15文件（10份Go，5份文档）。I8-14 本地收口；Q-13 仅 I8-14 范围已裁决，I8-42 其他清理候选仍未裁决，不展开相邻问题。本文及历史批次提及“保留旧Diff/P0-01回归”为当时事实；当前以本补记和正式 planner 测试为准。
 - **外部边界**：Go 1.27.1 darwin/arm64、Node 26.7.0。npm ci 仍提示既有3项high，未独立audit或升级，不登记漏洞检查通过。未执行 dnsintegration 真实上游、真实云/浏览器/SMTP/收件箱/Webhook/Uptime Kuma、Linux/Docker/compose 或当前 revision 远端CI/GHCR；原人工未执行/免除状态保持。定向20次与单轮禁缓存全仓不外推长期稳定或外部验收通过。
+
+## I8-15 当前整理补记（2026-10-09，用户定型方案 A）
+
+- **授权与复核基线**：用户在本聊天采用 A，明确要求修复前再次验证、修复后同步文档。实施前 `main / f813c2e79ca0d33cc6b3950beb4b3f12ebebe905`、本地 `origin/main / 36f77454107cc6fa6b28e2cb80c2cb8e5de41af3`、ahead 8，工作树/暂存区干净；未 fetch。再次逐项检查源码、Q-01/Q-07/Q-13 与正式目标调用链，四包相关回归修复前以 race 每项重复三次通过；不将此前研究期仓外候选或负向控制作为本次正式门禁。
+- **a/b 注释同步**：export.go 的导入顺序改为日志级别→告警集合→发布 RuntimeState→Health 唤醒→Push 唤醒。plan.go 明确缺失/不可解析的 CVM PolicyIndex 由 planner deferred，候选间重复解析后索引由 Provider 批量删除前返回错误、整批不发删除请求；tc_cvm.go 注释从“重复映射到不同规则”订正为拒绝任何解析后重复索引。正式目标链仍按既有清理错误处理保留规则/记录 deferred，不改变 Provider 或目标 outcome 行为。
+- **c 最小整理**：push.go 的 URL 早期校验改为 `if _, err := buildPushURL(...); err != nil`，去除 `_ = target`，健康检查后用 `:=` 声明实际请求 URL。保留早期校验位置，非法 URL 不占用在途名额、不进入健康检查/HTTP；保留两次构造，不做单次解析重构。返回值注释明确 false 为 URL 校验失败、true 不保证投递成功，Run 不依赖该返回值，两种结果均从尝试结束后按有效间隔等待；Q-07 截止时间/间隔/Wake 合同不变。
+- **d 澄清并保留**：生产未置 true 不代表全仓无执行点；`TestPlan_CoverageReadyImplementableSubset/unknown` 实际传 true 并检查覆盖/清理冻结。字段注释说明普通 Add 错误早退、幂等错误仍经 S1 覆盖验证，当前正式链无需置 true。保留字段、`!in.AddStateUnknown`、未知态与正式目标链回归，不把本项写成生产安全漏洞修复，不重新裁决 Q-01。
+- **正式回归与判别力**：复用既有测试，不新增/修改测试文件。`go test ./provider ./internal/health ./webui/api ./syncer -race -run 'TestPlan_CoverageReadyImplementableSubset|TestRequest_CVMDeleteRejectsUnsafeCandidates|TestPushInvalidURLShapes|TestPushImmediateFirstSendAndQueryContract|TestPushUpDownRecovery|TestPushSingleInFlightRejectsConcurrentSend|TestI805|TestAlertsAndImportPublishBeforeWake|TestApplyCandidatePublishesBeforeWake|TestTargetRound_AddFailureKeepsOldRules|TestTargetRound_S1MissingCoverageFails|TestTargetRound_IdempotentCreateConfirmedByS1|TestTargetRetry_IdempotentCreateRequiresCoverage' -count=20 -timeout=3m` 四包全部通过。三个基于本轮正式源码的仓外 overlay 分别删除 URL 早期校验、忽略 AddStateUnknown、删除 CVM 重复索引拒删：对应既有测试均以行为断言退出1，无编译失败、panic、race 告警或超时；正式文件未被错误候选覆盖。
+- **完整本地门禁**：固定 Go 1.27.1 的 PATH 与 `GOTOOLCHAIN=local`，`go test ./... -race -count=1 -timeout=5m` 全仓十二包无测试结果缓存、每项一轮全部 ok；`go vet ./...`、`go build ./...`、四份受影响 Go 文件 gofmt 检查与最终 `git diff --check` 通过。全仓包含既有 TestMain 构建产品二进制的本地进程回归，不冒称 I8-15 专项外部验收。证据目录 `/Users/kyle/.codex/outputs/i8-15-2026-10-09-7u8r_gus/` 保存 targeted-race/full-race/vet/build 日志、三份错误候选/overlay 与负向日志。
+- **范围与状态**：四份 Go 文件（webui/api/export.go、provider/plan.go、provider/tc_cvm.go、internal/health/push.go）与三份文档（AGENTS、Issue8、审计），共七文件；唯一可执行代码整理为 Push 局部赋值/作用域，其他为注释。Issue8 的 I8-15a/b/c 标记已整理、d 澄清并保留，订正“全仓从未置 true”；Q-13 仅新增 I8-15 已裁决，其他 I8-42 候选独立。旧批次 Q-13“仅 I8-14”保留为历史记录。未改 API/schema、依赖、前端、Provider 请求行为、目标状态机、DNS/重试/健康及 Push 调度。本轮未提交或推送。
+- **外部边界**：Go 1.27.1 darwin/arm64；裸 Go 门禁使用已准备好的真实 ignored 前端 dist，本轮未重建前端或运行 make all/npm audit。未执行真实浏览器、真实云/外部 DNS/SMTP/收件箱/Webhook/Uptime Kuma、Linux/Docker/compose 或当前 revision 远端 CI/GHCR，原人工未执行/免除状态保持。定向重复与单轮全仓绿色不外推为长期稳定或外部验收通过。

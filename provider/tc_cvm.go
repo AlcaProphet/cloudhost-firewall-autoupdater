@@ -192,7 +192,7 @@ func (p *TCCVM) CreateRules(snapshot RuleSnapshot, rules []config.RuleAction) (C
 // Issue7 §6.2：
 //   - 必须携带同一 S1 的 Version（缺失即快照不完整，绝不无版本删除）；
 //   - 绝不逐条复用已经变化的 Version（逐条删除会造成索引漂移）；
-//   - 任一候选缺 PolicyIndex、索引不可解析或索引重复映射到不同规则时直接拒绝删除。
+//   - 任一候选缺 PolicyIndex、索引不可解析或解析后的索引重复时，整批拒绝删除。
 func (p *TCCVM) DeleteRules(snapshot RuleSnapshot, rules []config.RuleInfo) (DeleteResult, error) {
 	if len(rules) == 0 {
 		return DeleteResult{}, nil

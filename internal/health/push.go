@@ -197,15 +197,15 @@ func (p *Pusher) InFlight() bool {
 
 // sendOnce 计算一次健康状态并发送一条心跳。
 //
-// 返回 false 表示配置非法、未发送（调用方保持未激活状态）。
+// 返回 false 表示 URL 校验失败；true 不代表投递成功。Run 不依赖返回值，
+// 两种结果均从尝试结束后按有效间隔等待下一次尝试。
 func (p *Pusher) sendOnce(baseCtx context.Context, cfg PushConfig) bool {
-	target, err := buildPushURL(cfg.URL, "up", "OK", 0)
-	if err != nil {
+	// 提前校验 URL，非法配置不得占用在途名额或进入健康检查。
+	if _, err := buildPushURL(cfg.URL, "up", "OK", 0); err != nil {
 		// 只记录安全类别，不记录 URL 本身
 		slog.Warn("Uptime Kuma Push 配置无效，跳过发送", "category", "invalid_url")
 		return false
 	}
-	_ = target
 
 	// 单在途：满载直接跳过本次 tick，不排队、不重试
 	if !p.tryAcquire() {
@@ -229,7 +229,7 @@ func (p *Pusher) sendOnce(baseCtx context.Context, cfg PushConfig) bool {
 		msg = buildDownMessage(res.Reasons)
 	}
 
-	target, err = buildPushURL(cfg.URL, status, msg, pingMS)
+	target, err := buildPushURL(cfg.URL, status, msg, pingMS)
 	if err != nil {
 		slog.Warn("Uptime Kuma Push 配置无效，跳过发送", "category", "invalid_url")
 		return false

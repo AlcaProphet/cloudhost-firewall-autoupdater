@@ -91,8 +91,8 @@ func attachmentName(exportedAt time.Time) string {
 //	LastInsertId → 建 export_id 映射 → 规则副本重写引用 → 显式写完整 settings
 //	→ 写完整 policy/email/webhook/push → 清 scanned_resources；保留 sync_logs、不碰
 //	sqlite_sequence）→ 事务内构造候选 RuntimeState 与候选告警集合 → commit
-//	→ 日志级别 → 告警集合 → 运行健康监督器唤醒 → Uptime Kuma Push 唤醒
-//	→ 发布 RuntimeState → 返回成功（Build7 §4.3、Step 7）
+//	→ 日志级别 → 告警集合 → 发布 RuntimeState → 运行健康监督器唤醒
+//	→ Uptime Kuma Push 唤醒 → 返回成功（Build7 §4.3、Step 7）
 //
 // 任一阶段失败都完整回滚：旧数据库、旧 RuntimeState、旧日志级别、旧告警订阅
 // 与扫描缓存全部保持不变，也不返回成功。

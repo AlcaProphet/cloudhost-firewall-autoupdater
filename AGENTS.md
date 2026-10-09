@@ -119,6 +119,10 @@
 
 **I8-14 旧描述身份链后续修复（2026-10-09，用户定型方案 A）**：用户确认研究定型后授权正式修复与文档同步；实施前 main / `5556f71`、本地 origin/main / `36f7745`、ahead 7，工作树/暂存区干净，未 fetch。删除无生产消费者的 Diff/OwnedRules/buildDesired、旧 ruleKey 与专属 helper/类型，不留兼容包装或历史可执行副本；15 个旧入口测试与专属 mockProvider 移除，有效回归直接保护正式 planner。六组 TestI814Plan* 保留四平台TCP+UDP、IPv4 ICMP端口等价、实际Ali归一化往返、S0/S1/S2纯规划安全门、严格TAG与模板保护；六个凭据池/摘要测试保留。唯一可执行生产变更为旧链删除，GetRules/ConvertPorts/ExpandPorts、SDK/超时、目标状态机、API/schema/前端逻辑不改。十份Go与五份文档共15文件，正式定向race20次、受影响两包完整race、八类正式负向控制、make all、禁缓存全仓12包race一轮、go build/格式/diff-check通过；证据见Issue8文末。旧批次“保留旧Diff”是历史状态，本段取代其当前保留要求。Q-13仅I8-14已裁决，其他I8-42候选独立未裁决；真实云/浏览器/通知链路/Linux/Docker/远端CI未执行，不外推长期稳定或外部通过。npm ci提示既有3项high，未独立audit/升级。本轮未提交或推送。
 
+**I8-15 注释与死赋值后续整理（2026-10-09，用户定型方案 A）**：用户授权修复前复核、实施与文档同步；实施前 `main / f813c2e`、本地 `origin/main / 36f7745`、ahead 8，工作树/暂存区干净。四份 Go 文件中，export.go 同步先发布 RuntimeState 后唤醒 Health/Push；plan.go 区分 planner 对缺失/不可解析索引 deferred 与 CVM Provider 对重复索引整批拒删；tc_cvm.go 明确拒绝任何解析后重复索引；push.go 仅去除死赋值，保留 URL 早期校验与健康检查后构造，并说明返回 true 不保证投递、Run 两种结果均按有效间隔再尝试。AddStateUnknown 保留：当前正式链对普通 Add 错误早退，幂等错误经 S1 验证，无需置 true；既有未知态回归与 Q-01 公式保持。本次不新增/修改测试，不改 Provider 行为、目标状态机、Push 调度、API/schema/依赖/前端；同步本文/Issue8/审计，共七文件。Q-13 仅新增 I8-15 范围已裁决，其他候选独立。正式门禁与外部边界见 Issue8 文末补记；本轮未提交、fetch 或推送。
+
+---
+
 ## 二、核心编码原则
 
 ### 简单轻量化
