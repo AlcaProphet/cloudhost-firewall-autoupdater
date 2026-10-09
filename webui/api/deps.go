@@ -163,7 +163,7 @@ func (d *Deps) applyCandidate(candidate Candidate) {
 		d.Health.Wake()
 	}
 
-	// 5) Uptime Kuma Push 配置：唤醒心跳循环，使其按新 URL/interval 立即首发或停止。
+	// 5) Push 重读已发布配置：普通保存保留截止时间，启用/URL 变化首发，关闭停止。
 	if d.Push != nil {
 		d.Push.Wake()
 	}

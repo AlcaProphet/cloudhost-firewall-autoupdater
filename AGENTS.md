@@ -111,6 +111,8 @@
 
 **I8-11 SWAS 快照计数后续修复状态（2026-10-09，定型 B / Q-17）**：用户确认研究合同后授权正式修复与文档同步；实施前 main / 5452db1、本地 origin/main / 36f7745、ahead 1，工作树/暂存区干净。唯一生产逻辑 ali_swas.go 固定单次快照总数基准、拒绝负数/变化/超额并要求累计精确相等；缺失/null 不清除已有依据，始终无总数保留短页回退与 100 页上限。两份正式回归与本文/Issue7/Issue8/审计共七文件；25 个 Provider 与 19 个真实 SDK 目标链场景，S0/S1 零删除与 S2 已确认计数/估计观察保留有判别证据。定向 race 20 轮、五类正式 source overlay 负向控制、真实 make all（七包测试缓存命中）及追加一次禁用缓存的全仓 12 包 race、go build/格式/diff-check 均通过，正式证据见 Issue8 文末。Go 1.27.1 darwin/arm64，npm 安装仍提示既有三项 high，未独立 audit/升级。真实云/浏览器/Linux/Docker/通知/远端 CI 未执行，不保证原子快照或外部通过；资源扫描/规则结构/重复 ID/总预算独立。本轮未 fetch、提交或推送。
 
+**I8-05/I8-06 后续本地修复（2026-10-09，定型 A / Q-07）**：按用户明确授权实施Push截止时间与统一间隔下限；同配置保存不延迟心跳，间隔变化基于最近尝试结束，到期先重读；下限只作用周期等待。唯一生产逻辑push.go，deps.go仅唤醒注释；三份测试与五份文档共十文件。正式回归、负向控制与门禁见Issue8文末及审计同名补记；真实Kuma/外部发布未验收，未提交或推送。
+
 ## 二、核心编码原则
 
 ### 简单轻量化
@@ -269,6 +271,7 @@
 - `/api/health` 保持静态 Docker 存活语义不变（不反映同步或运行健康）；新增 `GET /api/health/operational`：健康 200、异常 503，固定 `Content-Type: application/json; charset=utf-8` 与 `Cache-Control: no-store`，每次请求现场计算，响应只含稳定原因，不泄露 SQL、路径、凭据或 URL；Dockerfile 与 Compose 的 `HEALTHCHECK` 继续使用 `/api/health`
 - 新增 30 秒内部健康监督器：仅在健康→异常边沿发布一次 `notifier.EventOperationalUnhealthy`（事件数据只含检查时间与稳定原因数组），持续异常不重复发送、原因变化只更新日志，恢复只写 INFO 且恢复后再次异常可重新发布一次；配置保存后立即唤醒一次检查；第三触发开关只控制该事件是否进入邮件/Webhook，不关闭 operational 端点与 Push；监督器与进程 shutdown 同一生命周期，不产生孤立 goroutine
 - Uptime Kuma 同时支持 HTTP Monitor 拉取 `/api/health/operational` 与 Push Monitor 反向心跳；Push 默认关闭，解析用户填写的完整 URL 后覆盖 `status`/`msg`/`ping` 并保留 token 与其他未知 query；HTTP 上限 10 秒、同一时刻最多一条在途、不排队不重试；仅 2xx 且响应 JSON 为 `{"ok":true}` 算成功；down 的 `msg` 由稳定原因用 `; ` 连接并截断到 250 字符以内；Push 失败不改写应用健康、不产生自激告警；日志不得包含完整 Push URL 或 token；shutdown 取消在途请求
+- Push 调度（I8-05/I8-06 / Q-07）：Wake 与 timer 到期均先重读已发布配置；相同启用状态、TrimSpace 后 URL 与有效间隔保留原截止时间。有效间隔非正用60s、正值不足20s用20s，其余原值；只在运行端使用，不回写 SQLite/API/导出。间隔变化按最近尝试结束时间+新有效间隔计算，已到期只尝试一次，不补发遗漏周期；成功、普通失败和非法URL校验均从尝试结束后等待。启用/URL变化立即首发，关闭/空URL清除调度；同非法URL的普通Wake不重复校验/WARN或推迟截止时间。Wake可合并，在途请求沿用原配置自然结束后读最新状态，Stop继续取消在途请求；不新增开关边沿记忆或固定节拍。20秒下限约束周期等待，不限制启用/换URL首发；独立Health监督器与发布顺序保持。
 - Push 的 HTTP 2xx 业务正文上限为 **16 KiB**，最多读取 16,385 字节识别超限；按实际 `Response.Body` 字节计数，默认 gzip 解压后的正文仍受保护。完整读取成功、未超限、整个正文为一个合法 JSON 文档且 `ok` 为非 null 的 true 才确认成功；允许合法尾随空白与未知字段，保留 `encoding/json` 的字段大小写匹配及重复键覆盖规则，不承诺拒绝所有重复键。非 2xx 及时记 `http_status` 并关闭，不主动额外 drain；读取失败/超限/非法 JSON/未确认 ok 分别记固定 `response_read`/`response_too_large`/`invalid_json`/`not_ok`。Close 错误只记固定 `response_close` WARN，不输出错误原文或敏感正文，不推翻已确认的业务结果；在途名额保持到读取与关闭结束。10 秒时限、单在途、不排队不重试、失败不改健康与 shutdown 取消继续有效。业务读取上限不是整个网络栈总下载上限；标准 HTTP/1 Transport 关闭后可能有界清理，异常连接复用不作保证，不将标准库清理的版本实现数值写为项目强要求。
 
 **P2-05 后续已实施边界（2026-09-30）**

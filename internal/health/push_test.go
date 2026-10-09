@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
@@ -21,7 +23,7 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 )
 
-// ─── Build7 §7.6：Uptime Kuma Push 的判别性用例（全部使用本地 httptest） ───
+// ─── Build7 §7.6：Uptime Kuma Push 的判别性用例（使用本地 httptest 或虚拟时间与内存 Transport） ───
 
 // pushRecorder 记录收到的 Push 请求
 type pushRecorder struct {
@@ -193,28 +195,42 @@ func TestPushImmediateFirstSendAndQueryContract(t *testing.T) {
 
 // TestPushUpDownRecovery 每次发送当前状态：健康 up、异常 down（短原因）、恢复 up。
 func TestPushUpDownRecovery(t *testing.T) {
-	f := newPushFixture(t)
-	srv, rec := startPushServer(t, okHandler)
-	f.setConfig(PushConfig{Enabled: true, URL: srv.URL + "/api/push/t", Interval: 30 * time.Millisecond})
-
-	p := f.startPush(t, time.Second)
-	waitForRequests(t, rec, 1, 3*time.Second)
-	if got := parseQuery(rec.lastQuery())["status"]; got != "up" {
-		t.Fatalf("健康时 status = %q, want up", got)
-	}
-
-	// 异常：down + 原因
-	f.deps.setRunning(false)
-	waitForStatus(t, rec, "down", 3*time.Second)
-	msg := parseQuery(rec.lastQuery())["msg"]
-	if !strings.Contains(msg, ReasonSyncerStopped) {
-		t.Errorf("down 的 msg 必须包含稳定原因: %q", msg)
-	}
-
-	// 恢复：up
-	f.deps.setRunning(true)
-	p.Wake()
-	waitForStatus(t, rec, "up", 3*time.Second)
+	synctest.Test(t, func(t *testing.T) {
+		f := newPushFixture(t)
+		rec := &pushRecorder{}
+		f.setConfig(PushConfig{Enabled: true, URL: "https://example.invalid/t", Interval: config.MinPushInterval})
+		p := NewPusher(PusherDeps{Checker: f.deps.checker(), Config: f.configFunc})
+		p.client.Transport = pushFailingTransport(func(req *http.Request) (*http.Response, error) {
+			rec.add(req)
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"ok":true}`))}, nil
+		})
+		go p.Run()
+		defer p.Stop()
+		synctest.Wait()
+		if got := parseQuery(rec.lastQuery())["status"]; got != "up" {
+			t.Fatalf("健康时 status=%q", got)
+		}
+		f.deps.setRunning(false)
+		time.Sleep(config.MinPushInterval)
+		synctest.Wait()
+		if got := parseQuery(rec.lastQuery())["status"]; got != "down" {
+			t.Fatalf("异常时 status=%q", got)
+		}
+		if msg := parseQuery(rec.lastQuery())["msg"]; !strings.Contains(msg, ReasonSyncerStopped) {
+			t.Fatalf("缺少稳定原因: %q", msg)
+		}
+		f.deps.setRunning(true)
+		p.Wake()
+		synctest.Wait()
+		if rec.count() != 2 {
+			t.Fatal("普通 Wake 不应额外发送")
+		}
+		time.Sleep(config.MinPushInterval)
+		synctest.Wait()
+		if rec.count() != 3 || parseQuery(rec.lastQuery())["status"] != "up" {
+			t.Fatal("恢复后未按周期发送 up")
+		}
+	})
 }
 
 // waitForStatus 等待出现指定 status 的请求
@@ -320,35 +336,41 @@ func waitForLogContains(t *testing.T, buf *syncBuffer, want string, budget time.
 	return buf.String()
 }
 
-// TestPushSingleInFlightSkipsNewTicks 在途时新 tick 必须跳过，不排队、不重试。
-func TestPushSingleInFlightSkipsNewTicks(t *testing.T) {
-	f := newPushFixture(t)
-	release := make(chan struct{})
-	entered := make(chan struct{}, 4)
-	srv, rec := startPushServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		entered <- struct{}{}
-		<-release
-		okHandler(w, nil)
+// TestPushSingleInFlightRejectsConcurrentSend 直接验证在途名额拒绝并发发送，不排队。
+func TestPushSingleInFlightRejectsConcurrentSend(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newPushFixture(t)
+		p := NewPusher(PusherDeps{Checker: f.deps.checker(), Config: f.configFunc})
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var releaseOnce sync.Once
+		defer releaseOnce.Do(func() { close(release) })
+		done := make(chan struct{})
+		rec := &pushRecorder{}
+		p.client.Transport = pushFailingTransport(func(req *http.Request) (*http.Response, error) {
+			rec.add(req)
+			close(entered)
+			<-release
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"ok":true}`))}, nil
+		})
+		cfg := PushConfig{URL: "https://example.invalid/t"}
+		go func() { p.sendOnce(context.Background(), cfg); close(done) }()
+		<-entered
+		// 直接验证发送名额守卫；Run 同步发送，不借短时等待推断 tick 已被处理。
+		for range 3 {
+			if !p.sendOnce(context.Background(), cfg) {
+				t.Fatal("合法配置被拒绝")
+			}
+		}
+		if rec.count() != 1 || !p.InFlight() {
+			t.Fatal("在途名额未阻止重叠发送")
+		}
+		releaseOnce.Do(func() { close(release) })
+		<-done
+		if p.InFlight() {
+			t.Fatal("请求完成后未释放名额")
+		}
 	})
-	f.setConfig(PushConfig{Enabled: true, URL: srv.URL + "/api/push/t", Interval: 20 * time.Millisecond})
-
-	p := f.startPush(t, 5*time.Second)
-	select {
-	case <-entered:
-	case <-time.After(3 * time.Second):
-		t.Fatal("首个请求未发出")
-	}
-
-	// 在途期间触发多个 tick 与唤醒：必须被跳过（请求数保持 1）
-	time.Sleep(150 * time.Millisecond)
-	p.Wake()
-	time.Sleep(50 * time.Millisecond)
-	if got := rec.count(); got != 1 {
-		t.Fatalf("在途期间请求数 = %d, want 1（不得排队/重试）", got)
-	}
-
-	close(release)
-	waitForRequests(t, rec, 2, 3*time.Second)
 }
 
 // TestPushRequestTimeoutIsBounded HTTP 必须有界返回（超时接缝 200ms）。
@@ -444,24 +466,31 @@ func TestPushShutdownCancelsInFlight(t *testing.T) {
 // TestPushFailureDoesNotAffectHealthOrPublishEvents Push 失败不得改变应用健康，
 // 也不得发布任何告警事件（避免自激循环）。
 func TestPushFailureDoesNotAffectHealthOrPublishEvents(t *testing.T) {
-	f := newPushFixture(t)
-	srv, rec := startPushServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
+	synctest.Test(t, func(t *testing.T) {
+		f := newPushFixture(t)
+		rec := &pushRecorder{}
+		pub := &recordingPublisher{}
+		f.setConfig(PushConfig{Enabled: true, URL: "https://example.invalid/t", Interval: config.MinPushInterval})
+		p := NewPusher(PusherDeps{Checker: f.deps.checker(), Config: f.configFunc, Bus: pub})
+		p.client.Transport = pushFailingTransport(func(req *http.Request) (*http.Response, error) {
+			rec.add(req)
+			return &http.Response{StatusCode: 500, Body: io.NopCloser(strings.NewReader(""))}, nil
+		})
+		go p.Run()
+		defer p.Stop()
+		synctest.Wait()
+		time.Sleep(config.MinPushInterval)
+		synctest.Wait()
+		if rec.count() != 2 {
+			t.Fatal("失败后未继续正常周期")
+		}
+		if pub.count() != 0 {
+			t.Fatal("Push 失败发布了事件")
+		}
+		if res := f.deps.checker().Evaluate(context.Background()); !res.Healthy {
+			t.Fatalf("Push 失败改变健康: %+v", res)
+		}
 	})
-	pub := &recordingPublisher{}
-	f.setConfig(PushConfig{Enabled: true, URL: srv.URL + "/api/push/t", Interval: 20 * time.Millisecond})
-
-	p := NewPusher(PusherDeps{Checker: f.deps.checker(), Config: f.configFunc, Timeout: time.Second, Bus: pub})
-	go p.Run()
-	t.Cleanup(func() { p.Stop() })
-
-	waitForRequests(t, rec, 2, 3*time.Second)
-	if got := pub.count(); got != 0 {
-		t.Errorf("Push 失败不得发布告警事件，实际 %d", got)
-	}
-	if res := f.deps.checker().Evaluate(context.Background()); !res.Healthy {
-		t.Errorf("Push 失败不得改变应用健康: %+v", res)
-	}
 }
 
 // TestPushSuccessLogHasNoURL 成功日志必须是 DEBUG 且不含 URL/token。
@@ -544,8 +573,8 @@ func awaitInvalidURLAttempt(t *testing.T, attempts <-chan time.Time, budget time
 	}
 }
 
-// TestInvalidURLRetryInterval 固定脏配置下的等待下限及默认值，正常有效间隔保持原值。
-func TestInvalidURLRetryInterval(t *testing.T) {
+// TestEffectivePushInterval 固定正常发送与非法 URL 校验共用的下限及默认值。
+func TestEffectivePushInterval(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		input, want time.Duration
@@ -559,7 +588,7 @@ func TestInvalidURLRetryInterval(t *testing.T) {
 		{"long", time.Hour, time.Hour},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := invalidURLRetryInterval(tc.input); got != tc.want {
+			if got := effectivePushInterval(tc.input); got != tc.want {
 				t.Fatalf("等待间隔 = %v, want %v", got, tc.want)
 			}
 		})
@@ -647,13 +676,18 @@ func TestPushInvalidURLDisableAndReenable(t *testing.T) {
 	<-reads
 	f.setConfig(PushConfig{Enabled: false, URL: "ftp://invalid/token", Interval: time.Hour})
 	p.Wake()
-	select {
-	case cfg := <-reads:
-		if cfg.Enabled {
-			t.Fatal("关闭后未读新配置")
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+waitDisabled:
+	for {
+		select {
+		case cfg := <-reads:
+			if !cfg.Enabled {
+				break waitDisabled
+			}
+		case <-deadline.C:
+			t.Fatal("关闭未立即生效")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("关闭未立即生效")
 	}
 	srv, rec := startPushServer(t, okHandler)
 	f.setConfig(PushConfig{Enabled: true, URL: srv.URL, Interval: time.Hour})
@@ -673,45 +707,47 @@ func (fn pushFailingTransport) RoundTrip(req *http.Request) (*http.Response, err
 func TestPushNormalFailuresKeepPeriodicAttempts(t *testing.T) {
 	for _, mode := range []string{"network", "http_status", "invalid_json", "not_ok"} {
 		t.Run(mode, func(t *testing.T) {
-			f := newPushFixture(t)
-			hits := make(chan time.Time, 16)
-			p := NewPusher(PusherDeps{Checker: f.deps.checker(), Config: f.configFunc, Timeout: time.Second})
-			p.client.Transport = pushFailingTransport(func(req *http.Request) (*http.Response, error) {
-				hits <- time.Now()
-				if mode == "network" {
-					return nil, errors.New("offline")
-				}
-				body, code := `{"ok":false}`, http.StatusOK
-				if mode == "http_status" {
-					code = http.StatusInternalServerError
-				}
-				if mode == "invalid_json" {
-					body = "invalid"
-				}
-				w := httptest.NewRecorder()
-				w.WriteHeader(code)
-				if _, err := w.WriteString(body); err != nil {
-					return nil, err
-				}
-				return w.Result(), nil
-			})
-			const interval = 50 * time.Millisecond
-			f.setConfig(PushConfig{Enabled: true, URL: "https://invalid.example/token", Interval: interval})
-			go p.Run()
-			t.Cleanup(p.Stop)
-			var first time.Time
-			for i := 0; i < 2; i++ {
-				select {
-				case at := <-hits:
-					if i == 0 {
-						first = at
-					} else if at.Sub(first) < interval {
-						t.Fatal("发送失败发生立即重试")
+			synctest.Test(t, func(t *testing.T) {
+				f := newPushFixture(t)
+				hits := make(chan time.Time, 16)
+				p := NewPusher(PusherDeps{Checker: f.deps.checker(), Config: f.configFunc, Timeout: time.Second})
+				p.client.Transport = pushFailingTransport(func(req *http.Request) (*http.Response, error) {
+					hits <- time.Now()
+					if mode == "network" {
+						return nil, errors.New("offline")
 					}
-				case <-time.After(time.Second):
-					t.Fatal("发送失败未按周期继续")
+					body, code := `{"ok":false}`, http.StatusOK
+					if mode == "http_status" {
+						code = http.StatusInternalServerError
+					}
+					if mode == "invalid_json" {
+						body = "invalid"
+					}
+					w := httptest.NewRecorder()
+					w.WriteHeader(code)
+					if _, err := w.WriteString(body); err != nil {
+						return nil, err
+					}
+					return w.Result(), nil
+				})
+				const interval = config.MinPushInterval
+				f.setConfig(PushConfig{Enabled: true, URL: "https://invalid.example/token", Interval: interval})
+				go p.Run()
+				defer p.Stop()
+				var first time.Time
+				for i := 0; i < 2; i++ {
+					select {
+					case at := <-hits:
+						if i == 0 {
+							first = at
+						} else if at.Sub(first) < interval {
+							t.Fatal("发送失败发生立即重试")
+						}
+					case <-time.After(interval + time.Second):
+						t.Fatal("发送失败未按周期继续")
+					}
 				}
-			}
+			})
 		})
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -361,33 +362,35 @@ func TestPushResponseSuccessReusesHTTP1(t *testing.T) {
 func TestPushResponseFailuresKeepPeriod(t *testing.T) {
 	for _, mode := range []string{"response_read", "response_too_large"} {
 		t.Run(mode, func(t *testing.T) {
-			f := newPushFixture(t)
-			f.setConfig(PushConfig{Enabled: true, URL: "https://example.invalid", Interval: 50 * time.Millisecond})
-			p := NewPusher(PusherDeps{Checker: f.deps.checker(), Config: f.configFunc})
-			hits := make(chan time.Time, 16)
-			p.client.Transport = pushFailingTransport(func(*http.Request) (*http.Response, error) {
-				hits <- time.Now()
-				var reader io.Reader = pushResponseFailReader{}
-				if mode == "response_too_large" {
-					reader = strings.NewReader(strings.Repeat(" ", 20000))
-				}
-				return &http.Response{StatusCode: 200, Body: io.NopCloser(reader)}, nil
-			})
-			go p.Run()
-			defer p.Stop()
-			var first time.Time
-			for i := 0; i < 2; i++ {
-				select {
-				case at := <-hits:
-					if i == 0 {
-						first = at
-					} else if at.Sub(first) < 50*time.Millisecond {
-						t.Fatal("immediate retry introduced")
+			synctest.Test(t, func(t *testing.T) {
+				f := newPushFixture(t)
+				f.setConfig(PushConfig{Enabled: true, URL: "https://example.invalid", Interval: 20 * time.Second})
+				p := NewPusher(PusherDeps{Checker: f.deps.checker(), Config: f.configFunc})
+				hits := make(chan time.Time, 16)
+				p.client.Transport = pushFailingTransport(func(*http.Request) (*http.Response, error) {
+					hits <- time.Now()
+					var reader io.Reader = pushResponseFailReader{}
+					if mode == "response_too_large" {
+						reader = strings.NewReader(strings.Repeat(" ", 20000))
 					}
-				case <-time.After(time.Second):
-					t.Fatal("response failure stopped regular period")
+					return &http.Response{StatusCode: 200, Body: io.NopCloser(reader)}, nil
+				})
+				go p.Run()
+				defer p.Stop()
+				var first time.Time
+				for i := 0; i < 2; i++ {
+					select {
+					case at := <-hits:
+						if i == 0 {
+							first = at
+						} else if at.Sub(first) < 20*time.Second {
+							t.Fatal("immediate retry introduced")
+						}
+					case <-time.After(21 * time.Second):
+						t.Fatal("response failure stopped regular period")
+					}
 				}
-			}
+			})
 		})
 	}
 }

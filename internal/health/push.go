@@ -104,20 +104,24 @@ func NewPusher(deps PusherDeps) *Pusher {
 
 // Run 启动 Push 循环（阻塞，直到 Stop）。
 //
-// 循环在每个周期开始前重新读取配置，因此 URL/interval 热重载立即生效；
+// Wake 与定时到期均先重读配置；同配置保留截止时间，间隔变化以最近尝试结束为基准。
 // 关闭或 URL 为空时只等待唤醒；非空非法 URL 按有下限的间隔重新校验，不发网络请求。
 func (p *Pusher) Run() {
 	defer close(p.done)
-
-	baseCtx := p.baseCtx
-	active := false
+	// 调度状态包含非法 URL 的校验尝试，不等同于已成功发送。
+	scheduled := false
 	lastURL := ""
+	var interval time.Duration
+	var anchor, due time.Time
 	for {
+		if p.baseCtx.Err() != nil {
+			return
+		}
 		cfg := p.config()
-
-		if !cfg.Enabled || strings.TrimSpace(cfg.URL) == "" {
-			active = false
-			lastURL = ""
+		cfg.URL = strings.TrimSpace(cfg.URL)
+		cfg.Interval = effectivePushInterval(cfg.Interval)
+		if !cfg.Enabled || cfg.URL == "" {
+			scheduled = false
 			select {
 			case <-p.wake:
 				continue
@@ -125,38 +129,26 @@ func (p *Pusher) Run() {
 				return
 			}
 		}
-
-		// 启用后的第一条、以及 URL 变化后的第一条都必须立即发送
-		if !active || cfg.URL != lastURL {
-			if p.sendOnce(baseCtx, cfg) {
-				active = true
-				lastURL = cfg.URL
-			} else {
-				// 配置非法时保持未激活；定时重读配置，避免只依赖下一次唤醒。
-				active = false
-				lastURL = ""
-				timer := time.NewTimer(invalidURLRetryInterval(cfg.Interval))
-				select {
-				case <-timer.C:
-					continue
-				case <-p.wake:
-					timer.Stop()
-					continue
-				case <-p.stop:
-					timer.Stop()
-					return
-				}
-			}
+		// 启用与 URL 变化立即首发；普通保存不移动已有截止时间。
+		if !scheduled || cfg.URL != lastURL {
+			due = time.Now()
+		} else if cfg.Interval != interval {
+			due = anchor.Add(cfg.Interval)
 		}
-
-		interval := cfg.Interval
-		if interval <= 0 {
-			interval = config.DefaultPushInterval
+		interval = cfg.Interval
+		lastURL = cfg.URL
+		if !time.Now().Before(due) {
+			// 成功、发送失败与非法 URL 校验都从尝试结束后等待，不补发遗漏周期。
+			p.sendOnce(p.baseCtx, cfg)
+			anchor = time.Now()
+			due = anchor.Add(interval)
+			scheduled = true
+			continue
 		}
-		timer := time.NewTimer(interval)
+		// 无论到期还是 Wake，都回到顶部读取最新配置后再决定是否发送。
+		timer := time.NewTimer(time.Until(due))
 		select {
 		case <-timer.C:
-			p.sendOnce(baseCtx, cfg)
 		case <-p.wake:
 			timer.Stop()
 		case <-p.stop:
@@ -166,8 +158,8 @@ func (p *Pusher) Run() {
 	}
 }
 
-// invalidURLRetryInterval 限制异常配置的校验频率；不改变正常发送路径的间隔。
-func invalidURLRetryInterval(interval time.Duration) time.Duration {
+// effectivePushInterval 统一正常发送与非法 URL 重校验的等待间隔。
+func effectivePushInterval(interval time.Duration) time.Duration {
 	if interval <= 0 {
 		return config.DefaultPushInterval
 	}
