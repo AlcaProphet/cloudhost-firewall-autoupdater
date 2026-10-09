@@ -669,7 +669,7 @@ func emptyDryRunResult(targetID int, name string, domains []string) DryRunResult
 	}
 }
 
-// DryRun 试运行：DNS 解析 + Diff，不写入不触发事件。
+// DryRun 试运行：DNS 解析 + 目标级 PlanTarget，不写入不触发事件。
 //
 // 与同步一样只在开始时取**一次**完整运行时快照，全程使用该快照（不受并发状态替换影响）；
 // 不受同步暂停开关限制。

@@ -197,13 +197,12 @@
 
 ### 1.4 残留、一致性与可观测性
 
-#### I8-14【低·潜在回归】旧描述身份实现仍随包发布，且仍复现原缺陷语义　`②`
+#### I8-14【已按方案 A 本地修复】旧描述身份链清理与正式 planner 回归迁移
 
-- **残留物**：`provider/common.go` 保留第二套 key 与旧描述身份路径——`OwnedRules:68`、`Diff:139`（`:152` 以 `Description` 相等判归属）、`buildDesired:207`（`:224-228` 静默 `continue` 跳过 IPv6/ICMPv6）、`normalizePortForCompare/keyOf/keyOfAction:96-131`。
-- **历史实测**：该路径仍会 ① 空 comment 碰撞时把同目标另一条规则列入 `ToDelete`（`ToAdd=1 ToDelete=1`）② Lighthouse `ICMPv6` 与期望 `ICMP` 不收敛（`1/1`）。
-- **当前风险**：**无生产消费者**（`Diff`/`buildDesired`/`OwnedRules` 的调用者全部在 `provider/common_test.go`），但**无门禁阻止重新接线**；且与 `provider/plan.go:20` 自述"全仓只有这一个 canonical key 层"矛盾。
-- **建议**：删除或加"仅供历史回归"的显式标注 + 门禁（属低风险清理，非必须）。
-- **附带缺口**：`PlanTarget` 层的 TCP+UDP 拆分（`provider/plan.go:471-474`）未发现直接专项回归；单凭字面量搜索不能排除间接覆盖，应补 PlanTarget 拆分场景的行为断言。
+- **修复前事实**：`provider/common.go` 存在第二套 `ruleKey`、`OwnedRules`、按 Description 相等划分规则的 `Diff` 与静默过滤 unsupported 的 `buildDesired`；仅由旧测试消费，无生产调用者。研究期临时探针复现空 comment 碰撞误列删除、Lighthouse IPv6 ICMP 不收敛，均为 `ToAdd=1 / ToDelete=1`，不代表当时正式同步受影响。
+- **用户裁决与实际修复**：2026-10-09 确认并定型 A 后授权实施；删除旧链及专属能力 helper、`DiffResult`/`SkippedRule`，不提供兼容包装或历史可执行副本。保留 SDK 配置/超时、凭据池、Dry Run 摘要、GetRules/ConvertPorts/ExpandPorts 与其他候选；正式 planner、Provider 请求与目标状态机逻辑不变。
+- **回归迁移**：移除 15 个旧入口测试与专属 mockProvider；有效行为由现有正式 planner 判别性回归和新增六组 `TestI814Plan*` 保护。覆盖 TCP+UDP 四平台精确内容/回读收敛/部分覆盖、SWAS 混合 unsupported 冻结清理、IPv4 ICMP 端口等价、实际阿里云端口归一化往返、S0/S1/S2 纯规划安全门、严格 TAG 与模板保护；保留六个凭据池/摘要测试。
+- **判别力与范围**：研究期禁用拆分时原 TestPlan_* 仍绿，正式新回归可检出该行为回退；正式八类仓外 overlay 与本地门禁见文末补记。删除后旧符号引用编译失败，不新增符号黑名单。此为维护清理与测试补强，不新增产品合同或外部验收通过结论；Q-13 仅此具体范围已裁决，I8-42 其他清理继续独立。
 
 #### I8-15【低·维护性】注释/死赋值与实现不符　`①`
 
@@ -261,7 +260,7 @@
 | I8-06 | 已与 I8-05 一并本地修复 | 正常发送与非法 URL 校验共用有效间隔：非正60s、正数不足20s夹紧；不回写配置 | 正式临时 SQLite→运行配置→Pusher 与精确时间边界；见文末 |
 | I8-17f | 已按 A 本地修复；Q-19 已裁决 | 正式目标按 CloudType 跨轮冷却，执行前补剩余时间，成功/partial/失败结束后更新；首次/末尾零空等 | 正式 44 场景及退避断言，负向控制与门禁见文末；真实云未验收 |
 | I8-43 | 已按定型 B 本地修复，Q-20 已裁决；真实浏览器待验 | 全包有序缺失列表、100 项上限/准确总数、原文件上传与持久失败弹窗；400 零写入零发布 | 正式 handler/SQLite/组件模板回归与负向控制见文末；PT-AUDIT-06 |
-| I8-14 | 维护候选；生产无消费者 | 逐符号确认后删除/标历史，保留有效旧回归与正式planner专项；TCP+UDP补直接行为测试 | common调用链源码；字面搜索不证明全部间接测试缺失 |
+| I8-14 | 已按 A 本地修复；旧链删除 | 15 个旧入口测试迁移至正式 planner；六组 TestI814Plan*，保留有效共享内容 | 正式八类负向控制与本地门禁见文末；真实云未验收 |
 | I8-15a | 注释待改，低 | 后续代码注释同步实际先发布后唤醒，行为不变 | export88–95源码；本次不改Go注释 |
 | I8-15b | 注释待改，低 | 同步CVM重复索引为硬失败的真实行为，保留拒删测试 | plan742/tc_cvm213–215源码 |
 | I8-15c | 整洁候选 | 保留URL校验作用，仅移除死返回值时验证非法URL周期路径 | push210–216源码 |
@@ -296,7 +295,7 @@
 | **Q-10** | **I8-17d / I8-41** `Syncer.Pause()/Resume()` 的去留与并发语义（"是否保留"与"保留后如何正确"是两个问题） | ①设计同锁原子更新辅助方法；**不得持 s.mu 直接调用 ApplyState**，后者自己加锁会死锁 ②改非导出仅减少误用面，不修包内丢失更新③登记为"已知残留风险（当前无生产调用方）"并在 `AGENTS.md` 注明 | `syncer/syncer.go:365-390`、`webui/api/deps.go` |
 | **Q-11** | **I8-31 / TODO-003** CVM `DescribeSecurityGroupPolicies` 调用失败的错误分类 | 现状区分 SDK 调用失败与成功响应结构不完整是合理分类。保留 SDK 错误链及现有 retry；若要统一包装，须先验证错误分类和重试后果，不默认作为缺陷修复 | `provider/tc_cvm.go:248-250` vs `:254/:262` |
 | **Q-12（ECS 部分未裁决；Lighthouse 见 Q-16）** | **I8-38** 分页操作总预算（**未实施的研究候选**；实现前先定操作预算、失败类型与契约边界） | ①页间检查总预算（只能限制继续起下一页，不硬限制已在途页的耗时）②按剩余预算限制每页（**机制上必然**扩大 SDK 全局池键空间，`dara/core.go:71` 池无 Delete/TTL/容量，且 `:349-357` 每请求覆写共享 `httpClient.Timeout` 存在同 tag 并发覆写窗口 ⇒ 不建议直接实施）③隔离操作级 HTTP 客户端（需自证隔离与回收） | `provider/ali_ecs.go`、`provider/scan.go`、SDK `RuntimeOptions`、`getDaraClient` 全局 `sync.Map` |
-| **Q-13** | **I8-42** 清理类改动**是否实施**（本身不是缺陷，仅为"可安全清理清单"） | 原引用的 §4 清单已从本文移除，不能仅凭八/五/二/十四等历史计数承诺安全或零成本。具体符号清单缺失，待逐符号列出调用者、兼容边界、测试影响后再决定；本次未捏造或实施清理 | `config/config.go`、`notifier/bus.go`、`provider/provider.go`、前端 `types.ts`/composables |
+| **Q-13（I8-14 已裁决；其他候选未裁决）** | **I8-42 / I8-14 分项** 清理类改动**是否实施**（本身不是缺陷，仅为"可安全清理清单"） | 原引用的 §4 清单已从本文移除，不能仅凭八/五/二/十四等历史计数承诺安全或零成本。I8-42 其他候选的具体符号清单缺失，仍须逐符号确认后决定；I8-14 已按用户 2026-10-09 定型 A 单独实施，删除旧链并迁移有效回归，不扩大其他清理范围 | I8-14：common.go/provider.go 与正式 planner 回归；其他候选：config/config.go、notifier/bus.go、provider/provider.go、前端 types.ts/composables |
 | **Q-14（已裁决）** | **I8-12 / I8-13** 请求阶段与历史预览保留策略 | 用户 2026-10-08 授权推荐 A：四请求阶段，重试清空旧结果；失败持久提示，空结果中性展示并保留 warnings；请求完成不代表全部目标正常；时间只显示最近请求结束，不保留历史预览 | 三个前端生产文件、专用回归/命令入口与五份文档；无后端/API/schema/依赖改动；正式证据见文末 |
 | **Q-15（已裁决）** | **I8-102** 告警测试预算与失败收尾范围 | 用户 2026-10-08 授权推荐 B：仅 test:alerts 逐项 30 秒原生超时，关键请求断言提前，t.after 结算挂起夹具并等待任务；不新增进程监督、不统一其他五入口或接入 CI | package.json 与 alerts-load.test.mjs，同步 AGENTS/README/本文/审计共六文件；正式证据见文末 |
 | **Q-16（已裁决、本地修复）** | **I8-10** Lighthouse 完整快照额度 | 用户 2026-10-09 选择 B 并经候选验证后授权正式修复：120 秒 context＋最多 100 次分页查询，跨版本重读共享；次数耗尽为不可重试 ErrSnapshotIncomplete，时间耗尽同时保留 context.DeadlineExceeded 并沿用整目标重试 | 仅 Lighthouse 快照生产逻辑、两份回归与四份文档；不关闭 Q-12 ECS 部分，不新增 TotalCount/重复页/全目标预算合同 |
@@ -591,3 +590,13 @@
 - **当前正式门禁**：真实 `make all` 退出 0，包含 npm ci、vue-tsc/Vite、Go vet、全仓 race 和产品构建，其中部分 Go 包命中缓存。随后独立 `go test ./... -race -count=3 -timeout=20m` 禁用测试结果缓存，全仓 12 包全部 ok；这是单条命令每项测试重复三次，不是三个独立进程轮次。`go test ./config ./webui/api ./notifier -race -run TestI8113 -count=20 -timeout=10m` 与 `go test ./webui -run TestStaticAssetsServedFromEmbed -race -count=20 -timeout=5m` 均通过。当前前端 `node --test --test-timeout=30000 tests/*.test.mjs` 全部 95 项通过，无失败、取消或跳过；另行 `go build ./...` 与最终 `git diff --check` 通过。
 - **嵌入判别力**：仓库外 Go overlay 恢复旧 `//go:embed frontend/dist` 后，正式静态资源回归因当前 `_common-qs-f2iD0.js` 返回 404（预期 200）而退出 1；不是编译失败或测试超时。当前 `all:frontend/dist` 则通过上述 20 次 race 回归。证据保存于 `/Users/kyle/.codex/outputs/i8-113-resume-2026-10-09/`，包含 make-all、full-race、specialist-race、frontend-tests、static-race 和 embed-negative 日志；故障源码与 overlay 均在仓库外。
 - **状态与边界**：I8-113 本地修复、验证及文档收口完成；Go `1.27.1 darwin/arm64`、Node `26.7.0`。默认 DNS 测试现由本地夹具执行，本次未显式执行 `dnsintegration` 真实上游测试。真实浏览器（PT-AUDIT-02）、Linux/Docker/compose、真实云/SMTP/收件箱/Webhook/Uptime Kuma 与当前 revision 远端 CI/GHCR 未执行，原人工未执行/免除边界保持。npm ci 提示既有 3 项 high，本次未独立 audit 或升级，不登记漏洞检查通过。重复本地门禁不外推为全仓长期稳定或真实外部验收通过，其他 Issue8 问题独立保持。
+
+## I8-14 当前实施补记（2026-10-09，用户定型方案 A）
+
+- **授权与基线**：用户确认 A 并完成进一步研究定型后明确授权正式修复与文档同步。实施前 `main / 5556f7176cae3e4139705d9f467b410a29a59f70`、本地 `origin/main / 36f77454107cc6fa6b28e2cb80c2cb8e5de41af3`、ahead 7，工作树/暂存区干净；未 fetch，本轮未提交或推送。研究阶段仓外候选不冒称本轮正式证据。
+- **生产边界**：唯一可执行生产改动是从 common.go/provider.go 删除无生产消费者的旧身份链及专属类型：OwnedRules、ruleKey、normalizePortForCompare、keyOf/keyOfAction、Diff、buildDesired、unsupportedReason、supportsIPv6/supportsTCPUDP、DiffResult/SkippedRule；不提供兼容包装或历史可执行副本。SDK 配置/超时、凭据池、RuleChange 摘要、GetRules/ConvertPorts/ExpandPorts/ResolvedIPs 保留。plan.go、internal/tag/tag.go、ali_ecs.go、syncer.go 只更新引用旧入口的注释；正式 planner、Provider 请求、目标状态机、DNS/重试/健康、API/schema、依赖与前端源码逻辑不变。
+- **正式测试迁移**：common_test.go 移除 15 个旧入口测试与专属 mockProvider，保留六个凭据池/摘要测试；plan_test.go 新增六组 TestI814Plan*。四平台 TCP+UDP 内容断言使用独立明确的协议、端口与两个地址字段预期，检查缺漏/重复、云线格式和字段归属；回读模拟验证完整覆盖与缺一项只补一项，SWAS 混合目标可 coverage_ready=true 但 unsupported 冻结清理。补四平台 IPv4 ICMP 的 ALL/-1/-1/空端口回读、实际 normalizeSWASPort/normalizeECSPort→正式 planner 的 TCP/UDP 单端口/范围/ALL 往返、S0候选不可删→S1覆盖后可删→S2收敛，以及严格 TAG/模板结构保护。三阶段为纯规划快照形态，实际顺序仍由既有 syncer 目标链测试保护；空备注碰撞、备注修改、IPv6 ICMP 与 unsupported 矩阵既有正式回归保留。
+- **正式判别力**：八类仓外源码 overlay 接入本轮正式测试：取消拆分、仅生成TCP、错误拆分SWAS、IPv6写入IPv4字段、破坏ICMP端口等价、破坏SWAS端口归一化、绕过删除覆盖门、放宽TAG前缀。均以正式行为断言退出1；不以编译失败、panic、race告警或测试超时判负向通过。错误源码/日志保存在仓外，未覆盖正式文件；测试迁移清单亦保存。移除旧导出符号后直接引用会编译失败，不新增静态符号黑名单。
+- **本地门禁**：`go test ./provider -run '^(TestI814|TestPlan_|TestClientPool|TestProviderFactoryUsesPoolCredentials|TestRuleChange)' -race -count=20 -timeout=3m` 通过；`go test ./provider ./syncer -race -count=1 -timeout=5m` 两包完整回归通过。真实 `make all` 退出0，包含 npm ci、vue-tsc/Vite、go vet、全仓race与产品构建，部分未变包命中缓存；随后 `go test ./... -race -count=1 -timeout=5m` 禁缓存，全仓12包全部ok。另行 `go build ./...`、十个受影响Go文件gofmt检查与最终 `git diff --check` 通过。证据目录为 `/Users/kyle/.codex/outputs/i8-14-2026-10-09-tjvxqmmw/`，包含 affected-race/full-race/make-all/build 日志、八类负向日志与 test-migration.json。
+- **文档与状态**：同步 AGENTS/Issue8/Issue7/审计/TODOLIST，共五份文档；本轮共15文件（10份Go，5份文档）。I8-14 本地收口；Q-13 仅 I8-14 范围已裁决，I8-42 其他清理候选仍未裁决，不展开相邻问题。本文及历史批次提及“保留旧Diff/P0-01回归”为当时事实；当前以本补记和正式 planner 测试为准。
+- **外部边界**：Go 1.27.1 darwin/arm64、Node 26.7.0。npm ci 仍提示既有3项high，未独立audit或升级，不登记漏洞检查通过。未执行 dnsintegration 真实上游、真实云/浏览器/SMTP/收件箱/Webhook/Uptime Kuma、Linux/Docker/compose 或当前 revision 远端CI/GHCR；原人工未执行/免除状态保持。定向20次与单轮禁缓存全仓不外推长期稳定或外部验收通过。

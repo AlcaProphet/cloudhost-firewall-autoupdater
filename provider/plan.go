@@ -154,7 +154,7 @@ type TargetPlanInput struct {
 	AddStateUnknown bool
 }
 
-// Capability 平台能力矩阵：唯一的能力判定源（不得在 buildDesired 与 CreateRules 各写一套）。
+// Capability 平台能力矩阵：唯一的能力判定源（期望展开与 CreateRules 的防御检查均须遵循本矩阵）。
 type Capability struct {
 	IPv6   bool // 是否支持 IPv6 地址族
 	ICMPv6 bool // 是否支持 IPv6 + ICMP

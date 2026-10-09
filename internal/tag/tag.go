@@ -17,7 +17,7 @@ func Format(tag, comment string) string {
 //
 // 只有 description 精确等于 "[TAG]"、或以 "[TAG] "（右方恰好一个空格）开头时才属于
 // 当前命名空间；"[TAG]foo"、"x[TAG] foo"、"[TAG-old] foo" 均**不属于**，
-// 因此永远不参与修改、删除或接管。Parse 与 provider.OwnedRules 必须共用本判定，
+// 因此永远不参与修改、删除或接管。Parse 与目标级规划器必须共用本判定，
 // 禁止任何地方再写一套前缀比较。
 func IsOwned(description, tag string) bool {
 	prefix := "[" + tag + "]"

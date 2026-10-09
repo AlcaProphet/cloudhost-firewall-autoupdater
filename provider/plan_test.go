@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -728,4 +729,214 @@ func TestPlan_CoverageReadyImplementableSubset(t *testing.T) {
 			}
 		})
 	}
+}
+
+// I8-14：旧描述身份链删除后，有效回归直接保护正式目标级规划器。
+func TestI814PlanTCPUDPConvergence(t *testing.T) {
+	for _, ct := range []config.CloudType{config.CloudTCLighthouse, config.CloudTCCVM, config.CloudAliECS, config.CloudAliSWAS} {
+		t.Run(string(ct), func(t *testing.T) {
+			rr := []config.DomainRule{rule(1, "a.test", "TCP+UDP", "8000,9000", "ACCEPT", "")}
+			ips := map[int][]dns.ResolvedIP{1: {v4("1.2.3.4"), v6("2001:db8::1")}}
+			p := planFor(t, ct, rr, ips, nil)
+			want := 8
+			wantDesired := 8
+			wantUnsupported := 0
+			if ct == config.CloudAliSWAS {
+				want = 2
+				wantDesired = 4
+				wantUnsupported = 2
+			}
+			if len(p.ToAdd) != want || len(p.Desired) != wantDesired || len(p.Unsupported) != wantUnsupported {
+				t.Fatalf("initial: %+v", p)
+			}
+			seen := map[FunctionalKey]bool{}
+			for _, d := range p.Desired {
+				if seen[d.Key] {
+					t.Fatal("duplicate key")
+				}
+				seen[d.Key] = true
+				unsupported := ct == config.CloudAliSWAS && d.Key.Family == AddressIPv6
+				if d.Implementable == unsupported {
+					t.Fatalf("期望项可实施标记错误: %+v", d)
+				}
+				if ct == config.CloudAliSWAS {
+					if d.Key.Protocol != "TCP+UDP" {
+						t.Fatal("SWAS split")
+					}
+				} else if d.Key.Protocol != "TCP" && d.Key.Protocol != "UDP" {
+					t.Fatal("missing split")
+				}
+			}
+			snap := []config.RuleInfo{}
+			for i, a := range p.ToAdd {
+				snap = append(snap, config.RuleInfo{Protocol: a.Protocol, Port: a.Port, CidrBlock: a.CidrBlock, Ipv6CidrBlock: a.Ipv6CidrBlock, Action: a.Action, Description: a.Description, RuleID: fmt.Sprintf("r%d", i), PolicyIndex: fmt.Sprint(i)})
+			}
+			full := planFor(t, ct, rr, ips, snap)
+			if len(full.ToAdd) != 0 || len(full.CleanupCandidates) != 0 || !full.CoverageReady {
+				t.Fatalf("nonconvergent: %+v", full)
+			}
+			// SWAS 混合目标可覆盖全部可实施项，但 IPv6 unsupported 仍须冻结清理。
+			if ct == config.CloudAliSWAS {
+				stale := config.RuleInfo{Protocol: "TCP", Port: "9999", CidrBlock: "9.9.9.9/32", Action: "ACCEPT", Description: "[auto-dns]", RuleID: "stale"}
+				mixed := planFor(t, ct, rr, ips, append(append([]config.RuleInfo{}, snap...), stale))
+				if !mixed.CoverageReady || len(mixed.Unsupported) != 2 || !hasIssue(mixed.Unsupported, IssueUnsupportedIPv6) || len(mixed.CleanupCandidates) != 1 || len(mixed.CleanupDeletable) != 0 || !hasIssue(mixed.CleanupDeferred, IssueUnsupportedIPv6) {
+					t.Fatalf("混合目标 unsupported 必须冻结清理: %+v", mixed)
+				}
+			}
+			partial := planFor(t, ct, rr, ips, snap[:len(snap)-1])
+			if len(partial.ToAdd) != 1 || partial.CoverageReady || len(partial.CleanupCandidates) != 0 {
+				t.Fatalf("partial: %+v", partial)
+			}
+		})
+	}
+}
+
+// TestI814PlanIPv4ICMPPortEquivalence 将旧 ICMP 端口正向控制迁到正式 planner。
+func TestI814PlanIPv4ICMPPortEquivalence(t *testing.T) {
+	for _, ct := range []config.CloudType{config.CloudTCLighthouse, config.CloudTCCVM, config.CloudAliSWAS, config.CloudAliECS} {
+		for _, port := range []string{"ALL", "-1/-1", ""} {
+			t.Run(string(ct)+"/"+port, func(t *testing.T) {
+				rr := []config.DomainRule{rule(1, "ping.test", "ICMP", "ALL", "ACCEPT", "")}
+				p := planFor(t, ct, rr, map[int][]dns.ResolvedIP{1: {v4("1.2.3.4")}}, []config.RuleInfo{{Protocol: "ICMP", Port: port, CidrBlock: "1.2.3.4/32", Action: "ACCEPT", Description: "[auto-dns]", RuleID: "keep"}})
+				if len(p.ToAdd) != 0 || len(p.CleanupCandidates) != 0 || len(p.SatisfiedByOwned) != 1 || !p.CoverageReady {
+					t.Fatalf("ICMP did not converge: %+v", p)
+				}
+			})
+		}
+	}
+}
+
+// TestI814PlanAliPortRoundTrip 保留 P0-01 的真实端口归一化过程，并验证正式 planner 收敛。
+func TestI814PlanAliPortRoundTrip(t *testing.T) {
+	for _, ct := range []config.CloudType{config.CloudAliSWAS, config.CloudAliECS} {
+		for _, proto := range []string{"TCP", "UDP"} {
+			for _, tt := range []struct{ input, wire, normalized string }{{"443", "443/443", "443"}, {"8000-8010", "8000/8010", "8000-8010"}, {"ALL", "-1/-1", "ALL"}} {
+				t.Run(string(ct)+"/"+proto+"/"+tt.input, func(t *testing.T) {
+					rr := []config.DomainRule{rule(1, "api.test", proto, tt.input, "ACCEPT", "")}
+					ips := map[int][]dns.ResolvedIP{1: {v4("1.2.3.4")}}
+					initial := planFor(t, ct, rr, ips, nil)
+					if len(initial.ToAdd) != 1 || initial.ToAdd[0].Port != tt.wire {
+						t.Fatalf("wrong wire: %+v", initial.ToAdd)
+					}
+					normalized := normalizeSWASPort(tt.wire)
+					if ct == config.CloudAliECS {
+						normalized = normalizeECSPort(tt.wire)
+					}
+					if normalized != tt.normalized {
+						t.Fatalf("normalizer: %q want %q", normalized, tt.normalized)
+					}
+					p := planFor(t, ct, rr, ips, []config.RuleInfo{{Protocol: proto, Port: normalized, CidrBlock: "1.2.3.4/32", Action: "ACCEPT", Description: "[auto-dns] old comment", RuleID: "keep"}})
+					if len(p.ToAdd) != 0 || len(p.CleanupCandidates) != 0 || len(p.SatisfiedByOwned) != 1 || !p.CoverageReady {
+						t.Fatalf("roundtrip: %+v", p)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestI814PlanIPReplacementSafetyGates 按当前合同验证 S0 候选、S1 覆盖后可删与 S2 收敛。
+// 三阶段仅为纯 planner 的快照形态，不代替 syncer 的实际调用顺序回归。
+func TestI814PlanIPReplacementSafetyGates(t *testing.T) {
+	for _, ct := range []config.CloudType{config.CloudTCLighthouse, config.CloudTCCVM, config.CloudAliSWAS, config.CloudAliECS} {
+		t.Run(string(ct), func(t *testing.T) {
+			rr := []config.DomainRule{rule(1, "a.test", "TCP", "443", "ACCEPT", "")}
+			ips := map[int][]dns.ResolvedIP{1: {v4("5.6.7.8")}}
+			old := config.RuleInfo{Protocol: "TCP", Port: "443", CidrBlock: "1.2.3.4/32", Action: "ACCEPT", Description: "[auto-dns] stale", RuleID: "old", PolicyIndex: "0"}
+			keep := old
+			keep.CidrBlock = "5.6.7.8/32"
+			keep.RuleID = "new"
+			keep.PolicyIndex = "1"
+			s0 := planFor(t, ct, rr, ips, []config.RuleInfo{old})
+			if len(s0.ToAdd) != 1 || s0.ToAdd[0].CidrBlock != "5.6.7.8/32" || len(s0.CleanupCandidates) != 1 || s0.CleanupCandidates[0].RuleID != "old" || len(s0.CleanupDeletable) != 0 || s0.CoverageReady {
+				t.Fatalf("S0 gate: %+v", s0)
+			}
+			s1 := planFor(t, ct, rr, ips, []config.RuleInfo{old, keep})
+			if len(s1.ToAdd) != 0 || !s1.CoverageReady || len(s1.CleanupDeletable) != 1 || s1.CleanupDeletable[0].RuleID != "old" {
+				t.Fatalf("S1 gate: %+v", s1)
+			}
+			s2 := planFor(t, ct, rr, ips, []config.RuleInfo{keep})
+			if len(s2.ToAdd) != 0 || len(s2.CleanupCandidates) != 0 || !s2.CoverageReady {
+				t.Fatalf("S2: %+v", s2)
+			}
+		})
+	}
+}
+
+// TestI814PlanTCPUDPExactActions 使用明确的协议/端口/地址字段组合，避免仅比较条数。
+func TestI814PlanTCPUDPExactActions(t *testing.T) {
+	for _, ct := range []config.CloudType{config.CloudTCLighthouse, config.CloudTCCVM, config.CloudAliSWAS, config.CloudAliECS} {
+		t.Run(string(ct), func(t *testing.T) {
+			p := planFor(t, ct, []config.DomainRule{rule(1, "a.test", "TCP+UDP", "8000,9000", "ACCEPT", "")}, map[int][]dns.ResolvedIP{1: {v4("1.2.3.4"), v6("2001:db8::1")}}, nil)
+			protocols := []string{"TCP", "UDP"}
+			addresses := []string{"1.2.3.4/32", "2001:db8::1/128"}
+			if ct == config.CloudAliSWAS {
+				protocols = []string{"TCP+UDP"}
+				addresses = addresses[:1]
+			}
+			expected := map[string]bool{}
+			for _, proto := range protocols {
+				for _, addr := range addresses {
+					for _, port := range []string{"8000", "9000"} {
+						wire := port
+						if ct == config.CloudAliSWAS || ct == config.CloudAliECS {
+							wire = port + "/" + port
+						}
+						v4field, v6field := "", ""
+						if addr == "1.2.3.4/32" {
+							v4field = addr
+						} else {
+							v6field = addr
+						}
+						expected[proto+"|"+wire+"|"+v4field+"|"+v6field] = true
+					}
+				}
+			}
+			for _, a := range p.ToAdd {
+				if (a.CidrBlock == "") == (a.Ipv6CidrBlock == "") {
+					t.Fatalf("family fields not exclusive: %+v", a)
+				}
+				k := a.Protocol + "|" + a.Port + "|" + a.CidrBlock + "|" + a.Ipv6CidrBlock
+				if !expected[k] || a.Action != "ACCEPT" || a.Description != "[auto-dns]" {
+					t.Fatalf("unexpected/duplicate action: %+v", a)
+				}
+				delete(expected, k)
+			}
+			if len(expected) != 0 {
+				t.Fatalf("missing expected actions: %+v", expected)
+			}
+		})
+	}
+}
+
+// TestI814PlanOwnershipAndTemplate 保留严格 TAG 与模板规则不授权删除的安全边界。
+func TestI814PlanOwnershipAndTemplate(t *testing.T) {
+	rr := []config.DomainRule{rule(1, "a.test", "TCP", "443", "ACCEPT", "")}
+	ips := map[int][]dns.ResolvedIP{1: {v4("1.2.3.4")}}
+	keep := config.RuleInfo{Protocol: "TCP", Port: "443", CidrBlock: "1.2.3.4/32", Action: "ACCEPT", Description: "[auto-dns]", RuleID: "keep"}
+	for _, tt := range []struct {
+		description string
+		owned       bool
+	}{{"[auto-dns]", true}, {"[auto-dns] comment", true}, {"[auto-dns]suffix", false}, {"[auto-dns-old] comment", false}, {"x[auto-dns] comment", false}, {"manual", false}} {
+		t.Run(tt.description, func(t *testing.T) {
+			stale := keep
+			stale.Port = "9999"
+			stale.Description = tt.description
+			stale.RuleID = "stale"
+			p := planFor(t, config.CloudAliECS, rr, ips, []config.RuleInfo{keep, stale})
+			want := 0
+			if tt.owned {
+				want = 1
+			}
+			if len(p.ToAdd) != 0 || !p.CoverageReady || len(p.CleanupCandidates) != want || len(p.CleanupDeletable) != want {
+				t.Fatalf("ownership: %+v", p)
+			}
+		})
+	}
+	t.Run("template", func(t *testing.T) {
+		p := planFor(t, config.CloudAliECS, rr, ips, []config.RuleInfo{keep, {Description: "[auto-dns] template", RuleID: "template"}})
+		if len(p.CleanupCandidates) != 0 || len(p.CleanupDeletable) != 0 || !hasIssue(p.Conflicts, IssueSnapshotRuleInvalid) {
+			t.Fatalf("template safety: %+v", p)
+		}
+	})
 }

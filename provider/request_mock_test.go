@@ -863,7 +863,7 @@ func TestRequest_SWASPortSlashDropSkipAndDelete(t *testing.T) {
 	mock, host := newMockCloudAPI(t)
 	p := mockSWAS(t, host)
 
-	// ConvertPorts 是 buildDesired 使用的入口：ICMP 的 ALL → -1/-1
+	// 保留 ConvertPorts 的格式合同：ICMP 的 ALL → -1/-1
 	ports := p.ConvertPorts("ALL")
 	if len(ports) != 1 || ports[0] != "-1/-1" {
 		t.Fatalf("SWAS ConvertPorts(ALL) = %v, want [-1/-1]", ports)

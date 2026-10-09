@@ -67,11 +67,11 @@
 
 ### P0-01：Aliyun 端口表达式收敛
 
-- **状态**：已确认，需修正文档证据路径。
+- **状态**：已确认；2026-10-09 I8-14 已完成旧入口清理与当前证据路径同步。
 - **当前生产路径**：`syncer.Run → syncAll → runRound → syncTarget → runTargetAttempt/runTargetCleanup → provider.PlanTarget`。
 - **当前收敛点**：`provider/plan.go:239-254` 的端口展开与 `:300-316` 的 `canonicalPortExpression`；回读侧为 `provider/ali_swas.go:234-243`、`provider/ali_ecs.go:250-261`。
-- **问题**：报告把修复点指向 `normalizePortForCompare`/旧 `Diff`，但 `provider.Diff` 已不在生产调用链。旧回归 `provider/common_test.go:418-455` 只能证明废弃路径行为；当前生产 planner 回归在 `provider/plan_test.go:172-204`。
-- **文档动作**：将旧 `Diff` 测试标为废弃路径正向控制，明确当前修复点是 planner canonical 化；不要删除旧测试前误认为当前生产链无覆盖。
+- **历史证据**：旧 `TestDiff_AliyunPortRoundTripConverges` 只证明废弃路径；I8-14 已删除旧 Diff 与该入口回归。当前由 `provider/plan_test.go` 的 `TestPlan_AliyunPortRoundTripConverges` 和 `TestI814PlanAliPortRoundTrip` 直接保护正式 planner，后者保留实际 SWAS/ECS 端口归一化过程。
+- **文档动作已完成**：历史旧测试记录保留，当前证据明确指向 planner；正式门禁见 Issue8 的 I8-14 实施补记。
 - **边界**：真实 Aliyun SWAS/ECS 回读形态仍未验收。
 
 ### P1-01：TAG 所有权与目标级同步
@@ -92,8 +92,8 @@
 
 - **状态**：已确认，测试证据应限定为 planner/源码级。
 - **证据**：`provider/plan.go:288-295` 的 `canonicalProtocol`；`SnapshotRuleKeys`/`PlannedActionKeys` 共用 canonical key；`provider/plan_test.go:206` 覆盖 Lighthouse/CVM 的 ICMPv6 形态。
-- **遗留风险**：旧 `provider/common.go:keyOf` 只大写，不折叠 `ICMPv6 → ICMP`；旧 `Diff` 无生产调用者，但未来复用会重新引入不对称。
-- **建议动作**：为旧路径增加明确注释或负向控制；不要把旧路径测试说成当前同步链测试。
+- **旧路径风险已移除**：I8-14 已按 A 删除旧 keyOf/Diff；IPv6 ICMP 继续由 `TestPlan_IPv6ICMPNormalization` 保护，新增 `TestI814PlanIPv4ICMPPortEquivalence` 保留 IPv4 端口等价回归。
+- **证据边界**：正式 planner 与源码级回归不等于真实云回读验收；无需再为已删除旧链维护注释或可执行副本。
 
 ### P2-02：Aliyun ECS 删除分批
 
@@ -302,8 +302,7 @@
 
 ### TODO-005：修正 P0-01 行号和生产路径说明
 
-- 将旧 `provider/common.go` 的行号改为当前工作树实际位置。
-- 同时记录旧 `Diff` 是废弃路径，当前生产收敛在 `provider/plan.go` canonical planner。
+- **2026-10-09 已随 I8-14 同步**：旧 common.go 端口身份链已删除；当前证据使用 `provider/plan.go` canonical planner 与 `TestPlan_AliyunPortRoundTripConverges` / `TestI814PlanAliPortRoundTrip` 符号定位，保留历史旧入口记录，不继续维护已删除入口的当前行号。
 
 ### TODO-006：清理“尚未提交”历史残留，但保留历史证据（P3-18 范围已本地完成）
 

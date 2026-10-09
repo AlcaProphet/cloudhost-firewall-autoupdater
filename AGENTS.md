@@ -117,6 +117,8 @@
 
 **I8-43 后续修复状态（2026-10-09，研究定型 B / Q-20）**：用户依据研究聊天《研究 I8-43 修复方案》授权正式修复与文档同步，实施前 `main / e4543cb79ec4fbfeebb44afb67fb1cfdb21485f1`、本地 `origin/main / 36f77454107cc6fa6b28e2cb80c2cb8e5de41af3`、ahead 5，工作树/暂存区干净，未 fetch。必填结构集中汇总，原文件上传与持久失败列表同步实施；固定合同见 §9.1，正式证据见 Issue8 文末 I8-43 补记。无效输入在协调器前拒绝，配置包仍为 version 3；真实浏览器待 PT-AUDIT-06，外部验收不据本地测试外推。本轮改动尚未提交或推送。
 
+**I8-14 旧描述身份链后续修复（2026-10-09，用户定型方案 A）**：用户确认研究定型后授权正式修复与文档同步；实施前 main / `5556f71`、本地 origin/main / `36f7745`、ahead 7，工作树/暂存区干净，未 fetch。删除无生产消费者的 Diff/OwnedRules/buildDesired、旧 ruleKey 与专属 helper/类型，不留兼容包装或历史可执行副本；15 个旧入口测试与专属 mockProvider 移除，有效回归直接保护正式 planner。六组 TestI814Plan* 保留四平台TCP+UDP、IPv4 ICMP端口等价、实际Ali归一化往返、S0/S1/S2纯规划安全门、严格TAG与模板保护；六个凭据池/摘要测试保留。唯一可执行生产变更为旧链删除，GetRules/ConvertPorts/ExpandPorts、SDK/超时、目标状态机、API/schema/前端逻辑不改。十份Go与五份文档共15文件，正式定向race20次、受影响两包完整race、八类正式负向控制、make all、禁缓存全仓12包race一轮、go build/格式/diff-check通过；证据见Issue8文末。旧批次“保留旧Diff”是历史状态，本段取代其当前保留要求。Q-13仅I8-14已裁决，其他I8-42候选独立未裁决；真实云/浏览器/通知链路/Linux/Docker/远端CI未执行，不外推长期稳定或外部通过。npm ci提示既有3项high，未独立audit/升级。本轮未提交或推送。
+
 ## 二、核心编码原则
 
 ### 简单轻量化
@@ -175,7 +177,7 @@
 - 删除时“规则已不存在”视为成功（幂等），不报错
 - 添加时“规则已存在”视为成功，WARN 日志并跳过
 - 支持协议：TCP / UDP / TCP+UDP / **ICMP**（ICMP 时端口由各 Provider 按 API 要求处理：Lighthouse 传 ALL，阿里云传 -1/-1，CVM 省略 Port 字段）
-- **TCP+UDP 协议拆分：** 仅阿里云 SWAS 原生支持 TCP+UDP，Lighthouse/CVM/ECS 均不支持，由目标级 `provider.PlanTarget` 自动拆分为 TCP + UDP 两条期望功能（旧 `buildDesired` 仅保留作 Diff 回归适配）
+- **TCP+UDP 协议拆分：** 仅阿里云 SWAS 原生支持 TCP+UDP，Lighthouse/CVM/ECS 均不支持，由目标级 `provider.PlanTarget` 自动拆分为 TCP + UDP 两条期望功能；I8-14 已按用户方案 A 删除旧 `Diff/buildDesired/OwnedRules` 身份链及专属类型，有效回归直接保护正式 planner，不提供兼容包装或历史可执行副本
 - **IPv6+ICMP 处理：** Lighthouse 使用 ICMPv6 协议，CVM 使用 ICMPV6 协议，ECS 不支持（AuthorizeSecurityGroup 无 ICMPv6，直接跳过并 WARN）
 - 端口格式：单端口、逗号分隔、范围（`8000-8010`）、`ALL`
 - 腾讯云 CVM 安全组默认额度为**入站、出站各 100 条**（[官方配额说明](https://cloud.tencent.com/document/product/213/43699)、[使用限制总览](https://cloud.tencent.com/document/product/213/15379)）；本工具只新增入站，使用 **100 条入站本地保护上限**，出站不占用该额度。预计新增后 90 条不告警、91～100 条 WARN 且允许、超过 100 条停止整批新增。计数包含所有入站条目，不按 TAG 过滤，不扣除待清理条目；取完整两个入站统计合计与明确返回的 Ingress 条目数的较大值，统计不完整时回退明确数组（`[]` 有效），两种依据均不可用或响应/规则集合缺失则返回 `ErrSnapshotIncomplete`、停止新增。配额重读仅作数量保护，不替代 S0 Version 或 S1 删除定位；暂不动态适配提额账号。

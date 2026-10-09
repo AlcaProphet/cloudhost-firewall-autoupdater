@@ -129,7 +129,7 @@ func (p *AliECS) GetRules() ([]config.RuleInfo, error) {
 
 // CreateRules 增量添加入站规则（Permissions 数组，单次最多 100 条）。
 //
-// ECS 不支持任何本工具需要跳过的期望规则形态（ICMPv6 在 Diff 阶段已被过滤），
+// 正式新增集合已由 PlanTarget 排除 ICMPv6 unsupported 项；本层不额外跳过规则，
 // 因此成功时恒为 {len(rules), 0}（Issue6 A11）。
 func (p *AliECS) CreateRules(_ RuleSnapshot, rules []config.RuleAction) (CreateResult, error) {
 	if len(rules) == 0 {

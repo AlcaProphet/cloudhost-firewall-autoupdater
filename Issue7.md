@@ -204,7 +204,7 @@ CIDR 必须使用 `net/netip` 或等价标准库能力做掩码后的规范字�
 | `DryRunResult` / `DryRunResults.vue` | 以 domain 为结果与 `v-for` key，只有 add/delete/skipped | 改为目标级完整计划字段和稳定目标 key |
 | `Dashboard.vue` | 页面自行解释 round outcome，idle 被误报 | 只按后端 outcome/cleanup 字段展示，不生成第二套健康结论 |
 
-保留的正向控制包括：`TestDiff_AliyunPortRoundTripConverges`、运行时快照一次捕获、四云串行/跨云并行、最大 3 次指数退避、幂等“已存在/已不存在”、CVM 100 条新增保护、敏感信息日志边界和 Build7 的 OperationalHealth 唯一计算源。
+保留的正向控制包括：正式 planner 的 `TestPlan_AliyunPortRoundTripConverges` / `TestI814PlanAliPortRoundTrip`（旧 TestDiff 入口已由 I8-14 迁移）、运行时快照一次捕获、四云串行/跨云并行、最大 3 次指数退避、幂等“已存在/已不存在”、CVM 100 条新增保护、敏感信息日志边界和 Build7 的 OperationalHealth 唯一计算源。
 
 ---
 
@@ -567,7 +567,7 @@ DNS 失败继续发布 `EventDNSFailed`，但相同目标/host 一轮最多一�
 
 | 审计项 | 固定处理 |
 |---|---|
-| P0-01 Aliyun 端口 key 不对称 | 已由 `108e528` 修复；新 canonical key 必须保持 `TestDiff_AliyunPortRoundTripConverges` 绿色，并覆盖单端口/范围/ALL |
+| P0-01 Aliyun 端口 key 不对称 | 历史已由 `108e528` 修复；I8-14 已删除旧 TestDiff 入口，当前 canonical key 由 TestPlan_AliyunPortRoundTripConverges / TestI814PlanAliPortRoundTrip 保护，覆盖单端口/范围/ALL |
 | P1-01 comment 碰撞互删 | description/comment 不再承担个体身份；以目标级完整 Desired 取代 |
 | P2-01 IPv6+ICMP key 不对称 | family 显式入 key，ICMP/ICMPv6/ICMPV6 双向归一化 |
 | P2-02 ECS 删除 >100 | S1 RuleID 稳定分批，每批最多 100，部分成功如实计数 |
@@ -619,7 +619,7 @@ DNS 失败继续发布 `EventDNSFailed`，但相同目标/host 一轮最多一�
 
 **先写红灯：**
 
-1. `[TAG]foo` 不属于 TAG；Format/Parse/OwnedRules 一致；
+1. `[TAG]foo` 不属于 TAG；Parse 与目标级 planner 共用 IsOwned（旧 OwnedRules 已由 I8-14 删除）；
 2. 两条空 comment、不同域名形成两个 Desired key，互不成为 cleanup candidate；
 3. 同域名 TCP 443 + UDP 443 或多端口互不删除；
 4. comment 修改后相同 key 零 Add、零 cleanup candidate；
@@ -639,7 +639,7 @@ DNS 失败继续发布 `EventDNSFailed`，但相同目标/host 一轮最多一�
 - `provider/provider.go` snapshot/revision 与 plan DTO；
 - 四 Provider 的完整 snapshot，先只读不接正式写入；
 - ECS token 进度保护；
-- 旧 `Diff/buildDesired` 可暂留适配测试，但新主线不得继续扩展它们。2026-10-02 P3-07 清理已删除旧 Syncer 流程；这些 Provider 适配与 P0-01 回归仍保留，`GetRules` 仍由连接测试生产 API 使用。
+- 历史 Step 实施与 2026-10-02 P3-07 保留了旧 `Diff/buildDesired` 测试适配；2026-10-09 I8-14 已按用户 A 删除旧身份链与专属类型/测试，将有效回归迁到正式 PlanTarget。`GetRules` 仍由连接测试生产 API 使用，不在本次删除范围。当前合同与证据以 §12.11 为准。
 
 **定向门禁：**
 
@@ -1123,3 +1123,9 @@ SQLite 继续使用现有详情列，分行写累计确认操作、S1 候选来�
 ### 12.10 I8-10 Lighthouse 完整快照额度（2026-10-09，用户裁决 B）
 
 已按本聊天明确授权正式修复 `provider/tc_lighthouse.go`，同步 §6.1 与 AGENTS 的 120 秒 / 100 次查询合同；私有辅助方法只为回归传入短预算，不新增导出接口或生产配置项。两份正式回归覆盖 Provider 边界与真实 Lighthouse SDK → 正式目标链；正式门禁、外部负向控制、短预算目标重试验证与外部边界见 [Issue8 文末 I8-10 补记](./Issue8.md)。Q-12 的 ECS 部分仍未裁决，TotalCount/重复页、资源扫描与全目标预算独立；真实云和当前 revision 外部验收状态不变。
+
+### 12.11 I8-14 旧描述身份链清理（2026-10-09，用户定型 A）
+
+用户明确授权后删除旧 Diff/OwnedRules/buildDesired、第二套 ruleKey、专属 helper 与 DiffResult/SkippedRule，不保留兼容包装或历史算法副本。旧15项入口测试的有效行为迁入正式 planner，六组 TestI814Plan* 覆盖四平台TCP+UDP精确内容与收敛、IPv4 ICMP、实际Ali端口归一化往返、IP替换的S0/S1/S2规划安全门、严格TAG与模板保护；原空备注碰撞、备注改变、IPv6 ICMP与unsupported专项保持。六个凭据池/摘要测试保留，GetRules仍供连接测试使用；正式同步/Dry Run继续共用PlanTarget，目标状态机与Provider请求逻辑不变。
+
+§12.3/§12.7及其他历史段落中保留旧Diff或要求旧TestDiff绿色，是当时的实施记录；当前不再维护已删除入口，正向控制由 TestPlan_AliyunPortRoundTripConverges / TestI814PlanAliPortRoundTrip 等正式测试承担。三阶段新增回归仅为纯规划快照检查，不冒称云调用顺序或真实云验收。正式八类负向控制、race/构建证据、15文件范围与外部边界见 Issue8 文末 I8-14 补记；Q-13其他候选不因此获授权或关闭。本轮尚未提交或推送。

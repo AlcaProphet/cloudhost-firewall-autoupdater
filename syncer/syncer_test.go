@@ -487,7 +487,7 @@ func waitSignal(t *testing.T, ch <-chan struct{}, msg string) {
 }
 
 // TestSyncRound_TagSnapshotDuringReload 本轮首次 Describe 期间通过真实 Reload 替换 TAG：
-// 本轮的 OwnedRules 筛选与描述生成必须仍使用旧 TAG
+// 本轮的 TAG 所有权筛选与描述生成必须仍使用旧 TAG
 func TestSyncRound_TagSnapshotDuringReload(t *testing.T) {
 	p := &fakeTagProvider{
 		stubProvider: &stubProvider{cloudType: config.CloudTCCVM, targetIndex: 0},
@@ -519,7 +519,7 @@ func TestSyncRound_TagSnapshotDuringReload(t *testing.T) {
 	// 夹具缺少可删除定位，使用清理候选数观察 TAG 归属。
 	// 若本轮误用新 TAG，这条 [auto-dns] 规则会被判为 External，候选数将变为 0。
 	if sum := s.Status().LastRound; sum == nil || sum.CleanupCandidates != 1 {
-		t.Errorf("本轮清理候选 = %+v, want 1（OwnedRules 必须使用本轮旧 TAG）", sum)
+		t.Errorf("本轮清理候选 = %+v, want 1（所有权判定必须使用本轮旧 TAG）", sum)
 	}
 	if got := p.createdDescs(); len(got) != 1 || got[0] != "[auto-dns] 测试" {
 		t.Errorf("本轮新增描述 = %v, want [[auto-dns] 测试]（描述生成必须使用本轮旧 TAG）", got)
@@ -527,7 +527,7 @@ func TestSyncRound_TagSnapshotDuringReload(t *testing.T) {
 }
 
 // TestSyncRound_TagSnapshotAcrossRetry 首次写入返回可重试错误，在受控重试边界（第二次 Describe 阻塞）替换 TAG：
-// 重试轮的 OwnedRules 与描述必须仍使用本轮旧 TAG
+// 重试轮的所有权判定与描述必须仍使用本轮旧 TAG
 func TestSyncRound_TagSnapshotAcrossRetry(t *testing.T) {
 	p := &fakeTagProvider{
 		stubProvider: &stubProvider{cloudType: config.CloudTCCVM, targetIndex: 0},

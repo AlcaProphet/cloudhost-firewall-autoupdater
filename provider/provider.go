@@ -17,7 +17,7 @@ import (
 //     DROP 规则：其 CreateFirewallRules 请求参数没有 Policy 字段）；
 //   - 幂等跳过（云 API 报「规则已存在」）**不计入 Skipped**：它由 Syncer 层的
 //     isIdempotentCreate 处理，语义是「已符合期望」而不是「未实施」；
-//   - 两者都不包含协议拆分带来的条数变化（TCP+UDP 拆分在 Diff 阶段完成）。
+//   - 两者都不包含协议拆分带来的条数变化（TCP+UDP 拆分在目标级 PlanTarget 阶段完成）。
 type CreateResult struct {
 	Written int // 实际写入的规则条数
 	Skipped int // 明确跳过（未实施）的规则条数
@@ -80,23 +80,6 @@ type Provider interface {
 	ConvertPorts(port string) []string
 	// TargetIndex 返回目标的数据库 ID
 	TargetIndex() int
-}
-
-// SkippedRule 一条**无法实施**的期望规则及其原因（Issue6 A11）。
-//
-// 与 Provider.CreateRules 的 Skipped 计数不同：这里在 Diff 阶段就识别出
-// 云端能力限制，因此 Dry Run 也能如实展示（不再把它误列为普通 to_add）。
-type SkippedRule struct {
-	Action config.RuleAction
-	Reason string
-}
-
-// DiffResult Diff 计算结果
-type DiffResult struct {
-	ToAdd    []config.RuleAction
-	ToDelete []config.RuleInfo
-	// Skipped 云端能力限制导致无法实施的期望规则（只追加字段，Issue6 A11）
-	Skipped []SkippedRule
 }
 
 // ResolvedIPs 便捷别名
