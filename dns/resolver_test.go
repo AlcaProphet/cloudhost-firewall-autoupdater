@@ -31,23 +31,26 @@ func TestResolve_IPLiteral(t *testing.T) {
 
 // TestNewResolver_PortAppend 观察实际 Dial 上游，只建立回环 UDP socket，不发送报文。
 func TestNewResolver_PortAppend(t *testing.T) {
-	for _, addr := range []string{"127.0.0.1", "127.0.0.1:5353"} {
-		r := NewResolver(addr, time.Second)
-		c, err := r.resolver.Dial(context.Background(), "udp", "ignored.example:53")
-		if err != nil {
-			t.Fatal(err)
-		}
-		got := c.RemoteAddr().String()
-		if err := c.Close(); err != nil {
-			t.Fatal(err)
-		}
-		want := addr
-		if addr == "127.0.0.1" {
-			want = "127.0.0.1:53"
-		}
-		if got != want {
-			t.Errorf("Dial 上游=%s 期望=%s", got, want)
-		}
+	for _, tc := range []struct{ addr, want string }{
+		{"127.0.0.1", "127.0.0.1:53"},
+		{"127.0.0.1:5353", "127.0.0.1:5353"},
+		{"[::1]", "[::1]:53"},
+		{"[::1]:5353", "[::1]:5353"},
+	} {
+		t.Run(tc.addr, func(t *testing.T) {
+			r := NewResolver(tc.addr, time.Second)
+			c, err := r.resolver.Dial(context.Background(), "udp", "ignored.example:53")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := c.RemoteAddr().String()
+			if err := c.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("Dial 上游=%s 期望=%s", got, tc.want)
+			}
+		})
 	}
 }
 

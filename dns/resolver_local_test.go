@@ -27,7 +27,12 @@ type localDNS struct {
 
 func newLocalDNS(t *testing.T, mode string) *localDNS {
 	t.Helper()
-	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	return newLocalDNSAt(t, mode, "udp4", "127.0.0.1:0")
+}
+
+func newLocalDNSAt(t *testing.T, mode, network, address string) *localDNS {
+	t.Helper()
+	conn, err := net.ListenPacket(network, address)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,6 +133,16 @@ func (s *localDNS) checkQueries(t *testing.T, host string) {
 
 // TestI804LocalAnswers 验证真实解析器发出 A/AAAA 并保留返回地址、地址族和 CIDR。
 func TestI804LocalAnswers(t *testing.T) {
+	checkLocalAnswers(t, "udp4", "127.0.0.1:0")
+}
+
+// TestI817bIPv6Answers 验证 IPv6 上游运输 A/AAAA 查询，返回地址族独立于上游地址族。
+func TestI817bIPv6Answers(t *testing.T) {
+	checkLocalAnswers(t, "udp6", "[::1]:0")
+}
+
+func checkLocalAnswers(t *testing.T, network, address string) {
+	t.Helper()
 	for _, tc := range []struct {
 		mode string
 		want []string
@@ -137,7 +152,7 @@ func TestI804LocalAnswers(t *testing.T) {
 		{"v6", []string{"2001:db8::23|true|2001:db8::23/128"}},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
-			s := newLocalDNS(t, tc.mode)
+			s := newLocalDNSAt(t, tc.mode, network, address)
 			r := NewResolver(s.conn.LocalAddr().String(), 5*time.Second)
 			got, err := r.Resolve(context.Background(), "i804-answer.example.test.")
 			if err != nil {

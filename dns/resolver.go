@@ -29,6 +29,7 @@ type Resolver struct {
 
 // NewResolver 创建解析器
 // dnsAddr 格式: "8.8.8.8:53" 或 "8.8.8.8"（默认补 :53）
+// IPv6 使用 "[::1]" 或 "[::1]:53"；调用方通过配置校验保证输入格式合法。
 func NewResolver(dnsAddr string, timeout time.Duration) *Resolver {
 	if !hasPort(dnsAddr) {
 		dnsAddr = dnsAddr + ":53"
