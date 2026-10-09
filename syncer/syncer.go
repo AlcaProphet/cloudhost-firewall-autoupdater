@@ -84,6 +84,10 @@ type Syncer struct {
 	// 多次恢复合并为一轮；取得最终状态时同锁清除，轮中新的恢复留待下一次消费。
 	pendingResume bool
 
+	// targetNextStart 由 mu 保护，按 CloudType 保留正式目标的跨轮冷却。
+	// 只保存完成后的截止时间，配置发布不清空；等待与目标执行均不持锁。
+	targetNextStart map[config.CloudType]time.Time
+
 	dryRunMu sync.Mutex // Dry Run 防重入，同时保护跨调用的平台冷却
 	// dryRunNextRead 按云产品保留下一次快照读取的最早时间；只由持有 dryRunMu 的
 	// DryRun 访问，不随 RuntimeState 替换清空。仅保存时间，不缓存 DNS 或云快照。
@@ -933,7 +937,19 @@ func (s *Syncer) runRound(state *RuntimeState, total int) RoundSummary {
 					// 无适用规则的目标不构成统计单元，也不访问云 API
 					continue
 				}
+				// 同平台串行、跨轮保留冷却；先等待再解析 DNS，末尾不为空闲目标等待。
+				s.mu.RLock()
+				next := s.targetNextStart[ct]
+				s.mu.RUnlock()
+				s.sleep(time.Until(next))
 				res := s.syncTarget(state, p, rules, round)
+				// 成功、部分实施与失败均从完整目标结束后计时，包含重试及退避。
+				s.mu.Lock()
+				if s.targetNextStart == nil {
+					s.targetNextStart = make(map[config.CloudType]time.Time)
+				}
+				s.targetNextStart[ct] = time.Now().Add(rateLimitInterval(ct))
+				s.mu.Unlock()
 				switch res.outcome {
 				case TargetFailed:
 					failed.Add(1)
@@ -955,9 +971,6 @@ func (s *Syncer) runRound(state *RuntimeState, total int) RoundSummary {
 				observationMu.Lock()
 				observations.add(res)
 				observationMu.Unlock()
-
-				// 同一云厂商内目标之间限速（AGENTS §七）
-				s.sleep(rateLimitInterval(ct))
 			}
 		}(ct, ps)
 	}

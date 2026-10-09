@@ -513,9 +513,24 @@ func TestI802_ProductionLogChain(t *testing.T) {
 			case <-time.After(3 * time.Second):
 				t.Fatal("整轮事件超时")
 			}
-			logs, err := e.store.GetSyncLogs(10)
-			if err != nil || len(logs) != 1 {
-				t.Fatalf("日志: %+v %v", logs, err)
+			// EventBus 独立投递订阅者；目标/整轮事件到达不代表异步写库已完成。
+			deadline := time.Now().Add(3 * time.Second)
+			var logs []config.SyncLog
+			for {
+				logs, err = e.store.GetSyncLogs(10)
+				if err != nil {
+					t.Fatalf("读取同步日志失败: %v", err)
+				}
+				if len(logs) > 0 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("目标事件已发布，但 SQLite 未在限期内出现同步日志")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if len(logs) != 1 {
+				t.Fatalf("同步日志数量 = %d, want 1", len(logs))
 			}
 			sum := round.Data["cleanup_observation_summary"].(syncer.CleanupObservationSummary)
 			o := ev.Data["cleanup_observation"].(*syncer.CleanupObservation)

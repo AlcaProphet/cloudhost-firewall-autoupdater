@@ -179,11 +179,12 @@
 - **历史实测**：合法 URL + `interval=1ns`（仅能由直改 SQLite 绕过 API/导入产生，已有 `TestPushDirtySQLiteConfigReachesRuntime` 证明此类配置可达运行快照）→ **300ms 内向回环 mock 发出 1211 次请求**。
 - **性质**：**既有行为**（非 P3-03/P3-21 回归）；与 P3-03 为非法 URL 分支补下限的做法**不对称**。已与 I8-05 按 Q-07 一并本地实施；运行端统一有效间隔，不修写 SQLite，正式证据见文末补记。
 
-#### I8-17f【低·效率】`runRound` 在同云分组**最后一个目标之后**仍等待一个完整厂商间隔　`②`
+#### I8-17f【已按 A 本地修复·原低效率问题】正式同步末尾等待　`②`
 
-- **现象**：`syncer/syncer.go:951` 的 `s.sleep(rateLimitInterval(ct))` 位于逐目标循环末尾，对分组内每个目标（含最后一个）都执行 ⇒ 单目标分组每轮多等 1 个间隔（Lighthouse/SWAS **5s**、CVM/ECS **200ms**）。
-- **影响**：该等待**计入 `duration_ms`** 并**推迟 ticker Reset**。方向与 P3-22 对 Dry Run"取消末尾等待"的处理**相反**，正式同步侧仍有残留。
-- **候选方向**：减少末尾空等，但必须同时保护相邻轮次、手动 trigger 与相同 CloudType 的配额间隔；单纯移除最后一次等待可能缩短跨轮间隔，不能保证无契约变更。先以虚拟时间验证单目标、多目标和紧邻两轮的实际请求间隔。
+- **修复前现象**：`runRound` 在每个有适用规则的目标之后无条件等待，分组最后一个目标也等待；单目标 Lighthouse/SWAS 多等 5s，CVM/ECS 多等 200ms，计入整轮 `duration_ms` 并推迟定时/手动轮后的 ticker Reset。
+- **用户裁决 A / Q-19**：按 CloudType 跨轮保存完整目标完成后的冷却，下一目标在 DNS/目标链前只补足剩余时间；首次和末尾不额外等待，失败及 partial 也更新，跳过目标不更新。热更新、零目标/零规则和恢复保留；新 Syncer 清空；正式同步与 Dry Run 分离。
+- **计时与生命周期**：目标耗时不含准入等待，整轮耗时含实际等待；保留 Run 调度与 Stop/暂停门控，已准入轮继续完成捕获快照。完成事件提前是预期收益，紧邻 trigger/恢复仍受同平台冷却约束；不承诺目标内部每次 HTTP 请求间隔。
+- **正式证据**：新增虚拟时间真实目标链/Run 回归与单目标退避断言，门禁及负向控制见文末本项实施补记；真实云与外部验收状态不外推。
 
 #### I8-43【低·可复现性】`bundle_v3.go` 的 presence map 使同一非法请求的错误文案漂移　`②`
 
@@ -255,7 +256,7 @@
 | I8-17b | 已按 A 本地收口；合法括号 IPv6 可用，原产品影响订正 | 保留输入合同；补 IPv6 默认/显式端口与真实本地 IPv6 上游回归 | 正式定向 race 20 轮及负向控制证据见文末；真实外部 IPv6 DNS 未执行 |
 | I8-05 | 已按 A 本地修复；Q-07 已裁决 | 同配置保留截止时间；间隔变化按最近尝试结束+新有效间隔；到期重读；无补发/立即重试 | 正式调度、在途/取消与负向控制见文末；真实 Kuma 未执行 |
 | I8-06 | 已与 I8-05 一并本地修复 | 正常发送与非法 URL 校验共用有效间隔：非正60s、正数不足20s夹紧；不回写配置 | 正式临时 SQLite→运行配置→Pusher 与精确时间边界；见文末 |
-| I8-17f | 效率候选，低；每组末尾多等 | 优化前证明跨轮/trigger相邻请求限速；单/多目标虚拟时间，duration与停止保持 | runRound末尾sleep源码；不能承诺简单删sleep零契约影响 |
+| I8-17f | 已按 A 本地修复；Q-19 已裁决 | 正式目标按 CloudType 跨轮冷却，执行前补剩余时间，成功/partial/失败结束后更新；首次/末尾零空等 | 正式 44 场景及退避断言，负向控制与门禁见文末；真实云未验收 |
 | I8-43 | 待改，低；非法请求同时缺多字段 | 固定校验顺序；同负载多次同错误、400零写入零发布，状态契约保留 | presence map源码；300次文案分布属历史 |
 | I8-14 | 维护候选；生产无消费者 | 逐符号确认后删除/标历史，保留有效旧回归与正式planner专项；TCP+UDP补直接行为测试 | common调用链源码；字面搜索不证明全部间接测试缺失 |
 | I8-15a | 注释待改，低 | 后续代码注释同步实际先发布后唤醒，行为不变 | export88–95源码；本次不改Go注释 |
@@ -298,6 +299,7 @@
 | **Q-16（已裁决、本地修复）** | **I8-10** Lighthouse 完整快照额度 | 用户 2026-10-09 选择 B 并经候选验证后授权正式修复：120 秒 context＋最多 100 次分页查询，跨版本重读共享；次数耗尽为不可重试 ErrSnapshotIncomplete，时间耗尽同时保留 context.DeadlineExceeded 并沿用整目标重试 | 仅 Lighthouse 快照生产逻辑、两份回归与四份文档；不关闭 Q-12 ECS 部分，不新增 TotalCount/重复页/全目标预算合同 |
 | **Q-17（已裁决、本地修复）** | **I8-11** SWAS 规则快照计数一致性 | 用户确认研究定型 B 并授权正式修复：首个非负可用总数固定，后页可用值一致，累计精确相等才完成；缺失/null 不清除已有基准，始终无总数保留短页回退；计数矛盾空快照失败，不新增自动重扫/整目标重试 | 唯一生产逻辑 ali_swas.go、两份正式回归与 AGENTS/Issue7/本文/审计；资源扫描/重复 ID/集合结构/总预算独立 |
 | **Q-18（已裁决、本地收口）** | **I8-17b** IPv6 DNS 输入范围 | 用户 2026-10-09 授权推荐 A：保留 IPv6 括号格式，裸 IPv6 配置继续拒绝；补默认/显式端口和实际 IPv6 上游回归，订正文档。原 Q-01～Q-17 无直接关联未决项，Q-06 测试本地化合同继续适用 | 三份测试、resolver.go 注释与 AGENTS/README/本文/审计，共八文件；生产逻辑、API/schema/依赖/前端保持 |
+| **Q-19（已裁决、本地修复）** | **I8-17f** 正式同步末尾等待与跨轮间隔 | 用户 2026-10-09 确认并定型 A，授权修复与文档同步：按 CloudType 保存目标完成后的冷却，只在下一个适用目标 DNS/目标链前补足；保留 5s/200ms、计时边界和 Stop/暂停已准入轮完成。原 Q-01～Q-18 无直接关联未决项 | 唯一生产 syncer.go；正式冷却/退避回归、日志观察夹具及 AGENTS/本文/审计；不改统一请求限流、Run 调度或目标状态机 |
 
 ---
 
@@ -337,7 +339,7 @@
 1. **I8-05/I8-06**：已按 Q-07 定型 A 本地实施，正式证据见文末；真实 Kuma 仍待 PT-B7-05。I8-08/09 真实扫描待 PT-AUDIT-04/05；I8-18 已本地修复。
 2. **I8-17b 已按 A 本地收口**：保留括号合同，补 IPv6 回归并订正原产品影响；I8-11 已按定型 B 本地修复，Q-17 已裁决，真实云未验收；I8-12 已按 A 本地修复，真实浏览器待 PT-AUDIT-03；I8-02 已按 C 本地修复，真实浏览器/云观察仍待 PT-I7-07，不再作为待裁决事项。
 3. **§3 的独立证据缺口**继续处理；I8-102 已按 B 本地修复，异步超时与后续报告有正式证据，总命令硬上限/其他前端入口/CI 接线仍独立。I8-04 已按 B 本地修复，默认 DNS 不依赖外网，真实上游显式入口及证据见文末；I8-03 已按 A 本地修复，清洁 Make 入口证据见文末。本地收口均不等于完全离线构建或远端 CI 已通过。
-4. **I8-01 已本地修复**；I8-43、I8-17f 继续独立处理错误顺序和末尾等待候选，分别守住无效请求零写入、跨轮限速。
+4. **I8-01 已本地修复**；I8-17f 已按 A 本地修复跨轮冷却、取消末尾空等，Q-19 已裁决；I8-43 继续独立处理错误顺序，守住无效请求零写入。
 5. **Q-11/12/13 与静态候选**：错误分类、维护清理和整体预算按收益与合同决定。I8-111 已按严格 B 本地修复，Q-08 已裁决。I8-113 已按细化 A 本地修复，Q-09 已裁决，真实浏览器仍待执行。当前合理前置条件或理论路径不作为必须修的产品缺陷；文档修订不表示生产修复。
 
 ---
@@ -554,3 +556,15 @@
 - **正式判别力**：五类仓库外源码overlay接入正式测试：恢复旧循环、移除20秒下限、间隔变化从当前时刻重新等待、使用请求开始时间作为基准、取消URL Trim；各自按行为断言退出1，非编译失败、race告警或测试超时。故障源码与日志留在仓库外。恢复旧循环的兼容辅助函数仅用于编译既有私有helper测试，不进入正式源码。
 - **本地门禁**：正式新增调度与调整后的周期/单在途/helper回归 `go test ./internal/health -run '^(TestI805|TestI806|TestEffectivePushInterval|TestPushUpDownRecovery|TestPushSingleInFlightRejectsConcurrentSend|TestPushFailureDoesNotAffectHealthOrPublishEvents|TestPushNormalFailuresKeepPeriodicAttempts|TestPushResponseFailuresKeepPeriod)' -race -count=20 -timeout=2m` 通过；受影响health/API两包完整race一轮通过。五类正式overlay负向控制均按断言变红。真实 `make all` 退出0，含npm ci/vue-tsc/Vite、vet、全仓race及产品构建（部分未变包命中缓存）；随后独立 `go test ./... -race -count=1 -timeout=5m` 全仓12包全部通过，明确禁用缓存。另行vet/build、五个受影响Go文件gofmt检查与最终diff-check通过。研究阶段扩展探针和选定既有回归的20轮、API发布三轮属于仓库外候选证据，不冒称正式整包重复20轮。
 - **外部与残余边界**：Go 1.27.1 darwin/arm64。真实Kuma、浏览器、通知外部链路、真实云、Linux/Docker/compose与当前revision远端CI/GHCR未执行；PT-B7-05继续未执行，新增连续保存/修改间隔/换URL/关闭检查。npm ci仍报告既有3项high，未独立audit/升级，不登记漏洞检查通过。定向重复与单轮全量不外推全仓长期稳定或真实外部通过。Q-07已裁决，I8-05/I8-06本地收口；其他Issue8候选独立保持。
+
+## I8-17f 当前实施补记（2026-10-09，用户定型方案 A / Q-19）
+
+- **授权与基线**：用户确认 A、完成进一步定型后授权正式修复与同步文档。实施前 `main / 756bdeafb9b887575fd28dee9f12fd4eb2571663`、本地 `origin/main / 36f77454107cc6fa6b28e2cb80c2cb8e5de41af3`、ahead 4，工作树/暂存区干净；未 fetch，本轮尚未提交或推送。研究阶段仓库外候选不冒称以下正式证据。
+- **实际范围**：唯一生产文件 `syncer/syncer.go`；新增 `syncer/target_cooldown_test.go`，收紧 `syncer/target_test.go` 单目标两次退避断言，修复 `webui/api/logwriter_test.go` 异步落库观察夹具；同步 AGENTS/Issue8/审计，共七文件。无 Provider/DNS/目标状态机、Run/ticker、重试判定、API/schema、依赖或前端源码改动。
+- **固定合同**：`targetNextStart` 由现有 `s.mu` 保护，按 CloudType 跨轮保留目标结束后的截止时间；锁内只读写时间表，等待与目标执行不持锁。适用目标在 DNS/syncTarget 前补足剩余冷却；success/partial/failed 均从完整目标返回后计时，包含重试/退避/最终事件发布。首次与末尾不额外等待，无适用规则目标不等待也不更新；热更新、Provider 重建、零规则/零目标、暂停/恢复不清空，新 Syncer 清空。仍为 Lighthouse/SWAS 5s、CVM/ECS 200ms，正式同步与 Dry Run 独立，不扩为每次 HTTP 请求限流。
+- **计时与停止**：目标 duration_ms 排除准入等待，整轮 duration_ms 包含实际等待。sync:start/在途状态可早于冷却结束；完成事件/last_sync 与定时/手动轮后的 Reset 提前属取消空等的预期效果。Run 的 ticker 策略、单轮快照、Stop/暂停门控不变；已准入轮即使正在冷却也继续完成捕获快照，后续轮受门控约束。
+- **正式回归**：新增五个顶层测试、44 场景，使用 Go 虚拟时间驱动真实 syncAll/Run/目标链并记录 DNS 与快照调用时刻。覆盖四平台首次/连续/剩余/过期冷却、末尾/中间无适用规则、失败、重试后计时、慢目标与目标事件/整轮耗时；另覆盖平台独立、partial、Provider 替换、零规则/零目标、新 Syncer、Dry Run 独立、冷却期间 Stop/暂停、ticker、紧邻 trigger/恢复。既有单目标三次 attempt 测试准确断言只有 `[1s, 2s]` 退避。
+- **正式判别力**：八类仓库外 Go overlay 接入正式回归：恢复旧实现、每轮清空、每次等完整间隔、失败不记冷却、从目标开始计时、缩短间隔、平台共用冷却、提前解析 DNS。各自退出 1 且按行为断言变红，无编译失败、panic、测试超时或 race 告警作为负向通过依据；故障源码/日志未写入仓库。
+- **门禁发现与夹具修复**：初次 `make all` 在 `TestI802_ProductionLogChain/recover` 失败（读到零日志）。EventBus 独立异步投递目标写库与整轮订阅者，旧测试错误地将整轮事件到达当作 SQLite 落库完成，原末尾等待掩盖了窗口。仅在该测试按同文件既有做法有界等待实际日志：3s 预算、10ms 轮询，读库错误立即失败并保留完整内容/数量断言；没有改生产日志、事件总线或增加生产等待。仓外给 StoreLogWriter 注入 50ms 落库延迟后，旧夹具按“日志为空”断言失败，修复夹具 recover 场景 race 三轮通过。
+- **本地门禁**：正式冷却/退避与既有 P3-23/P3-24/目标重试/清理回归 `go test ./syncer -run 'TestTargetCooldown|TestTargetRound_ThreeAttemptsWithBackoff|TestP323|TestP324|TestTargetRetry|TestCleanup_Retryable' -race -count=20 -timeout=2m` 通过；修复后的 `TestI802_ProductionLogChain` 四场景 race 20 轮通过（`-timeout=3m`）。最终真实 `make all` 退出 0，含 npm ci/vue-tsc/Vite、vet、全仓 race 与产品构建（部分未变包命中缓存）；随后 `go test ./... -race -count=1 -timeout=5m` 禁用缓存，全仓 12 包全部 ok。四个受影响 Go 文件 gofmt 与最终 `git diff --check` 通过。
+- **状态与外部边界**：I8-17f 已按 A 本地修复，Q-19 已裁决；Go `1.27.1 darwin/arm64`。未执行 Linux/Docker/compose、真实浏览器、真实云/外部 DNS/SMTP/收件箱/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR；既有人工未执行/免除边界保持。npm ci 仍报告既有 3 项 high，本项未独立 audit 或升级，不登记漏洞检查通过。定向重复和单轮全仓不外推长期稳定或真实外部验收通过；其他 Issue8 问题独立保持。

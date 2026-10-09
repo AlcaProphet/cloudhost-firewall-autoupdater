@@ -471,9 +471,9 @@ func TestTargetRound_ThreeAttemptsWithBackoff(t *testing.T) {
 	if _, creates, _ := p.counts(); creates != maxRetries {
 		t.Fatalf("Create 调用 = %d, want %d（最多三次 attempt）", creates, maxRetries)
 	}
-	// 前两项必须是重试退避；其后可能跟随目标间云厂商限速（本用例经 sleepFn 拦截，不真实等待）。
-	if len(backoffs) < 2 || backoffs[0] != time.Second || backoffs[1] != 2*time.Second {
-		t.Fatalf("退避序列 = %v, want 前两项 [1s 2s]", backoffs)
+	// 单目标首轮只应有两次重试退避，不应附带末尾云厂商等待。
+	if len(backoffs) != 2 || backoffs[0] != time.Second || backoffs[1] != 2*time.Second {
+		t.Fatalf("退避序列 = %v, want [1s 2s]", backoffs)
 	}
 	sum := s.Status().LastRound
 	if sum == nil || sum.Outcome != RoundFailed {
