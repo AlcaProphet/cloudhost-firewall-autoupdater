@@ -1,15 +1,19 @@
 # FWAlizer 功能构建计划（Build6：已完成的历史构建记录）
 
-> **定位更新（2026-09-28，Build7 Step 0）：** 本文档已收束为**已完成的历史构建记录**（Step 0～7 全部验收通过），其原始证据与结论按原文保留，不再用于新的构建决策；当前构建方案见 [Build7.md](./Build7.md)（告警与运行健康，Step 0～7 已实施完成）。本文档的 **version 2 配置包边界已由 Build7 的 version 3 取代**；其余未被 Build7 明确替代的边界（HTTP 生命周期、严格解码、协调器、运行时快照等）继续作为既有实现基线。
+> **当前入口（2026-10-10）：** 剩余事项统一见 [Issue8.md](./Issue8.md)（I8-R01～I8-R25）；Issue5～7与audit已归档至HistoryDocs，旧I8实施补记见 [Issue8历史快照](./HistoryDocs/Issue8-history.md)。用户已确认普通真机验收收口，SMTP仍待完成，Webhook/Kuma继续豁免且不阻断；下文未执行/尚未提交等批次状态按历史阅读，当前revision发布证据独立跟踪。
+
+> **当前人工验收结论（2026-10-10，用户确认，优先于下文历史人工验收状态）：** 用户确认当前测试已完成、已真机核验，除 SMTP 外暂无问题。原 ProdTestList 的浏览器、真实云及其他非 SMTP、非豁免人工项目按本次确认收口，不再作为待执行或项目阻断项；已完成记录已从清单删除。Webhook 与 Uptime Kuma（HTTP Monitor / Push Monitor）继续人工验收豁免，不阻断项目，豁免不记为真实链路通过。SMTP 测试发送、自动告警邮件与运行健康异常邮件仍待完成，统一见 [ProdTestList.md](ProdTestList.md)。本次证据为用户真机确认，未附逐场景原始记录，不据此新增云响应字段、故障注入或配额边界的实测细节；未重新执行测试，也不推定当前 revision 远端 CI/GHCR、依赖审计或长期稳定性通过。下文各实施批次的“未执行/免除”保留为当时事实；与本次人工收口冲突时以本段为准，独立代码候选及待裁决事项保持原状态。
+
+> **定位更新（2026-09-28，Build7 Step 0）：** 本文档已收束为**已完成的历史构建记录**（Step 0～7 全部验收通过），其原始证据与结论按原文保留，不再用于新的构建决策；当前构建方案见 [Build7.md](Build7.md)（告警与运行健康，Step 0～7 已实施完成）。本文档的 **version 2 配置包边界已由 Build7 的 version 3 取代**；其余未被 Build7 明确替代的边界（HTTP 生命周期、严格解码、协调器、运行时快照等）继续作为既有实现基线。
 >
-> **历史阅读说明（2026-10-03 P3-18）：** 本文实施、授权与验收记录均描述相应 Build6 批次当时的事实；其中 version 2、逐域同步及“留在 Issue6/待处理”等表述不代表当前合同或待办。Issue6 批次 1～8 后续已由 `b38678a` 实施完成，当前状态见 [Issue6.md](./Issue6.md) §2.1；当前目标级同步与 R7 修复见 [Issue7.md](./Issue7.md) §12.3～12.5，外部验收见 [ProdTestList.md](./ProdTestList.md)。保留当时 version 2 浏览器/配置包证据，不将其改写为 version 3 验收。
+> **历史阅读说明（2026-10-03 P3-18）：** 本文实施、授权与验收记录均描述相应 Build6 批次当时的事实；其中 version 2、逐域同步及“留在 Issue6/待处理”等表述不代表当前合同或待办。Issue6 批次 1～8 后续已由 `b38678a` 实施完成，当前状态见 [Issue6.md](HistoryDocs/Issue6.md) §2.1；当前目标级同步与 R7 修复见 [Issue7.md](HistoryDocs/Issue7.md) §12.3～12.5，外部验收见 [ProdTestList.md](ProdTestList.md)。保留当时 version 2 浏览器/配置包证据，不将其改写为 version 3 验收。
 >
-> **文档定位：** 本文档是 FWAlizer 当时已固定口径的分步实施方案（Build 文档仍为非强制执行建议，唯一强要求是 AGENTS.md），整合完整配置导入导出、CLI 与 `.env` Headless 业务模式移除，以及 [Issue5.md](./Issue5.md) 中 R5-01～R5-03、O5-01～O5-06、A5-01 的处理计划。
+> **文档定位：** 本文档是 FWAlizer 当时已固定口径的分步实施方案（Build 文档仍为非强制执行建议，唯一强要求是 AGENTS.md），整合完整配置导入导出、CLI 与 `.env` Headless 业务模式移除，以及 [Issue5.md](HistoryDocs/Issue5.md) 中 R5-01～R5-03、O5-01～O5-06、A5-01 的处理计划。
 >
-> - 编码指令：[AGENTS.md](./AGENTS.md)（当前唯一强要求）
-> - 当前设计记录：[Design5.md](./Design5.md)
-> - Build6 阶段问题历史：[Issue5.md](./Issue5.md)；后续问题与目标级同步记录：[Issue6.md](./Issue6.md)、[Issue7.md](./Issue7.md)
-> - 已完成构建与设计记录：[HistoryDocs/](./HistoryDocs/)
+> - 编码指令：[AGENTS.md](AGENTS.md)（当前唯一强要求）
+> - 当前设计记录：[Design5.md](Design5.md)
+> - Build6 阶段问题历史：[Issue5.md](HistoryDocs/Issue5.md)；后续问题与目标级同步记录：[Issue6.md](HistoryDocs/Issue6.md)、[Issue7.md](HistoryDocs/Issue7.md)
+> - 已完成构建与设计记录：[HistoryDocs/](HistoryDocs)
 >
 > **授权边界：** 用户已于 2026-09-22 确认本文档的规划方向与 Step 0 文档改动方案。Step 0 完成不代表任一代码 Step 已获实施授权；后续必须每次只实施一个 Step，并在该 Step 验收完成后等待下一步授权。
 >

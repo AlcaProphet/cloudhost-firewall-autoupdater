@@ -1,7 +1,11 @@
 # AGENTS.md — FWAlizer AI 编码指令
 
+> **文档整合与归档（2026-10-10，用户授权）：** 当前剩余事项统一见 [Issue8.md](./Issue8.md)，连续编号 I8-R01～I8-R25；旧 I8/Q/TODO 编号仅为历史来源。Issue5～7 已按阶段完成移入 HistoryDocs，audit 按“报告完成、剩余事项转交”归档；Issue7 已实施合同仍可查阅。下文历史实施补记中“见 Issue8 文末/审计补记”的详细记录分别位于 [Issue8历史快照](./HistoryDocs/Issue8-history.md) 与 [归档audit](./HistoryDocs/fwalizer-audit-final1.md)，不指新活跃台账。历史人工未执行状态以本次用户确认优先，SMTP见ProdTestList，Webhook/Kuma豁免且不阻断。
+
+> **当前人工验收结论（2026-10-10，用户确认，优先于下文历史人工验收状态）：** 用户确认当前测试已完成、已真机核验，除 SMTP 外暂无问题。原 ProdTestList 的浏览器、真实云及其他非 SMTP、非豁免人工项目按本次确认收口，不再作为待执行或项目阻断项；已完成记录已从清单删除。Webhook 与 Uptime Kuma（HTTP Monitor / Push Monitor）继续人工验收豁免，不阻断项目，豁免不记为真实链路通过。SMTP 测试发送、自动告警邮件与运行健康异常邮件仍待完成，统一见 [ProdTestList.md](ProdTestList.md)。本次证据为用户真机确认，未附逐场景原始记录，不据此新增云响应字段、故障注入或配额边界的实测细节；未重新执行测试，也不推定当前 revision 远端 CI/GHCR、依赖审计或长期稳定性通过。下文各实施批次的“未执行/免除”保留为当时事实；与本次人工收口冲突时以本段为准，独立代码候选及待裁决事项保持原状态。
+
 > 本文档是给 AI 编码助手的指令集，也是项目**唯一的强要求文档**（详见「十二、文档体系与优先级」）。
-> 项目设计方向见 [Design5.md](./Design5.md)（设计记录，当前），已完成构建记录见 [Build7.md](./Build7.md)（告警与运行健康，Step 0～7），当前工作见 [Issue7.md](./Issue7.md)（P1-01 TAG 所有权与目标级同步，Step 0～5 主体已本地实施；§12.5 记录 R7-01～R7-07 本地复核项已修复提交；真实云/浏览器/远端 CI 待人工执行）；问题历史见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)，人工验收清单见 [ProdTestList.md](./ProdTestList.md)。
+> 项目设计方向见 [Design5.md](Design5.md)（设计记录，当前），已完成构建记录见 [Build7.md](Build7.md)（告警与运行健康，Step 0～7），当前剩余工作见 [Issue8.md](./Issue8.md)；已完成阶段合同见 [Issue7.md](HistoryDocs/Issue7.md)（P1-01 TAG 所有权与目标级同步，Step 0～5 主体已本地实施；§12.5 记录 R7-01～R7-07 本地复核项已修复提交；人工真机验收已于 2026-10-10 用户确认收口，SMTP 与发布证据边界见下文）；问题历史见 [Issue5.md](HistoryDocs/Issue5.md) 与 [Issue6.md](HistoryDocs/Issue6.md)，人工验收清单见 [ProdTestList.md](ProdTestList.md)。
 
 ---
 
@@ -12,17 +16,17 @@
 - **产品与兼容标识**：产品显示名、二进制名、`FWALIZER_DATA_DIR` 部署变量、数据目录及 GHCR 镜像继续使用 `FWAlizer` / `fwalizer`，避免破坏保留的部署边界
 - **Go 版本**：`go 1.27.1`（源码构建最低补丁要求；CI/Docker 固定该版本）
 - **平台约束**：仅支持 **Linux 与 macOS 13+**（平台文件 build tag 精确为 `linux || darwin`）；**不支持 Windows**（Windows pidfile 实现与 `%APPDATA%` 数据目录分支已移除，`GOOS=windows` 构建按预期失败）；构建与发布面向 `linux/amd64`
-- **文档定位与优先级**：编码前先阅读本文件（强要求）。设计记录见 [Design5.md](./Design5.md)（当前，非强制，供参考）；Build6/Build7 为已完成的历史构建记录；当前实施合同与串行步骤见 [Issue7.md](./Issue7.md)（Step 0～5 主体已实施，§12.5 记录 R7-01～R7-07 本地复核收口）；问题历史见 [Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)；人工验收清单见 [ProdTestList.md](./ProdTestList.md)；历史文档（Design1-4、Build1-5、Issue1-4）见 [HistoryDocs/](./HistoryDocs/)
+- **文档定位与优先级**：编码前先阅读本文件（强要求）。设计记录见 [Design5.md](Design5.md)（当前，非强制，供参考）；Build6/Build7 为已完成的历史构建记录；当前剩余事项与顺序见 [Issue8.md](./Issue8.md)；已实施合同与历史步骤见 [Issue7.md](HistoryDocs/Issue7.md)（Step 0～5 主体已实施，§12.5 记录 R7-01～R7-07 本地复核收口）；问题历史见 [Issue5.md](HistoryDocs/Issue5.md) 与 [Issue6.md](HistoryDocs/Issue6.md)；人工验收清单见 [ProdTestList.md](ProdTestList.md)；历史文档（Design1-4、Build1-5、Issue1-4）见 [HistoryDocs/](HistoryDocs)
 - **Build6 已完成构建（历史记录）**：目标形态固定为 WebUI 单二进制 + SQLite。截至 2026-09-27，Step 0～7 已验收通过。Step 5 的工程实现、本地自动门禁、浏览器人工回归及真实云/DNS/同步链路已经完成并由用户确认真机通过；跨实例不同自增历史的人工交叉导入因当前无该使用场景而免除（底层 ID 映射仍由自动化覆盖）。Step 7 的自动补测、统一验收门禁、真实二进制/Docker 容器验收与文档闭环已完成，并按用户确认的最小边界修复 Issue6 A10/A5/A7/A6/A8；**在此之后按用户一次性授权完成 Issue6 批次 1（A1、A12）、批次 3（A20、A16）、批次 2（A2）、批次 4（A3、A18、A13、A15 与 A11 接口部分）、批次 5（A4、A9、A14、A17）、批次 6（A11 收尾）与批次 7（A19、A8 文档收口）**，批次 8（低风险清理）亦已完成，Issue6 §2.1 状态表为权威记录。远端 GitHub Actions 已取得真实结果（tag `v2.0.0` → 运行 `36300428681` 成功，含远端 `go test -race -v ./...`，并真实推送 `ghcr.io/alcaprophet/fwalizer:2.0.0`），Issue5 O5-02 已关闭。真实 Email/SMTP/收件箱与 Webhook 的人工验收（原 `ProdTestList.md` PT-B6-08/09）经用户 2026-09-27 明确决定跳过、由用户自行处理，属**人工验收免除**（沿用 PT-B6-04 先例），不阻塞 Step 7，**但这两个外部链路仍无真实通过结论，不得写成已经通过**。
-- **Build7 实施状态（2026-09-28）**：Build7（[Build7.md](./Build7.md)，告警与运行健康）**Step 0～6 已全部实施完成，Step 7（核验缺陷修复）亦已完成**：告警三个触发开关（默认全部关闭，渠道与触发同时开启才订阅）、可编辑纯文本邮件主题与正文（固定事件后缀与稳定详情顺序）、`POST /api/alerts/test-email`、唯一 `OperationalHealth` 计算源（`internal/health`）+ 30 秒内部监督器 + `GET /api/health/operational`、Uptime Kuma Push（默认关闭、默认 60s、最小 20s）；配置包为 version 3，version 1/2 与其他版本直接拒绝。Step 7 修复了两项核验缺陷：告警页测试邮件请求体多带 `enabled` 导致必然 HTTP 400（前端改为显式 8 字段载荷，后端严格契约不变）；启动窗口把「同步引擎尚未启动」误判为「未运行」导致重启误报 Push DOWN 与运行健康异常（启动顺序确定性化 + 固定 10 秒启动宽限）。**本机已取得的证据**：`go test ./... -race -count=1`（12 包）、`go vet ./...`、`go build ./...`、前端 `npm ci`/`npm run build`/两条 `npm audit`（0 漏洞）、`docker compose config`、`docker build`、容器非 root（uid 1000）+ `healthy` + `docker stop` 有界且退出码 0、真实二进制进程级用例（静态 `/api/health` 与 `/api/health/operational` 200、Push 心跳发往本地 mock、SIGTERM 干净退出、UI 载荷测试邮件走完假 SMTP、重启后首条心跳为 up）。**仍无真实通过结论（不得写成通过）**：真实 SMTP 接受、真实收件箱投递、真实 Webhook、真实 Uptime Kuma HTTP Monitor 与 Push 的 DOWN/恢复通知、真实云 API、远端 CI/GHCR 均未执行，清单见 [ProdTestList.md](./ProdTestList.md)。
-- **Issue7 实施状态（2026-09-29）**：P1-01「TAG 所有权与目标级同步」**Step 0～5 主体已本地实施**（提交 `28559ed`；F1/F5 核验补强已提交为 `38bdc19`）：严格 TAG 命名空间、canonical `FunctionalKey`、目标级纯 planner、四平台 revision/完整性、`S0 → Add → S1 → 覆盖验证 → 安全门 → Delete → 必要时 S2`、平台化条件清理、目标级事件/日志/Dry Run/Dashboard 主线均已落地；F1 Lighthouse 多端口展开粒度与 F5 SWAS 分页上限完整性已带判别性用例修复。**R7-01 已修复并提交为 `b80b1b0`**：只对“本 attempt 已由 S1 确认覆盖、失败点仅为可重试 Delete”的路径做类型化标记，前两次保持整目标重试，第三次耗尽后收敛为 `success + cleanup_deferred`/healthy；DNS/Describe/Add/S1/S2 失败仍为 `failed`，未绕过腾讯版本保护。**R7-02 已修复并提交为 `eab4bea`**：目标完成/失败事件统一补齐 `cleanup_deleted`、目标全生命周期 `duration_ms` 与 canonical `unsupported`，并由真实 publisher/EventBus/SQLite 整链证明清理计数与落库一致。**R7-03 已按用户裁决 A 修复并提交为 `297ccfe`**：Dry Run 对所有已配置目标各返回一项；无适用规则目标只返回非 null 空数组骨架与 `coverage_ready=false`，不解析 DNS、不读取云快照、不进入 planner、不产生限速等待；前端明确标记“无适用规则”并说明正式同步会跳过，正式同步 `RoundSummary.Total` 仍只统计有适用规则目标。**完整核验仍有 R7-04～R7-07 未完成项，不得把主体完成写成无保留闭环**：R7-04 为 S2 未参与最终残留计数的可观测性偏差，幂等 NotFound 必须消除 deferred 但不得虚增 `deleted/cleanup_deleted`；R7-05 为数组非 null 测试无判别力，必须改用结构化 JSON 检查并保留 null 负向控制；R7-06 与新增 R7-07 分别是 `TestIsRetryable_RealWorldShapes`、`TestAliClientRequestIsBounded` 丢弃 accepted `net.Conn` 导致 GC/finalizer 提前关连接的同根因 flaky，修复只能稳定测试夹具，不得扩大生产 `isRetryable`、降低超时下限或修改阿里云生产超时。后续固定按 Issue7 §12.5.4 串行处理：先 R7-06+R7-07 恢复可信门禁，再 R7-04，再 R7-05，最后多轮全量 race/vet/build/前端/diff-check 与文档闭环；**不得把单次全量绿色外推为稳定绿色**。当时 `main` 相对 `origin/main` ahead 1、工作树在本轮文档修改前干净，尚未推送（**该 ahead 1 为本段的历史快照；后续已推进至 `b84531b`，相对 `origin/main` ahead 7，见本文件「Issue7 后续本地修复状态」段与审计报告「最近核验基线」小节**）。**仍无真实通过结论（不得写成通过）**：真实腾讯云/阿里云（含 Lighthouse 多端口收敛与四平台删除安全）、真实浏览器回归与当前 revision 的远端 CI/GHCR 均未执行；清单见 [ProdTestList.md](./ProdTestList.md) PT-I7-01～07。逐 Step 证据、已提交补强与追踪项分别见 [Issue7.md](./Issue7.md) §12.3、§12.4、§12.5。
+- **Build7 实施状态（2026-09-28）**：Build7（[Build7.md](Build7.md)，告警与运行健康）**Step 0～6 已全部实施完成，Step 7（核验缺陷修复）亦已完成**：告警三个触发开关（默认全部关闭，渠道与触发同时开启才订阅）、可编辑纯文本邮件主题与正文（固定事件后缀与稳定详情顺序）、`POST /api/alerts/test-email`、唯一 `OperationalHealth` 计算源（`internal/health`）+ 30 秒内部监督器 + `GET /api/health/operational`、Uptime Kuma Push（默认关闭、默认 60s、最小 20s）；配置包为 version 3，version 1/2 与其他版本直接拒绝。Step 7 修复了两项核验缺陷：告警页测试邮件请求体多带 `enabled` 导致必然 HTTP 400（前端改为显式 8 字段载荷，后端严格契约不变）；启动窗口把「同步引擎尚未启动」误判为「未运行」导致重启误报 Push DOWN 与运行健康异常（启动顺序确定性化 + 固定 10 秒启动宽限）。**本机已取得的证据**：`go test ./... -race -count=1`（12 包）、`go vet ./...`、`go build ./...`、前端 `npm ci`/`npm run build`/两条 `npm audit`（0 漏洞）、`docker compose config`、`docker build`、容器非 root（uid 1000）+ `healthy` + `docker stop` 有界且退出码 0、真实二进制进程级用例（静态 `/api/health` 与 `/api/health/operational` 200、Push 心跳发往本地 mock、SIGTERM 干净退出、UI 载荷测试邮件走完假 SMTP、重启后首条心跳为 up）。**仍无真实通过结论（不得写成通过）**：真实 SMTP 接受、真实收件箱投递、真实 Webhook、真实 Uptime Kuma HTTP Monitor 与 Push 的 DOWN/恢复通知、真实云 API、远端 CI/GHCR 均未执行，清单见 [ProdTestList.md](ProdTestList.md)。
+- **Issue7 实施状态（2026-09-29）**：P1-01「TAG 所有权与目标级同步」**Step 0～5 主体已本地实施**（提交 `28559ed`；F1/F5 核验补强已提交为 `38bdc19`）：严格 TAG 命名空间、canonical `FunctionalKey`、目标级纯 planner、四平台 revision/完整性、`S0 → Add → S1 → 覆盖验证 → 安全门 → Delete → 必要时 S2`、平台化条件清理、目标级事件/日志/Dry Run/Dashboard 主线均已落地；F1 Lighthouse 多端口展开粒度与 F5 SWAS 分页上限完整性已带判别性用例修复。**R7-01 已修复并提交为 `b80b1b0`**：只对“本 attempt 已由 S1 确认覆盖、失败点仅为可重试 Delete”的路径做类型化标记，前两次保持整目标重试，第三次耗尽后收敛为 `success + cleanup_deferred`/healthy；DNS/Describe/Add/S1/S2 失败仍为 `failed`，未绕过腾讯版本保护。**R7-02 已修复并提交为 `eab4bea`**：目标完成/失败事件统一补齐 `cleanup_deleted`、目标全生命周期 `duration_ms` 与 canonical `unsupported`，并由真实 publisher/EventBus/SQLite 整链证明清理计数与落库一致。**R7-03 已按用户裁决 A 修复并提交为 `297ccfe`**：Dry Run 对所有已配置目标各返回一项；无适用规则目标只返回非 null 空数组骨架与 `coverage_ready=false`，不解析 DNS、不读取云快照、不进入 planner、不产生限速等待；前端明确标记“无适用规则”并说明正式同步会跳过，正式同步 `RoundSummary.Total` 仍只统计有适用规则目标。**完整核验仍有 R7-04～R7-07 未完成项，不得把主体完成写成无保留闭环**：R7-04 为 S2 未参与最终残留计数的可观测性偏差，幂等 NotFound 必须消除 deferred 但不得虚增 `deleted/cleanup_deleted`；R7-05 为数组非 null 测试无判别力，必须改用结构化 JSON 检查并保留 null 负向控制；R7-06 与新增 R7-07 分别是 `TestIsRetryable_RealWorldShapes`、`TestAliClientRequestIsBounded` 丢弃 accepted `net.Conn` 导致 GC/finalizer 提前关连接的同根因 flaky，修复只能稳定测试夹具，不得扩大生产 `isRetryable`、降低超时下限或修改阿里云生产超时。后续固定按 Issue7 §12.5.4 串行处理：先 R7-06+R7-07 恢复可信门禁，再 R7-04，再 R7-05，最后多轮全量 race/vet/build/前端/diff-check 与文档闭环；**不得把单次全量绿色外推为稳定绿色**。当时 `main` 相对 `origin/main` ahead 1、工作树在本轮文档修改前干净，尚未推送（**该 ahead 1 为本段的历史快照；后续已推进至 `b84531b`，相对 `origin/main` ahead 7，见本文件「Issue7 后续本地修复状态」段与审计报告「最近核验基线」小节**）。**仍无真实通过结论（不得写成通过）**：真实腾讯云/阿里云（含 Lighthouse 多端口收敛与四平台删除安全）、真实浏览器回归与当前 revision 的远端 CI/GHCR 均未执行；清单见 [ProdTestList.md](ProdTestList.md) PT-I7-01～07。逐 Step 证据、已提交补强与追踪项分别见 [Issue7.md](HistoryDocs/Issue7.md) §12.3、§12.4、§12.5。
 - **Issue7 后续本地修复状态（2026-09-30，优先于上一行的未完成项快照）**：R7-06/R7-07 与 R7-04 已提交为 `b19d271`：两个阻塞 TCP 测试夹具持有 accepted `net.Conn` 并有界回收；成功可信的 S2 planner 成为最终 `cleanup_deferred` 唯一来源，幂等 NotFound 保持 `deleted/cleanup_deleted=0`，S2 失败继续 `failed` 并使用保守 fallback。R7-05 已在当前工作树按测试-only 边界修复：`TestDryRun_ArraysNeverNull` 改用 `map[string]json.RawMessage` 检查顶层与目标级数组的存在、非 `null` 与 JSON array 类型，覆盖有适用规则、无适用规则骨架、零目标/零结果三种真实输出，并对全部数组字段加入 `null`、缺失、对象类型负向控制；未修改生产 DTO、planner、API 或前端。两个 GOGC 压力门禁、`syncer`/`provider` 包 `-race -count=20`（Syncer 显式 `-timeout=20m`）、全量 12 包 race 连续 3 次、vet、build、前端 build、diff-check 均本地通过。**R7-05 与本轮文档改动已提交为 `d6d208e`（不再处于未提交状态）**；P1-01 的 R7-01～R7-07 本地核验项已收口，但真实四云、浏览器与当前 revision 远端 CI/GHCR 仍未执行，故仍不得外推为外部验收通过或无保留发布闭环。
 
 ---
 
 **第二轮只读核验与更正（2026-09-30）**：对审计报告做完整只读真实性核验后，按用户批准方案回写文档与测试（**生产代码零改动**）。关键更正：① P3-06 的「每方向 100」无官方依据——`AGENTS.md` §三「CVM 安全组规则上限 100 条」与官方 `SecurityGroupPolicyLimit` 定义均为**安全组级**上限，故 `provider/tc_cvm.go` 的四方向合计判定**不是过度保守**，原「只统计入站」修法已撤销，口径待 PT-I7-03 真实账号确认；② 新增 **P3-26**：`provider/scan.go` 分页中途空响应会静默截断并覆盖 `scanned_resources` 缓存（与 P3-25 资源扫描路径属不同缺陷类别，I-19 范围不变）；③ 新增「最近核验基线」小节固定当前基线（`main` / `b84531b`、`origin/main` / `d6d208e`、ahead 7）；④ P1-02/P3-08（`7aaa3f2`）与 P3-03（`c5cc79d`）的「尚未提交」已订正；P3-16 的 `RunTest.vue` 44px 已修复；P3-17 的 `export_test.go:461` 当时因只检索完整串 `version 2` 被误记为已修复，实际仍有 `v2` 注释，已由下方 2026-10-03 P3-17 实施补记更正并清理；P3-21 的 Webhook drain 子项部分修复、Push 字节上限子项仍未修复。本轮门禁仅覆盖 Go 侧：`gofmt`/`go vet`/`go build`/`git diff --check` 通过、定向两包 `-race` 通过、全量 12 包 `-race -count=1` 全部 ok、两个新增判别性用例各 `-race -count=20` 通过（含各自的红→绿判别力验证）；**未执行**前端构建、Docker/compose、真实云、SMTP/Webhook/Uptime Kuma、浏览器与远端 CI/GHCR，不外推为长期稳定绿色或外部验收通过。详见 `fwalizer-audit-final1.md`「最近核验基线」小节。 **P3-06 后续订正（2026-10-02）**：上述“合计判定不是过度保守、每方向 100 无官方依据”为当时仅取得泛称 API 字段定义时的历史判断；本次已取得 CVM 官方配额正文，明确默认入站、出站各 100 条，旧判断不再作为当前合同。当前以 §三与下方 P3-06 实施补记为准。
 
-**P2-05 后续修复状态（2026-09-30）**：Webhook 三渠道业务响应校验与 16 KiB 有界读取已实施并提交为 `93e0e4b`，详见 [审计报告 P2-05](./fwalizer-audit-final1.md) 与 [Build7.md](./Build7.md) 后续补记。定向响应 race 20 轮、notifier 整包 race 3 轮、全量 12 包 race 1 轮及 vet/build/diff-check 已本地通过；重复证据不外推为全仓长期稳定绿色。真实钉钉/飞书/Slack 投递与该改动的产品浏览器、远端 CI/GHCR 未执行，PT-B7-03 仍为人工验收免除、非已通过。
+**P2-05 后续修复状态（2026-09-30）**：Webhook 三渠道业务响应校验与 16 KiB 有界读取已实施并提交为 `93e0e4b`，详见 [审计报告 P2-05](HistoryDocs/fwalizer-audit-final1.md) 与 [Build7.md](Build7.md) 后续补记。定向响应 race 20 轮、notifier 整包 race 3 轮、全量 12 包 race 1 轮及 vet/build/diff-check 已本地通过；重复证据不外推为全仓长期稳定绿色。真实钉钉/飞书/Slack 投递与该改动的产品浏览器、远端 CI/GHCR 未执行，PT-B7-03 仍为人工验收免除、非已通过。
 
 **P3-26 / P3-25 资源扫描后续修复状态（2026-09-30，历史批次，后已提交 `901d642`）**：用户确认研究与临时副本验证方案后授权实施，基线 `ec82d10`。ECS 资源扫描严格区分结构异常与有效空数组：响应/Body/集合缺失、null 元素、缺失/空资源 ID 返回 `ErrSnapshotIncomplete` 且不带回半截资源；有效空数组仍按返回 token 分页；历史 token 集合同时拒绝未推进与环路。实际 SDK/API/临时 SQLite 回归证明异常保留旧缓存、完整结果覆盖、合法零结果清空对应地域，原生 nil 响应单独覆盖。定向新回归 race 20 轮、全量 12 包 race 1 轮及 vet/build/diff-check 本地通过，源码/测试/文档当时尚未提交，后已提交为 `901d642`。生产改动仅 ECS 扫描路径，未改防火墙同步、API 契约、schema、前端、SDK 或超时。缺失/null 集合失败为用户确认的保守兼容策略，真实云零资源是否省略集合未确认；未执行前端构建、浏览器、Docker、Go 1.25/Linux 或真实云/远端 CI，不外推稳定绿色或外部验收。证据与边界见审计报告 P3-26 和 I-19。
 
@@ -78,7 +82,7 @@
 
 ---
 
-**P3-24 恢复边沿后续修复状态（2026-10-05，细化方案 C，历史批次，后已提交 `938bb8b`）**：用户依据引用聊天《研究并核验 P3-24 修复》的定型结论授权正式修复及同步文档；实施前 `main == 本地 origin/main == 9dd5d34df2ec36dde4156eb349d4e65d521e8d78`，工作树/暂存区干净，五文件 SHA-256 与最终研究稿一致，前序 P3-23 已提交 `9dd5d34`。唯一生产文件 `syncer/syncer.go`：真实 false→true 在 `s.mu` 下与状态发布、镜像更新一起设置 `pendingResume`；Run 同锁取得最终状态并在起轮前消费标记，多次恢复合并一轮，最终暂停抑制补轮，新恢复留到下一批。启动消费既有标记，普通 ticker/trigger 准入前遇到标记转入恢复处理；最新 interval、过期 trigger 清理、Stop 门控、四处轮次入口及状态 hook 去重保持。新增独立控制回归 24 场景，原 P3-23 缺陷范围控制改为第 25 个 P3-24 回归，其余 23 个 P3-23 断言保持。旧实现与五类正式源码错误候选均在 race 20 轮按行为变红，无编译失败/超时/数据竞争；正式 P3-23/P3-24 race 20 轮、API 导入/协调器恢复 race 20 轮、syncer 整包 race、全仓 12 包 race 连续 3 轮、vet/build、格式/diff-check 本地通过。范围固定生产/两测试/本文件/审计，共五文件；P3-24 与 I-06 本地修复闭环，详细证据见审计文末补记。Go `1.27.1 darwin/arm64`，使用既有 ignored 前端 dist；全仓门禁含 TestMain 构建正式产品二进制的既有本地进程回归，不是 P3-24 专项进程验收。未执行 Linux/Docker/compose、前端构建/浏览器、真实云/DNS 上游/SMTP/收件箱/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR；人工未执行/免除状态保持，连续三轮不外推长期稳定或外部验收。源码/测试/文档**已提交为 `938bb8b`**（该批"尚未提交"为当时记录，2026-10-08 复核订正；该提交即当前 HEAD），未 fetch/push。**仍未闭环的问题与待裁决事项见 [Issue8.md](./Issue8.md)。**
+**P3-24 恢复边沿后续修复状态（2026-10-05，细化方案 C，历史批次，后已提交 `938bb8b`）**：用户依据引用聊天《研究并核验 P3-24 修复》的定型结论授权正式修复及同步文档；实施前 `main == 本地 origin/main == 9dd5d34df2ec36dde4156eb349d4e65d521e8d78`，工作树/暂存区干净，五文件 SHA-256 与最终研究稿一致，前序 P3-23 已提交 `9dd5d34`。唯一生产文件 `syncer/syncer.go`：真实 false→true 在 `s.mu` 下与状态发布、镜像更新一起设置 `pendingResume`；Run 同锁取得最终状态并在起轮前消费标记，多次恢复合并一轮，最终暂停抑制补轮，新恢复留到下一批。启动消费既有标记，普通 ticker/trigger 准入前遇到标记转入恢复处理；最新 interval、过期 trigger 清理、Stop 门控、四处轮次入口及状态 hook 去重保持。新增独立控制回归 24 场景，原 P3-23 缺陷范围控制改为第 25 个 P3-24 回归，其余 23 个 P3-23 断言保持。旧实现与五类正式源码错误候选均在 race 20 轮按行为变红，无编译失败/超时/数据竞争；正式 P3-23/P3-24 race 20 轮、API 导入/协调器恢复 race 20 轮、syncer 整包 race、全仓 12 包 race 连续 3 轮、vet/build、格式/diff-check 本地通过。范围固定生产/两测试/本文件/审计，共五文件；P3-24 与 I-06 本地修复闭环，详细证据见审计文末补记。Go `1.27.1 darwin/arm64`，使用既有 ignored 前端 dist；全仓门禁含 TestMain 构建正式产品二进制的既有本地进程回归，不是 P3-24 专项进程验收。未执行 Linux/Docker/compose、前端构建/浏览器、真实云/DNS 上游/SMTP/收件箱/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR；人工未执行/免除状态保持，连续三轮不外推长期稳定或外部验收。源码/测试/文档**已提交为 `938bb8b`**（该批"尚未提交"为当时记录，2026-10-08 复核订正；该提交即当前 HEAD），未 fetch/push。**仍未闭环的问题与待裁决事项见 [Issue8.md](Issue8.md)。**
 
 ---
 
@@ -266,7 +270,7 @@
 
 ### 9.1 已固定实施契约（Build7 已实施合同 + Build6 既有边界）
 
-> 本节同时承载 Build6 已落地边界与 Build7 已实施合同。Build7 条款自 2026-09-28 起已随 Step 1～7 实施完成（逐步证据见 [Build7.md](./Build7.md) 第八节与第十一节）；Build6 条款中未被 Build7 明确替代的部分继续有效。
+> 本节同时承载 Build6 已落地边界与 Build7 已实施合同。Build7 条款自 2026-09-28 起已随 Step 1～7 实施完成（逐步证据见 [Build7.md](Build7.md) 第八节与第十一节）；Build6 条款中未被 Build7 明确替代的部分继续有效。
 
 **Build7 已实施合同（告警与运行健康，Step 1～7 于 2026-09-28 完成；Step 7 为核验缺陷修复）**
 
@@ -309,7 +313,7 @@
 - 运行时 `cfg + providers + resolver` 一次原子替换（Step 5 已落地）：`syncer.RuntimeState`（Config/ClientPool/Providers/Resolver/Breaker）发布后不可修改，`RuntimeManager` 单锁边界替换指针；同步轮次、Dry Run、连接测试与资源扫描各只取一次完整快照，当前轮次继续使用旧完整快照，下一轮完整使用新快照
 - 普通 API 与配置导入共用同一组最小领域校验（`config/validate.go`）：非法输入不写库、不触发 reload，合法事务提交后只应用一次运行时更新，删除被规则引用的目标返回 409
 - 每渠道（邮件 / Webhook）最多 4 个在途发送，满载丢弃最新并返回 nil；安全丢弃 WARN 由渠道长期限流器聚合：新活动周期首条立即输出 `dropped=1`，后续约每 30 秒汇总新增数量，首条不重复计入；空窗口不输出并停止续约计时。仅保存三类告警事件与固定安全平台的计数，不持有密码、URL、正文、事件或配置引用；混合 Webhook 平台标记 `mixed` 并列出平台计数。计数与窗口跨热重载、关闭再开启及旧实例晚到回调连续；关闭后允许汇总此前丢弃，汇总不表示渠道恢复。锁内取走快照、锁外写日志，汇总回调输出后才重新计时；不增加队列、重试、持久化或 shutdown 强制汇总，进程退出前未输出的计数可能丢失。
-- Build6 的完整 Schema、字段校验与事务顺序继续作为既有实现基线；Build7 的 Schema 增量（`alert_policy` / `uptime_kuma_push` / `alert_email.subject|body`）、配置包 version 3、告警 API 与验收矩阵以 [Build7.md](./Build7.md) 为当前实施方案
+- Build6 的完整 Schema、字段校验与事务顺序继续作为既有实现基线；Build7 的 Schema 增量（`alert_policy` / `uptime_kuma_push` / `alert_email.subject|body`）、配置包 version 3、告警 API 与验收矩阵以 [Build7.md](Build7.md) 为当前实施方案
 
 ---
 
@@ -385,9 +389,9 @@
 | 文档类型 | 文件 | 定位 | 约束力 |
 |---------|------|------|--------|
 | **强要求** | **AGENTS.md（本文件）** | AI 编码指令与约束 | **唯一强要求，尽量不违背** |
-| 设计构想 | [Design5.md](./Design5.md)（当前）；历史：[HistoryDocs/](./HistoryDocs/)（Design1-4 已存档） | 设计大方向、架构构想、决策记录 | 非强制，供参考 |
-| 构建方案 | [Build7.md](./Build7.md)（Step 0～7 已完成）；历史构建记录：[Build6.md](./Build6.md)（已完成）；更早：[HistoryDocs/](./HistoryDocs/)（Build1-5 已存档） | 详细的分步构建方案与验收命令 | 非强制，执行建议 |
-| 问题记录 | [Issue7.md](./Issue7.md)（P1-01 实施合同，Step 0～5 主体已实施，§12.5 记录 R7-01～R7-07 本地复核收口）；[Issue5.md](./Issue5.md) 与 [Issue6.md](./Issue6.md)（已实施问题记录与残余候选）；历史：[HistoryDocs/](./HistoryDocs/)（Issue1-4 已存档） | 记录的错误、固定产品语义、分步实施与验收合同 | 非强制，经验参考 |
+| 设计构想 | [Design5.md](Design5.md)（当前）；历史：[HistoryDocs/](HistoryDocs)（Design1-4 已存档） | 设计大方向、架构构想、决策记录 | 非强制，供参考 |
+| 构建方案 | [Build7.md](Build7.md)（Step 0～7 已完成）；历史构建记录：[Build6.md](Build6.md)（已完成）；更早：[HistoryDocs/](HistoryDocs)（Build1-5 已存档） | 详细的分步构建方案与验收命令 | 非强制，执行建议 |
+| 问题记录 | [Issue8.md](./Issue8.md)（唯一活跃剩余事项台账）；[HistoryDocs/Issue5.md](./HistoryDocs/Issue5.md)、[Issue6.md](./HistoryDocs/Issue6.md)、[Issue7.md](./HistoryDocs/Issue7.md)（已完成阶段与实施合同） | 当前候选与历史合同分开查询，旧编号对照见Issue8 | 非强制，经验参考 |
 
 **执行规则：**
 
@@ -395,23 +399,23 @@
 - **Design 文档**描述设计大方向与构想；**Build 文档**描述详细的构建方案；**Issue 文档**记录错误与修复方案
 - 若 Design / Build / Issue 文档之间存在冲突，或与 AGENTS.md 冲突：**提示用户并让用户做决策**，不擅自选择遵守哪一份
 - 若构想本身存在冲突，同样**提示用户**，由用户决策
-- Design 文档（如 [Design5.md](./Design5.md)）中的内容不是强制性规定，仅是设计类构想
+- Design 文档（如 [Design5.md](Design5.md)）中的内容不是强制性规定，仅是设计类构想
 
 ### 12.2 文档清单
 
 | 文档 | 目标读者 | 内容 | 状态 |
 |------|---------|------|------|
 | AGENTS.md（本文件） | AI 编码助手 | 编码指令与约束（**唯一强要求**） | 活跃 |
-| [Design5.md](./Design5.md) | 人类（开发者/用户） | 当前设计记录：WebUI 单二进制目标形态、配置边界与安全决策 | 活跃 |
-| [Build7.md](./Build7.md) | 开发者 | 当前构建方案：告警与运行健康，Step 0～7（含核验缺陷修复）的分步实施与验收 | 活跃 |
-| [Build6.md](./Build6.md) | 开发者 | 已完成的历史构建记录：Step 0-7（version 2 配置包边界已被 Build7 的 version 3 取代，仅用于核查） | 已完成 |
-| [Issue5.md](./Issue5.md) | 开发者 | Build6 阶段问题历史：R5、O5 与 A5 事项 | 已完成历史记录 |
-| [Issue6.md](./Issue6.md) | 开发者 | 问题追踪：A1～A20 批次、后续核验与残余候选 | 活跃 |
-| [Issue8.md](./Issue8.md) | 开发者 | **未闭环问题与待裁决事项台账**（2026-10-08 全量只读复核产出）：仍存在的缺陷、未完成审阅、待裁决语义、未派发专项、文档订正记录与外部验收边界 | 活跃 |
-| [TODOLIST.md](./TODOLIST.md) | 开发者 | 业务待办（TODO-001～008）与文档动作 | 活跃 |
-| [Issue7.md](./Issue7.md) | 开发者 | P1-01 TAG 所有权、目标级规划、先增后验与平台化清理；Step 0～5 主体已本地实施，R7-01～R7-07 本地复核收口见 §12.5；后续独立候选见审计/TODOLIST，真实云/浏览器/远端 CI 未执行 | 主体与 R7 复核已本地收口（外部验收未完成） |
-| [ProdTestList.md](./ProdTestList.md) | 人类（用户） | 待用户执行的真实外部人工验收清单 | 活跃 |
-| [HistoryDocs/](./HistoryDocs/) | 开发者 | Build1-5、Issue1-4、Design1-4 共 13 份历史文档（已存档，仅记录，不再用于构建，仅用于核查等情况） | 已存档 |
+| [Design5.md](Design5.md) | 人类（开发者/用户） | 当前设计记录：WebUI 单二进制目标形态、配置边界与安全决策 | 活跃 |
+| [Build7.md](Build7.md) | 开发者 | 当前构建方案：告警与运行健康，Step 0～7（含核验缺陷修复）的分步实施与验收 | 活跃 |
+| [Build6.md](Build6.md) | 开发者 | 已完成的历史构建记录：Step 0-7（version 2 配置包边界已被 Build7 的 version 3 取代，仅用于核查） | 已完成 |
+| [Issue5.md](./HistoryDocs/Issue5.md) | 开发者 | Build6阶段完成记录 | 已归档 |
+| [Issue6.md](./HistoryDocs/Issue6.md) | 开发者 | A1～A20及后续修复完成记录；14项候选去向见Issue8 §3 | 已归档，剩余已转交 |
+| [Issue8.md](./Issue8.md) | 开发者 | 唯一活跃剩余事项、研究裁决、测试与发布证据台账，I8-R01～R25 | 活跃 |
+| [TODOLIST.md](./TODOLIST.md) | 开发者 | 待办入口，只指向Issue8，不重复维护状态 | 导航 |
+| [Issue7.md](./HistoryDocs/Issue7.md) | 开发者 | P1-01阶段完成记录及已实施合同，R7复核与人工真机已收口 | 已归档，合同保留查询 |
+| [ProdTestList.md](ProdTestList.md) | 人类（用户） | 仅保留 SMTP 待验收；Webhook/Kuma 豁免且不阻断 | 活跃 |
+| [HistoryDocs/](./HistoryDocs/) | 开发者 | Build1～5、Design1～4、Issue1～7、audit与旧Issue8/TODO快照 | 已归档，仅供历史/合同核查 |
 
 ### 12.3 API 使用要求文档（PlatformAPIDocs/）
 

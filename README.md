@@ -1,10 +1,12 @@
 # FWAlizer — 防火墙 DNS 自动同步工具
 
+> **当前入口（2026-10-10）：** 剩余事项统一见 [Issue8.md](./Issue8.md)（I8-R01～I8-R25）；Issue5～7与audit已归档至HistoryDocs，旧I8实施补记见 [Issue8历史快照](./HistoryDocs/Issue8-history.md)。用户已确认普通真机验收收口，SMTP仍待完成，Webhook/Kuma继续豁免且不阻断；下文未执行/尚未提交等批次状态按历史阅读，当前revision发布证据独立跟踪。
+
 **FWAlizer**（Firewall DNS Synchronizer）是一个轻量级自动化工具：定时解析指定域名的 IP 地址，自动同步到云防火墙/安全组白名单中。专为域名 IP 频繁变动的场景设计（如动态 DNS、API 网关、VPN 入口）。
 
 > FWAlizer 只有一种运行形态：**WebUI 单二进制 + SQLite**。程序可运行在 Linux 服务器、容器或其他无图形桌面环境，通过浏览器访问 WebUI 完成全部业务配置；不存在 `.env` Headless 模式，也不提供 CLI 子命令。
 
-![仪表盘](./ReadmeAsset/dashboard.png)
+![仪表盘](ReadmeAsset/dashboard.png)
 
 ---
 
@@ -48,33 +50,33 @@
 
 | 亮色主题 | 暗色主题 |
 |:---:|:---:|
-| ![仪表盘-亮色](./ReadmeAsset/dashboard.png) | ![仪表盘-暗色](./ReadmeAsset/dashboard-dark.png) |
+| ![仪表盘-亮色](ReadmeAsset/dashboard.png) | ![仪表盘-暗色](ReadmeAsset/dashboard-dark.png) |
 
 **云资源管理**：目标增删改、资源 ID 按平台提示、扫描结果自动补全、弹窗内测试连接
 
-![云资源管理](./ReadmeAsset/targets.png)
+![云资源管理](ReadmeAsset/targets.png)
 
-![添加目标弹窗](./ReadmeAsset/target-add-modal.png)
+![添加目标弹窗](ReadmeAsset/target-add-modal.png)
 
 **域名规则**：协议/端口/动作/适用目标配置，每条规则独立 IPv6 解析开关
 
-![域名规则](./ReadmeAsset/rules.png)
+![域名规则](ReadmeAsset/rules.png)
 
 **全局设置**：凭据卡片化（腾讯云/阿里云分卡）+ 一键扫描云资源 + TAG/间隔/DNS 配置
 
-![全局设置](./ReadmeAsset/settings.png)
+![全局设置](ReadmeAsset/settings.png)
 
 **模拟测试**：按云目标汇总所需功能并给出**目标级**变更预览（所需功能、已由 TAG 满足、已由外部规则满足、待新增、清理候选与延后原因、冲突与 DNS 错误），不实际写入云防火墙
 
-![模拟测试](./ReadmeAsset/dry-run.png)
+![模拟测试](ReadmeAsset/dry-run.png)
 
 **同步日志**：历史记录 + 实时运行日志（与终端格式一致）
 
-![同步日志](./ReadmeAsset/logs.png)
+![同步日志](ReadmeAsset/logs.png)
 
 **告警配置**：邮件（SMTP）+ Webhook（钉钉/飞书/Slack）双通道
 
-![告警配置](./ReadmeAsset/alerts.png)
+![告警配置](ReadmeAsset/alerts.png)
 
 ---
 
@@ -260,7 +262,7 @@ DNS 服务器可填写主机名或 IPv4（可选 `:端口`）；IPv6 使用 `[�
 3. 把 Uptime Kuma 的 Heartbeat Interval 设置为**大于**该发送间隔并留出余量（默认发送 60 秒时建议 120 秒）；
 4. 保存后 FWAlizer 立即发送第一条心跳，之后按间隔上报 `up`/`down`；进程死亡或完全卡死时不再有心跳，由 Uptime Kuma 依据缺失心跳判定 DOWN。
 
-> ⚠️ 真实 Uptime Kuma 的 HTTP 拉取与 Push DOWN/恢复通知属于人工验收项（见 [ProdTestList.md](./ProdTestList.md)），本地 mock 测试不等于真实外部验收。
+> ⚠️ 真实 Uptime Kuma 的 HTTP 拉取与 Push DOWN/恢复通知属于人工验收项（见 [ProdTestList.md](ProdTestList.md)），本地 mock 测试不等于真实外部验收。
 
 ---
 
@@ -318,7 +320,7 @@ docker run -d --name fwalizer --restart=always \
 
 ### docker-compose 示例
 
-完整示例见 [docker-compose.yml.example](./docker-compose.yml.example)：
+完整示例见 [docker-compose.yml.example](docker-compose.yml.example)：
 
 ```yaml
 services:
@@ -392,13 +394,13 @@ cloudhost-firewall-autoupdater/
 ├── internal/                # 内部工具（端口转换、标签解析、运行健康 internal/health）
 ├── ReadmeAsset/             # README 截图资源
 ├── PlatformAPIDocs/         # 各云平台 API 使用要求 + 地域可用区指南文档
-├── HistoryDocs/             # 历史工程文档（Design1-4/Build1-5/Issue1-4，共 13 份）
+├── HistoryDocs/             # 历史工程文档（含 Issue5～7、audit、旧Issue8/TODO证据快照）
 ├── Design5.md               # 当前设计记录
 ├── Build7.md                # 当前构建方案（告警与运行健康）
 ├── Build6.md                # 已完成的历史构建记录
-├── Issue5.md                # 问题追踪
-├── Issue6.md                # 问题追踪（A1～A20 批次）
-├── ProdTestList.md          # 待用户执行的真实外部人工验收清单
+├── Issue8.md                # 唯一活跃剩余事项台账（I8-R01～R25）
+├── TODOLIST.md              # 待办导航，统一指向Issue8
+├── ProdTestList.md          # 仅保留SMTP人工验收
 └── build/                   # Dockerfile
 ```
 
@@ -578,4 +580,4 @@ Docker 需在容器内设置 `WEBUI_HOST=0.0.0.0`。宿主机的暴露范围由�
 
 ## 许可证
 
-[MIT License](./LICENSE)
+[MIT License](LICENSE)

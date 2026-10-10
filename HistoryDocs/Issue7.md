@@ -1,5 +1,9 @@
 # Issue7.md — P1-01 TAG 所有权与目标级同步实施合同
 
+> **归档说明（2026-10-10）：** 本文件保留归档前的历史发现、实施合同与证据。本阶段主线已完成；当前人工验收以用户 2026-10-10 确认为准，SMTP 与发布证据分别由 [ProdTestList](../ProdTestList.md) 和 [Issue8](../Issue8.md) 承接。
+
+> **当前人工验收结论（2026-10-10，用户确认，优先于下文历史人工验收状态）：** 用户确认当前测试已完成、已真机核验，除 SMTP 外暂无问题。原 ProdTestList 的浏览器、真实云及其他非 SMTP、非豁免人工项目按本次确认收口，不再作为待执行或项目阻断项；已完成记录已从清单删除。Webhook 与 Uptime Kuma（HTTP Monitor / Push Monitor）继续人工验收豁免，不阻断项目，豁免不记为真实链路通过。SMTP 测试发送、自动告警邮件与运行健康异常邮件仍待完成，统一见 [ProdTestList.md](../ProdTestList.md)。本次证据为用户真机确认，未附逐场景原始记录，不据此新增云响应字段、故障注入或配额边界的实测细节；未重新执行测试，也不推定当前 revision 远端 CI/GHCR、依赖审计或长期稳定性通过。下文各实施批次的“未执行/免除”保留为当时事实；与本次人工收口冲突时以本段为准，独立代码候选及待裁决事项保持原状态。
+
 > **文档定位：** 本文是 `fwalizer-audit-final1.md` 中 P1-01 定案后的唯一当前实施合同，参考 Build 文档的写法，把产品语义、当前源码替换边界、建议代码形态、串行 Step、判别性测试与验收口径固定下来。`AGENTS.md` 是唯一强要求；若本文、Design、Build、Audit 之间出现新冲突，必须暂停并交由用户裁决。
 >
 > **Step 0 历史基线：** 2026-09-29，开始 Step 0 时 `main` HEAD 为 `108e5285fd88cd5a0bbc2dbecee81042091f19fa`，相对 `origin/main` ahead 2，工作树干净。Step 0 只修改文档，没有修改源码、测试、依赖或外部系统状态。
@@ -1066,7 +1070,7 @@ R7-04 实施时必须同时满足以下口径，避免为了让三个数字表�
 - DomainKey 为 `Lower + TrimSpace`，配置发布裁剪、计数与解析去重统一身份；配置/展示原值保留，不增加尾点或 IDNA 规范化。保留成功淘汰、配置生命周期裁剪、普通变更独立复制和导入 Reset。轮末只更新捕获的旧 breaker，不合并候选发布后旧轮次晚到的更新，沿用快照隔离边界。
 - 不提前跳过整目标、不复用旧 IP。既有目标重试与 Provider 版本保护保持原样；DNS 失败仍为 failed，其他域名可新增，删除必须继续通过全目标安全门。同轮某处 DNS 成功不改写失败目标或运行健康。DNS 事件仍每目标每 host 每轮最多一次，Dry Run 独立解析，不参与正式探测/计数/事件。
 
-回归入口为 `TestDNSRound_TargetFlow`、`TestDNSRound_ConcurrentProbe`、`TestDNSRound_RealUDP`、`TestDNSRound_FailureExpiresAndLatePublishIsIsolated`、`TestDNSRound_EmptyResultDoesNotRecover` 与 `TestDNSRound_FilteredIPv6DoesNotCountFailure`，并保留版本竞争、删除安全、breaker 裁剪与 API 导入 Reset 既有回归。真实本地 UDP 证明生产 Resolver 的 A/AAAA 请求被合并；负向控制分别移除探测协调、让失败覆盖本轮成功标记，必须使对应测试变红。完整实施门禁与证据边界见 [审计报告 P3-02 实施补记](./fwalizer-audit-final1.md)。
+回归入口为 `TestDNSRound_TargetFlow`、`TestDNSRound_ConcurrentProbe`、`TestDNSRound_RealUDP`、`TestDNSRound_FailureExpiresAndLatePublishIsIsolated`、`TestDNSRound_EmptyResultDoesNotRecover` 与 `TestDNSRound_FilteredIPv6DoesNotCountFailure`，并保留版本竞争、删除安全、breaker 裁剪与 API 导入 Reset 既有回归。真实本地 UDP 证明生产 Resolver 的 A/AAAA 请求被合并；负向控制分别移除探测协调、让失败覆盖本轮成功标记，必须使对应测试变红。完整实施门禁与证据边界见 [审计报告 P3-02 实施补记](fwalizer-audit-final1.md)。
 
 半开失败后如果域名在本轮中途恢复，须等下一轮或下一次手动同步重新探测，这是已确认的隔离取舍。成功计数与目标运行健康独立；不新增冷却时间、TTL、长期 IP 缓存、持久化或日志/通知限流。真实云、浏览器、Docker、通知链路、Go 1.25/Linux 与当前 revision 远端 CI/GHCR 未执行，本地证据不外推为外部验收。
 
@@ -1081,7 +1085,7 @@ R7-04 实施时必须同时满足以下口径，避免为了让三个数字表�
 - 描述边界归位共享实现所在的 `provider/plan_test.go`，直接测试 `RenderDescription` / `TruncateDescription`；Lighthouse 仅更正一处描述渲染注释。完整旧→新对照见 Issue6 §7.9，正式门禁和负向控制见审计报告 P3-07 当前实施补记。
 - 生产目标链仍为 `Run → syncAll → runRound → syncTarget → runTargetAttempt / runTargetCleanup`；`GetRules` 仍用于连接测试，旧 Diff/buildDesired 与 P0-01、planner 端口收敛、TAG/Provider 快照与 R7-06/R7-07 夹具继续保留。未修改目标状态机、Provider 增删、DNS、健康、API/schema、前端或 SDK。
 
-本项只关闭 P3-07/I-09 的本地不可达代码与测试迁移问题，不新增 ProdTestList 人工要求，不改变 PT-I7/PT-B7/PT-AUDIT 的未执行/免除边界。部分删除后 S2 失败且后续 S0 耗尽时，前次残留被空 attempt 覆盖为 0 的观察独立记录、尚未定语义，本次不修复也不把 0 固定为正确值。**该观察已于 2026-10-08 复核被两个独立小组确定性复现，语义裁决登记为 [Issue8.md](./Issue8.md) I8-02 / Q-02；后续按 C 独立修复见 §12.9，不改写本项历史结论。** Go 1.26.6 / macOS arm64；该批"源码/测试/文档尚未提交"为当时记录，**现由提交 `ba82292` 替代**（2026-10-08 复核订正），未 fetch/push。未执行 Go 1.25/Linux、前端构建、产品真实二进制/浏览器、Docker、真实云/通知链路或当前 revision 远端 CI/GHCR，不外推长期稳定或外部验收。
+本项只关闭 P3-07/I-09 的本地不可达代码与测试迁移问题，不新增 ProdTestList 人工要求，不改变 PT-I7/PT-B7/PT-AUDIT 的未执行/免除边界。部分删除后 S2 失败且后续 S0 耗尽时，前次残留被空 attempt 覆盖为 0 的观察独立记录、尚未定语义，本次不修复也不把 0 固定为正确值。**该观察已于 2026-10-08 复核被两个独立小组确定性复现，语义裁决登记为 [Issue8.md](../Issue8.md) I8-02 / Q-02；后续按 C 独立修复见 §12.9，不改写本项历史结论。** Go 1.26.6 / macOS arm64；该批"源码/测试/文档尚未提交"为当时记录，**现由提交 `ba82292` 替代**（2026-10-08 复核订正），未 fetch/push。未执行 Go 1.25/Linux、前端构建、产品真实二进制/浏览器、Docker、真实云/通知链路或当前 revision 远端 CI/GHCR，不外推长期稳定或外部验收。
 
 
 ### 12.8 P3-22 后续冷却改进（2026-10-03，方案 B）
@@ -1118,11 +1122,11 @@ SQLite 继续使用现有详情列，分行写累计确认操作、S1 候选来�
 
 范围为 7 个生产/前端文件、6 个测试文件与 5 个文档，共 18 文件。仓内 `TestI802_*` 覆盖部分删除→S2失败→S0/Add/S1早退、恢复、可信新零替换、unknown/S1零/S2零/估计零/NotFound失败、latest不完整与last_complete历史/完整空替换、混合四类目标、nullable JSON、Run→EventBus→SQLite，以及真实 HTTP 状态/SSE。Dashboard 新增 8 项真实组件 setup/模板渲染回归。六类仓外 Go overlay 与两类前端负向控制守护历史保留、零更新、估计分类、完整明细、汇总/事件、旧展示与零估计提示。
 
-门禁结果见 [Issue8.md 的 I8-02 当前实施补记](./Issue8.md#i8-02-当前实施补记2026-10-08方案-c)。真实浏览器、真实四云/通知链路、Linux/Docker/compose、原生 amd64/macOS 13 与当前 revision 远端 CI/GHCR 未执行；PT-I7-07 只补观察合同，人工未执行/免除状态不变。全仓默认 Go 门禁含既有真实 DNS 测试（I8-04），不把其包级 ok 或自行 skip 称本项真实上游验收。源码/测试/文档尚未提交。
+门禁结果见 [Issue8.md 的 I8-02 当前实施补记](Issue8-history.md#i8-02-当前实施补记2026-10-08方案-c)。真实浏览器、真实四云/通知链路、Linux/Docker/compose、原生 amd64/macOS 13 与当前 revision 远端 CI/GHCR 未执行；PT-I7-07 只补观察合同，人工未执行/免除状态不变。全仓默认 Go 门禁含既有真实 DNS 测试（I8-04），不把其包级 ok 或自行 skip 称本项真实上游验收。源码/测试/文档尚未提交。
 
 ### 12.10 I8-10 Lighthouse 完整快照额度（2026-10-09，用户裁决 B）
 
-已按本聊天明确授权正式修复 `provider/tc_lighthouse.go`，同步 §6.1 与 AGENTS 的 120 秒 / 100 次查询合同；私有辅助方法只为回归传入短预算，不新增导出接口或生产配置项。两份正式回归覆盖 Provider 边界与真实 Lighthouse SDK → 正式目标链；正式门禁、外部负向控制、短预算目标重试验证与外部边界见 [Issue8 文末 I8-10 补记](./Issue8.md)。Q-12 的 ECS 部分仍未裁决，TotalCount/重复页、资源扫描与全目标预算独立；真实云和当前 revision 外部验收状态不变。
+已按本聊天明确授权正式修复 `provider/tc_lighthouse.go`，同步 §6.1 与 AGENTS 的 120 秒 / 100 次查询合同；私有辅助方法只为回归传入短预算，不新增导出接口或生产配置项。两份正式回归覆盖 Provider 边界与真实 Lighthouse SDK → 正式目标链；正式门禁、外部负向控制、短预算目标重试验证与外部边界见 [Issue8 文末 I8-10 补记](../Issue8.md)。Q-12 的 ECS 部分仍未裁决，TotalCount/重复页、资源扫描与全目标预算独立；真实云和当前 revision 外部验收状态不变。
 
 ### 12.11 I8-14 旧描述身份链清理（2026-10-09，用户定型 A）
 

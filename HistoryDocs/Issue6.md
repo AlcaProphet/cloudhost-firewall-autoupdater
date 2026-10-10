@@ -1,6 +1,10 @@
 # Issue6.md — FWAlizer 后续问题与修复合同
 
-> **文档定位：** 本文记录 Build6 完成后的问题、修复合同与历史实施证据；当前条目状态见 §2.1，后续目标级同步以 [Issue7.md](./Issue7.md) 为入口。它只描述问题、已确认的产品语义、建议实施边界和验收要求；除明确标记为“已修复”的条目外，不代表代码已经修改或外部链路已经验收。
+> **归档说明（2026-10-10）：** 本文件保留归档前的历史发现、实施合同与证据。A1～A20 与后续已实施修复按阶段收口；§6.5 的剩余候选已逐项转交 [Issue8](../Issue8.md)，转交不代表修复。
+
+> **当前人工验收结论（2026-10-10，用户确认，优先于下文历史人工验收状态）：** 用户确认当前测试已完成、已真机核验，除 SMTP 外暂无问题。原 ProdTestList 的浏览器、真实云及其他非 SMTP、非豁免人工项目按本次确认收口，不再作为待执行或项目阻断项；已完成记录已从清单删除。Webhook 与 Uptime Kuma（HTTP Monitor / Push Monitor）继续人工验收豁免，不阻断项目，豁免不记为真实链路通过。SMTP 测试发送、自动告警邮件与运行健康异常邮件仍待完成，统一见 [ProdTestList.md](../ProdTestList.md)。本次证据为用户真机确认，未附逐场景原始记录，不据此新增云响应字段、故障注入或配额边界的实测细节；未重新执行测试，也不推定当前 revision 远端 CI/GHCR、依赖审计或长期稳定性通过。下文各实施批次的“未执行/免除”保留为当时事实；与本次人工收口冲突时以本段为准，独立代码候选及待裁决事项保持原状态。
+
+> **文档定位：** 本文记录 Build6 完成后的问题、修复合同与历史实施证据；当前条目状态见 §2.1，后续目标级同步以 [Issue7.md](Issue7.md) 为入口。它只描述问题、已确认的产品语义、建议实施边界和验收要求；除明确标记为“已修复”的条目外，不代表代码已经修改或外部链路已经验收。
 >
 > **历史基线（2026-09-27 批次）：** 2026-09-27，分支 `main`，全文规范化提交 HEAD `0d9e2d678f86520a5e688d4ad1b57a6483968d18`（其父为整理前 HEAD `1392ab9b675d0cf79a04f5f4a0f2f5cd966dec36`），相对 `origin/main` ahead 2；`git diff 1fafb172307652912a621eaebf4bf942cbd2c33f..0d9e2d678f86520a5e688d4ad1b57a6483968d18` 只包含 `Issue6.md`，源码零变化，因此该批次下列源码结论与最终合同适用于当时实现；当前同步链路已由 Issue7 替代，见下方 P3-07 更正与 §7.9。该批次裁决并入时，工作树唯一的未提交改动是本文（不涉及任何源码、测试、依赖或配置）。
 >
@@ -8,7 +12,7 @@
 >
 > **历史授权边界（2026-09-27 批次）：** 2026-09-27 已完成全量只读复核与用户裁决；本次只把裁决结果并入本文，不修改设计、源码、测试、依赖、配置或其他文档，也不开始任何修复。§2.2 各批次的可实施性由用户后续一次性授权决定。
 >
-> **Build7（2026-09-28）：** 当前构建方案为 [Build7.md](./Build7.md)（告警与运行健康）；Build7 **Step 0～6 已全部实施完成，Step 7（核验缺陷修复）亦已完成**（逐步证据见 Build7 第八节 Step 7 与 §十一 v1.3；本轮核验发现与处置见本文 §7.8）。§6.5 第 10 项（SMTP 多收件人未逐项 Trim）已由 Build7 合同显式接管并**随 Build7 Step 3 实施完成**：`notifier/email.go` 对 `To` 逐项 `TrimSpace` 并跳过空项，判别性用例见 `notifier/email_test.go:TestEmailRecipientsAreTrimmed`；该 Build7 批次未接管 §6.5 的其余候选；后续独立授权的处理见 §7 及审计报告各 finding，不将历史未授权范围解释为永久禁止后续授权。
+> **Build7（2026-09-28）：** 当前构建方案为 [Build7.md](../Build7.md)（告警与运行健康）；Build7 **Step 0～6 已全部实施完成，Step 7（核验缺陷修复）亦已完成**（逐步证据见 Build7 第八节 Step 7 与 §十一 v1.3；本轮核验发现与处置见本文 §7.8）。§6.5 第 10 项（SMTP 多收件人未逐项 Trim）已由 Build7 合同显式接管并**随 Build7 Step 3 实施完成**：`notifier/email.go` 对 `To` 逐项 `TrimSpace` 并跳过空项，判别性用例见 `notifier/email_test.go:TestEmailRecipientsAreTrimmed`；该 Build7 批次未接管 §6.5 的其余候选；后续独立授权的处理见 §7 及审计报告各 finding，不将历史未授权范围解释为永久禁止后续授权。
 
 > **P3-07 当前链路更正（2026-10-02）：** 本文上述基线与下文 A1/A11/A18、§6.5、§7.2 的 `syncDomain → retrySync` / `retrySyncDetailed` 和逐域计数均为 Build6 当时的历史实现。当前正式同步由 `Run → syncAll → runRound → syncTarget → runTargetAttempt / runTargetCleanup` 执行；Issue7 已改为目标级先增后验。P3-07 按本次独立授权方案 B 删除旧函数并迁移有效回归，不重写过去的实施事实；当前入口与迁移对照见 §7.9，当前强要求继续以 AGENTS 为准。
 
@@ -161,7 +165,7 @@
 
 #### A2｜高｜SMTP 无 deadline，异步告警无并发上界
 
-> **P3-15 后续实施说明（2026-10-03）**：下述 A2 方案与 2026-09-27 记录保留历史证据；其中“每次丢弃记录 WARN”的现时行为已由独立授权 P3-15 方案 B 替代。渠道长期限流器保存固定类别计数，新周期首条立即 WARN，随后约每 30 秒汇总新增丢弃，空窗口不输出并停止续约；窗口与计数跨配置重载、关闭再开启及旧实例晚到回调连续。Webhook 平台切换时按原平台计数，混合汇总标记 `mixed`。每渠道 4 条在途、满载丢弃最新、返回 nil、不排队不重试及 EventBus 异步边界保持。正式测试与门禁见 [审计 P3-15 当前实施补记](./fwalizer-audit-final1.md#p3-15-当前实施补记2026-10-03推荐方案-b)；真实外部链路人工状态保持，进程退出前未输出的计数可能丢失。
+> **P3-15 后续实施说明（2026-10-03）**：下述 A2 方案与 2026-09-27 记录保留历史证据；其中“每次丢弃记录 WARN”的现时行为已由独立授权 P3-15 方案 B 替代。渠道长期限流器保存固定类别计数，新周期首条立即 WARN，随后约每 30 秒汇总新增丢弃，空窗口不输出并停止续约；窗口与计数跨配置重载、关闭再开启及旧实例晚到回调连续。Webhook 平台切换时按原平台计数，混合汇总标记 `mixed`。每渠道 4 条在途、满载丢弃最新、返回 nil、不排队不重试及 EventBus 异步边界保持。正式测试与门禁见 [审计 P3-15 当前实施补记](fwalizer-audit-final1.md#p3-15-当前实施补记2026-10-03推荐方案-b)；真实外部链路人工状态保持，进程退出前未输出的计数可能丢失。
 
 - **状态与判定：** 确认存在，置信度高。SMTP 无 deadline 与并发无上限是代码事实；生产资源耗尽仍只是可信推论。
 - **当前证据：** `notifier/bus.go:109-115` 为每个接口订阅者启动一个 goroutine（无上限、无丢弃、无跟踪）；`notifier/email.go:49` 使用 `smtp.SendMail`——标准库内部 `smtp.Dial` 即 `net.Dial("tcp", addr)` 无 timeout，greeting（`ReadResponse(220)`）、STARTTLS、AUTH、MAIL、RCPT、DATA、QUIT 全链路无 deadline；Webhook client 已有 10s 超时（`notifier/webhook.go:26`）。全仓通知链路零并发上界（`syncer.go:448` 的 `WaitGroup` 只等轮次内云调用）。同步轮次不等待告警，进程退出也不等待在途告警（`run.go:182` 只等 `s.Wait()`）。localhost 静默 SMTP 与阻塞订阅者已分别复现长时间不返回及 goroutine 线性增长。
@@ -326,7 +330,7 @@
 - 固定驱动 `modernc.org/sqlite v1.54.0/tx.go` 对 `ReadOnly=true` 跳过 beginMode，故 A4 历史“会让导出/启动只读事务申请写锁”理由不成立。历史描述与当时测试证据保留；本补记替代禁止 `_txlock` 的理由和 DSN 形状边界。
 - 当前 DSN 为 file URI + `?_pragma=busy_timeout(5000)&_txlock=immediate`；`_txlock` 是独立驱动参数，不放入 `_pragma`。A4 的每连接 5000ms、路径转义和一次性 WAL 继续有效，未新增连接池上限。
 - `Store.BeginTx` 与通用写事务（含迁移/扫描）在首次读取前预留写事务；ReadOnly 导出/启动快照仍可与写事务并行。修复实际引用检查先读后写与独立日志/扫描提交之间的 517 竞争，不改 API 错误分类、事务回滚与提交后一次发布。
-- 正式 DSN 结构检查、写锁预留/入口等待/超时恢复、只读快照、日志/扫描完整落库与 coordinator 取消/发布回归已落地。定向 race 20 轮、5 秒慢例、受影响两包 race 与 vet/build 通过；三类仓库外正式 overlay 负向控制全部按行为断言变红。全量 12 包 race 一轮、受影响 Go 文件 gofmt 检查与 diff-check 均通过，完整证据见 [审计报告 P3-09 当前实施补记](./fwalizer-audit-final1.md)。
+- 正式 DSN 结构检查、写锁预留/入口等待/超时恢复、只读快照、日志/扫描完整落库与 coordinator 取消/发布回归已落地。定向 race 20 轮、5 秒慢例、受影响两包 race 与 vet/build 通过；三类仓库外正式 overlay 负向控制全部按行为断言变红。全量 12 包 race 一轮、受影响 Go 文件 gofmt 检查与 diff-check 均通过，完整证据见 [审计报告 P3-09 当前实施补记](fwalizer-audit-final1.md)。
 - 保留边界：超过 5 秒占锁仍可能返回 BUSY/API 500，重试不保证成功；context 不承诺毫秒级取消，但取消零提交/零发布及恢复已覆盖；ReadOnly 非驱动强制拒写。Go `1.26.6 darwin/arm64`，未执行 Go 1.25/Linux、前端/浏览器、Docker、真实云/通知链路或远端 CI。源码/测试/文档尚未提交；本地结果不外推长期稳定或外部验收。
 
 
@@ -603,7 +607,7 @@ git diff --check
 7. **Dashboard 数字双口径（2026-09-28 修复时尚未提交，后续提交 `043ac36`）**：核验时统计概览仍取最近一条逐域日志的 added/deleted，与 A18 的整轮汇总并存会出现两套数字；本轮已统一改取同一份 `SyncStatus.last_round.added/deleted` 整轮快照，实施与证据见 §7.2 第 1 项。
 8. **云侧错误码与重试面**：阿里云 `Throttling`/`ServiceUnavailable` 等不在可重试列表（F2 只新增腾讯 `ClientError.NetworkError`）。
 9. **Webhook 细节（历史观察，当前更正见下）**：`resp.Body.Close()` 错误被忽略且不 drain body（影响 keep-alive 复用）。
-   - **P3-21 当前更正（2026-10-03，方案 B）：** P2-05（`93e0e4b`）已处理 Close 的固定安全警告，≤16 KiB 的 2xx 经 ReadAll 读至 EOF；非 2xx/超限仍及时关闭。当前 Go 1.27 标准 HTTP/1 Transport 关闭后会尝试有界清理（[官方发布说明](https://go.dev/doc/go1.27#net/http)），不保证慢正文/取消/超大响应等异常连接复用；接受此边界，不增加主动 drain 等待。独立 Push 子项现已实施 16 KiB 有界完整正文校验、`*bool` 确认 ok 和安全 Close WARN，原 10 秒/单在途/无重试/健康独立保持，不混用 Webhook 的渠道成功协议。正式回归与门禁见 [审计报告 P3-21 当前实施补记](./fwalizer-audit-final1.md#p3-21-当前实施补记2026-10-03定型方案-b)；P3-21 本地闭环，真实通知验收状态保持。
+   - **P3-21 当前更正（2026-10-03，方案 B）：** P2-05（`93e0e4b`）已处理 Close 的固定安全警告，≤16 KiB 的 2xx 经 ReadAll 读至 EOF；非 2xx/超限仍及时关闭。当前 Go 1.27 标准 HTTP/1 Transport 关闭后会尝试有界清理（[官方发布说明](https://go.dev/doc/go1.27#net/http)），不保证慢正文/取消/超大响应等异常连接复用；接受此边界，不增加主动 drain 等待。独立 Push 子项现已实施 16 KiB 有界完整正文校验、`*bool` 确认 ok 和安全 Close WARN，原 10 秒/单在途/无重试/健康独立保持，不混用 Webhook 的渠道成功协议。正式回归与门禁见 [审计报告 P3-21 当前实施补记](fwalizer-audit-final1.md#p3-21-当前实施补记2026-10-03定型方案-b)；P3-21 本地闭环，真实通知验收状态保持。
 10. **SMTP 收件人解析**：`strings.Split(To, ",")` 未逐项 `TrimSpace`，`"a@x.com, b@y.com"` 会产生带前导空格的收件人。
 11. **时间戳纯内存**：`last_sync` 与新增的 `last_success` 重启归 null，UI 文案需避免表述为“从未成功”。
 12. **SQLite 其他缺口**：未设置任何连接池上限；`AddSyncLog` 的 `COUNT(*)` 是全表扫描且不在事务内；`WithTransaction` 使用无 context 的 `Begin()`；`PRAGMA foreign_keys` 未设置。
