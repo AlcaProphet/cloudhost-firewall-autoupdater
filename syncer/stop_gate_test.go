@@ -213,7 +213,7 @@ func TestStopInjectedDuringRoundBlocksNextRound(t *testing.T) {
 		t.Errorf("门控通过时已发生的云调用 = %d, want 0（门控位于 syncAll 之前）", got)
 	}
 	if got := p.calls.Load(); got != 2 {
-		t.Fatalf("Provider 调用次数 = %d, want 1（只保留 Stop 前已开始的当轮）", got)
+		t.Fatalf("Provider 调用次数 = %d, want 2（只保留 Stop 前已开始当轮的 S0/S1 调用）", got)
 	}
 }
 

@@ -121,6 +121,9 @@
 
 **I8-15 注释与死赋值后续整理（2026-10-09，用户定型方案 A）**：用户授权修复前复核、实施与文档同步；实施前 `main / f813c2e`、本地 `origin/main / 36f7745`、ahead 8，工作树/暂存区干净。四份 Go 文件中，export.go 同步先发布 RuntimeState 后唤醒 Health/Push；plan.go 区分 planner 对缺失/不可解析索引 deferred 与 CVM Provider 对重复索引整批拒删；tc_cvm.go 明确拒绝任何解析后重复索引；push.go 仅去除死赋值，保留 URL 早期校验与健康检查后构造，并说明返回 true 不保证投递、Run 两种结果均按有效间隔再尝试。AddStateUnknown 保留：当前正式链对普通 Add 错误早退，幂等错误经 S1 验证，无需置 true；既有未知态回归与 Q-01 公式保持。本次不新增/修改测试，不改 Provider 行为、目标状态机、Push 调度、API/schema/依赖/前端；同步本文/Issue8/审计，共七文件。Q-13 仅新增 I8-15 范围已裁决，其他候选独立。正式门禁与外部边界见 Issue8 文末补记；本轮未提交、fetch 或推送。
 
+
+**I8-16 后续本地补强（2026-10-10，b-A / d-A，Q-21）**：用户裁决并授权实施测试/文案与清理错误处理。静默 SMTP 持有 acceptedConn 并有界回收，严格安全超时类别；Push 保留 Bus 测试接缝、补正向控制；Stop 文案 want 2；无 Runtime 用例用有效 State 并独立覆盖 nil State。唯一生产逻辑 email.go 检查连接/客户端/失败 DATA 的清理错误，仅固定阶段/类别 WARN，正常 Quit 不重复 Close、预期 net.ErrClosed 不告警，不覆盖主错误或改变 QUIT 失败结果。六份 Go 与四文档，正式证据和外部边界见 Issue8 同名补记；未提交或推送。
+
 ---
 
 ## 二、核心编码原则
@@ -345,6 +348,7 @@
 ## 十一、代码规范
 
 - **所有 error 必须处理**，不可忽略返回值
+- SMTP 清理错误（I8-16d，d-A）仅记固定阶段/类别 WARN，不记录原始错误、SMTP 原文或 cause，不覆盖发送主错误；正常 Quit 后不重复关闭，预期 net.ErrClosed 不告警。QUIT 失败仍为发送失败，不将本规范补齐扩大为 DATA/QUIT 成功边界调整。
 - 同步事件 SSE 的序列化失败只记录固定 WARN、事件类型与错误类型，跳过坏事件并保持连接；不记录事件负载或序列化错误原文。日志渲染失败向 Handler 调用方返回错误，不在同一 Handler 内递归记录；静态 `/api/health` 写失败记录 Debug，不补写第二个响应。
 - 日志使用 `log/slog`（Go 1.21+ 内置结构化日志）
 - 注释使用**中文**（面向国内开发者）

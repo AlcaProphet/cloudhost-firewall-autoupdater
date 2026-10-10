@@ -470,6 +470,12 @@ func TestPushFailureDoesNotAffectHealthOrPublishEvents(t *testing.T) {
 		f := newPushFixture(t)
 		rec := &pushRecorder{}
 		pub := &recordingPublisher{}
+		// 正向控制：记录器必须观察到发布；正式 Push 使用独立的空记录器。
+		control := &recordingPublisher{}
+		control.Publish(notifier.Event{Type: notifier.EventOperationalUnhealthy})
+		if control.count() != 1 {
+			t.Fatal("发布记录器未记录正向控制事件")
+		}
 		f.setConfig(PushConfig{Enabled: true, URL: "https://example.invalid/t", Interval: config.MinPushInterval})
 		p := NewPusher(PusherDeps{Checker: f.deps.checker(), Config: f.configFunc, Bus: pub})
 		p.client.Transport = pushFailingTransport(func(req *http.Request) (*http.Response, error) {

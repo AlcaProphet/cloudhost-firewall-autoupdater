@@ -212,10 +212,30 @@ func TestApplyCandidateOrderAndEffects(t *testing.T) {
 	app.SetLogLevel("info")
 }
 
-// TestApplyCandidateWithoutRuntimeIsNoop 无 Syncer/Runtime 时 applyCandidate 不得 panic。
-func TestApplyCandidateWithoutRuntimeIsNoop(t *testing.T) {
+// TestApplyCandidateWithoutRuntimeDoesNotPanic 有效候选在无 Syncer/Runtime 时不得 panic。
+func TestApplyCandidateWithoutRuntimeDoesNotPanic(t *testing.T) {
+	previous := app.LogLevelVar.Level()
+	t.Cleanup(func() { app.LogLevelVar.Set(previous) })
+	rc := alertConfig(false, false)
+	rc.LogLevel = "error"
+	state, err := buildStateFromConfig(t, rc)
+	if err != nil {
+		t.Fatal(err)
+	}
 	d := &Deps{}
-	d.applyCandidate(Candidate{})
+	d.applyCandidate(Candidate{State: state})
+	if app.LogLevelVar.Level() != slog.LevelError {
+		t.Fatal("有效 State 未进入发布路径")
+	}
+}
+
+// TestApplyCandidateNilStateIsNoop 独立验证首个守卫，不与无 Runtime 分支混用。
+func TestApplyCandidateNilStateIsNoop(t *testing.T) {
+	previous := app.LogLevelVar.Level()
+	(&Deps{}).applyCandidate(Candidate{})
+	if app.LogLevelVar.Level() != previous {
+		t.Fatal("nil State 修改了日志级别")
+	}
 }
 
 // TestCoordinatorBuildsCandidateBeforeCommit 候选必须在 commit 之前构造，

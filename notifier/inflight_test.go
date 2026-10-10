@@ -90,13 +90,18 @@ func TestEmailSendBoundedByDeadlineOnSilentServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("启动静默 SMTP 服务失败: %v", err)
 	}
-	defer ln.Close()
+	release := make(chan struct{})
+	serverDone := make(chan struct{})
 	go func() {
-		for {
-			if _, err := ln.Accept(); err != nil {
-				return
-			}
-			// 不发送 220 greeting：客户端会一直等待直到自身 deadline 生效
+		defer close(serverDone)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		// 持有连接且不发送 greeting，直到测试收尾；避免 GC 提前关闭连接。
+		<-release
+		if err := conn.Close(); err != nil {
+			t.Errorf("关闭静默 SMTP 连接失败: %v", err)
 		}
 	}()
 
@@ -106,6 +111,25 @@ func TestEmailSendBoundedByDeadlineOnSilentServer(t *testing.T) {
 	}
 
 	setSMTPTimeouts(t, 2*time.Second, 400*time.Millisecond)
+	var sendDone <-chan error
+	t.Cleanup(func() {
+		close(release)
+		if err := ln.Close(); err != nil {
+			t.Errorf("关闭静默 SMTP 监听失败: %v", err)
+		}
+		select {
+		case <-serverDone:
+		case <-time.After(3 * time.Second):
+			t.Error("静默 SMTP 服务未有界退出")
+		}
+		if sendDone != nil {
+			select {
+			case <-sendDone:
+			case <-time.After(3 * time.Second):
+				t.Error("SMTP 发送未有界退出")
+			}
+		}
+	})
 
 	n := NewEmailNotifier(EmailConfig{
 		Host: host, Port: port, User: "", Pass: "",
@@ -114,38 +138,23 @@ func TestEmailSendBoundedByDeadlineOnSilentServer(t *testing.T) {
 
 	const budget = 5 * time.Second
 	done := make(chan error, 1)
+	sendDone = done
 	go func() {
 		done <- n.OnEvent(Event{Type: EventSyncError, Timestamp: time.Now()})
 	}()
 
 	select {
 	case err := <-done:
+		sendDone = nil
 		if err == nil {
 			t.Fatal("对静默 SMTP 必须返回错误（deadline 生效）")
 		}
-		var netErr net.Error
-		if !(asNetError(err, &netErr) && netErr.Timeout()) {
-			t.Logf("返回错误（非超时类型，但仍被 deadline 有界化）: %v", err)
+		if !strings.Contains(err.Error(), "会话超时") {
+			t.Fatalf("静默 SMTP 必须返回安全超时类别，实际: %v", err)
 		}
 	case <-time.After(budget):
 		t.Fatalf("静默 SMTP 未在 %v 内返回：deadline 未生效（修复前为无界阻塞）", budget)
 	}
-}
-
-// asNetError 是 errors.As 的小包装，避免在断言里再引入一次导入。
-func asNetError(err error, target *net.Error) bool {
-	for err != nil {
-		if ne, ok := err.(net.Error); ok {
-			*target = ne
-			return true
-		}
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-	return false
 }
 
 // TestInFlightLimiterMechanism 限流器单元语义：容量 4、满载失败、release 幂等。

@@ -219,6 +219,8 @@
 
 #### I8-16【低·测试与规范候选】测试夹具、文案与清理错误处理（Extension 误判撤销）　`①`
 
+- **当前状态（2026-10-10，b-A / d-A，Q-21 已裁决）**：a/c/e 已补强；b 保留测试 Bus 并补正向控制；d 已补安全清理错误处理，保留 QUIT 失败行为。正式门禁与边界见文末。本节下表保留修复前历史。
+
 | 项 | 位置 | 问题 |
 |---|---|---|
 | a | `notifier/inflight_test.go:89-98` | 仍丢弃 accepted `net.Conn`（与 R7-06/R7-07 同模式）；因断言放宽（`:120-132` 任意错误均可）不能据此保证不 flaky；现有宽断言无法区分"应用层 deadline 生效 vs 连接被重置"的判别力 |
@@ -269,11 +271,11 @@
 | I8-15b | 已按 A 整理 | planner 缺失/不可解析索引 deferred；Provider 拒绝任何解析后重复索引，整批零删除请求 | 正式 CVM 拒删 race 20 次及负向控制，见文末 |
 | I8-15c | 已按 A 整理 | 仅去除死赋值；保留 URL 早期校验、健康检查后构造与调度；修正返回值注释 | 正式 Push 回归 race 20 次及负向控制，见文末 |
 | I8-15d | 已澄清并保留 | 普通 Add 错误早退、幂等错误经 S1 验证；字段/覆盖公式/未知态测试保留，非安全漏洞 | 正式 planner/目标链 race 20 次及未知态负向控制，见文末 |
-| I8-16a | 测试改进，低 | 夹具持有 acceptedConn 并有界回收，断言deadline而非任意错误；压力复验 | inflight89–132源码，宽断言不能证明永不flaky |
-| I8-16b | 整洁／测试候选 | Bus未读取属残留，Publish零计数断言可失败；加正向控制或清理字段须复核调用者 | push48/run155–164；旧永真断言已撤销 |
-| I8-16c | 文案待改，低 | 后续Go测试文案 want2，与断言一致，行为不变 | stop_gate_test215–216 |
-| I8-16d | Close规范候选；Extension误报撤销 | 错误只作安全固定类别、不得推翻已接受邮件；断开/成功Quit对照，禁止记录SMTP原文 | email215/221/224–229；Extension第二返回值为string |
-| I8-16e | 测试改进，低 | 以非nil Candidate.State 到达无Runtime分支，保留nil State首守卫单独用例；分支变异应失败 | alertset_test216/deps129–131 |
+| I8-16a | 已本地补强，低 | acceptedConn 持有至收尾，连接/监听/发送有界回收；严格安全超时类别 | 定向 race 与 GC 压力、提前断开负向控制见文末 |
+| I8-16b | 已按 A 本地补强 | 保留 Bus 测试接缝；独立记录器正向控制＋零发布回归 | 发布变异准确失败；未移除字段或接线生产 Bus |
+| I8-16c | 已本地订正 | want 2，与 S0/S1 两次调用断言一致 | 只改文案，不改停止门控 |
+| I8-16d | 已按 A 本地补齐 | 固定安全清理 WARN，预期已关闭不告警；不覆盖主错误；QUIT 失败保持失败 | Extension 误报继续撤销；不改 SMTP 接受边界 |
+| I8-16e | 已本地补强 | 有效非 nil State 实际进入无 Runtime 分支；nil State 独立用例 | 改名 DoesNotPanic，恢复全局日志级别；分支变异失败 |
 | I8-17d | 静态更新丢失候选；无生产调用 | 未来保留接口时同锁辅助发布，不持s.mu调用自锁ApplyState；屏障证明不丢配置且无死锁 | setSyncEnabled378–389/ApplyState144–153 |
 | I8-17e | 当前前置条件合理 | 若将来允许任意域名，才定义缺键错误；当前调用者传本轮已知适用域名 | dns_round38–40调用链 |
 | I8-47 | 防御统一低收益；接线保证Store | 若扩大可空契约，导入/导出统一错误需新测试；不称违反既有六入口503要求 | export导入99/117/coordinator95真实nil点 |
@@ -307,6 +309,7 @@
 | **Q-18（已裁决、本地收口）** | **I8-17b** IPv6 DNS 输入范围 | 用户 2026-10-09 授权推荐 A：保留 IPv6 括号格式，裸 IPv6 配置继续拒绝；补默认/显式端口和实际 IPv6 上游回归，订正文档。原 Q-01～Q-17 无直接关联未决项，Q-06 测试本地化合同继续适用 | 三份测试、resolver.go 注释与 AGENTS/README/本文/审计，共八文件；生产逻辑、API/schema/依赖/前端保持 |
 | **Q-19（已裁决、本地修复）** | **I8-17f** 正式同步末尾等待与跨轮间隔 | 用户 2026-10-09 确认并定型 A，授权修复与文档同步：按 CloudType 保存目标完成后的冷却，只在下一个适用目标 DNS/目标链前补足；保留 5s/200ms、计时边界和 Stop/暂停已准入轮完成。原 Q-01～Q-18 无直接关联未决项 | 唯一生产 syncer.go；正式冷却/退避回归、日志观察夹具及 AGENTS/本文/审计；不改统一请求限流、Run 调度或目标状态机 |
 | **Q-20（已裁决、本地修复）** | **I8-43** 全包必填诊断与页面反馈 | 用户确认研究定型 B：保留 version 入口，集中有序汇总缺失/null，父子去重，前 100 项＋准确总数＋截断；结构完整后领域校验；原 File 上传与持久失败弹窗、导入生命周期守卫 | 原 Q-01～Q-19 无直接关联未决项，Q-08 严格解析继续适用；不汇总领域错误、不升版、不扩大其他页面守卫；证据见文末 |
+| **Q-21（已裁决、本地修复）** | **I8-16b / I8-16d** 测试 Bus 与 SMTP 清理边界 | 用户 2026-10-10 选择两项 A 并授权实施：保留 Bus、补正向控制与发布变异；清理错误只安全记录，保留 QUIT 失败仍返回失败。a/c/e 按推荐补强 | 不扩大 Q-13 其他清理候选，不调整 DATA/QUIT 成功语义；正式证据见文末 |
 
 ---
 
@@ -615,3 +618,13 @@
 - **完整本地门禁**：固定 Go 1.27.1 的 PATH 与 `GOTOOLCHAIN=local`，`go test ./... -race -count=1 -timeout=5m` 全仓十二包无测试结果缓存、每项一轮全部 ok；`go vet ./...`、`go build ./...`、四份受影响 Go 文件 gofmt 检查与最终 `git diff --check` 通过。全仓包含既有 TestMain 构建产品二进制的本地进程回归，不冒称 I8-15 专项外部验收。证据目录 `/Users/kyle/.codex/outputs/i8-15-2026-10-09-7u8r_gus/` 保存 targeted-race/full-race/vet/build 日志、三份错误候选/overlay 与负向日志。
 - **范围与状态**：四份 Go 文件（webui/api/export.go、provider/plan.go、provider/tc_cvm.go、internal/health/push.go）与三份文档（AGENTS、Issue8、审计），共七文件；唯一可执行代码整理为 Push 局部赋值/作用域，其他为注释。Issue8 的 I8-15a/b/c 标记已整理、d 澄清并保留，订正“全仓从未置 true”；Q-13 仅新增 I8-15 已裁决，其他 I8-42 候选独立。旧批次 Q-13“仅 I8-14”保留为历史记录。未改 API/schema、依赖、前端、Provider 请求行为、目标状态机、DNS/重试/健康及 Push 调度。本轮未提交或推送。
 - **外部边界**：Go 1.27.1 darwin/arm64；裸 Go 门禁使用已准备好的真实 ignored 前端 dist，本轮未重建前端或运行 make all/npm audit。未执行真实浏览器、真实云/外部 DNS/SMTP/收件箱/Webhook/Uptime Kuma、Linux/Docker/compose 或当前 revision 远端 CI/GHCR，原人工未执行/免除状态保持。定向重复与单轮全仓绿色不外推为长期稳定或外部验收通过。
+
+## I8-16 当前实施补记（2026-10-10，b-A / d-A，Q-21）
+
+- **授权与基线**：用户先裁决 b-A（保留 Bus）和 d-A（只处理清理错误，保留 QUIT 失败），随后明确授权按推荐处理并同步文档。实施前 `main == 本地 origin/main == de42602affcc70f45c76018999fc1275601aac2e`，工作树/暂存区干净，未 fetch。原 Q-01～Q-20 无直接对应本项未决争点；Q-13 仅间接涉及清理，本轮不扩大其其他候选，新增 Q-21 记录本次两项已裁决范围。
+- **a/c/e**：静默 SMTP 单连接夹具持有 acceptedConn 至收尾，关闭连接与监听、有界等待服务端和发送完成，再恢复测试超时；安全错误不保留底层 net.Error，因此严格检查“会话超时”类别，移除仅该测试使用的 asNetError。Stop 文案改为 want 2（当轮 S0/S1），断言不变。无 Runtime 用例用非 nil State、检查日志级别已应用并恢复全局级别，改名 TestApplyCandidateWithoutRuntimeDoesNotPanic；nil State 首守卫单独覆盖。
+- **b**：保留 PusherDeps.Bus/Pusher.bus 作为既有测试接缝，生产仍不接线/读取；零发布回归加入独立记录器的一次 Publish 正向控制。没有删零计数断言，不重开此前“永真断言”的误判，也不增加生产事件发布能力。
+- **d**：唯一生产逻辑文件 notifier/email.go。deadline 设置/NewClient 失败后的 conn.Close、异常路径 c.Close、正文 Write 失败后的 w.Close 均检查清理错误。仅记录固定消息、固定 stage 与 cleanup_failed，不记录原始 error/cause/SMTP 原文。正常 Quit 已关闭连接，不再重复 Close；nil 与 errors.Is(net.ErrClosed) 不告警，兼容标准库 NewClient/Auth 已关闭连接。清理失败不覆盖主错误或已有成功结果；c.Quit 的任何错误仍返回原有安全发送失败，不改 DATA 接受、SMTP 成功或重试语义。Extension 第二返回值仍按扩展参数字符串处理。
+- **回归与判别力**：新增 email_cleanup_test.go，覆盖 nil/已关闭/包装已关闭/含敏感原文的清理错误，以及成功 Quit、失败 Quit、greeting/Auth 失败后的无重复告警。四包定向 race 每项重复20次通过，包含既有 TestP319Session 对 QUIT 等阶段安全错误的保护。五类正式源码仓外 overlay 分别提前断开、注入 Publish、无 Runtime 分支 panic、泄露清理原文、对预期已关闭告警，均退出1；前三/后两类为对应断言或指定分支 panic 失败，无编译失败。证据保存于 `/Users/kyle/.codex/outputs/i8-16-2026-10-10/`；研究期候选证据不作为正式门禁。
+- **完整本地门禁**：`go test ./... -race -count=1 -timeout=5m` 十二包全部通过；最后对 e 用例改名并补发布副作用断言后，重新执行 webui/api 完整 race 一轮和四包定向 race20次通过。`GOGC=1 go test ./notifier -race -run ^TestEmailSendBoundedByDeadlineOnSilentServer$ -count=20 -timeout=1m` 通过。go vet/go build 通过；受影响 Go 格式与最终 diff-check 通过。全仓含既有产品二进制进程回归，不称为本项专项真实 SMTP 故障验收。
+- **范围与边界**：六份 Go 文件（唯一生产 email.go、四份既有测试及新增 email_cleanup_test.go），同步 AGENTS/Issue8/Build7/审计，共十文件。未修改 API/schema、依赖、前端、生产 SMTP 超时/在途限制、Push 调度/事件策略、Provider/DNS 或目标状态机。Go 1.27.1 darwin/arm64，裸 Go 门禁使用已准备好的前端 dist；未重建前端、运行 make all/npm audit、Linux/Docker/compose、专项产品进程故障验收、真实浏览器/云/SMTP/收件箱/Webhook/Uptime Kuma 或当前 revision 远端 CI/GHCR。既有人工免除/未执行状态保持，本地重复与单轮全量不外推长期稳定或外部验收通过。本轮未提交或推送。

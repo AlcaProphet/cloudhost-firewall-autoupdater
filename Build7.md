@@ -969,3 +969,8 @@ I8-113 与 `all:frontend/dist` 修正已提交为 `c3bb468` 并保留在当前 `
 当前正式版本的 `make all` 通过（包含前端重建、vet、全仓 race 与产品构建，部分 Go 包命中缓存）；随后独立全仓 `go test ./... -race -count=3 -timeout=20m` 全部 12 包通过，每项测试在单条命令中重复三次。I8-113 三包专项 race 20 次、静态资源 race 20 次、前端全部 95 项回归、另行 Go build 与最终 diff-check 通过。仓库外恢复旧嵌入规则，正式回归明确因 `_common-qs-f2iD0.js` 返回 404 而失败。完整命令、日志路径及历史失败说明见 Issue8/审计文末同名收口补记。
 
 I8-113 本地修复、验证与文档收口完成。PT-AUDIT-02 真实浏览器仍未执行；真实通知平台、云、上游 DNS、Linux/Docker/compose 与当前 revision 远端 CI/GHCR 无本次通过结论。npm ci 仍提示既有 3 项 high，未独立 audit/升级，不登记漏洞检查通过；本地重复不外推长期稳定或外部验收通过。
+
+
+## I8-16 SMTP 清理与测试补强（2026-10-10）
+
+按用户裁决 d-A，SMTP 连接/客户端及正文写失败后的清理错误改为固定 stage/category 的安全 WARN；正常 Quit 不重复关闭，预期已关闭不告警，不暴露底层 error/cause，不覆盖主错误。保留 §5.1 的 QUIT 错误返回失败行为，SMTP 成功仍不表示收件箱投递。按 b-A 保留 Push Bus 测试接缝并补记录器正向控制；静默 SMTP deadline 回归改为持有连接、有界回收与严格安全超时类别，无 Runtime 与 nil State 分支独立覆盖，Stop 失败文案订正。正式门禁见 Issue8 的 I8-16 补记；真实 SMTP/收件箱、Webhook/Kuma 等外部未执行/人工免除状态不升级。本轮未提交或推送。

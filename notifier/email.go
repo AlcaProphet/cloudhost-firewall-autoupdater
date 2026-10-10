@@ -212,18 +212,21 @@ func (n *EmailNotifier) send(subject, body string) error {
 	}
 	// 整条会话的硬上限：覆盖初始 greeting 与最后的 QUIT
 	if err := conn.SetDeadline(time.Now().Add(smtpDeadline)); err != nil {
-		_ = conn.Close()
+		logSMTPCleanupError("connection_close", conn.Close())
 		return safeSMTPError("设置 SMTP deadline 失败", err)
 	}
 
 	c, err := smtp.NewClient(conn, n.cfg.Host)
 	if err != nil {
-		_ = conn.Close()
+		logSMTPCleanupError("connection_close", conn.Close())
 		return safeSMTPError("创建 SMTP 客户端失败", err)
 	}
+	quitClosed := false
 	defer func() {
-		// Quit 已正常结束时再次 Close 是幂等的；这里保证异常路径也释放连接
-		_ = c.Close()
+		// 正常 Quit 已关闭连接；异常路径仍收尾，标准库提前关闭不重复告警。
+		if !quitClosed {
+			logSMTPCleanupError("client_close", c.Close())
+		}
 	}()
 
 	if ok, _ := c.Extension("STARTTLS"); ok {
@@ -260,7 +263,7 @@ func (n *EmailNotifier) send(subject, body string) error {
 	}
 	msg := buildEmailMessage(n.cfg.From, n.cfg.To, subject, body)
 	if _, err := w.Write([]byte(msg)); err != nil {
-		_ = w.Close()
+		logSMTPCleanupError("data_close", w.Close())
 		return safeSMTPError("写入邮件正文失败", err)
 	}
 	if err := w.Close(); err != nil {
@@ -270,7 +273,16 @@ func (n *EmailNotifier) send(subject, body string) error {
 	if err := c.Quit(); err != nil {
 		return safeSMTPError("SMTP QUIT 失败", err)
 	}
+	quitClosed = true
 	return nil
+}
+
+// logSMTPCleanupError 只记录固定阶段，不泄露 SMTP 原文，也不覆盖发送结果。
+func logSMTPCleanupError(stage string, err error) {
+	if err == nil || errors.Is(err, net.ErrClosed) {
+		return
+	}
+	slog.Warn("SMTP 清理失败", "stage", stage, "category", "cleanup_failed")
 }
 
 // ─── Build7 Step 2：测试邮件（复用同一条有界 SMTP 会话实现） ───
