@@ -221,6 +221,7 @@ CREATE TABLE IF NOT EXISTS alert_email (
 	enabled INTEGER NOT NULL DEFAULT 0,
 	host TEXT NOT NULL DEFAULT '',
 	port TEXT NOT NULL DEFAULT '587',
+	security TEXT NOT NULL DEFAULT '` + DefaultSMTPSecurity + `',
 	username TEXT NOT NULL DEFAULT '',
 	password TEXT NOT NULL DEFAULT '',
 	from_addr TEXT NOT NULL DEFAULT '',
@@ -299,7 +300,7 @@ func (s *Store) initTables() error {
 // migrateSchemaTx 执行显式 Schema 迁移（Build7 §4.2），不依赖
 // `CREATE TABLE IF NOT EXISTS` 自动补列：
 //
-//  1. 为老库补列（rules.enable_ipv6、alert_webhook.channel、alert_email.subject/body）；
+//  1. 为老库补列（rules.enable_ipv6、alert_webhook.channel、alert_email.security/subject/body）；
 //  2. **只有** alert_email 的主题/正文列是本次新增时，才把邮件与 Webhook 的启用状态
 //     统一归零。这是「一次性」语义：列已存在说明该库已经迁移过（或本来就是新库），
 //     绝不能在每次启动重复重置用户配置；
@@ -321,6 +322,12 @@ func migrateSchemaTx(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, "UPDATE alert_webhook SET channel = 'dingtalk' WHERE id = 1"); err != nil {
 			return fmt.Errorf("迁移历史 Webhook 渠道失败: %w", err)
 		}
+	}
+
+	// 仅补安全模式不得触发历史主题/正文迁移的开关归零。
+	if _, err := ensureColumnTx(ctx, tx, "alert_email", "security",
+		"ALTER TABLE alert_email ADD COLUMN security TEXT NOT NULL DEFAULT '"+DefaultSMTPSecurity+"'"); err != nil {
+		return err
 	}
 
 	subjectAdded, err := ensureColumnTx(ctx, tx, "alert_email", "subject",
@@ -808,8 +815,8 @@ func loadAlertEmail(ctx context.Context, q DBTX) (AlertEmailConfig, error) {
 	var cfg AlertEmailConfig
 	var enabled int
 	err := q.QueryRowContext(ctx,
-		"SELECT enabled, host, port, username, password, from_addr, to_addr, subject, body FROM alert_email WHERE id = 1").
-		Scan(&enabled, &cfg.Host, &cfg.Port, &cfg.Username, &cfg.Password, &cfg.FromAddr, &cfg.ToAddr,
+		"SELECT enabled, host, port, security, username, password, from_addr, to_addr, subject, body FROM alert_email WHERE id = 1").
+		Scan(&enabled, &cfg.Host, &cfg.Port, &cfg.Security, &cfg.Username, &cfg.Password, &cfg.FromAddr, &cfg.ToAddr,
 			&cfg.Subject, &cfg.Body)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AlertEmailConfig{}, nil
@@ -822,8 +829,8 @@ func loadAlertEmail(ctx context.Context, q DBTX) (AlertEmailConfig, error) {
 }
 
 // saveAlertEmailSQL 保存邮件告警配置的语句（单条写入与事务内写入共用）
-const saveAlertEmailSQL = `INSERT OR REPLACE INTO alert_email (id, enabled, host, port, username, password, from_addr, to_addr, subject, body)
-		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+const saveAlertEmailSQL = `INSERT OR REPLACE INTO alert_email (id, enabled, host, port, security, username, password, from_addr, to_addr, subject, body)
+		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // alertEmailArgs 把邮件告警配置转换为 SQL 参数
 func alertEmailArgs(cfg *AlertEmailConfig) []any {
@@ -831,7 +838,7 @@ func alertEmailArgs(cfg *AlertEmailConfig) []any {
 	if cfg.Enabled {
 		enabled = 1
 	}
-	return []any{enabled, cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.FromAddr, cfg.ToAddr, cfg.Subject, cfg.Body}
+	return []any{enabled, cfg.Host, cfg.Port, cfg.Security, cfg.Username, cfg.Password, cfg.FromAddr, cfg.ToAddr, cfg.Subject, cfg.Body}
 }
 
 // SaveAlertEmail 保存邮件告警配置

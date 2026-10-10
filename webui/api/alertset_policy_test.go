@@ -24,7 +24,7 @@ func policyRuntime(t *testing.T, emailOn, webhookOn bool, policy config.AlertPol
 		DNS: "223.5.5.5", DNSTimeout: 10 * time.Second, DNSFailThreshold: 5,
 		LogLevel: "info", SyncEnabled: true, Theme: "light",
 		Policy: policy,
-		Email: config.AlertEmailConfig{
+		Email: config.AlertEmailConfig{Security: "auto_starttls",
 			Enabled: emailOn, Host: host, Port: port, Username: "", Password: "",
 			FromAddr: "f@example.com", ToAddr: "t@example.com",
 			Subject: "[FWAlizer] 告警通知", Body: "FWAlizer 检测到运行异常，请检查同步日志。",

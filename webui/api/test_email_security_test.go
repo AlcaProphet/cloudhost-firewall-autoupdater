@@ -199,7 +199,7 @@ func TestP319HTTPAndLog(t *testing.T) {
 	for _, stage := range []string{"auth", "malformed_auth", "mail", "data_end"} {
 		t.Run(stage, func(t *testing.T) {
 			host, port := p319SMTP(t, stage)
-			req := map[string]string{"host": host, "port": port, "username": p319User, "password": p319Password, "from_addr": "f@example.com", "to_addr": "t@example.com", "subject": "subject", "body": p319Body}
+			req := map[string]string{"host": host, "port": port, "security": "auto_starttls", "username": p319User, "password": p319Password, "from_addr": "f@example.com", "to_addr": "t@example.com", "subject": "subject", "body": p319Body}
 			payload, err := json.Marshal(req)
 			if err != nil {
 				t.Fatal(err)

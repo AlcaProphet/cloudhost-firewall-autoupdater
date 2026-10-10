@@ -105,7 +105,7 @@ func TestEmailMIMETestSend(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			host, port, rec := startFakeSMTP(t, fakeSMTPOptions{rcptOK: true, dataOK: true, traditional: true})
-			cfg := EmailConfig{Host: host, Port: port, From: "from@example.com", To: "a@example.com, b@example.com"}
+			cfg := EmailConfig{Security: "auto_starttls", Host: host, Port: port, From: "from@example.com", To: "a@example.com, b@example.com"}
 			subject, body := BuildTestEmailContent(tc.subject, tc.body, time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC))
 			if err := SendTestEmail(cfg, subject, body); err != nil {
 				t.Fatalf("传统 SMTP 应接受: %v", err)
@@ -120,7 +120,7 @@ func TestEmailMIMEExactBody(t *testing.T) {
 	for _, body := range []string{"", "正文 \t", "正文\n", "正文\r\n\r\n", "正文\r"} {
 		t.Run(body, func(t *testing.T) {
 			host, port, rec := startFakeSMTP(t, fakeSMTPOptions{rcptOK: true, dataOK: true, traditional: true})
-			cfg := EmailConfig{Host: host, Port: port, From: "from@example.com", To: "a@example.com"}
+			cfg := EmailConfig{Security: "auto_starttls", Host: host, Port: port, From: "from@example.com", To: "a@example.com"}
 			if err := SendTestEmail(cfg, "ASCII subject", body); err != nil {
 				t.Fatal(err)
 			}
@@ -140,7 +140,7 @@ func TestEmailMIMEAutomatic(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(string(tc.typ), func(t *testing.T) {
 			host, port, rec := startFakeSMTP(t, fakeSMTPOptions{rcptOK: true, dataOK: true, traditional: true})
-			cfg := EmailConfig{Host: host, Port: port, From: "from@example.com", To: "a@example.com", Subject: strings.Repeat("😀", 200), Body: "自定义正文  \t\n"}
+			cfg := EmailConfig{Security: "auto_starttls", Host: host, Port: port, From: "from@example.com", To: "a@example.com", Subject: strings.Repeat("😀", 200), Body: "自定义正文  \t\n"}
 			errorText := strings.Repeat("失败", 1024)
 			event := Event{Type: tc.typ, Timestamp: time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC), Data: map[string]any{"provider": "tc_cvm", "domain": "example.com", "error": errorText}}
 			wantBody := cfg.Body + "\n\n事件类型：" + tc.display + "\n时间：2026-10-03 12:00:00\nProvider：tc_cvm\n域名：example.com\n错误：" + errorText

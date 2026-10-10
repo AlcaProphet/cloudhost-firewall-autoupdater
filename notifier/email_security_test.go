@@ -234,7 +234,7 @@ func TestP319Session(t *testing.T) {
 	} {
 		t.Run(tc.stage, func(t *testing.T) {
 			host, port := p319SMTP(t, tc.stage)
-			err := SendTestEmail(EmailConfig{Host: host, Port: port, User: p319User, Pass: p319Password, From: "f@example.com", To: "t@example.com"}, "subject", p319Body)
+			err := SendTestEmail(EmailConfig{Security: "auto_starttls", Host: host, Port: port, User: p319User, Pass: p319Password, From: "f@example.com", To: "t@example.com"}, "subject", p319Body)
 			if err == nil {
 				t.Fatal("expected failure")
 			}
@@ -264,7 +264,7 @@ func TestP319BusLog(t *testing.T) {
 	slog.SetDefault(slog.New(p319Handler{events: events}))
 	defer func() { slog.SetDefault(prev); log.SetOutput(oldWriter); log.SetFlags(oldFlags) }()
 	bus := NewEventBus()
-	bus.Subscribe(EventSyncError, NewEmailNotifier(EmailConfig{Host: host, Port: port, User: p319User, Pass: p319Password, From: "f@example.com", To: "t@example.com"}))
+	bus.Subscribe(EventSyncError, NewEmailNotifier(EmailConfig{Security: "auto_starttls", Host: host, Port: port, User: p319User, Pass: p319Password, From: "f@example.com", To: "t@example.com"}))
 	bus.Publish(Event{Type: EventSyncError, Timestamp: time.Now()})
 	select {
 	case got := <-events:
@@ -335,7 +335,7 @@ func TestP319TimeoutStillBounded(t *testing.T) {
 	host, port := p319SMTP(t, "silent")
 	setSMTPTimeouts(t, 100*time.Millisecond, 80*time.Millisecond)
 	start := time.Now()
-	err := SendTestEmail(EmailConfig{Host: host, Port: port}, "s", "b")
+	err := SendTestEmail(EmailConfig{Security: "auto_starttls", Host: host, Port: port}, "s", "b")
 	if err == nil || !strings.Contains(err.Error(), "会话超时") {
 		t.Error("missing timeout classification")
 	}
@@ -354,7 +354,7 @@ func TestP319LargeDiagnostic(t *testing.T) {
 
 func TestP319LocalTLS(t *testing.T) {
 	host, port := p319SMTP(t, "tls_handshake")
-	err := SendTestEmail(EmailConfig{Host: host, Port: port, User: p319User, Pass: p319Password}, "s", p319Body)
+	err := SendTestEmail(EmailConfig{Security: "auto_starttls", Host: host, Port: port, User: p319User, Pass: p319Password}, "s", p319Body)
 	if err == nil || err.Error() != "STARTTLS 失败: TLS 验证或握手异常" {
 		t.Fatal("missing safe TLS failure")
 	}
@@ -365,7 +365,7 @@ func TestP319LocalTLS(t *testing.T) {
 }
 
 func TestP319DialFailure(t *testing.T) {
-	err := SendTestEmail(EmailConfig{Host: p319Password, Port: "65536"}, "s", p319Body)
+	err := SendTestEmail(EmailConfig{Security: "auto_starttls", Host: p319Password, Port: "65536"}, "s", p319Body)
 	if err == nil || err.Error() != "连接 SMTP 服务器失败: 网络连接异常" {
 		t.Fatal("dial failure was not safely classified")
 	}

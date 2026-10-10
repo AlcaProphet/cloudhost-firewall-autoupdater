@@ -223,10 +223,13 @@ export interface AlertPolicyConfig {
   health_timeout: string
 }
 
+export type SMTPSecurity = 'auto_starttls' | 'starttls' | 'implicit_tls'
+
 export interface AlertEmailConfig {
   enabled: boolean
   host: string
   port: string
+  security: SMTPSecurity
   username: string
   password: string
   from_addr: string
@@ -236,14 +239,15 @@ export interface AlertEmailConfig {
   body: string
 }
 
-// TestEmailPayload 测试邮件请求体（Build7 §5.1）：固定 8 个发送字段。
+// TestEmailPayload 测试邮件请求体（Build7 §5.1）：固定 9 个发送字段。
 //
 // 刻意不复用 AlertEmailConfig：后者多一个 enabled，而 /api/alerts/test-email 的
-// 请求 DTO（webui/api/test_email.go 的 testEmailRequest）只有这 8 个字段且使用
+// 请求 DTO（webui/api/test_email.go 的 testEmailRequest）只有这 9 个字段且使用
 // 严格解码（拒绝未知字段），多带 enabled 会被 HTTP 400 拒绝。
 export interface TestEmailPayload {
   host: string
   port: string
+  security: SMTPSecurity
   username: string
   password: string
   from_addr: string

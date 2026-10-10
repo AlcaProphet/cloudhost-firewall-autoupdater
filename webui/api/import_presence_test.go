@@ -91,7 +91,7 @@ func TestI843Aggregation(t *testing.T) {
 		name, body string
 		want       []string
 	}{
-		{"cross-object", v3Bundle(`{"health_timeout":"10m"}`, `{"enabled":false}`, `{"uptime_kuma_push":{}}`), []string{"alerts.policy.dns_failed_enabled", "alerts.policy.sync_error_enabled", "alerts.policy.operational_error_enabled", "alerts.email.host", "alerts.email.port", "alerts.email.username", "alerts.email.password", "alerts.email.from_addr", "alerts.email.to_addr", "alerts.email.subject", "alerts.email.body", "monitoring.uptime_kuma_push.enabled", "monitoring.uptime_kuma_push.url", "monitoring.uptime_kuma_push.interval"}},
+		{"cross-object", v3Bundle(`{"health_timeout":"10m"}`, `{"enabled":false}`, `{"uptime_kuma_push":{}}`), []string{"alerts.policy.dns_failed_enabled", "alerts.policy.sync_error_enabled", "alerts.policy.operational_error_enabled", "alerts.email.host", "alerts.email.port", "alerts.email.security", "alerts.email.username", "alerts.email.password", "alerts.email.from_addr", "alerts.email.to_addr", "alerts.email.subject", "alerts.email.body", "monitoring.uptime_kuma_push.enabled", "monitoring.uptime_kuma_push.url", "monitoring.uptime_kuma_push.interval"}},
 		{"parent-only", `{"version":3,"metadata":null,"targets":[],"rules":[],"settings":{},"alerts":{"email":null},"monitoring":{}}`, []string{"metadata", "settings.credentials", "settings.tag", "settings.interval", "settings.dns", "settings.dns_timeout", "settings.dns_fail_threshold", "settings.log_level", "settings.sync_enabled", "settings.theme", "alerts.policy", "alerts.email", "alerts.webhook", "monitoring.uptime_kuma_push"}},
 		{"反序JSON仍按DTO顺序", `{"monitoring":null,"alerts":null,"settings":null,"rules":null,"targets":null,"metadata":null,"version":3}`, []string{"metadata", "targets", "rules", "settings", "alerts", "monitoring"}},
 		{"array-objects", bundleWith(`[{},null]`, `[{},null]`), []string{"targets[0].export_id", "targets[0].cloud_type", "targets[0].region", "targets[0].resource_id", "targets[1]", "rules[0].host", "rules[0].protocol", "rules[0].ports", "rules[0].action", "rules[0].target_export_ids", "rules[0].comment", "rules[0].enable_ipv6", "rules[1]"}},
@@ -116,7 +116,7 @@ func TestI843AllFields(t *testing.T) {
 	e, unchanged := i8111Guard(t)
 	base := json.RawMessage(i8111Fixture())
 	paths := i8111Fields(t, base, nil)
-	if len(paths) != 57 {
+	if len(paths) != 58 {
 		t.Fatalf("paths=%d", len(paths))
 	}
 	for _, mode := range []string{"缺失", "null"} {

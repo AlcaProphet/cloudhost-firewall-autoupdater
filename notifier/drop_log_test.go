@@ -77,7 +77,7 @@ func p315Fill(t *testing.T, l *InFlightLimiter) {
 	}
 }
 func p315Email(l *InFlightLimiter) *EmailNotifier {
-	n := NewEmailNotifier(EmailConfig{Host: "host-secret", Pass: "password-secret", Body: "body-secret"})
+	n := NewEmailNotifier(EmailConfig{Security: "auto_starttls", Host: "host-secret", Pass: "password-secret", Body: "body-secret"})
 	n.SetInFlightLimiter(l)
 	return n
 }

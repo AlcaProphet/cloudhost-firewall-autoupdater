@@ -41,7 +41,7 @@ func TestI818SnapshotGETAbsentRows(t *testing.T) {
 	}
 	fields := map[string][]string{
 		"policy":           {"dns_failed_enabled", "sync_error_enabled", "operational_error_enabled", "health_timeout"},
-		"email":            {"enabled", "host", "port", "username", "password", "from_addr", "to_addr", "subject", "body"},
+		"email":            {"enabled", "host", "port", "security", "username", "password", "from_addr", "to_addr", "subject", "body"},
 		"webhook":          {"enabled", "url", "channel"},
 		"uptime_kuma_push": {"enabled", "url", "interval"},
 	}
@@ -60,7 +60,7 @@ func TestI818SnapshotGETAbsentRows(t *testing.T) {
 		}
 	}
 	got := getAlertsV3(t, e)
-	if got.Policy.HealthTimeout != "10m" || got.Email.Port != "587" || got.Email.Subject != config.DefaultEmailSubject || got.Email.Body != config.DefaultEmailBody || got.Webhook.Channel != "" || got.UptimeKumaPush.Interval != "60s" {
+	if got.Policy.HealthTimeout != "10m" || got.Email.Security != config.DefaultSMTPSecurity || got.Email.Port != "587" || got.Email.Subject != config.DefaultEmailSubject || got.Email.Body != config.DefaultEmailBody || got.Webhook.Channel != "" || got.UptimeKumaPush.Interval != "60s" {
 		t.Fatal("缺行默认值变化")
 	}
 	if got.Policy.DNSFailedEnabled || got.Policy.SyncErrorEnabled || got.Policy.OperationalErrorEnabled || got.Email.Enabled || got.Webhook.Enabled || got.UptimeKumaPush.Enabled || got.Email.Host != "" || got.Webhook.URL != "" || got.UptimeKumaPush.URL != "" {
@@ -91,10 +91,10 @@ func TestI818SnapshotGETIndependentTables(t *testing.T) {
 // TestI818SnapshotGETKeepsRawEmailWebhook GET 不扩展校验或把空格字符串当成空值。
 func TestI818SnapshotGETKeepsRawEmailWebhook(t *testing.T) {
 	e := newTestEnv(t)
-	e.execRaw(t, "INSERT OR REPLACE INTO alert_email(id,enabled,host,port,username,password,from_addr,to_addr,subject,body) VALUES(1,0,' repair host ','bad-port','','','','','   ','   ')")
+	e.execRaw(t, "INSERT OR REPLACE INTO alert_email(id,enabled,host,port,security,username,password,from_addr,to_addr,subject,body) VALUES(1,0,' repair host ','bad-port',' unknown-mode ','','','','','   ','   ')")
 	e.execRaw(t, "INSERT OR REPLACE INTO alert_webhook(id,enabled,url,channel) VALUES(1,0,' repair url ','unknown-channel')")
 	got := getAlertsV3(t, e)
-	if got.Email.Host != " repair host " || got.Email.Port != "bad-port" || got.Email.Subject != "   " || got.Email.Body != "   " || got.Webhook.URL != " repair url " || got.Webhook.Channel != "unknown-channel" {
+	if got.Email.Security != " unknown-mode " || got.Email.Host != " repair host " || got.Email.Port != "bad-port" || got.Email.Subject != "   " || got.Email.Body != "   " || got.Webhook.URL != " repair url " || got.Webhook.Channel != "unknown-channel" {
 		t.Fatal("GET额外归一化或校验了原始字段")
 	}
 }
@@ -152,7 +152,7 @@ func TestI818SnapshotGETCancelled(t *testing.T) {
 
 // i818Payload 用跨四对象的独立版本标记辨别撕裂，所有通知渠道保持关闭。
 func i818Payload(version int64) string {
-	return fmt.Sprintf(`{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,"operational_error_enabled":false,"health_timeout":"%dm"},"email":{"enabled":false,"host":"v%d","port":"587","username":"","password":"","from_addr":"","to_addr":"","subject":"v%d","body":"v%d"},"webhook":{"enabled":false,"url":"https://example.invalid/v%d","channel":"dingtalk"},"uptime_kuma_push":{"enabled":false,"url":"https://example.invalid/v%d","interval":"60s"}}`, version, version, version, version, version, version)
+	return fmt.Sprintf(`{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,"operational_error_enabled":false,"health_timeout":"%dm"},"email":{"enabled":false,"host":"v%d","port":"587","security":"auto_starttls","username":"","password":"","from_addr":"","to_addr":"","subject":"v%d","body":"v%d"},"webhook":{"enabled":false,"url":"https://example.invalid/v%d","channel":"dingtalk"},"uptime_kuma_push":{"enabled":false,"url":"https://example.invalid/v%d","interval":"60s"}}`, version, version, version, version, version, version)
 }
 
 // TestI818SnapshotHTTPConcurrent 真实 HTTP GET 与协调器 PUT 并发时，每个响应四项同版本。

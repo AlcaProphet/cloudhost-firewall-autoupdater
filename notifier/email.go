@@ -14,6 +14,8 @@ import (
 	"net/textproto"
 	"strings"
 	"time"
+
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
 
 // SMTP 单次发送的有界时限（Issue6 A2）默认值。
@@ -38,19 +40,22 @@ var (
 // Subject / Body 是用户在告警页配置的纯文本主题与正文（Build7 §4.4）：
 // 自动邮件会在主题后追加固定事件后缀、在正文后追加固定详情块。
 type EmailConfig struct {
-	Host    string
-	Port    string
-	User    string
-	Pass    string
-	From    string
-	To      string
-	Subject string
-	Body    string
+	Security string
+	Host     string
+	Port     string
+	User     string
+	Pass     string
+	From     string
+	To       string
+	Subject  string
+	Body     string
 }
 
 // EmailNotifier 邮件告警
 type EmailNotifier struct {
 	cfg EmailConfig
+	// transport 只为实例级本地协议测试提供拨号、信任链和时限接缝。
+	transport *smtpTransport
 	// limiter 为渠道在途限流器（由 AlertManager 注入；nil 表示不限流，供既有测试构造）
 	limiter *InFlightLimiter
 }
@@ -198,24 +203,54 @@ func (n *EmailNotifier) OnEvent(event Event) error {
 	return err
 }
 
+// smtpTransport 不对外暴露，生产始终使用系统信任链和固定时限。
+type smtpTransport struct {
+	dial     func(string, string, time.Duration) (net.Conn, error)
+	roots    *x509.CertPool
+	deadline time.Duration
+}
+
 // send 用显式建连 + deadline 发送邮件。
 //
 // 刻意不调用 smtp.SendMail：它无法设置连接与整体 deadline。手写版本完整保留
 // greeting(220)、EHLO、STARTTLS（服务端通告时）、AUTH（配置了用户名时）、
 // MAIL、RCPT、DATA、QUIT 的既有顺序与语义，并由 SetDeadline 覆盖首尾。
 func (n *EmailNotifier) send(subject, body string) error {
+	if !config.ValidSMTPSecurity(n.cfg.Security) {
+		return safeSMTPError("SMTP 安全模式无效", errors.New("invalid security"))
+	}
 	addr := net.JoinHostPort(n.cfg.Host, n.cfg.Port)
-
-	conn, err := net.DialTimeout("tcp", addr, smtpDialTimeout)
+	dial, deadline := net.DialTimeout, smtpDeadline
+	var roots *x509.CertPool
+	if n.transport != nil {
+		if n.transport.dial != nil {
+			dial = n.transport.dial
+		}
+		roots = n.transport.roots
+		if n.transport.deadline > 0 {
+			deadline = n.transport.deadline
+		}
+	}
+	conn, err := dial("tcp", addr, smtpDialTimeout)
 	if err != nil {
 		return safeSMTPError("连接 SMTP 服务器失败", err)
 	}
 	// 整条会话的硬上限：覆盖初始 greeting 与最后的 QUIT
-	if err := conn.SetDeadline(time.Now().Add(smtpDeadline)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(deadline)); err != nil {
 		logSMTPCleanupError("connection_close", conn.Close())
 		return safeSMTPError("设置 SMTP deadline 失败", err)
 	}
 
+	tlsConfig := &tls.Config{ServerName: n.cfg.Host, RootCAs: roots}
+	if n.cfg.Security == config.SMTPSecurityImplicitTLS {
+		encrypted := tls.Client(conn, tlsConfig)
+		if err := encrypted.Handshake(); err != nil {
+			logSMTPCleanupError("connection_close", encrypted.Close())
+			return safeSMTPError("SMTP TLS 握手失败", err)
+		}
+		// 必须保留具体 *tls.Conn 类型，让 PlainAuth 正确识别加密连接。
+		conn = encrypted
+	}
 	c, err := smtp.NewClient(conn, n.cfg.Host)
 	if err != nil {
 		logSMTPCleanupError("connection_close", conn.Close())
@@ -229,9 +264,19 @@ func (n *EmailNotifier) send(subject, body string) error {
 		}
 	}()
 
-	if ok, _ := c.Extension("STARTTLS"); ok {
-		if err := c.StartTLS(&tls.Config{ServerName: n.cfg.Host}); err != nil {
-			return safeSMTPError("STARTTLS 失败", err)
+	// Extension 会隐藏内部 Hello 错误，先显式检查；保留 EHLO→HELO 回退。
+	if err := c.Hello("localhost"); err != nil {
+		return safeSMTPError("SMTP EHLO/HELO 失败", err)
+	}
+	if n.cfg.Security != config.SMTPSecurityImplicitTLS {
+		offered, _ := c.Extension("STARTTLS")
+		if n.cfg.Security == config.SMTPSecuritySTARTTLS && !offered {
+			return safeSMTPError("STARTTLS 失败", errors.New("STARTTLS required"))
+		}
+		if offered {
+			if err := c.StartTLS(tlsConfig); err != nil {
+				return safeSMTPError("STARTTLS 失败", err)
+			}
 		}
 	}
 

@@ -113,9 +113,11 @@ func i818SnapshotEnv(t *testing.T) (*Store, *Store, *i818SnapshotConnector) {
 func i818SnapshotSave(s *Store, tag string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	security := SMTPSecuritySTARTTLS
 	p := DefaultAlertPolicy()
 	if tag == "new" {
 		p.HealthTimeoutText = "11m"
+		security = SMTPSecurityImplicitTLS
 	}
 	tx, err := s.BeginTx(ctx)
 	if err != nil {
@@ -126,7 +128,7 @@ func i818SnapshotSave(s *Store, tag string) error {
 			slog.Error("回滚测试夹具失败", "error", rbErr)
 		}
 	}()
-	if err = s.ReplaceBusinessAlertsTx(ctx, tx, p, AlertEmailConfig{Host: tag, Port: "587", Subject: tag, Body: tag}, AlertWebhookConfig{URL: tag, Channel: "dingtalk"}, UptimeKumaPushConfig{URL: tag, IntervalText: "60s"}); err != nil {
+	if err = s.ReplaceBusinessAlertsTx(ctx, tx, p, AlertEmailConfig{Security: security, Host: tag, Port: "587", Subject: tag, Body: tag}, AlertWebhookConfig{URL: tag, Channel: "dingtalk"}, UptimeKumaPushConfig{URL: tag, IntervalText: "60s"}); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -150,14 +152,14 @@ func TestI818SnapshotBarrierWithoutProductionHooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hits != 1 || got.Policy.HealthTimeoutText != "10m" || got.Email.Host != "old" || got.Webhook.URL != "old" || got.UptimeKumaPush.URL != "old" {
+	if hits != 1 || got.Policy.HealthTimeoutText != "10m" || got.Email.Host != "old" || got.Email.Security != SMTPSecuritySTARTTLS || got.Webhook.URL != "old" || got.UptimeKumaPush.URL != "old" {
 		t.Fatalf("同一事务快照不一致: %+v;屏障次数=%d", got, hits)
 	}
 	next, err := r.LoadAlertsSnapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.Policy.HealthTimeoutText != "11m" || next.Email.Host != "new" || next.Webhook.URL != "new" || next.UptimeKumaPush.URL != "new" {
+	if next.Policy.HealthTimeoutText != "11m" || next.Email.Host != "new" || next.Email.Security != SMTPSecurityImplicitTLS || next.Webhook.URL != "new" || next.UptimeKumaPush.URL != "new" {
 		t.Fatal("新快照未更新")
 	}
 	if c.begins.Load() != 2 || c.readOnly.Load() != 2 || c.commits.Load() != 2 || r.db.Stats().InUse != 0 {

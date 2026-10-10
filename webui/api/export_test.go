@@ -414,7 +414,7 @@ func TestConfigImportClearsScannedKeepsSyncLogsAndSequence(t *testing.T) {
 // TestConfigImportAlertsRoundTrip 完整告警（含 SMTP 密码与 Webhook URL）必须被覆盖保存。
 func TestConfigImportAlertsRoundTrip(t *testing.T) {
 	e := newTestEnv(t)
-	if err := e.store.SaveAlertEmail(&config.AlertEmailConfig{Enabled: true, Host: "old-smtp", Port: "25"}); err != nil {
+	if err := e.store.SaveAlertEmail(&config.AlertEmailConfig{Security: "auto_starttls", Enabled: true, Host: "old-smtp", Port: "25"}); err != nil {
 		t.Fatalf("预置告警失败: %v", err)
 	}
 
@@ -422,7 +422,7 @@ func TestConfigImportAlertsRoundTrip(t *testing.T) {
 		validBundleSettings() + `,` +
 		`"alerts":{"policy":{"dns_failed_enabled":true,"sync_error_enabled":false,` +
 		`"operational_error_enabled":false,"health_timeout":"25m"},` +
-		`"email":{"enabled":true,"host":"smtp.new","port":"587","username":"u","password":"pw-secret",` +
+		`"email":{"enabled":true,"host":"smtp.new","port":"587","security":"auto_starttls","username":"u","password":"pw-secret",` +
 		`"from_addr":"f@example.com","to_addr":"t@example.com","subject":"导入主题","body":"导入正文"},` +
 		`"webhook":{"enabled":true,"url":"https://hook.example.com/abc","channel":"feishu"}},` +
 		`"monitoring":{"uptime_kuma_push":{"enabled":true,"url":"https://kuma.example.com/api/push/tok9","interval":"45s"}}}`

@@ -475,7 +475,7 @@ func TestStoreRoundTripPolicyAndPush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("归一化 Push 失败: %v", err)
 	}
-	email, err := NormalizeAlertEmail(AlertEmailConfig{
+	email, err := NormalizeAlertEmail(AlertEmailConfig{Security: "auto_starttls",
 		Enabled: true, Host: "smtp.x", Port: "587", FromAddr: "f@x", ToAddr: "t@x",
 		Subject: "主题X", Body: "正文X",
 	})

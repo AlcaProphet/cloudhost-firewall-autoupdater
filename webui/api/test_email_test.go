@@ -182,7 +182,7 @@ func testEmailBody(t *testing.T, addr, password, subject, body string) string {
 	if err != nil {
 		t.Fatalf("解析假 SMTP 地址失败: %v", err)
 	}
-	return `{"host":"` + host + `","port":"` + port + `","username":"form-user",` +
+	return `{"host":"` + host + `","port":"` + port + `","security":"auto_starttls","username":"form-user",` +
 		`"password":"` + password + `","from_addr":"form-from@example.com",` +
 		`"to_addr":"form-to@example.com","subject":"` + subject + `","body":"` + body + `"}`
 }
@@ -273,7 +273,7 @@ func TestTestEmailValidationErrors(t *testing.T) {
 	}
 	base := func(overrides map[string]string) string {
 		fields := map[string]string{
-			"host": host, "port": port, "username": "u", "password": "p",
+			"host": host, "port": port, "security": "auto_starttls", "username": "u", "password": "p",
 			"from_addr": "f@example.com", "to_addr": "t@example.com",
 			"subject": "s", "body": "b",
 		}
@@ -285,7 +285,7 @@ func TestTestEmailValidationErrors(t *testing.T) {
 			fields[k] = v
 		}
 		parts := make([]string, 0, len(fields))
-		for _, k := range []string{"host", "port", "username", "password", "from_addr", "to_addr", "subject", "body"} {
+		for _, k := range []string{"host", "port", "security", "username", "password", "from_addr", "to_addr", "subject", "body"} {
 			if v, ok := fields[k]; ok {
 				parts = append(parts, `"`+k+`":"`+v+`"`)
 			}
@@ -300,7 +300,7 @@ func TestTestEmailValidationErrors(t *testing.T) {
 		"缺 subject": base(map[string]string{"subject": ""}),
 		"缺 body":    base(map[string]string{"body": ""}),
 		"端口非法":      base(map[string]string{"port": "abc"}),
-		"host 为 null": `{"host":null,"port":"` + port + `","username":"u","password":"p",` +
+		"host 为 null": `{"host":null,"port":"` + port + `","security":"auto_starttls","username":"u","password":"p",` +
 			`"from_addr":"f@example.com","to_addr":"t@example.com","subject":"s","body":"b"}`,
 		"未知字段":      strings.TrimSuffix(base(nil), "}") + `,"extra":1}`,
 		"尾随 JSON":   base(nil) + `{"x":1}`,

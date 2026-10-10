@@ -26,6 +26,7 @@ type alertsV3 struct {
 		Enabled  bool   `json:"enabled"`
 		Host     string `json:"host"`
 		Port     string `json:"port"`
+		Security string `json:"security"`
 		Username string `json:"username"`
 		Password string `json:"password"`
 		FromAddr string `json:"from_addr"`
@@ -72,7 +73,7 @@ func v3Bundle(policyJSON, emailJSON, monitoringJSON string) string {
 const v3DefaultPolicyJSON = `{"dns_failed_enabled":false,"sync_error_enabled":false,"operational_error_enabled":false,"health_timeout":"10m"}`
 
 // v3DefaultEmailJSON 是默认邮件片段（含 Build7 主题/正文）
-const v3DefaultEmailJSON = `{"enabled":false,"host":"","port":"587","username":"","password":"","from_addr":"","to_addr":"","subject":"[FWAlizer] 告警通知","body":"FWAlizer 检测到运行异常，请检查同步日志。"}`
+const v3DefaultEmailJSON = `{"enabled":false,"host":"","port":"587","security":"auto_starttls","username":"","password":"","from_addr":"","to_addr":"","subject":"[FWAlizer] 告警通知","body":"FWAlizer 检测到运行异常，请检查同步日志。"}`
 
 // TestExportVersion3StructureAndFilename 空库导出必须是完整 version 3 结构：
 // policy/email/webhook + monitoring、默认全部关闭、默认主题正文与时长、v3 附件名。
@@ -205,7 +206,7 @@ func TestImportVersion3RequiresPolicyAndMonitoring(t *testing.T) {
 		},
 		"缺 email.subject": {
 			body: `{"version":3,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` +
-				validBundleSettings() + `,"alerts":{"policy":` + v3DefaultPolicyJSON + `,"email":{"enabled":false,"host":"","port":"587","username":"","password":"","from_addr":"","to_addr":"","body":"b"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}},"monitoring":{"uptime_kuma_push":` + push + `}}`,
+				validBundleSettings() + `,"alerts":{"policy":` + v3DefaultPolicyJSON + `,"email":{"enabled":false,"host":"","port":"587","security":"auto_starttls","username":"","password":"","from_addr":"","to_addr":"","body":"b"},"webhook":{"enabled":false,"url":"","channel":"dingtalk"}},"monitoring":{"uptime_kuma_push":` + push + `}}`,
 			want: "subject",
 		},
 		"monitoring 为 null": {
@@ -237,7 +238,7 @@ func TestImportVersion3WritesPolicyEmailPush(t *testing.T) {
 	e := newTestEnv(t)
 
 	policy := `{"dns_failed_enabled":true,"sync_error_enabled":false,"operational_error_enabled":true,"health_timeout":"25m"}`
-	email := `{"enabled":true,"host":"smtp.v3","port":"2525","username":"u","password":"pw-v3","from_addr":"f@v3","to_addr":"t@v3","subject":"导入主题","body":"导入正文"}`
+	email := `{"enabled":true,"host":"smtp.v3","port":"2525","security":"auto_starttls","username":"u","password":"pw-v3","from_addr":"f@v3","to_addr":"t@v3","subject":"导入主题","body":"导入正文"}`
 	monitoring := `{"uptime_kuma_push":{"enabled":true,"url":"https://kuma.example.com/api/push/tok-v3","interval":"45s"}}`
 
 	w := e.do(t, http.MethodPost, "/api/config/import", v3Bundle(policy, email, monitoring))
@@ -296,7 +297,7 @@ func TestPutAlertsFourObjectsRoundTrip(t *testing.T) {
 	e := newTestEnv(t)
 
 	body := `{"policy":{"dns_failed_enabled":true,"sync_error_enabled":true,"operational_error_enabled":false,"health_timeout":"30m"},` +
-		`"email":{"enabled":true,"host":"smtp.put","port":"2525","username":"u","password":"pw","from_addr":"f@x","to_addr":"t@x","subject":"主题PUT","body":"正文PUT"},` +
+		`"email":{"enabled":true,"host":"smtp.put","port":"2525","security":"auto_starttls","username":"u","password":"pw","from_addr":"f@x","to_addr":"t@x","subject":"主题PUT","body":"正文PUT"},` +
 		`"webhook":{"enabled":true,"url":"https://hook.example.com/put","channel":"slack"},` +
 		`"uptime_kuma_push":{"enabled":true,"url":"https://kuma.example.com/api/push/tok-put","interval":"20s"}}`
 	if w := e.do(t, http.MethodPut, "/api/alerts", body); w.Code != http.StatusOK {
@@ -356,7 +357,7 @@ func TestPutAlertsRollbackOnPushWriteFailure(t *testing.T) {
 	e.execRaw(t, `CREATE TRIGGER fail_push BEFORE INSERT ON uptime_kuma_push BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;`)
 
 	body := `{"policy":{"dns_failed_enabled":true,"sync_error_enabled":true,"operational_error_enabled":true,"health_timeout":"99m"},` +
-		`"email":{"enabled":false,"host":"new.example.com","port":"587","username":"u","password":"new-pass","from_addr":"f@x","to_addr":"t@x","subject":"新主题","body":"新正文"},` +
+		`"email":{"enabled":false,"host":"new.example.com","port":"587","security":"auto_starttls","username":"u","password":"new-pass","from_addr":"f@x","to_addr":"t@x","subject":"新主题","body":"新正文"},` +
 		`"webhook":{"enabled":false,"url":"","channel":"dingtalk"},` +
 		`"uptime_kuma_push":{"enabled":false,"url":"","interval":"60s"}}`
 	w := e.do(t, http.MethodPut, "/api/alerts", body)
@@ -381,7 +382,7 @@ func TestResetRestoresAlertDefaults(t *testing.T) {
 	e := newTestEnv(t)
 
 	body := `{"policy":{"dns_failed_enabled":true,"sync_error_enabled":true,"operational_error_enabled":true,"health_timeout":"30m"},` +
-		`"email":{"enabled":true,"host":"smtp.put","port":"2525","username":"u","password":"pw","from_addr":"f@x","to_addr":"t@x","subject":"主题","body":"正文"},` +
+		`"email":{"enabled":true,"host":"smtp.put","port":"2525","security":"auto_starttls","username":"u","password":"pw","from_addr":"f@x","to_addr":"t@x","subject":"主题","body":"正文"},` +
 		`"webhook":{"enabled":true,"url":"https://hook.example.com/x","channel":"feishu"},` +
 		`"uptime_kuma_push":{"enabled":true,"url":"https://kuma.example.com/api/push/t","interval":"45s"}}`
 	if w := e.do(t, http.MethodPut, "/api/alerts", body); w.Code != http.StatusOK {

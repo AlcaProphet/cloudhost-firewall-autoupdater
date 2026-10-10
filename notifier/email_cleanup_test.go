@@ -45,7 +45,7 @@ func TestI816SMTPQuitCleanup(t *testing.T) {
 		t.Run(stage, func(t *testing.T) {
 			logs := captureLogs(t)
 			host, port := p319SMTP(t, stage)
-			err := SendTestEmail(EmailConfig{Host: host, Port: port, User: p319User, Pass: p319Password, From: "f@example.com", To: "t@example.com"}, "subject", p319Body)
+			err := SendTestEmail(EmailConfig{Security: "auto_starttls", Host: host, Port: port, User: p319User, Pass: p319Password, From: "f@example.com", To: "t@example.com"}, "subject", p319Body)
 			if stage == "success" {
 				if err != nil {
 					t.Fatal(err)

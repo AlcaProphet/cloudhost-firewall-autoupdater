@@ -123,7 +123,7 @@ func TestI8111RejectJSON(t *testing.T) {
 	}
 }
 
-// i8111Fixture 含目标与规则，覆盖固定合同的全部 57 条字段路径。
+// i8111Fixture 含目标与规则，覆盖固定合同的全部 58 条字段路径。
 func i8111Fixture() string {
 	return bundleWith(
 		`[{"export_id":1,"cloud_type":"tc_cvm","region":"gz","resource_id":"x"}]`,
@@ -218,8 +218,8 @@ func TestI8111AllFieldPaths(t *testing.T) {
 	e, unchanged := i8111Guard(t)
 	base := json.RawMessage(i8111Fixture())
 	paths := i8111Fields(t, base, nil)
-	if len(paths) != 57 {
-		t.Fatalf("合同字段路径 = %d，期望 57", len(paths))
+	if len(paths) != 58 {
+		t.Fatalf("合同字段路径 = %d，期望 58", len(paths))
 	}
 	for _, mode := range []string{"大写", "重复", "缺失", "null"} {
 		for _, path := range paths {

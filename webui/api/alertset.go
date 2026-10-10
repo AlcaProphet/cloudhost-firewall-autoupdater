@@ -59,7 +59,7 @@ func BuildAlertSet(rc config.RuntimeConfig) alertSet {
 
 	if rc.Email.Enabled {
 		set.email = notifier.NewEmailNotifier(notifier.EmailConfig{
-			Host: rc.Email.Host, Port: rc.Email.Port,
+			Host: rc.Email.Host, Port: rc.Email.Port, Security: rc.Email.Security,
 			User: rc.Email.Username, Pass: rc.Email.Password,
 			From: rc.Email.FromAddr, To: rc.Email.ToAddr,
 			Subject: rc.Email.Subject, Body: rc.Email.Body,

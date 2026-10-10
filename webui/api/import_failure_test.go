@@ -69,7 +69,7 @@ func seedImportBaseline(t *testing.T, e *testEnv) {
 	if err := e.store.SetSetting("theme", "dark"); err != nil {
 		t.Fatalf("预置设置失败: %v", err)
 	}
-	if err := e.store.SaveAlertEmail(&config.AlertEmailConfig{
+	if err := e.store.SaveAlertEmail(&config.AlertEmailConfig{Security: "auto_starttls",
 		Enabled: true, Host: "smtp.keep", Port: "587", Username: "u", Password: "keep-pass",
 		FromAddr: "f@example.com", ToAddr: "t@example.com",
 	}); err != nil {

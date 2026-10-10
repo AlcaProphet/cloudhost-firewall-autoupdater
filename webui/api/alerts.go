@@ -65,6 +65,9 @@ func (d *Deps) handleGetAlerts(w http.ResponseWriter, r *http.Request) {
 	if policy.HealthTimeoutText == "" {
 		*policy = config.DefaultAlertPolicy()
 	}
+	if emailCfg.Security == "" {
+		emailCfg.Security = config.DefaultSMTPSecurity
+	}
 	if emailCfg.Port == "" {
 		emailCfg.Port = config.DefaultAlertPort
 	}
@@ -121,6 +124,7 @@ type alertEmailRequest struct {
 	Enabled  *bool   `json:"enabled"`
 	Host     *string `json:"host"`
 	Port     *string `json:"port"`
+	Security *string `json:"security"`
 	Username *string `json:"username"`
 	Password *string `json:"password"`
 	FromAddr *string `json:"from_addr"`
@@ -134,7 +138,7 @@ func (req *alertEmailRequest) toConfig() (config.AlertEmailConfig, error) {
 	if req == nil {
 		return config.AlertEmailConfig{}, badRequest("email 字段缺失")
 	}
-	if req.Enabled == nil || req.Host == nil || req.Port == nil || req.Username == nil ||
+	if req.Enabled == nil || req.Host == nil || req.Port == nil || req.Security == nil || req.Username == nil ||
 		req.Password == nil || req.FromAddr == nil || req.ToAddr == nil ||
 		req.Subject == nil || req.Body == nil {
 		return config.AlertEmailConfig{}, badRequest("email 的每个子字段都必须出现")
@@ -143,6 +147,7 @@ func (req *alertEmailRequest) toConfig() (config.AlertEmailConfig, error) {
 		Enabled:  *req.Enabled,
 		Host:     *req.Host,
 		Port:     *req.Port,
+		Security: *req.Security,
 		Username: *req.Username,
 		Password: *req.Password,
 		FromAddr: *req.FromAddr,

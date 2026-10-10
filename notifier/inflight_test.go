@@ -131,7 +131,7 @@ func TestEmailSendBoundedByDeadlineOnSilentServer(t *testing.T) {
 		}
 	})
 
-	n := NewEmailNotifier(EmailConfig{
+	n := NewEmailNotifier(EmailConfig{Security: "auto_starttls",
 		Host: host, Port: port, User: "", Pass: "",
 		From: "f@example.com", To: "t@example.com",
 	})
@@ -347,7 +347,7 @@ func TestEmailInFlightCapAndDropNewest(t *testing.T) {
 	setSMTPTimeouts(t, 10*time.Second, 30*time.Second)
 
 	limiter := NewInFlightLimiter(InFlightLimit)
-	n := NewEmailNotifier(EmailConfig{
+	n := NewEmailNotifier(EmailConfig{Security: "auto_starttls",
 		Host: "127.0.0.1", Port: "1", // 立即失败，验证「在途占用 → 释放」链路
 		From: "f@example.com", To: "t@example.com",
 	})

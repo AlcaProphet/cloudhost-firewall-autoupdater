@@ -206,7 +206,7 @@ func TestNormalizeDNSAddress(t *testing.T) {
 
 // TestNormalizeAlertEmail 邮件端口、启用必填项与 Build7 主题/正文边界
 func TestNormalizeAlertEmail(t *testing.T) {
-	got, err := NormalizeAlertEmail(AlertEmailConfig{
+	got, err := NormalizeAlertEmail(AlertEmailConfig{Security: "auto_starttls",
 		Port: " 587 ", Host: " smtp.example.com ", Subject: " [FWAlizer] 告警通知 ",
 	})
 	if err != nil {
@@ -216,28 +216,28 @@ func TestNormalizeAlertEmail(t *testing.T) {
 		t.Errorf("归一化错误: %+v", got)
 	}
 
-	if _, err := NormalizeAlertEmail(AlertEmailConfig{
+	if _, err := NormalizeAlertEmail(AlertEmailConfig{Security: "auto_starttls",
 		Enabled: true, Port: "587", Host: "h", FromAddr: "f", ToAddr: "t", Subject: "s",
 	}); err != nil {
 		t.Errorf("启用且字段齐全应通过: %v", err)
 	}
 
-	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Port: ""})), "email.port")
-	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Port: "0"})), "email.port")
-	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Port: "65536"})), "email.port")
-	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Enabled: true, Port: "587"})), "email.host")
-	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Enabled: true, Port: "587", Host: "h"})), "email.from_addr")
-	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Enabled: true, Port: "587", Host: "h", FromAddr: "f"})), "email.to_addr")
+	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Security: "auto_starttls", Port: ""})), "email.port")
+	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Security: "auto_starttls", Port: "0"})), "email.port")
+	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Security: "auto_starttls", Port: "65536"})), "email.port")
+	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Security: "auto_starttls", Enabled: true, Port: "587"})), "email.host")
+	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Security: "auto_starttls", Enabled: true, Port: "587", Host: "h"})), "email.from_addr")
+	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Security: "auto_starttls", Enabled: true, Port: "587", Host: "h", FromAddr: "f"})), "email.to_addr")
 
 	// Build7 §4.5：主题 Trim 后不能为空、禁止换行/控制字符、最多 200 字符
-	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Port: "587", Subject: "   "})), "email.subject")
-	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Port: "587", Subject: "a\nb"})), "email.subject")
-	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Port: "587", Subject: strings.Repeat("a", MaxEmailSubjectRunes+1)})), "email.subject")
+	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Security: "auto_starttls", Port: "587", Subject: "   "})), "email.subject")
+	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Security: "auto_starttls", Port: "587", Subject: "a\nb"})), "email.subject")
+	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Security: "auto_starttls", Port: "587", Subject: strings.Repeat("a", MaxEmailSubjectRunes+1)})), "email.subject")
 	// 正文允许普通换行，但最大 10 KiB
-	if _, err := NormalizeAlertEmail(AlertEmailConfig{Port: "587", Subject: "s", Body: "第一行\n第二行"}); err != nil {
+	if _, err := NormalizeAlertEmail(AlertEmailConfig{Security: "auto_starttls", Port: "587", Subject: "s", Body: "第一行\n第二行"}); err != nil {
 		t.Errorf("正文允许普通换行: %v", err)
 	}
-	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{
+	requireInvalid(t, mustErr(NormalizeAlertEmail(AlertEmailConfig{Security: "auto_starttls",
 		Port: "587", Subject: "s", Body: strings.Repeat("x", MaxEmailBodyBytes+1),
 	})), "email.body")
 }

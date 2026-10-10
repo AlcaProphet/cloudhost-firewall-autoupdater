@@ -199,7 +199,7 @@ func (e *testEnv) seedRule(t *testing.T, r config.DomainRule) int {
 func alertsBody(emailHost, emailPassword, webhookURL, channel string) string {
 	return `{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,` +
 		`"operational_error_enabled":false,"health_timeout":"10m"},` +
-		`"email":{"enabled":false,"host":"` + emailHost + `","port":"587","username":"u",` +
+		`"email":{"enabled":false,"host":"` + emailHost + `","port":"587","security":"auto_starttls","username":"u",` +
 		`"password":"` + emailPassword + `","from_addr":"f@example.com","to_addr":"t@example.com",` +
 		`"subject":"[FWAlizer] 告警通知","body":"FWAlizer 检测到运行异常，请检查同步日志。"},` +
 		`"webhook":{"enabled":false,"url":"` + webhookURL + `","channel":"` + channel + `"},` +
@@ -224,7 +224,7 @@ func validBundleSettings() string {
 func validBundleAlerts() string {
 	return `"alerts":{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,` +
 		`"operational_error_enabled":false,"health_timeout":"10m"},` +
-		`"email":{"enabled":false,"host":"","port":"587","username":"","password":"",` +
+		`"email":{"enabled":false,"host":"","port":"587","security":"auto_starttls","username":"","password":"",` +
 		`"from_addr":"","to_addr":"","subject":"[FWAlizer] 告警通知",` +
 		`"body":"FWAlizer 检测到运行异常，请检查同步日志。"},` +
 		`"webhook":{"enabled":false,"url":"","channel":"dingtalk"}}`

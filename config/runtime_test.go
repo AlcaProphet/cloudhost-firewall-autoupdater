@@ -294,7 +294,7 @@ func TestDeleteImportOwnedTablesTxClearsFixedSet(t *testing.T) {
 	if err := store.SetSetting("tag", "t"); err != nil {
 		t.Fatalf("预置设置失败: %v", err)
 	}
-	if err := store.SaveAlertEmail(&AlertEmailConfig{Host: "smtp.example.com", Port: "587"}); err != nil {
+	if err := store.SaveAlertEmail(&AlertEmailConfig{Security: "auto_starttls", Host: "smtp.example.com", Port: "587"}); err != nil {
 		t.Fatalf("预置邮件告警失败: %v", err)
 	}
 	if err := store.AddSyncLog(SyncLog{Timestamp: time.Now(), Target: "t", Domain: "a.com", Result: "success"}); err != nil {

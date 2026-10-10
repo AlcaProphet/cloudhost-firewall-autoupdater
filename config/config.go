@@ -76,11 +76,30 @@ type DomainRule struct {
 	EnableIPv6 bool   `json:"enable_ipv6"` // 是否解析 AAAA 记录，默认 false
 }
 
+// SMTP 安全模式与端口独立；旧数据库与默认表单保留按需升级行为。
+const (
+	SMTPSecurityAutoSTARTTLS = "auto_starttls"
+	SMTPSecuritySTARTTLS     = "starttls"
+	SMTPSecurityImplicitTLS  = "implicit_tls"
+	DefaultSMTPSecurity      = SMTPSecurityAutoSTARTTLS
+)
+
+// ValidSMTPSecurity 只接受固定枚举，不推断端口、不扩展大小写别名。
+func ValidSMTPSecurity(security string) bool {
+	switch security {
+	case SMTPSecurityAutoSTARTTLS, SMTPSecuritySTARTTLS, SMTPSecurityImplicitTLS:
+		return true
+	default:
+		return false
+	}
+}
+
 // AlertEmailConfig SMTP 邮件告警配置（Build7 起含可编辑纯文本主题与正文）。
 type AlertEmailConfig struct {
 	Enabled  bool   `json:"enabled"`
 	Host     string `json:"host"`
 	Port     string `json:"port"`
+	Security string `json:"security"`
 	Username string `json:"username"`
 	Password string `json:"password"`
 	FromAddr string `json:"from_addr"`

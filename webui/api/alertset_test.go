@@ -85,7 +85,7 @@ func alertConfig(emailEnabled, webhookEnabled bool) config.RuntimeConfig {
 		},
 	}
 	if emailEnabled {
-		rc.Email = config.AlertEmailConfig{
+		rc.Email = config.AlertEmailConfig{Security: "auto_starttls",
 			Enabled: true, Host: "127.0.0.1", Port: "1", Username: "u", Password: "smtp-password-secret",
 			FromAddr: "f@example.com", ToAddr: "t@example.com",
 		}

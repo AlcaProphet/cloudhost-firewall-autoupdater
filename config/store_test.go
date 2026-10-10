@@ -153,7 +153,7 @@ func TestResetAll(t *testing.T) {
 	if err := store.AddSyncLog(SyncLog{Timestamp: time.Now(), Target: "lhins-abc", Result: "success"}); err != nil {
 		t.Fatalf("AddSyncLog 失败: %v", err)
 	}
-	if err := store.SaveAlertEmail(&AlertEmailConfig{Enabled: true, Host: "smtp.example.com"}); err != nil {
+	if err := store.SaveAlertEmail(&AlertEmailConfig{Security: "auto_starttls", Enabled: true, Host: "smtp.example.com"}); err != nil {
 		t.Fatalf("SaveAlertEmail 失败: %v", err)
 	}
 	if err := store.SaveAlertWebhook(&AlertWebhookConfig{Enabled: true, URL: "https://example.com/hook"}); err != nil {

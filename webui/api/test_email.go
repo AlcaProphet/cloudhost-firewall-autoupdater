@@ -24,6 +24,7 @@ import (
 type testEmailRequest struct {
 	Host     *string `json:"host"`
 	Port     *string `json:"port"`
+	Security *string `json:"security"`
 	Username *string `json:"username"`
 	Password *string `json:"password"`
 	FromAddr *string `json:"from_addr"`
@@ -46,7 +47,7 @@ func (d *Deps) handleTestEmail(w http.ResponseWriter, r *http.Request) {
 		writeRequestError(w, err)
 		return
 	}
-	if req.Host == nil || req.Port == nil || req.Username == nil || req.Password == nil ||
+	if req.Host == nil || req.Port == nil || req.Security == nil || req.Username == nil || req.Password == nil ||
 		req.FromAddr == nil || req.ToAddr == nil || req.Subject == nil || req.Body == nil {
 		writeRequestError(w, badRequest("测试邮件的每个字段都必须出现"))
 		return
@@ -58,6 +59,7 @@ func (d *Deps) handleTestEmail(w http.ResponseWriter, r *http.Request) {
 		Enabled:  true,
 		Host:     *req.Host,
 		Port:     *req.Port,
+		Security: *req.Security,
 		Username: *req.Username,
 		Password: *req.Password,
 		FromAddr: *req.FromAddr,
@@ -72,7 +74,7 @@ func (d *Deps) handleTestEmail(w http.ResponseWriter, r *http.Request) {
 
 	subject, body := notifier.BuildTestEmailContent(cfg.Subject, cfg.Body, time.Now())
 	err = notifier.SendTestEmail(notifier.EmailConfig{
-		Host: cfg.Host, Port: cfg.Port, User: cfg.Username, Pass: cfg.Password,
+		Host: cfg.Host, Port: cfg.Port, Security: cfg.Security, User: cfg.Username, Pass: cfg.Password,
 		From: cfg.FromAddr, To: cfg.ToAddr,
 	}, subject, body)
 	if err != nil {

@@ -173,7 +173,7 @@ test('重复保存只有一个在途PUT；失败保留编辑并允许重试', as
   assert.equal(puts, 2)
 })
 
-test('成功后重载失败重新锁定，测试邮件仍独立使用八字段POST', async () => {
+test('成功后重载失败重新锁定，测试邮件仍独立使用九字段POST', async () => {
   const calls = []
   let reads = 0
   const { state, mounted } = mount((url, opts) => {
@@ -191,7 +191,7 @@ test('成功后重载失败重新锁定，测试邮件仍独立使用八字段PO
   assert.equal(send.url, '/api/alerts/test-email')
   assert.equal(send.opts.method, 'POST')
   assert.deepEqual(Object.keys(JSON.parse(send.opts.body)).sort(),
-    ['host', 'port', 'username', 'password', 'from_addr', 'to_addr', 'subject', 'body'].sort())
+    ['host', 'port', 'security', 'username', 'password', 'from_addr', 'to_addr', 'subject', 'body'].sort())
   assert.equal(calls.some((call) => call.opts?.method === 'PUT'), false)
 })
 
@@ -243,8 +243,75 @@ test('真实单选组件渲染：空值未选中，已有渠道恰选中一项',
     const component = modules.script.default; component.ssrRender = modules.template.ssrRender
     const html = await renderToString(vue.createSSRApp(component))
     const inputs = html.match(/<input\b[^>]*type="radio"[^>]*>/g) || []
-    const checked = inputs.filter((s) => /\bchecked(?:\s|=|>)/.test(s))
-    assert.equal(inputs.length, 3); assert.equal(checked.length, channel === '' ? 0 : 1)
+    const channelInputs = inputs.filter((s) => /value="(?:dingtalk|feishu|slack)"/.test(s))
+    const checked = channelInputs.filter((s) => /\bchecked(?:\s|=|>)/.test(s))
+    assert.equal(channelInputs.length, 3); assert.equal(checked.length, channel === '' ? 0 : 1)
     if (channel) assert.match(checked[0], new RegExp(`value="${channel}"`))
+  }
+})
+
+
+test('SMTP 三模式加载、保存、测试发送贯通；切换保留端口与其他输入', async () => {
+  for (const mode of ['auto_starttls', 'starttls', 'implicit_tls']) {
+    const data = fixture(); data.email.security = mode; data.email.port = '465'
+    const calls = []
+    const { state, mounted } = mount((url, opts) => { calls.push({ url, opts }); return opts ? { success: true } : structuredClone(data) })
+    await mounted()
+    assert.equal(state.loadState.value, 'ready')
+    assert.equal(state.email.value.security, mode)
+    const before = JSON.parse(JSON.stringify(state.email.value))
+    state.email.value.security = 'starttls'
+    assert.deepEqual(JSON.parse(JSON.stringify(state.email.value)), { ...before, security: 'starttls' })
+    state.email.value.security = mode
+    await state.save()
+    assert.equal(JSON.parse(calls[1].opts.body).email.security, mode)
+    await state.testSend()
+    const payload = JSON.parse(calls.at(-1).opts.body)
+    assert.equal(payload.security, mode)
+    assert.equal(payload.port, '465')
+    assert.equal(Object.keys(payload).length, 9)
+    assert.equal('enabled' in payload, false)
+  }
+})
+
+test('SMTP 空值与非法枚举响应整体拒绝，不能用默认模式覆盖', async () => {
+  for (const mode of ['', 'STARTTLS', ' starttls ', 'plain']) {
+    const data = fixture(); data.email.security = mode
+    const calls = []
+    const { state, mounted } = mount((...args) => { calls.push(args); return data })
+    const before = forms(state)
+    await mounted(); await state.save()
+    assert.equal(state.loadState.value, 'error')
+    assert.equal(calls.length, 1)
+    assert.deepEqual(forms(state), before)
+  }
+})
+
+
+test('真实SMTP单选渲染：默认兼容模式，已有模式恰选中一项', async () => {
+  const { compileTemplate } = await import('@vue/compiler-sfc')
+  const { renderToString } = await import('@vue/server-renderer')
+  for (const security of ['auto_starttls', 'starttls', 'implicit_tls']) {
+    const { descriptor } = parse(source.replace("security: 'auto_starttls'", `security: '${security}'`))
+    const compiledScript = compileScript(descriptor, { id: 'security-render-test' })
+    const template = compileTemplate({ source: descriptor.template.content, filename: 'Alerts.vue', id: 'security-render-test', ssr: true, ssrCssVars: [], compilerOptions: { bindingMetadata: compiledScript.bindings } })
+    assert.deepEqual(template.errors, [])
+    const modules = {}
+    for (const [name, code] of [['script', compiledScript.content], ['template', template.code]]) {
+      const module = { exports: {} }
+      new Script(ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText).runInNewContext({ module, exports: module.exports, require(name) {
+        if (name === '../api') return { request: () => { throw new Error('unexpected SSR request') } }
+        if (name === 'naive-ui') return { ...require('naive-ui'), useMessage: () => ({ error() {}, success() {} }) }
+        return require(name)
+      } })
+      modules[name] = module.exports
+    }
+    const component = modules.script.default; component.ssrRender = modules.template.ssrRender
+    const html = await renderToString(vue.createSSRApp(component))
+    const inputs = html.match(/<input\b[^>]*type="radio"[^>]*>/g) || []
+    const securityInputs = inputs.filter((s) => /value="(?:auto_starttls|starttls|implicit_tls)"/.test(s))
+    const checked = securityInputs.filter((s) => /\bchecked(?:\s|=|>)/.test(s))
+    assert.equal(securityInputs.length, 3); assert.equal(checked.length, security === '' ? 0 : 1)
+    if (security) assert.match(checked[0], new RegExp(`value="${security}"`))
   }
 })

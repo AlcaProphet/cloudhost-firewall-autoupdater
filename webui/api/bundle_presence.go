@@ -120,6 +120,7 @@ func collectBundleV3Email(w *bundleV3WireEmail, prefix string, e *bundleV3Presen
 	e.add(prefix+".enabled", w.Enabled != nil)
 	e.add(prefix+".host", w.Host != nil)
 	e.add(prefix+".port", w.Port != nil)
+	e.add(prefix+".security", w.Security != nil)
 	e.add(prefix+".username", w.Username != nil)
 	e.add(prefix+".password", w.Password != nil)
 	e.add(prefix+".from_addr", w.FromAddr != nil)

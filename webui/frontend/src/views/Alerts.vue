@@ -27,6 +27,7 @@ const email = ref<AlertEmailConfig>({
   enabled: false,
   host: '',
   port: '587',
+  security: 'auto_starttls',
   username: '',
   password: '',
   from_addr: '',
@@ -64,7 +65,8 @@ function isAlertsData(value: unknown): value is AlertsData {
   return hasFields(data.policy,
     ['dns_failed_enabled', 'sync_error_enabled', 'operational_error_enabled'], ['health_timeout'])
     && hasFields(data.email, ['enabled'],
-      ['host', 'port', 'username', 'password', 'from_addr', 'to_addr', 'subject', 'body'])
+      ['host', 'port', 'security', 'username', 'password', 'from_addr', 'to_addr', 'subject', 'body'])
+    && ['auto_starttls', 'starttls', 'implicit_tls'].includes((data.email as AlertEmailConfig).security)
     && hasFields(data.webhook, ['enabled'], ['url', 'channel'])
     && hasFields(data.uptime_kuma_push, ['enabled'], ['url', 'interval'])
 }
@@ -77,7 +79,7 @@ const testResult = ref<{ ok: boolean; text: string } | null>(null)
 // 测试发送：使用当前表单值，不触发保存；请求上限固定 35 秒。
 // 成功只表述为「SMTP 服务器已接受测试邮件」，不表示已投递到收件箱。
 //
-// 请求体必须显式只取 8 个发送字段（Build7 §5.1）：不得直接序列化整个 email 表单对象，
+// 请求体必须显式只取 9 个发送字段（Build7 §5.1）：不得直接序列化整个 email 表单对象，
 // 它多一个 enabled，而后端 testEmailRequest 使用严格解码，多带字段会被 HTTP 400 拒绝。
 async function testSend() {
   testing.value = true
@@ -86,6 +88,7 @@ async function testSend() {
     const payload: TestEmailPayload = {
       host: email.value.host,
       port: email.value.port,
+      security: email.value.security,
       username: email.value.username,
       password: email.value.password,
       from_addr: email.value.from_addr,
@@ -205,6 +208,14 @@ async function save() {
         <NFormItem label="端口">
           <NInput v-model:value="email.port" placeholder="587" />
         </NFormItem>
+        <NFormItem label="安全模式">
+          <NRadioGroup v-model:value="email.security">
+            <NRadio value="auto_starttls">兼容模式：按需 STARTTLS</NRadio>
+            <NRadio value="starttls">强制 STARTTLS</NRadio>
+            <NRadio value="implicit_tls">SSL/TLS</NRadio>
+          </NRadioGroup>
+        </NFormItem>
+        <NText depth="3">腾讯云 SMTP 常用配置：smtp.qcloudmail.com，端口 465，SSL/TLS。切换模式后请核对服务商要求的端口。</NText>
         <NFormItem label="用户名">
           <NInput v-model:value="email.username" placeholder="user@example.com" />
         </NFormItem>

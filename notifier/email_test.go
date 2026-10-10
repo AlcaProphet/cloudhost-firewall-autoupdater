@@ -266,7 +266,7 @@ func TestSendTestEmailSuccessAgainstFakeSMTP(t *testing.T) {
 	})
 
 	const password = "unit-test-smtp-password-0001"
-	cfg := EmailConfig{
+	cfg := EmailConfig{Security: "auto_starttls",
 		Host: host, Port: port, User: "user@example.com", Pass: password,
 		From: "from@example.com", To: "a@example.com,b@example.com",
 	}
@@ -301,7 +301,7 @@ func TestSendTestEmailSuccessAgainstFakeSMTP(t *testing.T) {
 func TestSendTestEmailAuthFailure(t *testing.T) {
 	host, port, _ := startFakeSMTP(t, fakeSMTPOptions{advertiseAuth: true, authOK: false, rcptOK: true, dataOK: true})
 	const password = "unit-test-auth-failure-password"
-	cfg := EmailConfig{Host: host, Port: port, User: "u", Pass: password, From: "f@example.com", To: "t@example.com"}
+	cfg := EmailConfig{Security: "auto_starttls", Host: host, Port: port, User: "u", Pass: password, From: "f@example.com", To: "t@example.com"}
 
 	err := SendTestEmail(cfg, "s", "b")
 	if err == nil {
@@ -321,7 +321,7 @@ func TestSendTestEmailAuthFailure(t *testing.T) {
 // TestSendTestEmailRcptFailure RCPT 失败必须返回阶段错误
 func TestSendTestEmailRcptFailure(t *testing.T) {
 	host, port, _ := startFakeSMTP(t, fakeSMTPOptions{rcptOK: false, dataOK: true})
-	cfg := EmailConfig{Host: host, Port: port, From: "f@example.com", To: "t@example.com"}
+	cfg := EmailConfig{Security: "auto_starttls", Host: host, Port: port, From: "f@example.com", To: "t@example.com"}
 	err := SendTestEmail(cfg, "s", "b")
 	if err == nil || !strings.Contains(err.Error(), "SMTP RCPT TO 失败") {
 		t.Fatalf("RCPT 失败必须返回阶段错误: %v", err)
@@ -334,7 +334,7 @@ func TestSendTestEmailRcptFailure(t *testing.T) {
 // TestSendTestEmailDataFailure DATA 提交失败必须返回阶段错误
 func TestSendTestEmailDataFailure(t *testing.T) {
 	host, port, _ := startFakeSMTP(t, fakeSMTPOptions{rcptOK: true, dataOK: false})
-	cfg := EmailConfig{Host: host, Port: port, From: "f@example.com", To: "t@example.com"}
+	cfg := EmailConfig{Security: "auto_starttls", Host: host, Port: port, From: "f@example.com", To: "t@example.com"}
 	err := SendTestEmail(cfg, "s", "b")
 	if err == nil || !strings.Contains(err.Error(), "SMTP DATA 失败") {
 		t.Fatalf("DATA 失败必须返回阶段错误: %v", err)
@@ -349,7 +349,7 @@ func TestSendTestEmailBoundedOnSilentServer(t *testing.T) {
 	host, port, _ := startFakeSMTP(t, fakeSMTPOptions{silent: true})
 	setSMTPTimeouts(t, 2*time.Second, 400*time.Millisecond)
 
-	cfg := EmailConfig{Host: host, Port: port, From: "f@example.com", To: "t@example.com"}
+	cfg := EmailConfig{Security: "auto_starttls", Host: host, Port: port, From: "f@example.com", To: "t@example.com"}
 	done := make(chan error, 1)
 	go func() { done <- SendTestEmail(cfg, "s", "b") }()
 
@@ -366,7 +366,7 @@ func TestSendTestEmailBoundedOnSilentServer(t *testing.T) {
 // TestSendTestEmailMissingRecipient 缺少收件人时不得静默成功（防御性：正常路径由 API 校验拦截）
 func TestSendTestEmailMissingRecipient(t *testing.T) {
 	host, port, _ := startFakeSMTP(t, fakeSMTPOptions{rcptOK: true, dataOK: true})
-	cfg := EmailConfig{Host: host, Port: port, From: "f@example.com", To: ""}
+	cfg := EmailConfig{Security: "auto_starttls", Host: host, Port: port, From: "f@example.com", To: ""}
 	if err := SendTestEmail(cfg, "s", "b"); err != nil {
 		t.Fatalf("空收件人的行为由 SMTP 服务器决定，本用例只要求不 panic: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestSendTestEmailMissingRecipient(t *testing.T) {
 // 正文为用户正文 + 固定顺序详情块。
 func TestEmailSubjectSuffixAndBodyDetails(t *testing.T) {
 	host, port, rec := startFakeSMTP(t, fakeSMTPOptions{rcptOK: true, dataOK: true})
-	n := NewEmailNotifier(EmailConfig{
+	n := NewEmailNotifier(EmailConfig{Security: "auto_starttls",
 		Host: host, Port: port, From: "f@example.com", To: "t@example.com",
 		Subject: "[FWAlizer] 告警通知", Body: "FWAlizer 检测到运行异常，请检查同步日志。",
 	})
@@ -429,7 +429,7 @@ func TestEmailSubjectSuffixAndBodyDetails(t *testing.T) {
 // TestEmailDetailsUsePlaceholderForMissingFields 缺失字段必须写 "-"，不得留空或省略。
 func TestEmailDetailsUsePlaceholderForMissingFields(t *testing.T) {
 	host, port, rec := startFakeSMTP(t, fakeSMTPOptions{rcptOK: true, dataOK: true})
-	n := NewEmailNotifier(EmailConfig{
+	n := NewEmailNotifier(EmailConfig{Security: "auto_starttls",
 		Host: host, Port: port, From: "f@example.com", To: "t@example.com",
 		Subject: "S", Body: "B",
 	})
@@ -456,7 +456,7 @@ func TestEmailDetailsUsePlaceholderForMissingFields(t *testing.T) {
 // TestEmailRecipientsAreTrimmed 多收件人必须逐项 Trim（Build7 §4.5）。
 func TestEmailRecipientsAreTrimmed(t *testing.T) {
 	host, port, rec := startFakeSMTP(t, fakeSMTPOptions{rcptOK: true, dataOK: true})
-	n := NewEmailNotifier(EmailConfig{
+	n := NewEmailNotifier(EmailConfig{Security: "auto_starttls",
 		Host: host, Port: port, From: "f@example.com",
 		To:      "a@example.com, b@example.com ,  c@example.com",
 		Subject: "S", Body: "B",
@@ -481,7 +481,7 @@ func TestEmailRecipientsAreTrimmed(t *testing.T) {
 func TestEmailSuccessLogDoesNotLeakSecrets(t *testing.T) {
 	host, port, _ := startFakeSMTP(t, fakeSMTPOptions{advertiseAuth: true, authOK: true, rcptOK: true, dataOK: true})
 	const password = "auto-mail-password-0007"
-	n := NewEmailNotifier(EmailConfig{
+	n := NewEmailNotifier(EmailConfig{Security: "auto_starttls",
 		Host: host, Port: port, User: "u", Pass: password,
 		From: "f@example.com", To: "t@example.com",
 		Subject: "S", Body: "这是不应出现在日志里的完整正文",
@@ -511,7 +511,7 @@ func TestEmailSuccessLogDoesNotLeakSecrets(t *testing.T) {
 // 末尾追加固定「原因」行；DNS/同步事件不出现该行（既有正文形态逐字节不变）。
 func TestEmailOperationalEventIncludesReasons(t *testing.T) {
 	host, port, rec := startFakeSMTP(t, fakeSMTPOptions{rcptOK: true, dataOK: true})
-	n := NewEmailNotifier(EmailConfig{
+	n := NewEmailNotifier(EmailConfig{Security: "auto_starttls",
 		Host: host, Port: port, From: "f@example.com", To: "t@example.com",
 		Subject: "[FWAlizer] 告警通知", Body: "正文",
 	})

@@ -151,7 +151,7 @@ func TestGetAlertsDefaultsOnEmptyDB(t *testing.T) {
 
 // TestPutAlertsRequiresAllFields 四个对象与全部子字段必需（Build7 §4.6）
 func TestPutAlertsRequiresAllFields(t *testing.T) {
-	email := `{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"}`
+	email := `{"enabled":false,"host":"h","port":"587","security":"auto_starttls","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"}`
 	webhook := `{"enabled":false,"url":"","channel":"dingtalk"}`
 	policy := `{"dns_failed_enabled":false,"sync_error_enabled":false,"operational_error_enabled":false,"health_timeout":"10m"}`
 	push := `{"enabled":false,"url":"","interval":"60s"}`
@@ -166,9 +166,9 @@ func TestPutAlertsRequiresAllFields(t *testing.T) {
 		"email 为 null":            `{"policy":` + policy + `,"email":null,"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
 		"webhook 为 null":          `{"policy":` + policy + `,"email":` + email + `,"webhook":null,"uptime_kuma_push":` + push + `}`,
 		"push 为 null":             `{"policy":` + policy + `,"email":` + email + `,"webhook":` + webhook + `,"uptime_kuma_push":null}`,
-		"缺 email.port":            `{"policy":` + policy + `,"email":{"enabled":false,"host":"h","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"},"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
-		"缺 email.subject":         `{"policy":` + policy + `,"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t","body":"b"},"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
-		"缺 email.body":            `{"policy":` + policy + `,"email":{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s"},"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
+		"缺 email.port":            `{"policy":` + policy + `,"email":{"enabled":false,"host":"h","security":"auto_starttls","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"},"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
+		"缺 email.subject":         `{"policy":` + policy + `,"email":{"enabled":false,"host":"h","port":"587","security":"auto_starttls","username":"u","password":"p","from_addr":"f","to_addr":"t","body":"b"},"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
+		"缺 email.body":            `{"policy":` + policy + `,"email":{"enabled":false,"host":"h","port":"587","security":"auto_starttls","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s"},"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
 		"缺 webhook.channel":       `{"policy":` + policy + `,"email":` + email + `,"webhook":{"enabled":false,"url":""},"uptime_kuma_push":` + push + `}`,
 		"缺 policy.health_timeout": `{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,"operational_error_enabled":false},"email":` + email + `,"webhook":` + webhook + `,"uptime_kuma_push":` + push + `}`,
 		"缺 push.interval":         `{"policy":` + policy + `,"email":` + email + `,"webhook":` + webhook + `,"uptime_kuma_push":{"enabled":false,"url":""}}`,
@@ -228,15 +228,15 @@ func TestPutAlertsValidation(t *testing.T) {
 	wrap := func(e, w, p, k string) string {
 		return `{"policy":` + p + `,"email":` + e + `,"webhook":` + w + `,"uptime_kuma_push":` + k + `}`
 	}
-	baseEmail := `{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"}`
+	baseEmail := `{"enabled":false,"host":"h","port":"587","security":"auto_starttls","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"}`
 
 	cases := map[string]string{
-		"端口为 0":      wrap(email(`{"enabled":false,"host":"h","port":"0","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"}`), webhook, policy, push),
-		"端口非整数":      wrap(email(`{"enabled":false,"host":"h","port":"abc","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"}`), webhook, policy, push),
-		"启用但 host 空": wrap(email(`{"enabled":true,"host":"","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"}`), webhook, policy, push),
-		"启用但 from 空": wrap(email(`{"enabled":true,"host":"h","port":"587","username":"u","password":"p","from_addr":"","to_addr":"t","subject":"s","body":"b"}`), webhook, policy, push),
-		"启用但 to 空":   wrap(email(`{"enabled":true,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"","subject":"s","body":"b"}`), webhook, policy, push),
-		"主题为空":       wrap(email(`{"enabled":false,"host":"h","port":"587","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"  ","body":"b"}`), webhook, policy, push),
+		"端口为 0":      wrap(email(`{"enabled":false,"host":"h","port":"0","security":"auto_starttls","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"}`), webhook, policy, push),
+		"端口非整数":      wrap(email(`{"enabled":false,"host":"h","port":"abc","security":"auto_starttls","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"}`), webhook, policy, push),
+		"启用但 host 空": wrap(email(`{"enabled":true,"host":"","port":"587","security":"auto_starttls","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"s","body":"b"}`), webhook, policy, push),
+		"启用但 from 空": wrap(email(`{"enabled":true,"host":"h","port":"587","security":"auto_starttls","username":"u","password":"p","from_addr":"","to_addr":"t","subject":"s","body":"b"}`), webhook, policy, push),
+		"启用但 to 空":   wrap(email(`{"enabled":true,"host":"h","port":"587","security":"auto_starttls","username":"u","password":"p","from_addr":"f","to_addr":"","subject":"s","body":"b"}`), webhook, policy, push),
+		"主题为空":       wrap(email(`{"enabled":false,"host":"h","port":"587","security":"auto_starttls","username":"u","password":"p","from_addr":"f","to_addr":"t","subject":"  ","body":"b"}`), webhook, policy, push),
 		"渠道未知":       wrap(baseEmail, `{"enabled":false,"url":"","channel":"wecom"}`, policy, push),
 		"启用但渠道为空":    wrap(baseEmail, `{"enabled":true,"url":"https://example.invalid/hook","channel":""}`, policy, push),
 		"启用但 URL 为空": wrap(baseEmail, `{"enabled":true,"url":"","channel":"dingtalk"}`, policy, push),
@@ -342,7 +342,7 @@ func TestConfigResetStrictBody(t *testing.T) {
 	if err := e.store.SetSetting("tag", "x"); err != nil {
 		t.Fatalf("预置设置失败: %v", err)
 	}
-	if err := e.store.SaveAlertEmail(&config.AlertEmailConfig{Enabled: true, Host: "h", Port: "587"}); err != nil {
+	if err := e.store.SaveAlertEmail(&config.AlertEmailConfig{Security: "auto_starttls", Enabled: true, Host: "h", Port: "587"}); err != nil {
 		t.Fatalf("预置邮件告警失败: %v", err)
 	}
 	if err := e.store.SaveAlertWebhook(&config.AlertWebhookConfig{Enabled: true, URL: "https://example.com/h"}); err != nil {

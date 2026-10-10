@@ -125,6 +125,7 @@ type bundleV3Email struct {
 	Enabled  bool   `json:"enabled"`
 	Host     string `json:"host"`
 	Port     string `json:"port"`
+	Security string `json:"security"`
 	Username string `json:"username"`
 	Password string `json:"password"`
 	FromAddr string `json:"from_addr"`
@@ -229,6 +230,7 @@ type bundleV3WireEmail struct {
 	Enabled  *bool   `json:"enabled"`
 	Host     *string `json:"host"`
 	Port     *string `json:"port"`
+	Security *string `json:"security"`
 	Username *string `json:"username"`
 	Password *string `json:"password"`
 	FromAddr *string `json:"from_addr"`
@@ -344,6 +346,9 @@ func toBundleV3(snapshot *config.BusinessSnapshot, exportedAt time.Time) bundleV
 		policy = config.DefaultAlertPolicy()
 	}
 	email := snapshot.Email
+	if email.Security == "" {
+		email.Security = config.DefaultSMTPSecurity
+	}
 	if email.Port == "" {
 		email.Port = "587"
 	}
@@ -395,6 +400,7 @@ func toBundleV3(snapshot *config.BusinessSnapshot, exportedAt time.Time) bundleV
 				Enabled:  email.Enabled,
 				Host:     email.Host,
 				Port:     email.Port,
+				Security: email.Security,
 				Username: email.Username,
 				Password: email.Password,
 				FromAddr: email.FromAddr,
@@ -644,6 +650,7 @@ func normalizeBundleEmail(w *bundleV3WireEmail) (config.AlertEmailConfig, error)
 		Enabled:  *w.Enabled,
 		Host:     *w.Host,
 		Port:     *w.Port,
+		Security: *w.Security,
 		Username: *w.Username,
 		Password: *w.Password,
 		FromAddr: *w.FromAddr,

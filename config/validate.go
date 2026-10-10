@@ -276,12 +276,16 @@ func NormalizeDNSAddress(v string) (string, error) {
 
 // NormalizeAlertEmail 归一化并校验邮件告警配置（Build6 §4.5、Build7 §4.5）：
 //
+//   - security 必须为固定三模式（禁用时也要求合法）；
 //   - 端口必须是 1～65535 的整数（禁用时也要求类型正确）；
 //   - 启用时 host / from_addr / to_addr 必须非空；
 //   - username / password 允许为空，作为不透明凭据按原值保存；
 //   - subject Trim 后必须非空、禁止换行与控制字符、最多 200 个 Unicode 字符；
 //   - body 允许普通换行，最大 10 KiB。
 func NormalizeAlertEmail(c AlertEmailConfig) (AlertEmailConfig, error) {
+	if !ValidSMTPSecurity(c.Security) {
+		return AlertEmailConfig{}, invalidField("email.security", "只允许 auto_starttls / starttls / implicit_tls")
+	}
 	port, err := normalizePort(c.Port)
 	if err != nil {
 		return AlertEmailConfig{}, invalidField("email.port", "必须是 1～65535 的整数")

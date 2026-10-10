@@ -668,7 +668,7 @@ func TestProcessSecretsNotLogged(t *testing.T) {
 		_ = store.Close()
 		t.Fatalf("预置凭据失败: %v", err)
 	}
-	if err := store.SaveAlertEmail(&config.AlertEmailConfig{
+	if err := store.SaveAlertEmail(&config.AlertEmailConfig{Security: "auto_starttls",
 		Enabled: true, Host: "smtp.example.com", Port: "587", Username: "u",
 		Password: sentinelSMTPPass, FromAddr: "f@example.com", ToAddr: "t@example.com",
 	}); err != nil {
@@ -775,7 +775,7 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 		_ = srcStore.Close()
 		t.Fatalf("预置主题失败: %v", err)
 	}
-	if err := srcStore.SaveAlertEmail(&config.AlertEmailConfig{
+	if err := srcStore.SaveAlertEmail(&config.AlertEmailConfig{Security: "auto_starttls",
 		Enabled: true, Host: "smtp.example.com", Port: "587", Username: "u", Password: smtpPass,
 		FromAddr: "f@example.com", ToAddr: "t@example.com",
 	}); err != nil {
@@ -1290,7 +1290,7 @@ func TestProcessUptimeKumaPushHeartbeat(t *testing.T) {
 	const token = "e2e-push-token-abc123"
 	body := `{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,` +
 		`"operational_error_enabled":false,"health_timeout":"10m"},` +
-		`"email":{"enabled":false,"host":"","port":"587","username":"","password":"",` +
+		`"email":{"enabled":false,"host":"","port":"587","security":"auto_starttls","username":"","password":"",` +
 		`"from_addr":"","to_addr":"","subject":"[FWAlizer] 告警通知",` +
 		`"body":"FWAlizer 检测到运行异常，请检查同步日志。"},` +
 		`"webhook":{"enabled":false,"url":"","channel":"dingtalk"},` +
@@ -1480,7 +1480,7 @@ func serveFakeSMTP(conn net.Conn, rec *fakeSMTPRecord) {
 	}
 }
 
-// TestProcessTestEmailWithUIPayload 真实进程：与告警页现在构造的**完全一致的 8 字段载荷**
+// TestProcessTestEmailWithUIPayload 真实进程：与告警页现在构造的**完全一致的 9 字段载荷**
 // 必须走完 SMTP 会话并返回成功；同时锁定严格解码契约（多带 enabled 必须 400）。
 //
 // 判别性：修复前告警页序列化整个 email 表单对象（含 enabled），后端必然 400，
@@ -1501,7 +1501,7 @@ func TestProcessTestEmailWithUIPayload(t *testing.T) {
 	alertsBody := `{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,` +
 		`"operational_error_enabled":false,"health_timeout":"10m"},` +
 		`"email":{"enabled":false,"host":"` + host + `","port":"` + port + `",` +
-		`"username":"","password":"","from_addr":"from@example.com",` +
+		`"security":"auto_starttls","username":"","password":"","from_addr":"from@example.com",` +
 		`"to_addr":"a@example.com, b@example.com","subject":"[FWAlizer] 告警通知",` +
 		`"body":"FWAlizer 检测到运行异常，请检查同步日志。"},` +
 		`"webhook":{"enabled":false,"url":"","channel":"dingtalk"},` +
@@ -1511,8 +1511,8 @@ func TestProcessTestEmailWithUIPayload(t *testing.T) {
 	}
 
 	// 与 webui/frontend/src/views/Alerts.vue 的 testSend() 显式构造的载荷逐字段一致：
-	// 只有 8 个发送字段，不含 enabled（Build7 §5.1）。
-	uiPayload := fmt.Sprintf(`{"host":%q,"port":%q,"username":"","password":"",`+
+	// 只有 9 个发送字段，不含 enabled（Build7 §5.1）。
+	uiPayload := fmt.Sprintf(`{"host":%q,"port":%q,"security":"auto_starttls","username":"","password":"",`+
 		`"from_addr":"from@example.com","to_addr":"a@example.com, b@example.com",`+
 		`"subject":"[FWAlizer] 告警通知","body":"FWAlizer 检测到运行异常，请检查同步日志。"}`,
 		host, port)
@@ -1629,7 +1629,7 @@ func TestProcessRestartPushFirstHeartbeatIsUp(t *testing.T) {
 
 	alertsBody := `{"policy":{"dns_failed_enabled":false,"sync_error_enabled":false,` +
 		`"operational_error_enabled":true,"health_timeout":"10m"},` +
-		`"email":{"enabled":false,"host":"","port":"587","username":"","password":"",` +
+		`"email":{"enabled":false,"host":"","port":"587","security":"auto_starttls","username":"","password":"",` +
 		`"from_addr":"","to_addr":"","subject":"[FWAlizer] 告警通知",` +
 		`"body":"FWAlizer 检测到运行异常，请检查同步日志。"},` +
 		`"webhook":{"enabled":false,"url":"","channel":"dingtalk"},` +

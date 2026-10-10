@@ -175,6 +175,7 @@ CREATE TABLE alert_email (
     enabled INTEGER NOT NULL DEFAULT 0,
     host TEXT NOT NULL DEFAULT '',
     port TEXT NOT NULL DEFAULT '587',
+    security TEXT NOT NULL DEFAULT 'auto_starttls',
     username TEXT NOT NULL DEFAULT '',
     password TEXT NOT NULL DEFAULT '',
     from_addr TEXT NOT NULL DEFAULT '',
@@ -230,6 +231,7 @@ version 3 继续保留 Build6 已有的 metadata、targets、rules 与 settings 
       "enabled": false,
       "host": "",
       "port": "587",
+      "security": "auto_starttls",
       "username": "",
       "password": "",
       "from_addr": "",
@@ -255,7 +257,7 @@ version 3 继续保留 Build6 已有的 metadata、targets、rules 与 settings 
 
 固定规则：
 
-- version 3 是唯一可导入/导出的版本；Webhook channel 仍必须存在且为字符串，关闭允许空、开启必须为合法渠道；GET/导出保留空值。新版接受原有合法 version 3 包；旧版可能拒绝新增关闭空渠道包，用户已接受该边界（I8-113）；
+- version 3 是唯一可导入/导出的版本；Webhook channel 仍必须存在且为字符串，关闭允许空、开启必须为合法渠道；GET/导出保留空值。I8-R01 起邮件 security 严格必填，缺少该字段的旧 v3 包拒绝导入，新包可能被旧程序的未知字段规则拒绝；此条替代 I8-113 时“新版接受原有合法包”的历史兼容口径；
 - 配置导入使用独立的标准库 JSON v2 严格解码：字段名大小写必须精确匹配，任意对象内拒绝重复字段（同值也拒绝），拒绝非法 UTF-8 与孤立代理项；合法 JSON 转义按解码后名称判断，`version` 与 `\u0076ersion` 同时出现仍为重复。先完成 10 MiB 有界读取，超限统一 413；其余解析/字段错误为安全 400，仅返回固定原因与必要字段路径，不回显原始错误或字段值。全部解码与领域校验完成后才进入配置写事务，非法输入零写入零发布；普通 API 不随本项切换解析器。（2026-10-08 I8-111 严格方案 B，替代此前共享普通 API 解码器的边界。）
 - Push URL 与 SMTP 密码、Webhook URL 一样属于敏感完整快照字段；导出响应体允许包含，其他日志和错误响应不得包含；
 - 导入仍是覆盖式原子事务；targets/rules ID 映射、保留 `sync_logs`、清空 `scanned_resources`、不重置 `sqlite_sequence` 等 Build6 未被本方案改变的合同继续保留；
@@ -333,7 +335,7 @@ P2-05 是 Build7 完成后的独立修复，已提交为 `93e0e4b`；不改变 S
 - `subject` Trim 后不能为空，禁止换行和控制字符，最多 200 个 Unicode 字符；
 - `body` 允许普通换行，最大 10 KiB；
 - 邮件仍固定使用 `text/plain; charset=UTF-8`；
-- SMTP host/port/from/to 与渠道启用时的既有最小校验保留；
+- SMTP security 固定为 auto_starttls / starttls / implicit_tls，禁用时也须合法；保存/测试/v3 导入严格必填。host/port/from/to 与渠道启用时的既有最小校验保留；
 - 测试邮件按“实际要发送”校验 SMTP 字段，即使邮件自动通知开关关闭也要求 host/from/to 完整；
 - 多收件人继续使用逗号分隔，实施时应逐项 Trim，避免页面示例 `a@example.com, b@example.com` 把第二个地址连同前导空格传给 SMTP。
 - `health_timeout` 必须是大于 0 的 Go duration，默认 `10m`；
@@ -364,6 +366,7 @@ GET/PUT 顶层固定为四个完整对象：
     "enabled": false,
     "host": "",
     "port": "587",
+    "security": "auto_starttls",
     "username": "",
     "password": "",
     "from_addr": "",
@@ -420,6 +423,7 @@ POST /api/alerts/test-email
 {
   "host": "smtp.example.com",
   "port": "587",
+  "security": "auto_starttls",
   "username": "user@example.com",
   "password": "secret",
   "from_addr": "user@example.com",
@@ -978,3 +982,13 @@ I8-113 本地修复、验证与文档收口完成。PT-AUDIT-02 真实浏览器�
 ## I8-16 SMTP 清理与测试补强（2026-10-10）
 
 按用户裁决 d-A，SMTP 连接/客户端及正文写失败后的清理错误改为固定 stage/category 的安全 WARN；正常 Quit 不重复关闭，预期已关闭不告警，不暴露底层 error/cause，不覆盖主错误。保留 §5.1 的 QUIT 错误返回失败行为，SMTP 成功仍不表示收件箱投递。按 b-A 保留 Push Bus 测试接缝并补记录器正向控制；静默 SMTP deadline 回归改为持有连接、有界回收与严格安全超时类别，无 Runtime 与 nil State 分支独立覆盖，Stop 失败文案订正。正式门禁见 Issue8 的 I8-16 补记；真实 SMTP/收件箱、Webhook/Kuma 等外部未执行/人工免除状态不升级。本轮未提交或推送。
+
+## I8-R01 SMTP 显式安全模式（2026-10-10）
+
+用户依据两项研究授权正式实施，基线 main/d410959，工作树干净、相对本地 origin/main ahead 2，未 fetch。生产范围为11个现有文件：配置/校验/SQLite、共用SMTP出口、告警保存/测试/通知器构造、v3 DTO与集中必填汇总、前端类型与告警页。
+
+`auto_starttls` 保留按需升级，`starttls` 必须升级，`implicit_tls` 在欢迎消息前握手且不发送STARTTLS；模式与端口独立，不猜测、不回退。生产使用系统CA与主机名校验，PlainAuth认证条件不变。显式Hello返回固定安全阶段；隐式连接保留具体TLS类型。10秒建连后一次设置30秒会话deadline，握手后不重置；成功仍仅表示SMTP接受，QUIT失败仍为发送失败，安全清理与MIME合同保持。
+
+旧数据库显式补 security 列，默认auto_starttls，仅补此列不关闭邮件/Webhook；缺subject/body的更古老数据库仍按历史合同归零。新库/reset/无行GET及导出默认一致，重复重启不覆盖已选模式。保存、测试与v3导入全部要求合法security；版本保持3，缺字段旧备份拒绝，新包可能被旧程序拒绝。此前测试8字段和隐式EHLO错误阶段的描述属于历史；当前测试请求为显式9字段、不含enabled，Hello错误单独返回。前端三项单选在渠道关闭时仍可编辑，切换保留端口和输入，非法响应整体拒绝加载。腾讯云目标为smtp.qcloudmail.com、465、SSL/TLS。
+
+正式验证与负向控制结果见 [Issue8.md](Issue8.md) I8-R01。真实SMTP接受/收件箱及三类邮件仍未验收；本地CA、假SMTP与产品进程回归不替代真实投递，也不推定Linux/Docker、真实浏览器或当前revision远端CI/GHCR通过。本轮未修改依赖或发布配置，未提交/推送。
