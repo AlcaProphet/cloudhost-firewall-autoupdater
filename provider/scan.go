@@ -122,7 +122,8 @@ func scanTCCVM(region string, pool *ClientPool) ([]ScannedCloudResource, error) 
 	return resources, nil
 }
 
-// scanAliSWAS 扫描阿里云轻量云实例（ListInstances，PageNumber/PageSize 分页）
+// scanAliSWAS 扫描阿里云轻量云实例，按单次调用的总数与唯一 ID 验证分页完整性。
+// 总数使用 SDK 解码后的值；不自动重扫，不提供跨页原子快照或操作总预算。
 func scanAliSWAS(region string, pool *ClientPool) ([]ScannedCloudResource, error) {
 	creds := pool.Credentials()
 	client, err := pool.GetOrCreate(pool.CacheKey(config.CloudAliSWAS, region), func() (any, error) {
@@ -135,9 +136,10 @@ func scanAliSWAS(region string, pool *ClientPool) ([]ScannedCloudResource, error
 	s := client.(*swas.Client)
 
 	resources := make([]ScannedCloudResource, 0)
-	pageNumber := int32(1)
-	pageSize := int32(100)
-	for {
+	seenIDs := make(map[string]struct{})
+	const pageSize int32 = 100
+	var totalCount int32
+	for pageNumber := int32(1); ; pageNumber++ {
 		req := &swas.ListInstancesRequest{
 			RegionId:   tea.String(region),
 			PageNumber: tea.Int32(pageNumber),
@@ -151,14 +153,44 @@ func scanAliSWAS(region string, pool *ClientPool) ([]ScannedCloudResource, error
 		if err != nil {
 			return nil, err
 		}
-		resources = append(resources, page...)
-		// 返回数量不足一页时结束；结构异常已由页解码拒绝。
-		if int32(len(page)) < pageSize {
-			break
+		body := resp.Body
+		if body.TotalCount == nil || *body.TotalCount < 0 {
+			return nil, fmt.Errorf("%w: SWAS 资源扫描总数缺失或无效", ErrSnapshotIncomplete)
 		}
-		pageNumber++
+		if pageNumber == 1 {
+			// 复制数值作为本次扫描基准，不持有响应字段指针。
+			totalCount = *body.TotalCount
+		} else if *body.TotalCount != totalCount {
+			return nil, fmt.Errorf("%w: SWAS 资源扫描分页总数发生变化", ErrSnapshotIncomplete)
+		}
+		if body.PageNumber != nil && *body.PageNumber != pageNumber {
+			return nil, fmt.Errorf("%w: SWAS 资源扫描返回页码不一致", ErrSnapshotIncomplete)
+		}
+		if body.PageSize != nil && *body.PageSize != pageSize {
+			return nil, fmt.Errorf("%w: SWAS 资源扫描返回页大小不一致", ErrSnapshotIncomplete)
+		}
+		if len(page) > int(pageSize) {
+			return nil, fmt.Errorf("%w: SWAS 资源扫描单页条数超限", ErrSnapshotIncomplete)
+		}
+		for _, item := range page {
+			if _, exists := seenIDs[item.ResourceID]; exists {
+				return nil, fmt.Errorf("%w: SWAS 资源扫描存在重复资源标识", ErrSnapshotIncomplete)
+			}
+			seenIDs[item.ResourceID] = struct{}{}
+		}
+		count := int64(len(resources)) + int64(len(page))
+		if count > int64(totalCount) {
+			return nil, fmt.Errorf("%w: SWAS 资源扫描已读条数超出总数", ErrSnapshotIncomplete)
+		}
+		resources = append(resources, page...)
+		// 满页也可直接完成；未达到总数的短页不能解释为完整列表。
+		if count == int64(totalCount) {
+			return resources, nil
+		}
+		if len(page) < int(pageSize) {
+			return nil, fmt.Errorf("%w: SWAS 资源扫描在达到总数前返回短页", ErrSnapshotIncomplete)
+		}
 	}
-	return resources, nil
 }
 
 // decodeSWASScanPage 校验并转换实例页；缺失集合失败，显式空数组合法。

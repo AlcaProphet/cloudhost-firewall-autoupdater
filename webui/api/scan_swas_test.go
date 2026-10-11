@@ -23,8 +23,8 @@ func TestScanSWASCacheIntegrity(t *testing.T) {
 	ct := config.CloudAliSWAS
 	list, id := "Instances", "InstanceId"
 	wrap := func(content string) string { return `{` + content + `}` }
-	empty := wrap(`"` + list + `":[]`)
-	one := wrap(`"` + list + `":[{"` + id + `":"new"}]`)
+	empty := wrap(`"TotalCount":0,"` + list + `":[]`)
+	one := wrap(`"TotalCount":1,"` + list + `":[{"` + id + `":"new"}]`)
 	entries := make([]map[string]string, 100)
 	for i := range entries {
 		entries[i] = map[string]string{id: fmt.Sprintf("new-%03d", i)}
@@ -33,7 +33,9 @@ func TestScanSWASCacheIntegrity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	full := wrap(`"` + list + `":` + string(fullJSON) + `,"TotalCount":100`)
+	full := wrap(`"` + list + `":` + string(fullJSON) + `,"TotalCount":101`)
+	exactFull := wrap(`"` + list + `":` + string(fullJSON) + `,"TotalCount":100`)
+	last := wrap(`"TotalCount":101,"Instances":[{"InstanceId":"new"}]`)
 	cases := []struct {
 		name  string
 		pages []string
@@ -44,8 +46,8 @@ func TestScanSWASCacheIntegrity(t *testing.T) {
 		{"positive-missing-list", []string{wrap(`"TotalCount":1`)}},
 		{"null-entry", []string{wrap(`"` + list + `":[null]`)}},
 		{"null-id", []string{wrap(`"Instances":[{"InstanceId":null}]`)}},
-		{"null-name", []string{wrap(`"Instances":[{"InstanceId":"new","InstanceName":null}]`)}},
-		{"raw-values", []string{wrap(`"Instances":[{"InstanceId":" raw-ID ","InstanceName":" 名称 "}]`)}},
+		{"null-name", []string{wrap(`"TotalCount":1,"Instances":[{"InstanceId":"new","InstanceName":null}]`)}},
+		{"raw-values", []string{wrap(`"TotalCount":1,"Instances":[{"InstanceId":" raw-ID ","InstanceName":" 名称 "}]`)}},
 		{"zero-empty", []string{wrap(`"TotalCount":0,"Instances":[]`)}},
 		{"sdk-error", []string{`sdk-error`}},
 		{"later-sdk-error", []string{full, `sdk-error`}},
@@ -56,8 +58,8 @@ func TestScanSWASCacheIntegrity(t *testing.T) {
 		{"empty-list", []string{empty}}, {"normal", []string{one}},
 		{"later-missing-response", []string{full, `{}`}},
 		{"later-zero-null", []string{full, wrap(`"TotalCount":0,"` + list + `":null`)}},
-		{"full-empty-last", []string{full, empty}},
-		{"full-short-last", []string{full, one}},
+		{"exact-full", []string{exactFull}},
+		{"full-short-last", []string{full, last}},
 		{"valid-then-null", []string{wrap(`"` + list + `":[{"` + id + `":"new"},null]`)}},
 		{"later-null-entry", []string{full, wrap(`"` + list + `":[null]`)}},
 		{"later-missing-id", []string{full, wrap(`"` + list + `":[{}]`)}},
@@ -137,7 +139,7 @@ func TestScanSWASCacheIntegrity(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 				t.Fatal(err)
 			}
-			success := tc.name == "empty-list" || tc.name == "zero-empty" || tc.name == "normal" || tc.name == "null-name" || tc.name == "raw-values" || tc.name == "full-empty-last" || tc.name == "full-short-last"
+			success := tc.name == "empty-list" || tc.name == "zero-empty" || tc.name == "normal" || tc.name == "null-name" || tc.name == "raw-values" || tc.name == "exact-full" || tc.name == "full-short-last"
 			if result.Success != success {
 				t.Errorf("success=%v want=%v body=%s", result.Success, success, w.Body.String())
 			}
@@ -179,7 +181,7 @@ func TestScanSWASCacheIntegrity(t *testing.T) {
 				if tc.name == "normal" || tc.name == "null-name" || tc.name == "raw-values" {
 					wantCount = 1
 				}
-				if tc.name == "full-empty-last" || tc.name == "full-short-last" {
+				if tc.name == "exact-full" || tc.name == "full-short-last" {
 					wantCount = 100
 					if tc.name == "full-short-last" {
 						wantCount = 101
@@ -235,6 +237,123 @@ func TestScanSWASCacheIntegrity(t *testing.T) {
 			}
 			if int(calls.Load()) != len(tc.pages) {
 				t.Errorf("calls=%d want=%d", calls.Load(), len(tc.pages))
+			}
+		})
+	}
+}
+
+// TestScanSWASCache 分页异常必须保留旧缓存，失败不返回部分资源或成功计数。
+func TestScanSWASCache(t *testing.T) {
+	entries := make([]map[string]string, 100)
+	for i := range entries {
+		entries[i] = map[string]string{"InstanceId": fmt.Sprintf("id-%d", i)}
+	}
+	encoded, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := `{"TotalCount":101,"Instances":` + string(encoded) + `}`
+	cases := []struct {
+		name  string
+		pages []string
+		count int
+		valid bool
+	}{
+		{"short", []string{`{"TotalCount":2,"Instances":[{"InstanceId":"new"}]}`}, 1, false},
+		{"zero-nonempty", []string{`{"TotalCount":0,"Instances":[{"InstanceId":"new"}]}`}, 1, false},
+		{"empty-positive", []string{`{"TotalCount":2,"Instances":[]}`}, 0, false},
+		{"duplicate", []string{`{"TotalCount":2,"Instances":[{"InstanceId":"dup"},{"InstanceId":"dup"}]}`}, 2, false},
+		{"echo-wrong", []string{`{"TotalCount":1,"PageNumber":2,"Instances":[{"InstanceId":"new"}]}`}, 1, false},
+		{"valid", []string{`{"TotalCount":1,"Instances":[{"InstanceId":"new"}]}`}, 1, true},
+		{"valid-zero", []string{`{"TotalCount":0,"Instances":[]}`}, 0, true},
+		{"later-missing-total", []string{full, `{"Instances":[{"InstanceId":"last"}]}`}, 0, false},
+		{"later-null-total", []string{full, `{"TotalCount":null,"Instances":[{"InstanceId":"last"}]}`}, 0, false},
+		{"later-changing-total", []string{full, `{"TotalCount":100,"Instances":[{"InstanceId":"last"}]}`}, 0, false},
+		{"later-duplicate", []string{full, `{"TotalCount":101,"Instances":[{"InstanceId":"id-0"}]}`}, 0, false},
+		{"later-empty", []string{full, `{"TotalCount":101,"Instances":[]}`}, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			ct := config.CloudAliSWAS
+			for _, region := range []string{"cn-hangzhou", "cn-other"} {
+				if err := e.store.ReplaceScannedResources(string(ct), region, []config.ScannedResource{{ResourceID: "old-" + region}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := e.store.GetScannedResources(string(ct))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				i := int(calls.Add(1)) - 1
+				if err := r.ParseForm(); err != nil {
+					t.Error(err)
+				}
+				if r.Form.Get("PageNumber") != fmt.Sprint(i+1) || r.Form.Get("PageSize") != "100" {
+					t.Errorf("params=%v", r.Form)
+				}
+				if i >= len(tc.pages) {
+					t.Error("unexpected page")
+					w.WriteHeader(400)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if _, err := w.Write([]byte(tc.pages[i])); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer srv.Close()
+			cli, err := swas.NewClient(&openapi.Config{AccessKeyId: tea.String("fake"), AccessKeySecret: tea.String("fake"), Endpoint: tea.String(strings.TrimPrefix(srv.URL, "http://")), Protocol: tea.String("http")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pool := provider.NewClientPool(provider.Credentials{AliyunAccessKeyID: "fake", AliyunAccessKeySecret: "fake"})
+			if _, err := pool.GetOrCreate(pool.CacheKey(ct, "cn-hangzhou"), func() (any, error) { return cli, nil }); err != nil {
+				t.Fatal(err)
+			}
+			e.runtime.Apply(&syncer.RuntimeState{Config: config.RuntimeConfig{Credentials: config.Credentials{AliyunAccessKeyID: "fake", AliyunAccessKeySecret: "fake"}}, Pool: pool})
+			w := e.do(t, "POST", "/api/scan-resources", `{"cloud_type":"ali_swas","region":"cn-hangzhou"}`)
+			var resp struct {
+				Success bool
+				Count   int
+				Error   string
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			after, err := e.store.GetScannedResources(string(ct))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantSuccess := tc.valid
+			if w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" || resp.Success != wantSuccess {
+				t.Fatalf("response=%s status=%d", w.Body.String(), w.Code)
+			}
+			if wantSuccess {
+				if resp.Count != tc.count || len(after) != tc.count+1 {
+					t.Fatalf("count=%d cache=%+v", resp.Count, after)
+				}
+				for _, v := range after {
+					if v.Region == "cn-other" && v.ResourceID != "old-cn-other" {
+						t.Fatalf("other region changed")
+					}
+				}
+			} else {
+				if !reflect.DeepEqual(before, after) {
+					t.Fatalf("failure overwrote cache")
+				}
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(w.Body.Bytes(), &fields); err != nil {
+					t.Fatal(err)
+				}
+				if resp.Error == "" || fields["resources"] != nil || fields["count"] != nil {
+					t.Fatalf("invalid failure contract")
+				}
+			}
+			if int(calls.Load()) != len(tc.pages) {
+				t.Fatalf("calls=%d want=%d", calls.Load(), len(tc.pages))
 			}
 		})
 	}

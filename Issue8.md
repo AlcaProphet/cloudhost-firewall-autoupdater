@@ -17,7 +17,7 @@
 | I8-R02 | 前端依赖 high 告警与项目依赖升级 | 本地已修复；依赖审计通过 | Issue8 I8-08 实施补记及后续 npm ci 记录 |
 | I8-R03 | ECS 删除分批判别力 | 测试补强本地完成 | TODO-002；P2-02 |
 | I8-R04 | hook 测试观察竞争 | 测试补强本地完成 | 旧 I8-17g |
-| I8-R05 | SWAS 资源扫描分页完整性 | 独立候选未定型 | 旧 I8-08 后续候选；Q-04 剩余 |
+| I8-R05 | SWAS 资源扫描分页完整性 | 本地已修复 | 旧 I8-08 后续候选；Q-04 剩余 |
 | I8-R06 | ECS 与资源扫描操作总预算 | 待研究与裁决 | 旧 I8-38；Q-12 ECS 剩余 |
 | I8-R07 | Pause/Resume 接口的原子更新 | 静态候选待裁决 | 旧 I8-17d/I8-41；Q-10 |
 | I8-R08 | CVM Describe 错误分类合同 | 合理分类待明确 | 旧 I8-31；Q-11；TODO-003；P3-06 |
@@ -105,9 +105,13 @@
 
 ### I8-R05 SWAS 资源扫描分页完整性
 
-- **状态与来源：** 独立候选未定型；旧 I8-08 后续候选；Q-04 剩余。
-- **证据与边界：** scanAliSWAS/ListInstances 已修结构异常，仍按短页结束。历史 SDK→handler→SQLite 对照记录 TotalCount=2但一条短页成功，以及TotalCount=0但一条仍成功。规则 ListFirewallRules 的 I8-11 修复不覆盖此路径。
-- **后续与完成条件：** 先确定总数可用/缺失、跨页变化、提前空/短页、重复ID、资源变化时失败或重扫策略，再补SDK与缓存回归；不得直接照搬规则快照判据或声称现有结构修复证明完整分页。
+- **状态、授权与基线：** 2026-10-11 用户选择 B（严格总数、不自动重扫），深入研究后进一步确认保持 typed SDK 边界，随后授权正式修复并同步文档。正式修复及文档同步已完成，专项门禁、判别性对照与完整本地门禁均通过。实施前 `main == 本地 origin/main == 173660f9d7d9f3bd5a706a4ebcbfba0d8f985c28`，工作树与暂存区干净，未 fetch。旧来源为 I8-08 后续候选、Q-04 剩余；此前结构保护已实施，本轮只补扫描分页完整性，不修改规则 ListFirewallRules 的 I8-11 合同。
+- **实际范围：** 唯一生产文件 `provider/scan.go` 的 `scanAliSWAS`；调整并补充 `provider/scan_swas_test.go`、`webui/api/scan_swas_test.go`，同步本文及 `AGENTS.md`，共五文件。复用原 `ListInstances`、客户端池、`decodeSWASScanPage`、handler/Store/前端失败处理；SDK/依赖/锁文件、超时、API/schema、规则快照、同步状态机及其他平台扫描保持。
+- **正式合同：** 每页 SDK 解码后的 TotalCount 必须存在、非负；首页复制数值为本次基准，后续页必须一致。PageNumber 从 1 开始、PageSize 保持 100；返回页码/页大小若非 nil 必须匹配请求，缺失/null 允许，单页超过 100 条失败。原值 InstanceId 在本次调用内同页/跨页不得重复，名称不参与身份；累计唯一资源数超过总数失败，精确相等才成功，尚不足时空页或非空短页均失败。总数为零只接受显式空数组，结构缺失不豁免；所有完整性失败返回 `nil + ErrSnapshotIncomplete`，不带回部分资源、不覆盖旧缓存，不自动重扫。普通 SDK 业务/解码错误链及分类保持；HTTP 仍为 200 + success=false/error + no-store，失败无 resources/count；成功只覆盖对应 cloud_type+region。总数、页码和去重状态不跨调用，不按声明总数预分配资源数组/map，计数比较用 int64。
+- **SDK 与完整性边界：** 用户接受现有 SDK 的类型转换；当前 SWAS v3.0.0 将 TotalCount 的原始 JSON `"1"`、`1.9`、`true` 转为整数 1，因此本合同针对 typed 值，不承诺原始 JSON 类型严格检查或重复字段拒绝。总数一致且 ID 唯一不能识别等量资源替换，不提供跨页原子快照；显式边界对照保留。资源扫描不继承单实例规则快照的 100 页限制，合法 101 页列表已由正式对照覆盖；整个操作的页数/时间预算继续由 I8-R06 独立研究，不宣称硬墙钟上限。API 字段定义见[官方 ListInstances 文档](https://help.aliyun.com/zh/simple-application-server/developer-reference/api-swas-open-2020-06-01-listinstances)。
+- **正式回归与夹具迁移：** 保留原生 nil/Body/集合/元素/ID 结构回归及名称可空/原值合同。后续页 SDK/结构异常用例首页改为 100 条、总数 101，确保真实进入第二页；原总数 100 的满页对照改为只请求一次，正常两页总数固定 101。新 SDK 回归覆盖首页/后续页总数缺失/null/负数、增长/下降、空/短页、超额、重复页/ID、分页回显、超长页、终止后不多发请求与扫描状态独立；正式 handler→临时 SQLite 覆盖首页/后续页失败保留旧缓存、成功与零结果替换、其他地域/其他产品缓存保持及失败无部分结果。typed 数值转换与等量替换属于边界回归，不称原始类型或原子快照保护。
+- **正式专项与判别力：** `go test ./provider ./webui/api -run '^(TestDecodeSWASScanPage|TestScanSWAS)' -race -count=20 -timeout=3m` 通过。当前正式测试挂入 HEAD 旧扫描源码后，提前短页、重复 ID、错误页码及 API 缓存场景按行为断言变红；另外八类仓外生产源码 overlay（放行缺失总数、忽略变化、放行重复 ID、提前短页继续、忽略页码、忽略页大小、放行超长页、错误返回部分资源）各重复 20 次，均由预期行为断言检出，不以编译失败/panic/race/测试超时计负向通过。overlay 只替换生产文件，使用正式仓内测试；完整命令、返回码与日志位于 `/Users/kyle/.codex/outputs/i8-r05-implementation-20261011/`，研究/准备结果不充当本轮正式门禁。
+- **完整门禁与外部边界：** `make all`（前端 npm ci、vue-tsc/Vite 构建、Go vet、全仓 race 与产品构建）通过；其中部分 Go 包命中缓存，不计为第二轮无缓存全仓证据。另行执行 `go test ./... -race -count=1 -timeout=5m`，12 包全部通过；`go build ./...`、受影响 Go 文件 gofmt 检查与 `git diff --check` 通过。npm ci 报告 0 漏洞，未另行执行独立 npm audit。单次无缓存全仓绿色不外推为长期稳定性结论。本机为 Go 1.27.1 darwin/arm64 / Node 26.7.0。本轮未执行 Linux/Docker、真实云、产品浏览器、SMTP/Webhook/Kuma 或远端 CI/GHCR；保持既有用户真机收口与人工豁免，不恢复旧 PT-AUDIT-05，SMTP 继续由 I8-R01 跟踪。源码、测试及本轮文档尚未提交或推送。
 
 <a id="i8-r06"></a>
 
