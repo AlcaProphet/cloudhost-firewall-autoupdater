@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -1055,85 +1056,202 @@ func TestRequest_ECSPortRangeIPv6DeleteAndBatching(t *testing.T) {
 	}
 }
 
-// TestRequest_ECSDeleteBatches100 Issue7 §6.4：删除也必须每批最多 100，稳定切批；
-// 150 个候选固定拆为 100 + 50。
+// TestRequest_ECSDeleteBatches100 保护实际 SDK 的批大小和完整 ID 顺序。
+// 预期固定为 API 上限 100，不调用生产切批函数生成预期。
 func TestRequest_ECSDeleteBatches100(t *testing.T) {
-	mock, host := newMockCloudAPI(t)
-	p := mockECS(t, host)
-
-	candidates := make([]config.RuleInfo, 0, 150)
-	for i := 0; i < 150; i++ {
-		candidates = append(candidates, config.RuleInfo{RuleID: fmt.Sprintf("sgr-%03d", i), Description: "[auto-dns]"})
-	}
-	res, err := p.DeleteRules(RuleSnapshot{}, candidates)
-	if err != nil {
-		t.Fatalf("DeleteRules 失败: %v", err)
-	}
-	if res.Deleted != 150 || res.Resolved != 150 {
-		t.Errorf("DeleteResult = %+v, want {Deleted:150 Resolved:150}", res)
-	}
-
-	revokes := requestsWithAction(t, mock.recorded(), "RevokeSecurityGroup")
-	if len(revokes) != 2 {
-		t.Fatalf("RevokeSecurityGroup 请求数 = %d, want 2（150 = 100 + 50）", len(revokes))
-	}
-	if got := len(rpcIndexedList(t, revokes[0], "SecurityGroupRuleId")); got != 100 {
-		t.Errorf("第 1 批数量 = %d, want 100", got)
-	}
-	if got := len(rpcIndexedList(t, revokes[1], "SecurityGroupRuleId")); got != 50 {
-		t.Errorf("第 2 批数量 = %d, want 50", got)
+	for _, tc := range []struct {
+		n     int
+		sizes []int
+	}{
+		{0, nil}, {1, []int{1}}, {99, []int{99}}, {100, []int{100}},
+		{101, []int{100, 1}}, {150, []int{100, 50}}, {200, []int{100, 100}},
+		{201, []int{100, 100, 1}}, {250, []int{100, 100, 50}}, {350, []int{100, 100, 100, 50}},
+	} {
+		t.Run(fmt.Sprintf("rules_%d", tc.n), func(t *testing.T) {
+			mock, p := newECSDeleteBatchMock(t, 0)
+			candidates, ids := ecsDeleteCandidates(tc.n)
+			res, err := p.DeleteRules(RuleSnapshot{}, candidates)
+			if err != nil || res != (DeleteResult{Deleted: tc.n, Resolved: tc.n}) {
+				t.Fatalf("DeleteResult = %+v, err = %v，预期确认 %d 条", res, err, tc.n)
+			}
+			assertECSDeleteBatches(t, mock.recorded(), tc.sizes, ids)
+		})
 	}
 }
 
 // TestRequest_ECSDeleteSecondBatchFailureKeepsConfirmedProgress 第二批失败时，
 // 第一批已确认删除必须保留，剩余候选由调用方计入 deferred（Issue7 §6.4）。
 func TestRequest_ECSDeleteSecondBatchFailureKeepsConfirmedProgress(t *testing.T) {
-	mock, host := newMockCloudAPI(t)
-	mock.reply = func(index int, _ recordedRequest) (int, string) {
-		if index == 1 {
-			return http.StatusInternalServerError,
-				`{"Code":"InternalError","Message":"模拟第二批失败","RequestId":"mock"}`
-		}
-		return http.StatusOK, mock.defaultReply
-	}
-	p := mockECS(t, host)
+	// 输入有第三批，才能证明第二批失败后确实停止发送。
+	checkECSDeleteBatchFailure(t, 250, 2, 100, []int{100, 100})
+}
 
-	candidates := make([]config.RuleInfo, 0, 150)
-	for i := 0; i < 150; i++ {
-		candidates = append(candidates, config.RuleInfo{RuleID: fmt.Sprintf("sgr-%03d", i), Description: "[auto-dns]"})
+// TestRequest_ECSDeleteOtherBatchFailures 保护首批、第三批与尾批的确认进度。
+func TestRequest_ECSDeleteOtherBatchFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		n, failBatch, confirmed int
+		sizes                   []int
+	}{
+		{"first", 250, 1, 0, []int{100}},
+		{"third_with_fourth_pending", 350, 3, 200, []int{100, 100, 100}},
+		{"short_last", 250, 3, 200, []int{100, 100, 50}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			checkECSDeleteBatchFailure(t, tc.n, tc.failBatch, tc.confirmed, tc.sizes)
+		})
 	}
+}
+
+func checkECSDeleteBatchFailure(t *testing.T, n, failBatch, confirmed int, sizes []int) {
+	t.Helper()
+	mock, p := newECSDeleteBatchMock(t, failBatch)
+	candidates, ids := ecsDeleteCandidates(n)
 	res, err := p.DeleteRules(RuleSnapshot{}, candidates)
 	if err == nil {
-		t.Fatal("第二批失败必须返回错误")
+		t.Fatal("失败批次必须返回错误")
 	}
 	var partial *PartialDeleteError
-	if !errors.As(err, &partial) {
-		t.Fatalf("部分成功必须返回 *PartialDeleteError，实际: %v", err)
+	if got := errors.As(err, &partial); got != (confirmed > 0) {
+		t.Fatalf("PartialDeleteError = %t，预期确认进度 %d: %v", got, confirmed, err)
 	}
-	if res.Deleted != 100 || res.Resolved != 100 {
-		t.Errorf("DeleteResult = %+v, want {Deleted:100 Resolved:100}（保留前一批确认计数）", res)
+	if partial != nil && partial.Deleted != confirmed {
+		t.Errorf("PartialDeleteError.Deleted = %d，预期 %d", partial.Deleted, confirmed)
 	}
-	if partial.Deleted != 100 {
-		t.Errorf("PartialDeleteError.Deleted = %d, want 100", partial.Deleted)
+	if res != (DeleteResult{Deleted: confirmed, Resolved: confirmed}) {
+		t.Errorf("DeleteResult = %+v，预期只确认 %d 条", res, confirmed)
 	}
-	if got := len(requestsWithAction(t, mock.recorded(), "RevokeSecurityGroup")); got != 2 {
-		t.Errorf("请求数 = %d, want 2（失败后不再继续后续批次）", got)
+	var sdkErr *tea.SDKError
+	if !errors.As(err, &sdkErr) || tea.StringValue(sdkErr.Code) != "InternalError" {
+		t.Fatalf("原 SDK 错误链未保留: %T %v", err, err)
 	}
+	assertECSDeleteBatches(t, mock.recorded(), sizes, ids)
 }
 
 // TestRequest_ECSDeleteRejectsMissingLocator 定位不完整必须整体拒绝，不得按值降级删除。
 func TestRequest_ECSDeleteRejectsMissingLocator(t *testing.T) {
-	mock, host := newMockCloudAPI(t)
-	p := mockECS(t, host)
-
-	if _, err := p.DeleteRules(RuleSnapshot{}, []config.RuleInfo{
-		{RuleID: "sgr-a", Description: "[auto-dns] a"},
-		{Description: "[auto-dns] 缺定位"},
-	}); err == nil {
-		t.Fatal("缺少 SecurityGroupRuleId 的候选必须整体拒绝删除")
+	for _, locator := range []string{"", " \t"} {
+		t.Run(fmt.Sprintf("locator_%q", locator), func(t *testing.T) {
+			mock, p := newECSDeleteBatchMock(t, 0)
+			candidates, _ := ecsDeleteCandidates(250)
+			// 无效定位在最后一项，防止实现逐批校验而先删前两批。
+			candidates[249].RuleID = locator
+			res, err := p.DeleteRules(RuleSnapshot{}, candidates)
+			if err == nil || res != (DeleteResult{}) || len(mock.recorded()) != 0 {
+				t.Fatalf("末项缺定位必须整体零请求/零确认: %+v, err=%v, requests=%d", res, err, len(mock.recorded()))
+			}
+		})
 	}
-	if got := len(requestsWithAction(t, mock.recorded(), "RevokeSecurityGroup")); got != 0 {
-		t.Errorf("定位不完整时不得发出删除请求，实际 %d", got)
+}
+
+func ecsDeleteCandidates(n int) ([]config.RuleInfo, []string) {
+	candidates, ids := make([]config.RuleInfo, n), make([]string, n)
+	for i := range n {
+		// 倒序 ID 防止排序后发送也碰巧满足顺序断言。
+		ids[i] = fmt.Sprintf("sgr-%04d", n-i)
+		candidates[i] = config.RuleInfo{RuleID: ids[i], Description: "[auto-dns]"}
+	}
+	return candidates, ids
+}
+
+// newECSDeleteBatchMock 只约束本项删除动作，不修改四平台共用 mock 的行为。
+func newECSDeleteBatchMock(t *testing.T, failBatch int) (*mockCloudAPI, *AliECS) {
+	t.Helper()
+	mock, host := newMockCloudAPI(t)
+	mock.reply = func(index int, req recordedRequest) (int, string) {
+		u, err := url.Parse(req.URL)
+		if err == nil {
+			var ids []string
+			ids, err = ecsDeleteRPCIDs(u.Query())
+			if err == nil && (req.action() != "RevokeSecurityGroup" || len(ids) < 1 || len(ids) > 100) {
+				err = fmt.Errorf("非法删除请求: action=%q, size=%d", req.action(), len(ids))
+			}
+		}
+		if err != nil {
+			t.Error(err)
+			return http.StatusBadRequest, `{"Code":"InvalidParameter","Message":"invalid delete request"}`
+		}
+		if index+1 == failBatch {
+			return http.StatusInternalServerError, `{"Code":"InternalError","Message":"batch failure","RequestId":"mock"}`
+		}
+		return http.StatusOK, mock.defaultReply
+	}
+	return mock, mockECS(t, host)
+}
+
+func assertECSDeleteBatches(t *testing.T, reqs []recordedRequest, sizes []int, ids []string) {
+	t.Helper()
+	if len(reqs) != len(sizes) {
+		t.Fatalf("删除请求数 = %d，预期 %d（失败后不得继续发送）", len(reqs), len(sizes))
+	}
+	offset := 0
+	for i, req := range reqs {
+		u, err := url.Parse(req.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := ecsDeleteRPCIDs(u.Query())
+		if err != nil {
+			t.Fatal(err)
+		}
+		end := offset + sizes[i]
+		if !reflect.DeepEqual(got, ids[offset:end]) {
+			t.Fatalf("第 %d 批 ID 数量/顺序不符: got=%v, want=%v", i+1, got, ids[offset:end])
+		}
+		if req.action() != "RevokeSecurityGroup" || req.query("RegionId") != "cn-hangzhou" || req.query("SecurityGroupId") != "sg-mock" {
+			t.Fatal("删除请求动作或云目标不符")
+		}
+		for key := range u.Query() {
+			if strings.HasPrefix(key, "Permissions") {
+				t.Fatal("不得降级为按规则内容删除")
+			}
+		}
+		offset = end
+	}
+}
+
+// ecsDeleteRPCIDs 校验原始 RPC 连续索引与单值，不能通过整理参数隐藏构造错误。
+func ecsDeleteRPCIDs(values url.Values) ([]string, error) {
+	indexed := make(map[int]string)
+	for key, vals := range values {
+		if key == "SecurityGroupRuleId" {
+			return nil, fmt.Errorf("缺少数组索引")
+		}
+		if !strings.HasPrefix(key, "SecurityGroupRuleId.") {
+			continue
+		}
+		suffix := strings.TrimPrefix(key, "SecurityGroupRuleId.")
+		n, err := strconv.Atoi(suffix)
+		if err != nil || n < 1 || strconv.Itoa(n) != suffix || len(vals) != 1 || vals[0] == "" {
+			return nil, fmt.Errorf("非法 RPC ID 字段 %q: %v", key, vals)
+		}
+		indexed[n] = vals[0]
+	}
+	ids := make([]string, len(indexed))
+	for i := range ids {
+		id, ok := indexed[i+1]
+		if !ok {
+			return nil, fmt.Errorf("RPC ID 索引 %d 缺失", i+1)
+		}
+		ids[i] = id
+	}
+	return ids, nil
+}
+
+func TestRequest_ECSDeleteRPCIDsNegativeControls(t *testing.T) {
+	for i, values := range []url.Values{
+		{"SecurityGroupRuleId.1": {"a"}, "SecurityGroupRuleId.3": {"b"}},
+		{"SecurityGroupRuleId.1": {"a", "b"}}, {"SecurityGroupRuleId.0": {"a"}},
+		{"SecurityGroupRuleId.01": {"a"}}, {"SecurityGroupRuleId.x": {"a"}},
+		{"SecurityGroupRuleId.1": {""}}, {"SecurityGroupRuleId": {"a"}},
+	} {
+		if _, err := ecsDeleteRPCIDs(values); err == nil {
+			t.Fatalf("非法 RPC 参数场景 %d 被接受", i)
+		}
+	}
+	ids, err := ecsDeleteRPCIDs(url.Values{"SecurityGroupRuleId.2": {"a"}, "SecurityGroupRuleId.1": {"z"}})
+	if err != nil || !reflect.DeepEqual(ids, []string{"z", "a"}) {
+		t.Fatalf("合法乱序参数名应按索引还原: %v, %v", ids, err)
 	}
 }
 
