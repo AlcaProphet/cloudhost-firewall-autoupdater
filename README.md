@@ -451,11 +451,15 @@ sh build/makefile_test.sh
 
 ### 前端开发
 
+2026-10-11 已按用户授权刷新前端与 Go 依赖到当时最新稳定版本；具体锁定版本见 `package-lock.json` 与 `go.mod`，升级及验证记录见 [Issue8 I8-R02](./Issue8.md#i8-r02)。Go 与 Node 构建工具链继续遵循仓库固定版本。
+
+前端的 `typescript` 使用 Microsoft 官方兼容包别名 `npm:@typescript/typescript6@^6.0.2`。原生 TypeScript 7 已更换编译器接口，不能直接供当前 `vue-tsc` 及使用 `transpileModule` 的行为回归使用；官方兼容包保留 TypeScript 6 API，现有构建和测试命令无需改写。详见 [Microsoft 的 TypeScript 6/7 兼容包说明](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-60)。后续原生版本迁移须先验证 Vue 类型检查与全部前端回归。
+
 ```bash
 cd webui/frontend
 
-# 安装依赖
-npm install
+# 按锁文件安装依赖
+npm ci
 
 # 启动开发服务器（热重载，代理 API 到 127.0.0.1:60200）
 npm run dev

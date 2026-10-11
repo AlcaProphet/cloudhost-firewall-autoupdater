@@ -14,7 +14,7 @@
 | 当前编号 | 剩余内容 | 状态 | 旧来源 |
 |---|---|---|---|
 | I8-R01 | SMTP 安全模式修复与真实投递 | 本地已修复；人工验收未完成 | PT-B7-01/02/06；Issue5 O5-03；Build7 |
-| I8-R02 | 前端依赖 high 告警 | 待研究与裁决 | Issue8 I8-08 实施补记及后续 npm ci 记录 |
+| I8-R02 | 前端依赖 high 告警与项目依赖升级 | 本地已修复；依赖审计通过 | Issue8 I8-08 实施补记及后续 npm ci 记录 |
 | I8-R03 | ECS 删除分批判别力 | 测试补强未完成 | TODO-002；P2-02 |
 | I8-R04 | hook 测试观察竞争 | 测试夹具风险未处理 | 旧 I8-17g |
 | I8-R05 | SWAS 资源扫描分页完整性 | 独立候选未定型 | 旧 I8-08 后续候选；Q-04 剩余 |
@@ -54,11 +54,14 @@
 
 <a id="i8-r02"></a>
 
-### I8-R02 前端依赖 high 告警
+### I8-R02 前端依赖 high 告警与项目依赖升级
 
-- **状态与来源：** 待研究与裁决；Issue8 I8-08 实施补记及后续 npm ci 记录。
-- **证据与边界：** 历史 npm audit 记录三条 high、两个底层公告：@vue/server-renderer（GHSA-g2v6-rqmx-r4w6）、vue 上游条目、source-map-js（GHSA-68fv-2mgg-jv7q）。本次未联网刷新、未运行 audit，不把旧告警数量当作当前实时结果。
-- **后续与完成条件：** 复核 lockfile、实际产品/构建可达性及可用修复，再决定升级或接受边界；保留构建和回归证据。真机暂无问题不等于依赖审计通过。
+- **状态与来源：** 2026-10-11 本地修复与依赖审计收口；来源为 Issue8 I8-08 实施补记及后续 npm ci 记录。实施前 `main == 本地 origin/main == 5814725670e770841e1372b1e166d20dfbd84eba`，工作树/暂存区干净，未 fetch。
+- **问题复核：** 本轮联网完整审计和 `--omit=dev` 审计均退出 1，确认三条 high、两个底层公告：@vue/server-renderer（[GHSA-g2v6-rqmx-r4w6](https://github.com/advisories/GHSA-g2v6-rqmx-r4w6)）、其上游 vue 条目、source-map-js（[GHSA-68fv-2mgg-jv7q](https://github.com/advisories/GHSA-68fv-2mgg-jv7q)）。Vue 3.5.42 与 source-map-js 1.2.2 为修复起点。产品为浏览器端 Vue + Go 静态文件服务；原依赖生产构建的模块清单没有 server-renderer、source-map-js、Vue 编译器或 PostCSS，SSR 使用位于测试，source-map 消费位于构建工具。本轮未发现线上用户输入进入这两个触发点的路径，但生产依赖分类不等于产物可达性，现有两条 CI 审计门禁确会被旧依赖阻断。
+- **用户裁决与授权：** 用户允许项目依赖升级到最新版，并明确包括前端与 Go 后端。原生 TypeScript 7.0.2 在隔离副本使 vue-tsc 的 `typescript/lib/tsc` 解析失败，且现有测试使用的 `ModuleKind` / `transpileModule` API 不再可用；用户选择 Microsoft 官方 TypeScript 6 兼容包最新版，保留现有构建和测试入口。采用官方 npm alias `typescript: npm:@typescript/typescript6@^6.0.2`（当前内部 API 包为 @typescript/old 6.0.3），不以原生 TypeScript 7 通过作结论。方案依据见 [Microsoft 兼容包说明](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-60) 与 [vue-tsc 3.3.13 的兼容包路径支持](https://github.com/vuejs/language-tools/blob/v3.3.13/packages/tsc/index.ts)。
+- **正式范围：** 仅修改 go.mod/go.sum、前端 package.json/package-lock.json 与 AGENTS/README/本文件，共七文件。前端直接依赖当前稳定版为 Vue 3.5.43、Vue Router 5.4.0、Naive UI 2.45.3、Vite 8.3.4、plugin-vue 6.0.10、vue-tsc 3.3.13，TypeScript 按上述兼容包裁决；source-map-js 锁定 1.2.2，其余传递依赖在上游范围内刷新。Go 当前 module path 的显式依赖复核无剩余 Update；15 个模块更新，包括 ECS v7.11.5、Tea v1.5.3、腾讯 common v1.3.192/Lighthouse v1.3.182/VPC v1.3.188、x/net v0.61.0、SQLite v1.60.1 及相关间接依赖。OpenAPI v2.2.4、SWAS v3.0.0 已为对应 module path 最新版；另查 OpenAPI/v3、ECS/v8、SWAS/v4 均无可用版本。生产源码、测试、API/schema、Go 1.27.1、CI/Docker 固定 Node、基础镜像和七条 SDK 自动更新策略未改；无 overrides、--force 或审计门禁豁免。
+- **正式本地门禁：** macOS Go 1.27.1 / Node 26.7.0 下原样 `make all` 通过（真实 npm ci/vue-tsc/Vite、vet、全仓 12 包 race 和产品构建）；随后独立 `go test ./... -race -count=1 -timeout=10m` 全仓 12 包通过，明确禁用结果缓存。正式前端全部 98 项回归通过；完整和生产依赖审计均退出 0、0 漏洞，npm outdated 返回空对象。go mod tidy -diff 与构建入口替身回归通过。固定 Node 24.21.0 的 Linux arm64 Docker 前端构建、98 项测试与两条审计通过。与正式四份依赖文件逐字节一致的隔离副本在 Linux arm64 Go 1.27.1 下全仓 race 一轮、vet/build 通过；linux/amd64 完整发布 Dockerfile 构建通过。浏览器使用正式二进制和独立空库，七个页面导航、目标弹窗打开/关闭及告警配置渲染正常，观察期间控制台无 warning/error；该冒烟不代替全部业务场景验收。
+- **容器收尾与证据边界：** 本地 `fwalizer-i8r02:local` 为 linux/amd64 镜像，在 arm64 Docker VM 中兼容执行；UID=1000、healthy，静态 health/operational health/首页及首页引用的三个 JS（含 `_common`）均 HTTP 200，`docker stop -t 15` 后退出码 0，临时容器已删除。浏览器空库实例亦已 SIGTERM 干净退出。研究阶段的 Vue 3.5.42/3.5.43 最小候选、原生 TypeScript 7 失败记录与正式门禁分开保存；正式证据目录为 `/Users/kyle/.codex/outputs/i8-r02-upgrade-84zekkbi/`。本轮未执行真实云 API、SMTP/收件箱/Webhook/Kuma、远端 CI/GHCR、原生 linux/amd64 主机或长期压力验收；Go 模块版本刷新不是 Go 漏洞审计通过证明。用户既有真机收口与豁免状态保持，SMTP 仍由 I8-R01/ProdTestList 跟踪，不把本地回归外推为外部发布或长期稳定通过。尚未提交/推送。
 
 <a id="i8-r03"></a>
 

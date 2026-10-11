@@ -130,6 +130,8 @@
 
 ---
 
+**I8-R02 项目依赖升级（2026-10-11）**：用户授权前端与 Go 后端依赖更新到最新版，并在原生 TypeScript 7.0.2 的构建/API 不兼容被隔离副本确认后，裁决采用 Microsoft 官方 TypeScript 6 兼容包最新版。当前 `typescript` 使用 `npm:@typescript/typescript6@^6.0.2`（内部 API 包 @typescript/old 6.0.3）；现有 vue-tsc/build/行为回归入口保持，不将其写成原生 TypeScript 7 已通过。前端直接依赖更新到当时稳定版，source-map-js 为 1.2.2；Go 当前 module path 的显式依赖均已联网复核，15 个模块更新，具体版本见 go.mod/锁文件。仅四份依赖文件与 AGENTS/README/Issue8 共七文件，生产源码、测试、schema/API、工具链与现有七条 SDK 自动更新策略零改动，不加 overrides/--force/审计豁免。原样 make all、禁缓存全仓 12 包 race 一轮、macOS 前端 98 项、两条 npm 审计（均 0 漏洞）、tidy-diff 与构建入口替身回归通过；固定 Node 24.21.0 的 Linux arm64 前端构建/98 项/两条审计、Linux arm64 Go 1.27.1 全仓 race/vet/build 与 linux/amd64 完整 Dockerfile 构建通过，浏览器空库页面与弹窗冒烟无观察到的控制台 warning/error。容器运行收尾与完整证据见 [Issue8 I8-R02](./Issue8.md#i8-r02)。本地重复与 amd64 兼容执行不等于原生 amd64、真实云/通知或当前 revision 远端发布/长期稳定通过；旧人工收口与豁免保持，SMTP 独立待验收。本轮尚未提交/推送。
+
 ## 二、核心编码原则
 
 ### 简单轻量化
