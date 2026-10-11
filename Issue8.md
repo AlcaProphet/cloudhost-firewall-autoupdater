@@ -16,7 +16,7 @@
 | I8-R01 | SMTP 安全模式修复与真实投递 | 本地已修复；人工验收未完成 | PT-B7-01/02/06；Issue5 O5-03；Build7 |
 | I8-R02 | 前端依赖 high 告警与项目依赖升级 | 本地已修复；依赖审计通过 | Issue8 I8-08 实施补记及后续 npm ci 记录 |
 | I8-R03 | ECS 删除分批判别力 | 测试补强本地完成 | TODO-002；P2-02 |
-| I8-R04 | hook 测试观察竞争 | 测试夹具风险未处理 | 旧 I8-17g |
+| I8-R04 | hook 测试观察竞争 | 测试补强本地完成 | 旧 I8-17g |
 | I8-R05 | SWAS 资源扫描分页完整性 | 独立候选未定型 | 旧 I8-08 后续候选；Q-04 剩余 |
 | I8-R06 | ECS 与资源扫描操作总预算 | 待研究与裁决 | 旧 I8-38；Q-12 ECS 剩余 |
 | I8-R07 | Pause/Resume 接口的原子更新 | 静态候选待裁决 | 旧 I8-17d/I8-41；Q-10 |
@@ -85,9 +85,21 @@
 
 ### I8-R04 hook 测试观察竞争
 
-- **状态与来源：** 测试夹具风险未处理；旧 I8-17g。
-- **证据与边界：** TestStateAppliedHookFiresOncePerApplyState 的 hook 先 hooks.Add(1)，后 enabledAtHook.Store；测试仅等计数再读状态，存在观察窗口。本次静态确认，未重新复现偶发失败。
-- **后续与完成条件：** 以完成信号或一致观察证明 hook 完成，再断言状态；保留准确触发次数、真实发布屏障与有界退出，不改生产同步语义。
+- **状态与来源：** 测试补强本地完成（2026-10-11，用户定型方案 C）；旧 I8-17g。用户依据《研究 I8-R04 解决方案》的最终准备结论授权正式修复与文档同步；实施前 `main == 本地 origin/main == 829ef302b5f208961cf56197c951f46bcddcc5c1`，工作树/暂存区干净，未 fetch。正式改动仅 `syncer/state_applied_hook_test.go` 与本文件，生产代码、共享测试夹具、依赖、前端及 API/schema 均未修改。
+- **原问题与修复：** 原 hook 先 `hooks.Add(1)`、后 `enabledAtHook.Store`，主测试只等计数再读状态，允许观察到尚未写完的状态；原子操作不把两次写入合并成一次观察。保留两项既有测试符号，改用 `testing/synctest` 驱动真实 Run/目标链，固定内存 DNS 与能反映新增结果的既有 Provider。单值计数用原子操作，多字段观察用互斥锁统一追加/复制，完成后再断言，消除该观察窗口。本轮未宣称自然复现原样测试的偶发失败；研究阶段扩大写入间隔的故障模型与正式证据分开保存。
+- **正式回归合同：** 普通轮测试逐轮执行启动轮、6 个定时轮、3 个手动轮，hook 始终准确为 0；新状态测试从暂停启动，串行消费启用、启用且间隔不变的配置变化、暂停、恢复四份新状态，hook 准确为 4。同一已消费指针的重复通知及普通轮不增加回调。每轮检查实际 S0/S1 调用数、单目标成功汇总和无在途标记；hook 内核对本次指针、开关及已完成轮数，首次和再次恢复均须先完成本次恢复轮，不能以上一轮成功掩盖提前回调。通知仍允许合并，不扩成快速连续 ApplyState 的逐次回调保证。
+- **完成与退出观察：** 保留正式目标冷却；有新轮时先有界等待 `EventSyncComplete`，再 `synctest.Wait`，不能把冷却中的稳定阻塞当作轮次完成。无新轮的状态变化在 Wait 后断言。复用现有有界 Stop/Wait，订阅始终取消，成功退出后检查固定次数及 `Running=false`；仓外故意 Fatal 的清理哨兵也确认 Run 退出。5 秒完成信号预算为虚拟时间局部断言，Go 命令另有整体 timeout，不称墙钟硬上限。
+- **正式本地门禁：** macOS Go 1.27.1 darwin/arm64 / Node 26.7.0；以下两种 GOMAXPROCS 环境中，每项正式测试各重复 200 次 race 均通过，syncer 整包 race 一轮通过。原样 `make all` 通过（真实 npm ci/vue-tsc/Vite 前置、vet、全仓 race 入口与产品构建；部分未受影响包复用缓存），随后独立禁用结果缓存的全仓 12 包 race 一轮全部通过。受影响 Go 文件 gofmt 检查与 `git diff --check` 通过。npm ci 报告 0 漏洞，不记为另行执行两条独立依赖审计；单轮全仓绿色不外推长期稳定。
+
+  ```bash
+  GOMAXPROCS=1 go test ./syncer -race -run '^TestStateAppliedHook' -count=200 -timeout=10m
+  GOMAXPROCS=4 go test ./syncer -race -run '^TestStateAppliedHook' -count=200 -timeout=10m
+  go test ./syncer -race -count=1 -timeout=10m
+  make all
+  go test ./... -race -count=1 -timeout=10m
+  ```
+
+- **正式负向控制与证据边界：** 仓外 7 个生产源码 overlay 仅替换 `syncer.go`，运行正式仓内测试；漏回调、重复回调、普通轮重复回调、提前回调、错误状态指针、跳过手动轮、跳过定时轮各重复 20 次，全部由对应行为断言变红，无编译失败/panic/race/整体测试超时混入判别证据。跳过轮次由局部完成信号断言检出；故意 Fatal 清理探针预期退出 1，另有退出哨兵确认，不记为绿色测试。正式命令、返回码与日志位于 `/Users/kyle/.codex/outputs/i8-r04-implementation-20261011/`，不沿用研究/准备结果充当正式门禁。本轮未执行 Linux/Docker、浏览器、真实云/SMTP/Webhook/Kuma 或远端 CI/GHCR；保持用户既有真机收口与豁免状态，SMTP 仍由 I8-R01 独立跟踪。本轮尚未提交或推送。
 
 <a id="i8-r05"></a>
 
