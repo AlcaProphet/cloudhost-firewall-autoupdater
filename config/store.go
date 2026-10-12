@@ -1197,6 +1197,19 @@ func (s *Store) LoadBusinessSnapshotTx(ctx context.Context, q DBTX) (*BusinessSn
 	if err != nil {
 		return nil, err
 	}
+	// 非空目标引用必须全部属于同一事务读出的目标集合；损坏引用不裁剪、不转为空数组。
+	// 此处属于持久化配置完整性错误，不能包装为请求侧 ValidationError。
+	existingTargetIDs := make(map[int]struct{}, len(targets))
+	for _, target := range targets {
+		existingTargetIDs[target.ID] = struct{}{}
+	}
+	for _, rule := range rules {
+		for _, id := range rule.Targets {
+			if _, exists := existingTargetIDs[id]; !exists {
+				return nil, fmt.Errorf("规则 #%d 引用了不存在的目标 #%d，数据已损坏", rule.ID, id)
+			}
+		}
+	}
 	settings, err := loadSettings(ctx, q)
 	if err != nil {
 		return nil, err

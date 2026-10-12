@@ -312,6 +312,9 @@
 - 配置导入为强类型、严格解码（10 MiB）、覆盖式原子事务；使用 `export_id → 新数据库 ID` 映射重建规则引用，显式写入完整设置键集合，并在同一事务内覆盖 policy/email/webhook/uptime_kuma_push
 - 导入保留 `sync_logs`，清空 `scanned_resources`，不重置 SQLite 自增序列，不处理部署参数或数据库内部状态
 - 被任一规则引用的目标不得直接删除，API 返回 HTTP 409；不静默删除引用或把规则扩大为“适用于全部目标”
+- 完整配置快照引用完整性（I8-R09，2026-10-12 方案 A）：`Store.LoadBusinessSnapshotTx` 在同一调用方事务加载 targets/rules 后，检查每个非空规则引用都属于该目标集合；不另读 `s.db`、不逐引用查询。缺失引用返回普通内部错误和 nil 快照，不包装为请求侧 `ValidationError`，不裁剪引用、不自动删除规则、不转为 `[]`；历史空串/空数组的全部目标语义及零目标配合空引用保持。只检查本地 ID 存在性，不验证对应云资源仍存在，不扩为全部持久化字段的领域校验。
+- 悬空引用的错误与发布边界（I8-R09）：启动在创建 RuntimeState/监听 HTTP 前中止；导出返回安全 500 + no-store 且无附件。普通协调器在 mutation 之后、commit 之前检查最终完整状态；失败完整回滚，零持久化提交、零候选构造/发布、零 Health/Push 唤醒，旧 RuntimeState/告警集合/运行时日志级别保持。既有请求校验、404/409 等早期错误分类不变；零持久化提交不表示 mutation 从未执行 SQL。若一次修改或删除已消除全部损坏，允许提交并只发布一次；多条损坏下逐条修复若仍留无效引用则回滚，合法完整 version 3 导入可原子恢复。reset 仍是显式清空全部业务数据，不作为自动修复。
+- 悬空引用的恢复边界（I8-R09）：不持续检测外部 SQL 改库、不自动暂停旧运行时、不取消在途同步。pause/resume 端点也经过完整协调器，损坏库下无法提交开关；需要立即停同步时先停止进程，再离线精确修复或恢复有效数据库备份。启动前损坏时尚无 WebUI，不能依靠导入端点恢复，不提供额外修复模式。`GetRules/GetTargets` 保留各自既有解析，合法 JSON 形态的悬空引用仍可在线定位；不能将缺失引用机械清空为 `[]`，因为这会扩大为全部目标。正式回归与证据见 [Issue8 I8-R09](./Issue8.md#i8-r09)。
 - TAG Trim 后必须非空，禁止 `[` / `]` 和控制字符，最多 48 个 Unicode 字符
 - 配置导入 JSON 最大 10 MiB，其他 JSON 请求最大 1 MiB，超限返回 413；固定结构 DTO 拒绝未知字段、尾随 JSON 和多个顶层值
 - HTTP Server 使用 `ReadHeaderTimeout=5s`、`IdleTimeout=120s`，不设置全局 `ReadTimeout` / `WriteTimeout`；HTTP shutdown 上限 10s

@@ -21,7 +21,7 @@
 | I8-R06 | ECS 与资源扫描操作总预算 | 本地已修复 | 旧 I8-38；Q-12 ECS 剩余 |
 | I8-R07 | Pause/Resume 接口的原子更新 | 本地已修复 | 旧 I8-17d/I8-41；Q-10 |
 | I8-R08 | CVM Describe 错误分类合同 | 合同与测试补强本地完成 | 旧 I8-31；Q-11；TODO-003；P3-06 |
-| I8-R09 | dangling 目标引用 | 历史候选待复核 | Issue6 §6.5 第4项 |
+| I8-R09 | dangling 目标引用 | 本地已修复 | Issue6 §6.5 第4项 |
 | I8-R10 | 日志持久化回调并发与背压 | 容量候选待定型 | Issue6 §6.5 第5项 |
 | I8-R11 | 同步事件 SSE 续传与心跳 | 契约候选待裁决 | Issue6 §6.5 第6项 |
 | I8-R12 | 阿里云错误码重试范围 | 行为候选待裁决 | Issue6 §6.5 第8项 |
@@ -161,9 +161,12 @@
 
 ### I8-R09 dangling 目标引用
 
-- **状态与来源：** 历史候选待复核；Issue6 §6.5 第4项。
-- **证据与边界：** 历史观察为外部直接删除targets后，规则引用可能只作用于零目标；正常API与导入已有引用校验。本次不把绕过API的数据库修改等同正常用户路径缺陷。
-- **后续与完成条件：** 追踪启动加载、普通发布、目标删除和导入的当前引用校验；决定损坏库fail-closed或明确支持边界，补零写入/零发布及恢复证据。
+- **状态、裁决与基线：** 2026-10-12 用户选择 A（完整快照拒绝悬空引用），完成进一步定型与修复前准备后授权正式修复并同步文档；本地已修复，正式门禁通过。旧来源为 Issue6 §6.5 第4项。实施前 `main / 75f5584c519cd82528b9e92e092257d64cf5d55e`、本地 `origin/main / fe5b6f1317b68bf4e7019bc7c7a1821e295c1671`，ahead3；工作树/暂存区干净，未 fetch。
+- **当前定性与合同：** 正常规则 API、目标删除与配置导入已有引用保护；本项修复绕过受支持入口改库后，完整配置快照未检查引用闭包的缺口，不宣称正常用户删除路径有缺陷。`Store.LoadBusinessSnapshotTx` 在同一调用方事务加载 targets/rules 后，用已读目标 ID 集合检查全部非空引用；第一个缺失引用返回 nil 快照与普通内部错误，只含规则/目标 ID 及固定原因，不用 `ValidationError`，不另读 `s.db`、不逐引用查询、不裁剪引用或转为 `[]`。空数组/历史空串与零目标配合空引用保持；全部引用缺失与混合引用都拒绝，只检查本地 ID 存在性，不检查云资源或扩展全部字段校验。
+- **发布与恢复边界：** 启动在 RuntimeState 构造/HTTP 监听前中止；导出安全500 + no-store、无附件。协调器在 mutation 之后、commit 之前检查最终完整状态，失败零持久化提交、零候选构造/发布/Health或Push唤醒，旧运行时/告警集合/日志级别保持；不宣称 mutation 未执行 SQL，既有早期400/404/409分类不变。一笔修改/删除消除全部损坏可正常提交，多条损坏下逐条修复若仍留失效引用则回滚，合法完整v3导入可原子恢复。运行期外部改库不即时影响旧快照、不自动暂停或取消在途同步；pause/resume也经完整协调器，损坏库下不能提交开关，需立即停同步时先停止进程。启动前损坏须离线精确修复或恢复有效数据库备份，没有尚未启动的WebUI可导入；不增加修复模式、自动清空引用或自动reset。README同步澄清历史null修为[]须先确认全部目标意图。
+- **正式回归与范围：** 新增 `config/snapshot_references_test.go`（完整加载三入口、全规则遍历、全部/混合缺失、空引用、未提交事务与WAL旧视图），`webui/api/config_references_test.go`（十类普通写入口回滚/零候选/零发布、日志与HTTP安全诊断、导出与定位、最终状态修复、多规则逐条修复限制），`reference_integrity_process_test.go`（真实产品启动拒绝、监听前退出、离线修复后同目录/端口重启）。既有夹具不改，生产仅 `config/store.go` 新增13行本地校验；AGENTS/本文/README配套更新，共七文件。不改 Provider、同步状态机、BuildRuntimeState、API DTO、schema、前端、SDK/依赖、超时或归档历史文档。进程恢复后退出等待沿现有用例用15秒，覆盖产品既有10秒HTTP收尾预算；不降低或修改生产预算。
+- **正式专项与判别力：** 三份默认回归正式归位后，先用 `go test ./config ./webui/api -race -run '^TestI8R09SnapshotReferenceIntegrity$' -count=1 -timeout=2m` 验证旧实现按行为断言变红（config失败，api无匹配测试），错误为“悬空引用仍成功加载”，无编译/panic/race/超时混入。修复后 `go test ./config ./webui/api . -race -run '^TestI8R09' -count=20 -timeout=3m` 三包通过，包含20次真实产品启动拒绝—离线精确修复—重启回归；主包TestMain构建的产品子进程沿用既有普通构建，不冒称子进程本身受race插桩。仅替换生产源码的仓外overlay使用最终正式仓内测试：漏校验、零目标绕过、只检查单引用、错误归类为ValidationError、绕过调用方事务读库、mutation之前检查旧状态、快照失败仍commit七类各重复20次，均按预期行为断言变红，退出码1，没有编译/panic/race/超时混入。`request-error`同时由内部错误身份和十类普通入口HTTP400代替500判别；事务变体由未提交目标可见性与WAL旧视图判别；提前检查由合法最终修复被拒绝判别；错误commit由数据库内容变化判别。正式命令、退出码、源码/测试哈希及日志在 `/Users/kyle/.codex/outputs/i8-r09-implementation-20261012/`，不复用准备阶段回归或日志作为正式证据。
+- **完整门禁与外部边界：** 原样 `make all`（真实npm ci/vue-tsc/Vite、全仓vet/race、产品构建）通过，其中七个Go包复用缓存；追加 `go test ./... -race -count=1 -timeout=5m`，12包禁缓存全仓race一轮全部通过，包含受影响完整回归。`go build ./...`、四份受影响Go文件gofmt检查与 `git diff --check` 通过。本机Go1.27.1 darwin/arm64、Node26.7.0/npm11.19.0；npm ci报告0漏洞，不记为另行执行独立npm audit。未执行Linux/Docker、产品浏览器、真实云、SMTP/Webhook/Kuma或远端CI/GHCR，不外推长期稳定或外部通过；保持既有用户真机收口/人工豁免，SMTP继续由I8-R01跟踪。源码、正式测试与本轮文档尚未提交或推送。
 
 <a id="i8-r10"></a>
 
