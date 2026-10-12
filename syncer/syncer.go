@@ -48,6 +48,10 @@ type Syncer struct {
 	// 在「stop 门控通过之后、syncAll 之前」调用，与 SetStateAppliedHook 同风格。
 	beforeRoundHook func()
 
+	// afterSyncEnabledReadHook 仅用于测试在读取快照后构造确定性交错，默认 nil。
+	// 必须在并发操作开始前设置；调用时持有 s.mu，不得重入 Syncer 或访问网络。
+	afterSyncEnabledReadHook func()
+
 	// 目标级 attempt 的三个测试接缝（默认 nil → 生产实现，零行为变化）：
 	//   - resolveHostFn 注入确定性 DNS 结果（避免单测依赖真实解析）；
 	//   - backoffFn 覆盖重试退避时长（默认 1s、2s）；
@@ -147,18 +151,27 @@ func (s *Syncer) Runtime() *RuntimeManager {
 // 最终状态与恢复边沿由同一把 mu 线性化，Run 消费时同锁取得快照与恢复标记。
 func (s *Syncer) ApplyState(next *RuntimeState) {
 	s.mu.Lock()
+	s.applyStateLocked(next)
+	s.mu.Unlock()
+	s.notifyControl()
+}
+
+// applyStateLocked 要求调用者已持有 s.mu；同锁发布状态、开关镜像与恢复边沿。
+// 不自行加锁，不调用回调、日志或网络；只供完整发布与开关更新共用。
+func (s *Syncer) applyStateLocked(next *RuntimeState) {
 	previous := s.runtime.Snapshot()
 	if previous != nil && !previous.Config.SyncEnabled && next.Config.SyncEnabled {
 		s.pendingResume = true
 	}
 	s.runtime.Apply(next)
-	// 镜像只作为尚未发布状态时的 IsEnabled 回退，与本次发布一起推进。
 	s.enabled = next.Config.SyncEnabled
-	s.mu.Unlock()
+}
 
+// notifyControl 在释放 s.mu 后投递可合并通知；最终状态与恢复标记保存在锁内。
+func (s *Syncer) notifyControl() {
 	select {
 	case s.controlCh <- struct{}{}:
-	default: // 已有待处理通知，最终状态在快照里，合并即可
+	default:
 	}
 }
 
@@ -362,7 +375,7 @@ func (s *Syncer) Run() {
 	}
 }
 
-// Pause 暂停同步（非阻塞，幂等）。
+// Pause 幂等发布运行时暂停；只等待短暂内存锁，不等待或取消在途轮次。
 //
 // sync_enabled 的持久化真值在 SQLite，由协调器写入并发布新状态；本方法只把
 // 运行时状态里的同步开关置为 false，使 dispatch 立即停止启动新一轮。
@@ -370,27 +383,31 @@ func (s *Syncer) Pause() {
 	s.setSyncEnabled(false)
 }
 
-// Resume 恢复同步（非阻塞，幂等）：与 Resume 语义一致，false → true 立即触发一轮。
+// Resume 幂等发布运行时恢复；真实 false → true 由 Run 消费后立即起轮。
 func (s *Syncer) Resume() {
 	s.setSyncEnabled(true)
 }
 
-// setSyncEnabled 在运行时状态的一次指针替换内翻转同步开关。
+// setSyncEnabled 与 ApplyState 共用 s.mu，将读取、判断、复制和发布作为原子更新。
 //
 // 运行时快照始终是调度与业务逻辑的唯一真相来源，因此控制通知消费后读到的是
-// 最新状态；通知可合并，真实恢复边沿由 ApplyState 单独保留。
+// 最新状态；通知可合并，真实恢复边沿由锁内发布辅助方法统一保留。
 func (s *Syncer) setSyncEnabled(enabled bool) {
+	s.mu.Lock()
 	current := s.runtime.Snapshot()
-	if current == nil {
-		return
+	if s.afterSyncEnabledReadHook != nil {
+		s.afterSyncEnabledReadHook()
 	}
-	if current.Config.SyncEnabled == enabled {
+	if current == nil || current.Config.SyncEnabled == enabled {
+		s.mu.Unlock()
 		return
 	}
 	next := *current
 	next.Config = current.Config.DeepCopy()
 	next.Config.SyncEnabled = enabled
-	s.ApplyState(&next)
+	s.applyStateLocked(&next)
+	s.mu.Unlock()
+	s.notifyControl()
 }
 
 // notifyStateApplied 只在**首次见到该状态指针**时触发一次「状态已应用」回调。

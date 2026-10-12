@@ -19,7 +19,7 @@
 | I8-R04 | hook 测试观察竞争 | 测试补强本地完成 | 旧 I8-17g |
 | I8-R05 | SWAS 资源扫描分页完整性 | 本地已修复 | 旧 I8-08 后续候选；Q-04 剩余 |
 | I8-R06 | ECS 与资源扫描操作总预算 | 本地已修复 | 旧 I8-38；Q-12 ECS 剩余 |
-| I8-R07 | Pause/Resume 接口的原子更新 | 静态候选待裁决 | 旧 I8-17d/I8-41；Q-10 |
+| I8-R07 | Pause/Resume 接口的原子更新 | 本地已修复 | 旧 I8-17d/I8-41；Q-10 |
 | I8-R08 | CVM Describe 错误分类合同 | 合理分类待明确 | 旧 I8-31；Q-11；TODO-003；P3-06 |
 | I8-R09 | dangling 目标引用 | 历史候选待复核 | Issue6 §6.5 第4项 |
 | I8-R10 | 日志持久化回调并发与背压 | 容量候选待定型 | Issue6 §6.5 第5项 |
@@ -136,9 +136,14 @@
 
 ### I8-R07 Pause/Resume 接口的原子更新
 
-- **状态与来源：** 静态候选待裁决；旧 I8-17d/I8-41；Q-10。
-- **证据与边界：** Syncer.setSyncEnabled 读取快照、复制后调用ApplyState，整个读改写未在同一锁中；当前无生产调用者，不能按线上配置丢失缺陷处理。历史交错探针不是本次重演。
-- **后续与完成条件：** 决定删除/收窄接口、保留已知边界，或设计原子辅助更新；不得持s.mu调用自身加锁的ApplyState。若实施，屏障回归必须证明并发发布不丢配置且无死锁。
+- **状态与来源：** 本地已修复（2026-10-12，用户定型方案 A 并授权实施与文档同步）；旧 I8-17d/I8-41；Q-10。实施前 `main / 278a70383e430103b04985a9e4f20a12635e453b`，本地 `origin/main / fe5b6f1317b68bf4e7019bc7c7a1821e295c1671`，ahead 1；工作树/暂存区干净，未 fetch。
+- **问题与适用边界：** 原 `setSyncEnabled` 在读取旧快照后复制并调用 `ApplyState`，完整读改写不在同一锁内，能够把其间发布的新 TAG、间隔、规则和运行时依赖退回旧状态；本轮由正式屏障回归重演，不再仅引用历史探针。具体 `Syncer.Pause()/Resume()` 仍无生产调用者，产品端点已有 SQLite 配置协调器串行提交/发布，不将此问题记为已发生的线上配置丢失。
+- **正式合同：** 保留具体方法，`setSyncEnabled` 的读取、nil/同值判断、Config 深复制、开关修改和发布全程持有 `s.mu`；与 `ApplyState` 共用不自行加锁的 `applyStateLocked`，统一维护状态指针、enabled 镜像与真实 false→true 的 pendingResume，解锁后投递可合并通知。空状态/同值控制不发布、不通知、不增加恢复边沿；普通完整发布与暂停不提前清除待消费恢复，仍由 `consumeControlState` 同锁消费。沿用 `s.mu → RuntimeManager.mu`，不持锁调用自锁的 `ApplyState`；保留 Pool/Providers/Resolver/Breaker 引用，不重建依赖或修改旧快照。生产锁内无日志、状态消费回调、网络或同步轮次。
+- **控制与调度语义：** 完整发布先完成时后续控制仅改变其开关；控制先完成时后续完整状态及其中的开关生效，不增加“运行时暂停永久优先”的覆盖层。具体方法仍不持久化，产品端点继续经协调器；不等待或取消在途轮次，已捕获旧完整快照的轮次继续完成。恢复合并、最终暂停、最新 interval、排队 trigger 与 Stop 门控保持。
+- **正式回归：** 新增 `syncer/sync_enabled_test.go`，四种 Pause/Resume × 完整状态开关的读窗口组合检查整个配置、依赖身份、旧状态不可变和两个操作的有界完成；四种串行顺序组合保护开关优先级。另覆盖空状态、同值、深复制、镜像、通知、恢复边沿与最终暂停消费，以及真实 Run/目标链中恢复后普通保存、多恢复合并、最终暂停和 Stop。实例私有 `afterSyncEnabledReadHook` 默认 nil，无导出 setter，仅测试在并发开始前设置；调用时持锁、禁止重入。读窗口使用有界真实 channel，TryLock 只安排交错，最终按配置行为判定；不以 `synctest.Wait` 等待互斥锁阻塞。新增 `webui/api/sync_enabled_test.go` 使用真实临时 SQLite→真实协调器→真实 Syncer，证明 pause/resume 成功响应后配置与数据库一致、恰好一次发布，以及事务失败不改状态/不发布；该夹具不启动 Run，也不把它与读窗口测试合称为“真实 SQLite 提交的交错验证”。
+- **正式专项与判别力：** `go test ./syncer ./webui/api -race -run '^TestI8R07' -count=20 -timeout=3m` 通过。仅替换生产源码的仓外 overlay 使用最终正式仓内测试：恢复 HEAD 旧算法并保留相同测试接缝后，四种读窗口各重复20次，共80次按配置回滚断言变红；另外六类错误变体（遗漏恢复标记、遗漏镜像、浅复制、同值仍发布、遗漏通知、普通保存清除待消费恢复）各重复20次，全部按预期行为断言变红，没有编译失败/panic/race/整体或局部屏障超时混入负向通过。命令、返回码、最终源码/测试哈希和日志位于 `/Users/kyle/.codex/outputs/i8-r07-implementation-20261012/`，不复用研究/准备结果作为正式证据。
+- **完整门禁与范围：** 受影响两包完整 `-race -count=1 -timeout=5m` 通过；原样 `make all`（真实 npm ci/vue-tsc/Vite、全仓 vet/race、产品构建）通过，其中部分 Go 包复用缓存；追加 `go test ./... -race -count=1 -timeout=5m`，12包禁缓存全仓 race 一轮全部通过。`go build ./...`、三份受影响 Go 文件 gofmt 检查及 `git diff --check` 通过。唯一可执行生产文件为 `syncer/syncer.go`，加两份正式测试与 AGENTS/Issue8 共五文件；不改 RuntimeManager、协调器、API 接口、schema、Provider、DNS、前端或依赖，不改归档历史文档。
+- **外部与提交边界：** 本机 Go1.27.1 darwin/arm64 / Node26.7.0；npm ci报告0漏洞，不记为另行执行独立 npm audit。本轮未执行 Linux/Docker、产品浏览器、真实云、SMTP/Webhook/Kuma 或远端 CI/GHCR，单次全仓绿色不外推长期稳定或外部通过。保持既有用户真机收口与人工豁免，不重开旧人工清单，SMTP继续由 I8-R01 跟踪。正式源码、测试及本轮文档尚未提交或推送。
 
 <a id="i8-r08"></a>
 

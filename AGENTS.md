@@ -226,6 +226,7 @@
 - 优雅退出：收到 `SIGTERM`/`SIGINT` 后，完成当前轮次再退出
 - 支持配置热重载（WebUI 修改后通过 channel 通知 Syncer）
 - 同步全局开关（SQLite `sync_enabled`，默认 true）：暂停时 ticker 与手动 trigger 均不触发同步；模拟测试与连接测试不受影响（独立于 Run() 主循环）
+- 运行时开关更新（I8-R07，2026-10-12 方案 A）：保留具体 `Syncer.Pause()/Resume()`，只修改运行时，产品端点继续经 SQLite 配置协调器提交后发布。`setSyncEnabled` 的读取、空状态/同值判断、配置深复制和发布全程持有 `s.mu`，与 `ApplyState` 共用不自行加锁的 `applyStateLocked`，统一维护状态指针、`enabled` 镜像与真实 false→true 的 `pendingResume`；解锁后再投递可合并通知。空状态/同值控制不发布、不通知、不新增恢复边沿，普通完整发布不得提前清除待消费恢复。沿用 `s.mu → RuntimeManager.mu` 锁顺序，保留 Pool/Providers/Resolver/Breaker 引用；开关更新先完成时后续完整状态可覆盖其开关，完整发布先完成时控制只改变最新状态的开关。生产锁内不执行日志、状态消费回调、网络或同步轮次，不等待/取消在途轮，不持锁调用自锁的 `ApplyState`。实例私有 `afterSyncEnabledReadHook` 默认 nil、无导出 setter，仅测试在并发开始前设置；调用时持锁，禁止重入 Syncer。正式行为回归与证据边界见 [Issue8 I8-R07](./Issue8.md#i8-r07)。
 
 ---
 
