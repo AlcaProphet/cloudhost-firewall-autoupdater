@@ -17,11 +17,10 @@ const maxRetries = 3
 //  1. 结构化：context.DeadlineExceeded 及其包装（阿里云 tea/dara 原样返回 *url.Error，
 //     可用 errors.Is/errors.As 正确识别）；
 //  2. 结构化：net.Error.Timeout()（覆盖 i/o timeout、真实 http.Client.Timeout）；
-//  3. 字符串兜底（大小写不敏感）：腾讯 SDK 会把网络错误重新包装成
-//     *TencentCloudSDKError{Code:"ClientError.NetworkError", Message:"... context deadline
-//     exceeded (Client.Timeout exceeded while awaiting headers)"}，而该类型**没有
-//     Unwrap**（common/errors/errors.go 全文无 Unwrap），因此结构化判断对腾讯路径不成立，
-//     只能靠云错误码与 message 关键字兜底。
+//  3. 字符串兜底（大小写不敏感）：保留腾讯云业务错误码与无 cause 网络错误的兼容判断。
+//     当前 common v1.3.192 的 TencentCloudSDKError 已有 Unwrap；网络请求失败通过
+//     NewTencentCloudSDKErrorWithCause 保留原始 cause，可由上述结构化判断识别超时。
+//     普通云业务错误及部分解码/读取错误仍不携带 cause，不将 SDK 全部路径视为可解包。
 //
 // 语义：腾讯 SDK 的网络类错误（含超时）进入重试；判定顺序与幂等优先级不变
 // （幂等「已存在/已不存在」先于本函数判定，且不计数不重试）。

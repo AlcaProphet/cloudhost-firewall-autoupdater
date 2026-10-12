@@ -77,8 +77,8 @@ func realHTTPTimeoutError(t *testing.T) error {
 	return err
 }
 
-// tencentNetworkError 构造腾讯 SDK 真实形状的网络错误：netretry.go 重新包装的
-// *TencentCloudSDKError{Code:"ClientError.NetworkError"}，该类型没有 Unwrap。
+// tencentNetworkError 构造没有 cause 的 SDK 网络错误，保护字符串兼容兜底。
+// 当前 SDK 的实际网络包装会保留 cause；此夹具不冒称当前 netretry.go 的完整错误链。
 func tencentNetworkError(cause string) error {
 	return sdkerrors.NewTencentCloudSDKError(
 		"ClientError.NetworkError",

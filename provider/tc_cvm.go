@@ -61,6 +61,8 @@ func (p *TCCVM) TargetIndex() int {
 }
 
 // GetSnapshot 查询安全组入站规则并携带 Version。
+// 普通 SDK 调用失败保留原错误链，不附加 ErrSnapshotIncomplete；
+// 成功响应缺少快照安全依据时才标记不完整（I8-R08）。
 //
 // Issue7 §6.2：SecurityGroupPolicySet.Version 必须进入快照；每条 Ingress 保留 API 返回的
 // 真实 PolicyIndex。缺少 PolicyIndex 的规则**仍进入快照**（否则会丢失覆盖判断并可能重复创建），
@@ -241,6 +243,8 @@ func (p *TCCVM) ConvertPorts(port string) []string {
 }
 
 // checkRuleLimit 检查安全组入站规则数；额外 Describe 仅用于配额保护。
+// 普通 SDK 调用失败保留原错误链，成功响应缺少计数依据才标记 ErrSnapshotIncomplete。
+// 两类失败均阻止本次新增；该标记不决定整目标重试，配额 Version 也不替代 S0（I8-R08）。
 func (p *TCCVM) checkRuleLimit(toAdd int) error {
 	req := vpc.NewDescribeSecurityGroupPoliciesRequest()
 	req.SecurityGroupId = common.StringPtr(p.securityGroupID)

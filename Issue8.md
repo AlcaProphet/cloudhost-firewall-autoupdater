@@ -20,7 +20,7 @@
 | I8-R05 | SWAS 资源扫描分页完整性 | 本地已修复 | 旧 I8-08 后续候选；Q-04 剩余 |
 | I8-R06 | ECS 与资源扫描操作总预算 | 本地已修复 | 旧 I8-38；Q-12 ECS 剩余 |
 | I8-R07 | Pause/Resume 接口的原子更新 | 本地已修复 | 旧 I8-17d/I8-41；Q-10 |
-| I8-R08 | CVM Describe 错误分类合同 | 合理分类待明确 | 旧 I8-31；Q-11；TODO-003；P3-06 |
+| I8-R08 | CVM Describe 错误分类合同 | 合同与测试补强本地完成 | 旧 I8-31；Q-11；TODO-003；P3-06 |
 | I8-R09 | dangling 目标引用 | 历史候选待复核 | Issue6 §6.5 第4项 |
 | I8-R10 | 日志持久化回调并发与背压 | 容量候选待定型 | Issue6 §6.5 第5项 |
 | I8-R11 | 同步事件 SSE 续传与心跳 | 契约候选待裁决 | Issue6 §6.5 第6项 |
@@ -149,9 +149,13 @@
 
 ### I8-R08 CVM Describe 错误分类合同
 
-- **状态与来源：** 合理分类待明确；旧 I8-31；Q-11；TODO-003；P3-06。
-- **证据与边界：** SDK调用失败保留错误链，成功响应结构缺失返回ErrSnapshotIncomplete，均停止新增。现状区分有合理性，旧“必须统一包装”的缺陷定性不沿用。
-- **后续与完成条件：** 决定保留现状并明确合同，或经 errors.Is/云错误码/整目标重试判别后调整；不得扩大生产isRetryable或破坏配额失败零新增。
+- **状态、裁决与基线：** 2026-10-12 用户选择 A（保留合理分类、补正式合同与回归），随后授权实施并同步文档。合同与正式测试补强本地完成，旧“必须统一包装”的缺陷定性不沿用。旧来源为 I8-31、Q-11、TODO-003、P3-06。实施前 `main / e2b20557df7bc856441b619d7ff3a0217775e121`、本地 `origin/main / fe5b6f1317b68bf4e7019bc7c7a1821e295c1671`，ahead2；工作树/暂存区干净，未 fetch。
+- **正式合同：** CVM `GetSnapshot` 与 `checkRuleLimit` 的普通 SDK 调用失败继续 `%w` 保留原错误，`errors.Is(err, ErrSnapshotIncomplete)` 为 false；成功响应缺少对应操作的快照/计数安全依据时为 true。配额失败零 Written/Skipped，本 attempt 不发 Create/Delete；可重试错误沿原判定重新 DNS→S0→规划→配额读取，最多三次 attempt，后续可信 attempt 可恢复。配额响应 Version 不替代 S0，删除使用同一 S1 Version/PolicyIndex。`ErrSnapshotIncomplete` 不作为所有读取失败的通用标记或重试开关，其他读取预算耗尽的双重错误身份保持。
+- **SDK 说明订正：** 当前 common v1.3.192 的 TencentCloudSDKError 已有 Unwrap，网络请求失败用带 cause 的构造器保留原始原因；可由 errors.Is/As 找到 deadline/net.OpError。普通云业务错误及部分解码/正文读取错误仍可能没有 cause，不宣称全部 SDK 路径可解包。`syncer/retry.go` 与旧网络错误夹具注释已订正，夹具继续保护无 cause 时的字符串兼容兜底，不再冒称当前 netretry.go 的完整错误链；生产 isRetryable/maxRetries 与测试夹具行为均不变。
+- **正式回归：** 新增 `provider/cvm_describe_errors_test.go`：真实 SDK→Provider 的快照/配额两入口覆盖鉴权、资源不存在、限频、内部、参数错误、非法 JSON、两种502响应、响应/集合缺失/null、计数依据缺失及快照缺 Version，检查不完整标记、云错误码、RequestId、空快照/零计数和仅 Describe 请求；Transport 注入网络 deadline/net.OpError 与拒绝连接 cause，检查原始身份与 SDK NetworkError 链。新增 `syncer/cvm_describe_errors_test.go`：真实 SDK→正式目标链覆盖 S0/配额两阶段、八种错误、持续失败/仅首个错误响应两种安排共32场景，不可重试错误即使后续已安排恢复也不补 attempt；按精确操作序列、每 attempt DNS/S0、实际写入与旧权限保留判定。可重试恢复路径验证 S0→配额→Create→S1→Delete→S2，刻意区分配额/S0/S1 Version，并检查旧规则精确 PolicyIndex。受控消息没有额外重试关键字，不将结果冒称严格云码白名单；网络 cause 由 HTTP Transport 注入，不等待或宣称生产默认60秒真实超时。
+- **正式专项与判别力：** `go test ./provider ./syncer -race -run '^TestI8R08' -count=20 -timeout=2m` 通过。仅替换生产源码的仓外 overlay 使用最终正式仓内测试：七类错误变体（SDK失败附加不完整标记、丢失原链、结构失败丢失不完整标记、绕过配额失败、取消重试、结构异常新增重试、Create改用配额Version）各重复20次，全部按预期行为断言变红，无编译失败/panic/race/超时混入负向通过。正式命令、退出码、最终源码/测试哈希和日志保存在 `/Users/kyle/.codex/outputs/i8-r08-implementation-20261012/`；不复用仓外研究测试作为正式证据。
+- **完整门禁与范围：** 原样 `make all`（真实 npm ci/vue-tsc/Vite、全仓 vet/race、产品构建）通过，其中八个 Go 包复用缓存；追加 `go test ./... -race -count=1 -timeout=5m`，12包禁缓存全仓 race 一轮全部通过，包含受影响两包完整回归。`go build ./...`、五份受影响 Go 文件 gofmt 检查及 `git diff --check` 通过；Go scanner 排除注释后验证三份既有 Go 文件与 HEAD 的 token 序列完全一致。实际范围为两份新增默认测试、`provider/tc_cvm.go` / `syncer/retry.go` / `syncer/retry_test.go` 三份注释修订，以及 AGENTS/本文，共七文件；生产可执行逻辑零变动。未改配额计数/阈值、SDK/依赖、API/schema、前端、同步状态机、错误判定/重试次数或归档历史文档。
+- **外部与提交边界：** 本机 Go1.27.1 darwin/arm64 / Node26.7.0；npm ci报告0漏洞，不记为另行执行独立 npm audit。本轮未执行 Linux/Docker、产品浏览器、真实云、SMTP/Webhook/Kuma 或远端 CI/GHCR，不外推长期稳定或外部通过。保持既有用户真机收口与人工豁免，不重开旧人工清单，SMTP继续由 I8-R01 跟踪。正式测试、注释与本轮文档尚未提交或推送。
 
 <a id="i8-r09"></a>
 
@@ -323,7 +327,7 @@
 | 旧Q-01～09、Q-14～21 | 已裁决并有对应实施，不再作为活跃决策表。 |
 | 旧Q-10、Q-11、Q-12 ECS、Q-13剩余 | 分别I8-R07、R08、R06、R16；Lighthouse预算和两批清理已完成，不重开。 |
 | TODO-001/008 | 已由旧I8-01/02修复，归档。 |
-| TODO-002/003 | I8-R03已本地补强；I8-R08继续独立研究。 |
+| TODO-002/003 | I8-R03已本地补强；I8-R08按A完成合同与正式测试补强。 |
 | TODO-004/007剩余 | I8-R25；旧规模/行号按历史解释，不算生产缺陷。 |
 | TODO-005/006已完成范围 | 当前planner路径与历史提交说明已整理，归档；剩余引用精度归I8-R25。 |
 | 旧I8-17g、I8-22/23/25 | I8-R04、R17、R18；I8-25的全量本地门禁历史缺口已被后续门禁替代，发布/长期范围分别R22/R23。 |
