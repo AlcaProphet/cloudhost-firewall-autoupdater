@@ -158,7 +158,7 @@ func aliTimeoutCases() []aliTimeoutCase {
 			// 路径 3：资源扫描 scanAliSWAS（ListInstances）
 			name: "扫描路径 scanAliSWAS",
 			call: func(pool *ClientPool) error {
-				_, err := scanAliSWAS("cn-hangzhou", pool)
+				_, err := ScanResources(config.CloudAliSWAS, "cn-hangzhou", pool)
 				return err
 			},
 		},
@@ -166,7 +166,7 @@ func aliTimeoutCases() []aliTimeoutCase {
 			// 路径 4：资源扫描 scanAliECS（DescribeSecurityGroups）
 			name: "扫描路径 scanAliECS",
 			call: func(pool *ClientPool) error {
-				_, err := scanAliECS("cn-hangzhou", pool)
+				_, err := ScanResources(config.CloudAliECS, "cn-hangzhou", pool)
 				return err
 			},
 		},

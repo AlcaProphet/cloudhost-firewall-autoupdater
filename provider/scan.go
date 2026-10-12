@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 
@@ -30,22 +31,37 @@ type ScannedCloudResource struct {
 //   - ali_swas:      ListInstances（查询实例）
 //   - ali_ecs:       DescribeSecurityGroups（查询安全组）
 func ScanResources(ct config.CloudType, region string, pool *ClientPool) ([]ScannedCloudResource, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cloudReadBudget)
+	defer cancel()
+	return scanResourcesBounded(ctx, ct, region, pool)
+}
+
+func scanResourcesBounded(ctx context.Context, ct config.CloudType, region string, pool *ClientPool) (resources []ScannedCloudResource, err error) {
+	defer func() {
+		if cause := ctx.Err(); cause != nil {
+			resources = nil
+			err = readBudgetError(ctx, "资源扫描", err)
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	switch ct {
 	case config.CloudTCLighthouse:
-		return scanTCLighthouse(region, pool)
+		return scanTCLighthouse(ctx, region, pool)
 	case config.CloudTCCVM:
-		return scanTCCVM(region, pool)
+		return scanTCCVM(ctx, region, pool)
 	case config.CloudAliSWAS:
-		return scanAliSWAS(region, pool)
+		return scanAliSWAS(ctx, region, pool)
 	case config.CloudAliECS:
-		return scanAliECS(region, pool)
+		return scanAliECS(ctx, region, pool)
 	default:
 		return nil, fmt.Errorf("不支持的云产品类型: %s", ct)
 	}
 }
 
 // scanTCLighthouse 扫描腾讯云轻量云实例（DescribeInstances，Offset/Limit 分页）
-func scanTCLighthouse(region string, pool *ClientPool) ([]ScannedCloudResource, error) {
+func scanTCLighthouse(ctx context.Context, region string, pool *ClientPool) ([]ScannedCloudResource, error) {
 	creds := pool.Credentials()
 	client, err := pool.GetOrCreate(pool.CacheKey(config.CloudTCLighthouse, region), func() (any, error) {
 		credential := common.NewCredential(creds.TencentSecretID, creds.TencentSecretKey)
@@ -62,12 +78,18 @@ func scanTCLighthouse(region string, pool *ClientPool) ([]ScannedCloudResource, 
 	var offset int64
 	limit := int64(100)
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		req := lighthouse.NewDescribeInstancesRequest()
 		req.Offset = common.Int64Ptr(offset)
 		req.Limit = common.Int64Ptr(limit)
-		resp, err := lh.DescribeInstances(req)
+		resp, err := lh.DescribeInstancesWithContext(ctx, req)
 		if err != nil {
 			return nil, fmt.Errorf("查询实例列表失败: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		page, err := decodeLighthouseScanPage(resp, region)
 		if err != nil {
@@ -84,7 +106,7 @@ func scanTCLighthouse(region string, pool *ClientPool) ([]ScannedCloudResource, 
 }
 
 // scanTCCVM 扫描腾讯云 CVM 安全组（DescribeSecurityGroups，Offset/Limit 分页，Offset 为字符串类型）
-func scanTCCVM(region string, pool *ClientPool) ([]ScannedCloudResource, error) {
+func scanTCCVM(ctx context.Context, region string, pool *ClientPool) ([]ScannedCloudResource, error) {
 	creds := pool.Credentials()
 	client, err := pool.GetOrCreate(pool.CacheKey(config.CloudTCCVM, region), func() (any, error) {
 		credential := common.NewCredential(creds.TencentSecretID, creds.TencentSecretKey)
@@ -101,12 +123,18 @@ func scanTCCVM(region string, pool *ClientPool) ([]ScannedCloudResource, error) 
 	offset := 0
 	limit := "100"
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		req := vpc.NewDescribeSecurityGroupsRequest()
 		req.Offset = common.StringPtr(strconv.Itoa(offset))
 		req.Limit = common.StringPtr(limit)
-		resp, err := v.DescribeSecurityGroups(req)
+		resp, err := v.DescribeSecurityGroupsWithContext(ctx, req)
 		if err != nil {
 			return nil, fmt.Errorf("查询安全组列表失败: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		page, err := decodeCVMScanPage(resp, region)
 		if err != nil {
@@ -123,8 +151,9 @@ func scanTCCVM(region string, pool *ClientPool) ([]ScannedCloudResource, error) 
 }
 
 // scanAliSWAS 扫描阿里云轻量云实例，按单次调用的总数与唯一 ID 验证分页完整性。
-// 总数使用 SDK 解码后的值；不自动重扫，不提供跨页原子快照或操作总预算。
-func scanAliSWAS(region string, pool *ClientPool) ([]ScannedCloudResource, error) {
+// 总数使用 SDK 解码后的值；不自动重扫，不提供跨页原子快照。
+// 单次扫描读取预算由 ScanResources 统一提供。
+func scanAliSWAS(ctx context.Context, region string, pool *ClientPool) ([]ScannedCloudResource, error) {
 	creds := pool.Credentials()
 	client, err := pool.GetOrCreate(pool.CacheKey(config.CloudAliSWAS, region), func() (any, error) {
 		// 与正式 SWAS Provider 共用同一缓存键与同一超时样本（Issue6 A1）
@@ -133,13 +162,22 @@ func scanAliSWAS(region string, pool *ClientPool) ([]ScannedCloudResource, error
 	if err != nil {
 		return nil, fmt.Errorf("创建 SWAS Client 失败: %w", err)
 	}
-	s := client.(*swas.Client)
+	base := client.(*swas.Client)
+	operation := newAliReadHTTP(ctx, tea.IntValue(base.ConnectTimeout), tea.IntValue(base.ReadTimeout))
+	defer operation.close()
+	s, createErr := swas.NewClient(aliReadConfig(&base.Client, operation))
+	if createErr != nil {
+		return nil, fmt.Errorf("创建 SWAS 读取 Client 失败: %w", createErr)
+	}
 
 	resources := make([]ScannedCloudResource, 0)
 	seenIDs := make(map[string]struct{})
 	const pageSize int32 = 100
 	var totalCount int32
 	for pageNumber := int32(1); ; pageNumber++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		req := &swas.ListInstancesRequest{
 			RegionId:   tea.String(region),
 			PageNumber: tea.Int32(pageNumber),
@@ -148,6 +186,9 @@ func scanAliSWAS(region string, pool *ClientPool) ([]ScannedCloudResource, error
 		resp, err := s.ListInstances(req)
 		if err != nil {
 			return nil, fmt.Errorf("查询实例列表失败: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		page, err := decodeSWASScanPage(resp, region)
 		if err != nil {
@@ -217,7 +258,7 @@ func decodeSWASScanPage(resp *swas.ListInstancesResponse, region string) ([]Scan
 }
 
 // scanAliECS 扫描阿里云 ECS 安全组（DescribeSecurityGroups，NextToken 分页）
-func scanAliECS(region string, pool *ClientPool) ([]ScannedCloudResource, error) {
+func scanAliECS(ctx context.Context, region string, pool *ClientPool) ([]ScannedCloudResource, error) {
 	creds := pool.Credentials()
 	client, err := pool.GetOrCreate(pool.CacheKey(config.CloudAliECS, region), func() (any, error) {
 		// 与正式 ECS Provider 共用同一缓存键与同一超时样本（Issue6 A1）
@@ -226,13 +267,22 @@ func scanAliECS(region string, pool *ClientPool) ([]ScannedCloudResource, error)
 	if err != nil {
 		return nil, fmt.Errorf("创建 ECS Client 失败: %w", err)
 	}
-	e := client.(*ecs.Client)
+	base := client.(*ecs.Client)
+	operation := newAliReadHTTP(ctx, tea.IntValue(base.ConnectTimeout), tea.IntValue(base.ReadTimeout))
+	defer operation.close()
+	e, createErr := ecs.NewClient(aliReadConfig(&base.Client, operation))
+	if createErr != nil {
+		return nil, fmt.Errorf("创建 ECS 读取 Client 失败: %w", createErr)
+	}
 
 	resources := make([]ScannedCloudResource, 0)
 	var nextToken *string
 	seenTokens := make(map[string]bool)
 	maxResults := int32(100)
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		req := &ecs.DescribeSecurityGroupsRequest{
 			RegionId:   tea.String(region),
 			MaxResults: tea.Int32(maxResults),
@@ -241,6 +291,9 @@ func scanAliECS(region string, pool *ClientPool) ([]ScannedCloudResource, error)
 		resp, err := e.DescribeSecurityGroups(req)
 		if err != nil {
 			return nil, fmt.Errorf("查询安全组列表失败: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		page, token, err := decodeECSScanPage(resp, region)
 		if err != nil {

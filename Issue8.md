@@ -18,7 +18,7 @@
 | I8-R03 | ECS 删除分批判别力 | 测试补强本地完成 | TODO-002；P2-02 |
 | I8-R04 | hook 测试观察竞争 | 测试补强本地完成 | 旧 I8-17g |
 | I8-R05 | SWAS 资源扫描分页完整性 | 本地已修复 | 旧 I8-08 后续候选；Q-04 剩余 |
-| I8-R06 | ECS 与资源扫描操作总预算 | 待研究与裁决 | 旧 I8-38；Q-12 ECS 剩余 |
+| I8-R06 | ECS 与资源扫描操作总预算 | 本地已修复 | 旧 I8-38；Q-12 ECS 剩余 |
 | I8-R07 | Pause/Resume 接口的原子更新 | 静态候选待裁决 | 旧 I8-17d/I8-41；Q-10 |
 | I8-R08 | CVM Describe 错误分类合同 | 合理分类待明确 | 旧 I8-31；Q-11；TODO-003；P3-06 |
 | I8-R09 | dangling 目标引用 | 历史候选待复核 | Issue6 §6.5 第4项 |
@@ -108,7 +108,7 @@
 - **状态、授权与基线：** 2026-10-11 用户选择 B（严格总数、不自动重扫），深入研究后进一步确认保持 typed SDK 边界，随后授权正式修复并同步文档。正式修复及文档同步已完成，专项门禁、判别性对照与完整本地门禁均通过。实施前 `main == 本地 origin/main == 173660f9d7d9f3bd5a706a4ebcbfba0d8f985c28`，工作树与暂存区干净，未 fetch。旧来源为 I8-08 后续候选、Q-04 剩余；此前结构保护已实施，本轮只补扫描分页完整性，不修改规则 ListFirewallRules 的 I8-11 合同。
 - **实际范围：** 唯一生产文件 `provider/scan.go` 的 `scanAliSWAS`；调整并补充 `provider/scan_swas_test.go`、`webui/api/scan_swas_test.go`，同步本文及 `AGENTS.md`，共五文件。复用原 `ListInstances`、客户端池、`decodeSWASScanPage`、handler/Store/前端失败处理；SDK/依赖/锁文件、超时、API/schema、规则快照、同步状态机及其他平台扫描保持。
 - **正式合同：** 每页 SDK 解码后的 TotalCount 必须存在、非负；首页复制数值为本次基准，后续页必须一致。PageNumber 从 1 开始、PageSize 保持 100；返回页码/页大小若非 nil 必须匹配请求，缺失/null 允许，单页超过 100 条失败。原值 InstanceId 在本次调用内同页/跨页不得重复，名称不参与身份；累计唯一资源数超过总数失败，精确相等才成功，尚不足时空页或非空短页均失败。总数为零只接受显式空数组，结构缺失不豁免；所有完整性失败返回 `nil + ErrSnapshotIncomplete`，不带回部分资源、不覆盖旧缓存，不自动重扫。普通 SDK 业务/解码错误链及分类保持；HTTP 仍为 200 + success=false/error + no-store，失败无 resources/count；成功只覆盖对应 cloud_type+region。总数、页码和去重状态不跨调用，不按声明总数预分配资源数组/map，计数比较用 int64。
-- **SDK 与完整性边界：** 用户接受现有 SDK 的类型转换；当前 SWAS v3.0.0 将 TotalCount 的原始 JSON `"1"`、`1.9`、`true` 转为整数 1，因此本合同针对 typed 值，不承诺原始 JSON 类型严格检查或重复字段拒绝。总数一致且 ID 唯一不能识别等量资源替换，不提供跨页原子快照；显式边界对照保留。资源扫描不继承单实例规则快照的 100 页限制，合法 101 页列表已由正式对照覆盖；整个操作的页数/时间预算继续由 I8-R06 独立研究，不宣称硬墙钟上限。API 字段定义见[官方 ListInstances 文档](https://help.aliyun.com/zh/simple-application-server/developer-reference/api-swas-open-2020-06-01-listinstances)。
+- **SDK 与完整性边界：** 用户接受现有 SDK 的类型转换；当前 SWAS v3.0.0 将 TotalCount 的原始 JSON `"1"`、`1.9`、`true` 转为整数 1，因此本合同针对 typed 值，不承诺原始 JSON 类型严格检查或重复字段拒绝。总数一致且 ID 唯一不能识别等量资源替换，不提供跨页原子快照；显式边界对照保留。资源扫描不继承单实例规则快照的 100 页限制，合法 101 页列表已由正式对照覆盖；I8-R05 当时未增加操作总预算，现由 I8-R06 独立合同固定120秒且不新增页数上限，不宣称硬墙钟上限。API 字段定义见[官方 ListInstances 文档](https://help.aliyun.com/zh/simple-application-server/developer-reference/api-swas-open-2020-06-01-listinstances)。
 - **正式回归与夹具迁移：** 保留原生 nil/Body/集合/元素/ID 结构回归及名称可空/原值合同。后续页 SDK/结构异常用例首页改为 100 条、总数 101，确保真实进入第二页；原总数 100 的满页对照改为只请求一次，正常两页总数固定 101。新 SDK 回归覆盖首页/后续页总数缺失/null/负数、增长/下降、空/短页、超额、重复页/ID、分页回显、超长页、终止后不多发请求与扫描状态独立；正式 handler→临时 SQLite 覆盖首页/后续页失败保留旧缓存、成功与零结果替换、其他地域/其他产品缓存保持及失败无部分结果。typed 数值转换与等量替换属于边界回归，不称原始类型或原子快照保护。
 - **正式专项与判别力：** `go test ./provider ./webui/api -run '^(TestDecodeSWASScanPage|TestScanSWAS)' -race -count=20 -timeout=3m` 通过。当前正式测试挂入 HEAD 旧扫描源码后，提前短页、重复 ID、错误页码及 API 缓存场景按行为断言变红；另外八类仓外生产源码 overlay（放行缺失总数、忽略变化、放行重复 ID、提前短页继续、忽略页码、忽略页大小、放行超长页、错误返回部分资源）各重复 20 次，均由预期行为断言检出，不以编译失败/panic/race/测试超时计负向通过。overlay 只替换生产文件，使用正式仓内测试；完整命令、返回码与日志位于 `/Users/kyle/.codex/outputs/i8-r05-implementation-20261011/`，研究/准备结果不充当本轮正式门禁。
 - **完整门禁与外部边界：** `make all`（前端 npm ci、vue-tsc/Vite 构建、Go vet、全仓 race 与产品构建）通过；其中部分 Go 包命中缓存，不计为第二轮无缓存全仓证据。另行执行 `go test ./... -race -count=1 -timeout=5m`，12 包全部通过；`go build ./...`、受影响 Go 文件 gofmt 检查与 `git diff --check` 通过。npm ci 报告 0 漏洞，未另行执行独立 npm audit。单次无缓存全仓绿色不外推为长期稳定性结论。本机为 Go 1.27.1 darwin/arm64 / Node 26.7.0。本轮未执行 Linux/Docker、真实云、产品浏览器、SMTP/Webhook/Kuma 或远端 CI/GHCR；保持既有用户真机收口与人工豁免，不恢复旧 PT-AUDIT-05，SMTP 继续由 I8-R01 跟踪。源码、测试及本轮文档尚未提交或推送。
@@ -117,9 +117,20 @@
 
 ### I8-R06 ECS 与资源扫描操作总预算
 
-- **状态与来源：** 待研究与裁决；旧 I8-38；Q-12 ECS 剩余。
-- **证据与边界：** Lighthouse规则快照已固定120秒/100次（旧Q-16），ECS及资源扫描尚无统一操作总预算合同。历史SDK研究指出动态每页Timeout涉及全局客户端池和共享Timeout覆写窗口，当前版本须重新核实。
-- **后续与完成条件：** 先明确单操作预算、在途页取消、错误类型、客户端隔离/回收及重试后果；只做页间检查不能称硬墙钟上限。不得改变SDK池策略后仅用页数测试判定安全。
+- **状态、授权与基线：** 2026-10-12 用户选择并定型 B（操作 deadline、中断在途网络请求；120 秒；同步沿用现有超时重试；扫描不自动重扫；不新增页数上限），进一步研究与仓外准备后授权正式修复及同步文档。正式实施和专项门禁已完成，完整门禁结果见下文。实施前 `main == 本地 origin/main == fe5b6f1317b68bf4e7019bc7c7a1821e295c1671`，工作树与暂存区干净，未 fetch。旧来源为 I8-38、Q-12 ECS 剩余；Lighthouse 规则快照的既有 120 秒/100 次合同保持。
+- **实际范围：** 生产仅 `provider/read_budget.go`（新增）、`provider/ali_ecs.go` 与 `provider/scan.go`；迁移 `provider/ali_timeout_test.go` 两个扫描夹具到公共入口，新增默认 `provider/read_budget_test.go` 及 `testdata/i8-r06/` 的两份集成夹具和专项入口；同步本文与 `AGENTS.md`，共十文件。SDK/依赖/锁文件、API/schema、前端源码、规则分页结构/终止条件、正式同步状态机、`isRetryable/maxRetries` 与扫描 handler/Store 保持；未修改 Make/CI/Docker 接线。
+- **预算与错误合同：** ECS 每次 `GetSnapshot`、每次单产品单地域 `ScanResources` 固定独立 120 秒，全部分页共享、不逐页重置；S0/S1/S2 与整目标重试后的读取分别计时。不新增页数/资源条数限制，合法超过 100 页扫描继续支持。腾讯扫描使用原生 WithContext，阿里云 HTTP 请求绑定同一操作 context；页前、SDK 返回后及成功返回前检查。耗尽返回空快照或 nil 资源，同时保留 `ErrSnapshotIncomplete`、`context.DeadlineExceeded` 与当时 SDK 错误链（若有）；操作 context 仍有效时，原单页超时不新加不完整标记，普通业务/网络/解码错误分类保持。阿里云单页 Connect 10s / Read 30s、HTTP 整体 40s 与腾讯默认 60s 保持，测试仍可沿已有接缝缩短。120 秒约束网络等待与正文读取，不强制终止签名、解码、计算、池锁等待或清理，不含数据库持久化、整目标或整轮，不承诺严格墙钟返回上限。
+- **客户端隔离与回收：** 池提供捕获快照的基础 SDK 客户端，操作通过官方构造器读取其不可变配置/凭据创建独立实例，不复制或修改整个 Client，不读取可变 Headers。准备阶段的浅拷贝与 `GetRpcHeaders` 并发竞态已撤销，未进入正式源码；正式并发回归保护这一边界。读取不进入 dara 默认全局 HTTP 池、不动态改变每页 Timeout；保留签名、TLS/CA 与代理配置，操作内复用第一份 SDK Transport、操作间独立。SDK 正常关闭与操作收尾共用一次关闭器，覆盖正文读取失败或空正文遗漏关闭；下一页前清理前页残留，结束先 cancel，再关闭当前响应体与空闲连接。关闭错误统一处理，仅固定 `response_close` 阶段及错误类型 WARN，不记录原始错误/URL/正文/凭据，不覆盖主错误或完整读取结果，不增加清理重试。操作间可能新增连接/TLS握手开销；当前 SDK 未开启内部重试，未来更改 SDK、可变性或退避配置须重验取消/隔离，当前证据不外推未知版本。
+- **安全门与重试后果：** 预算耗尽沿现有最多三次整目标 attempt；S0 持续耗尽时三次读取预算约六分钟加退避，不是整目标上限。S0 失败本 attempt 零增删；S1 失败保留已确认新增且零删除；S2 失败保持既有 failed 与保守观察合同，已确认增删不丢。后续可信 attempt 可恢复、重新规划并清理，不沿用失败快照授权删除。扫描不自动重扫，沿既有 HTTP 200 + success=false/error + no-store，失败无 resources/count、不覆盖旧缓存；成功/合法零结果仍只覆盖对应产品地域。不接入 HTTP 断开或 Stop 的新取消源，既有完成当前轮规则、限流/冷却及快照捕获边界保持。
+- **正式回归与专项入口：** 默认 provider 回归覆盖五条路径首页/后页响应头与正文挂起、持续新 token 共用预算、已耗尽零 HTTP、正常成功、原单页超时分类、响应体遗漏/重复关闭与安全日志、真实 SDK 空正文/坏 JSON 回收、原池请求并发、操作隔离/连接复用回收、TLS自定义CA与HTTP代理。既有完整性、token原值、计数与101页扫描对照保持。跨包夹具存放于 `testdata/i8-r06/`，临时 Go overlay 注入实际测试包并仅将测试构建预算改为150ms，不修改源文件/产品设置；默认 Go 测试不加载该两份夹具，不据默认绿色声称已执行专项。真实 SDK→当前正式目标链覆盖 S0/S1/S2 连续耗尽、首次失败后恢复和正常清理；S2 连续耗尽夹具模拟每次成功删除后另一个写入方产生新的旧 TAG 规则，确认三次删除计数保留且最终 failed。四平台真实 SDK→handler→临时 SQLite 分别覆盖首页/后页耗尽、旧缓存及其他地域保持、响应无半截结果。以下两条专项每项 race 重复20次均通过：
+
+  ```bash
+  go test ./provider -run '^TestReadBudget' -race -count=20 -timeout=3m
+  python3 testdata/i8-r06/run_integration.py --count 20
+  ```
+
+- **正式判别力：** 四个仓外生产帮助函数 overlay（取消 HTTP context 绑定、漏不完整标记、漏响应体收尾、移除一次关闭保护）使用当前正式仓内测试各重复20次，全部按取消时限、错误分类或关闭次数局部断言变红，无编译失败/panic/race/整体测试超时混入负向通过。正式命令、返回码与日志位于 `/Users/kyle/.codex/outputs/i8-r06-implementation-20261012/`，不将研究/准备或中间版本结果当作最终正式门禁。
+- **完整门禁与外部边界：** 最终原样 `make all`（真实 npm ci/vue-tsc/Vite、Go vet、全仓 race、产品构建）通过，其中部分 Go 包复用缓存；另行执行 `go test ./... -race -count=1 -timeout=5m`，12 包禁缓存全仓 race 一轮全部通过；`go build ./...`、受影响 Go 文件 gofmt 检查与 `git diff --check` 通过。本机 Go1.27.1 darwin/arm64 / Node26.7.0，npm ci报告0漏洞，不记为另行执行独立 npm audit；单次全仓绿色不外推为长期稳定性结论。本轮未执行 Linux/Docker、真实云、产品浏览器、SMTP/Webhook/Kuma 或远端 CI/GHCR；保持既有用户真机收口与人工豁免，不重开旧人工清单，SMTP继续由 I8-R01 跟踪。正式源码、测试及本轮文档尚未提交或推送。
 
 <a id="i8-r07"></a>
 

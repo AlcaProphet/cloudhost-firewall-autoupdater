@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -61,12 +62,33 @@ func (p *AliECS) TargetIndex() int {
 // 或任一已见 token 再次出现，立即按快照不完整失败（ErrSnapshotIncomplete），
 // 绝不返回半截规则，也绝不让调用方基于不完整快照产生删除计划（P3-25）。
 func (p *AliECS) GetSnapshot() (RuleSnapshot, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cloudReadBudget)
+	defer cancel()
+	return p.getSnapshotBounded(ctx)
+}
+
+func (p *AliECS) getSnapshotBounded(ctx context.Context) (snapshot RuleSnapshot, err error) {
+	defer func() {
+		if cause := ctx.Err(); cause != nil {
+			snapshot = RuleSnapshot{}
+			err = readBudgetError(ctx, "ECS快照", err)
+		}
+	}()
+	operation := newAliReadHTTP(ctx, tea.IntValue(p.client.ConnectTimeout), tea.IntValue(p.client.ReadTimeout))
+	defer operation.close()
+	client, createErr := ecs.NewClient(aliReadConfig(&p.client.Client, operation))
+	if createErr != nil {
+		return RuleSnapshot{}, fmt.Errorf("创建 ECS 读取 Client 失败: %w", createErr)
+	}
 	var allRules []config.RuleInfo
 	var nextToken *string
 	maxResults := int32(500)
 	seenTokens := make(map[string]bool)
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return RuleSnapshot{}, err
+		}
 		req := &ecs.DescribeSecurityGroupAttributeRequest{
 			SecurityGroupId: tea.String(p.securityGroupID),
 			RegionId:        tea.String(p.regionID),
@@ -75,7 +97,7 @@ func (p *AliECS) GetSnapshot() (RuleSnapshot, error) {
 			NextToken:       nextToken,
 		}
 
-		resp, err := p.client.DescribeSecurityGroupAttribute(req)
+		resp, err := client.DescribeSecurityGroupAttribute(req)
 		if err != nil {
 			return RuleSnapshot{}, fmt.Errorf("查询安全组规则失败: %w", err)
 		}
@@ -83,6 +105,9 @@ func (p *AliECS) GetSnapshot() (RuleSnapshot, error) {
 			return RuleSnapshot{}, fmt.Errorf("%w: ECS 返回空响应", ErrSnapshotIncomplete)
 		}
 
+		if err := ctx.Err(); err != nil {
+			return RuleSnapshot{}, err
+		}
 		body := resp.Body
 		if body.Permissions != nil && body.Permissions.Permission != nil {
 			for _, r := range body.Permissions.Permission {
