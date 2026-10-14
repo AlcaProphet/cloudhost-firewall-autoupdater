@@ -7,7 +7,11 @@ import (
 	"time"
 )
 
-const sseWriteTimeout = 5 * time.Second
+const (
+	sseWriteTimeout = 5 * time.Second
+	// SSE 心跳只维持连接活跃，不承载业务事件或游标。
+	sseHeartbeatInterval = 15 * time.Second
+)
 
 // writeSSE 向长连接写出一条 SSE 消息并立即刷新（两类 SSE 共用）。
 //

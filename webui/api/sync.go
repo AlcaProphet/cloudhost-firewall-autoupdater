@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 )
@@ -107,6 +108,7 @@ func (d *Deps) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	ch, unsubscribe := d.EventBus.SubscribeChan()
 	defer unsubscribe()
@@ -118,6 +120,10 @@ func (d *Deps) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("同步事件 SSE 初始刷新失败，结束连接", "error", err)
 		return
 	}
+
+	// 初始响应刷新成功后开始计时；业务输出不重置心跳周期。
+	heartbeat := time.NewTicker(sseHeartbeatInterval)
+	defer heartbeat.Stop()
 
 	for {
 		select {
@@ -134,6 +140,20 @@ func (d *Deps) handleSyncEvents(w http.ResponseWriter, r *http.Request) {
 			if err := writeSSE(w, "data: %s\n\n", data); err != nil {
 				// 半开连接 / 客户端停止读取：首个写错误即退出（修复前会永久循环）
 				slog.Debug("同步事件 SSE 写出失败，结束连接", "error", err)
+				return
+			}
+		case <-heartbeat.C:
+			// 写前再次检查退出信号；取消仍可能与已进入的写入并发。
+			select {
+			case <-r.Context().Done():
+				return
+			case <-d.ShutdownCh:
+				slog.Info("服务器关闭，同步事件 SSE 退出")
+				return
+			default:
+			}
+			if err := writeSSE(w, ": heartbeat\n\n"); err != nil {
+				slog.Debug("同步事件 SSE 心跳写出失败，结束连接", "error", err)
 				return
 			}
 		case <-r.Context().Done():

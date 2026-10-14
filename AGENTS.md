@@ -319,6 +319,8 @@
 - 配置导入 JSON 最大 10 MiB，其他 JSON 请求最大 1 MiB，超限返回 413；固定结构 DTO 拒绝未知字段、尾随 JSON 和多个顶层值
 - HTTP Server 使用 `ReadHeaderTimeout=5s`、`IdleTimeout=120s`，不设置全局 `ReadTimeout` / `WriteTimeout`；HTTP shutdown 上限 10s
 - 两类 SSE 必须监听服务器级 shutdown 信号显式退出，不依赖 `http.Server.Shutdown()` 自动取消长连接
+- SSE 心跳与即时通知（I8-R11，2026-10-14 用户定型）：两类 SSE 在能力探测通过、初始响应头刷新成功后各创建一个固定 15 秒 ticker，日志 reset 仍先于心跳输出，业务消息不重置周期；同一 handler 串行写出业务帧与 `: heartbeat\n\n` 注释心跳，退出停止 ticker。心跳不带 data/id、不推进日志游标、不进入 EventBus/历史/告警/健康，正常不输出诊断。成功响应头在首次刷新前设置 `X-Accel-Buffering: no`；缺失依赖 503 与能力不足 500 的早期错误边界保持。同步事件流仅用于即时通知，保留 32 条非阻塞通道与满载可丢边界，不承诺 id/Last-Event-ID 回放；当前状态与最近一轮以 `/api/sync/status` 为准，该接口不补发全部历史事件。日志 epoch/序号/reset/1000 条缓存回放与慢订阅者可丢边界保持。
+- SSE 心跳写出与退出边界（I8-R11）：心跳复用 `writeSSE` 的 5 秒独立写 deadline；设置、Write、Flush 或清除失败均结束连接，Write/Flush 失败仍尝试清除 deadline，响应开始后不补写 HTTP 错误状态，心跳写错沿对应固定 Debug。心跳分支写前再次检查 request context/shutdown，已观察退出信号就返回；取消仍可能与已开始写入并发。15 秒为调度周期，不是严格墙钟承诺；小帧可能进入 TCP 缓冲，不保证停止读取者在 20 秒内被发现，也不保证任意代理保活或实时转发。正式证据见 [Issue8 I8-R11](./Issue8.md#i8-r11)，不把本地 HTTP/自动回归外推为真实浏览器、代理或发布验收。
 - 运行时 `cfg + providers + resolver` 一次原子替换（Step 5 已落地）：`syncer.RuntimeState`（Config/ClientPool/Providers/Resolver/Breaker）发布后不可修改，`RuntimeManager` 单锁边界替换指针；同步轮次、Dry Run、连接测试与资源扫描各只取一次完整快照，当前轮次继续使用旧完整快照，下一轮完整使用新快照
 - 普通 API 与配置导入共用同一组最小领域校验（`config/validate.go`）：非法输入不写库、不触发 reload，合法事务提交后只应用一次运行时更新，删除被规则引用的目标返回 409
 - 每渠道（邮件 / Webhook）最多 4 个在途发送，满载丢弃最新并返回 nil；安全丢弃 WARN 由渠道长期限流器聚合：新活动周期首条立即输出 `dropped=1`，后续约每 30 秒汇总新增数量，首条不重复计入；空窗口不输出并停止续约计时。仅保存三类告警事件与固定安全平台的计数，不持有密码、URL、正文、事件或配置引用；混合 Webhook 平台标记 `mixed` 并列出平台计数。计数与窗口跨热重载、关闭再开启及旧实例晚到回调连续；关闭后允许汇总此前丢弃，汇总不表示渠道恢复。锁内取走快照、锁外写日志，汇总回调输出后才重新计时；不增加队列、重试、持久化或 shutdown 强制汇总，进程退出前未输出的计数可能丢失。

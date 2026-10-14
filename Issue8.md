@@ -23,7 +23,7 @@
 | I8-R08 | CVM Describe 错误分类合同 | 合同与测试补强本地完成 | 旧 I8-31；Q-11；TODO-003；P3-06 |
 | I8-R09 | dangling 目标引用 | 本地已修复 | Issue6 §6.5 第4项 |
 | I8-R10 | 日志持久化回调并发与背压 | 本地已修复 | Issue6 §6.5 第5项 |
-| I8-R11 | 同步事件 SSE 续传与心跳 | 契约候选待裁决 | Issue6 §6.5 第6项 |
+| I8-R11 | 同步事件 SSE 续传与心跳 | 即时通知契约已裁决；心跳本地已修复 | Issue6 §6.5 第6项 |
 | I8-R12 | 阿里云错误码重试范围 | 行为候选待裁决 | Issue6 §6.5 第8项 |
 | I8-R13 | 运行时间戳重启展示 | 产品边界待确认 | Issue6 §6.5 第11项 |
 | I8-R14 | SQLite 容量与辅助事务边界 | 研究候选待复核 | Issue6 §6.5 第12项 |
@@ -185,9 +185,12 @@
 
 ### I8-R11 同步事件 SSE 续传与心跳
 
-- **状态与来源：** 契约候选待裁决；Issue6 §6.5 第6项。
-- **证据与边界：** 同步事件channel满载可丢，未承诺id/Last-Event-ID回放；已完成的P3-04是日志SSE续传。历史还记录两类SSE无心跳。
-- **后续与完成条件：** 先决定同步流是否要求回放、断线窗口与心跳，再考虑两种流的独立deadline和慢订阅者边界；日志已有续传不能作为同步流无损证明。
+- **状态、来源与授权：** 2026-10-14 按用户确认的即时通知用途与修复前定型方案正式实施并同步文档，即时通知契约已裁决、心跳本地已修复；来源为 Issue6 §6.5 第6项。实施前 `main == 本地 origin/main == 6cf79032023ac0c1ec8192b6e3c9ffc7c5d75c7c`，工作树/暂存区干净，未 fetch。研究与准备阶段的仓外成绩不作为本次正式证据。
+- **问题复核与用户裁决：** 同步流每订阅者32条通道，非阻塞发送满载即丢，最后的 `sync:complete` 也可能不可见；断线期间事件未保存，没有 id/Last-Event-ID 回放。仓内 Dashboard 每5秒读取状态API，未订阅同步SSE；同步引擎先保存整轮状态再发布完成事件。用户选择同步流只用于即时通知、允许丢事件，当前状态与最近一轮以 `/api/sync/status` 为准，该接口不补发全部历史事件。同步流不新增回放，作为已接受用途边界；P3-04已有日志续传不外推为同步流无损。历史两类SSE无心跳，本轮仅补连接保活与代理缓冲控制。
+- **正式范围与合同：** 三份生产文件 `webui/api/sse.go`、`sync.go`、`logstream.go`，新增 `sse_heartbeat_test.go`，以及 AGENTS/README/本文件，共七文件。两类SSE在能力探测通过、初始响应头Flush成功后各创建固定15秒ticker，退出Stop；日志reset仍先于心跳输出，业务消息不重置周期。同一handler串行输出业务帧和 `: heartbeat\n\n` 注释，心跳不带data/id、不推进日志游标、不进入EventBus/历史/告警/健康，正常不输出诊断。成功头在首次刷新前设置 `X-Accel-Buffering: no`，覆盖已有yes；nil依赖503与能力不足500仍早于成功头/订阅。心跳复用原 `writeSSE` 的5秒独立deadline，set/Write/Flush/clear任一失败退出，Write/Flush失败仍尝试clear，不补第二个HTTP错误响应，写错沿对应固定Debug。心跳分支写前再次检查context/shutdown；取消仍可能与已开始写入并发。同步32条通道与满载可丢、日志epoch/序号/reset/1000条回放与慢订阅者可丢、坏事件安全WARN并跳过，以及取消不关闭EventBus channel的合同保持；未改前端、数据库、告警/同步状态机、依赖或发布配置。
+- **正式专项与判别力：** 正式仓内 `go test ./webui/api -race -run '^TestI8R11' -count=20 -timeout=90s` 通过，5个入口共18个叶子场景各重复20次，覆盖14秒无心跳、15秒首条/30秒再次、业务消息不重置、准确注释/5秒预算/清理顺序、四阶段失败退出、空闲context/shutdown退出、退出后无新增输出、退订与代理头覆盖；默认新测试使用虚拟时间。API整包 `go test ./webui/api -race -count=1 -timeout=3m` 通过，包含既有SSE生命周期、真实停止读取客户端5秒写deadline、坏事件跳过及日志游标/回放。前端现有 `npm run test:logs` 6/6通过，mock EventSource不作为真实浏览器解析证明。使用本轮正式生产文件和正式测试重新生成的仓外6类生产overlay（周期30秒、业务Reset、data心跳、绕过deadline、错误后continue、移除代理头），以及基线旧生产源码，各选定测试重复20次均在预期行为断言变红；已复核根测试失败次数，无编译失败/panic/race/整体超时混入。仓外仅注入HTTP测试夹具、不替换生产文件的专项，两类真实回环HTTP均于约15.06秒收到注释心跳，响应头正常；该夹具不进入产品或默认测试。本轮命令、退出码、源码与日志保存在 `/Users/kylechen/.codex/outputs/i8-r11-implementation-20261014-f4js2mjp/`。
+- **完整门禁与环境处理：** 首次原样 `make all` 在npm ci阶段因本机全局npm缓存EACCES/EEXIST退出2，尚未进入构建/Go门禁；未更改全局缓存权限或清理缓存。使用本任务独立 `npm_config_cache` 重跑同一 `make all` 入口通过（真实npm ci/vue-tsc/Vite、全仓vet、12包race与产品构建，Makefile未改，Go结果无cached项）；npm ci报告0漏洞，不记为另行执行独立npm audit。随后独立 `go test ./... -race -count=1 -timeout=5m`，12包禁缓存完整race一轮全部通过；四份受影响Go文件gofmt检查、最终diff-check与七文件范围复核通过。I8-R11本地收口，单轮完整门禁不外推长期稳定。
+- **外部与保留边界：** 本机Go1.27.1 darwin/arm64、Node26.7.0/npm11.19.0；未执行真实浏览器/反向代理、Linux/Docker、真实云/SMTP/Webhook/Kuma或当前revision远端CI/GHCR，不外推长期稳定或外部通过。15秒为调度周期，不是严格墙钟承诺；小帧可进入TCP缓冲，不保证停止读取者在20秒内被发现，也不保证任意代理不断开或实时转发。心跳不修复断线/满载丢事件、日志尾部缺口或进程重启后的历史恢复。用户既有真机收口与通知豁免保持，不恢复普通人工待执行项，SMTP继续由I8-R01/ProdTestList跟踪。本轮源码、正式回归和文档尚未提交或推送。
 
 <a id="i8-r12"></a>
 
@@ -312,7 +315,7 @@
 | 3 buildDesired静默丢弃 | 旧链已由I8-14删除；正式planner有unsupported/partial/清理冻结，归档。 |
 | 4 dangling引用 | I8-R09，历史候选先复核。 |
 | 5 日志回调积压 | I8-R10，已按方案A本地修复日志准入、容量与退出等待；正式证据见该项。 |
-| 6 SSE续传/心跳 | I8-R11；日志续传P3-04已完成，同步流另定合同。 |
+| 6 SSE续传/心跳 | I8-R11；同步流即时通知/允许丢事件的用途已裁决，两类心跳本地已修复，正式证据见该项；日志续传P3-04保持。 |
 | 7 Dashboard数字双口径 | 已由043ac36及后续Dashboard观察修复收口，归档。 |
 | 8 阿里云重试码 | I8-R12，待验证形态并裁决。 |
 | 9 Webhook Close/drain | 已按P3-21接受及时关闭/有界清理边界，Push正文上限也已实施；不作为待修项。真实Webhook/Kuma豁免不阻断。 |
