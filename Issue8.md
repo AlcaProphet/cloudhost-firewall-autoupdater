@@ -22,7 +22,7 @@
 | I8-R07 | Pause/Resume 接口的原子更新 | 本地已修复 | 旧 I8-17d/I8-41；Q-10 |
 | I8-R08 | CVM Describe 错误分类合同 | 合同与测试补强本地完成 | 旧 I8-31；Q-11；TODO-003；P3-06 |
 | I8-R09 | dangling 目标引用 | 本地已修复 | Issue6 §6.5 第4项 |
-| I8-R10 | 日志持久化回调并发与背压 | 容量候选待定型 | Issue6 §6.5 第5项 |
+| I8-R10 | 日志持久化回调并发与背压 | 本地已修复 | Issue6 §6.5 第5项 |
 | I8-R11 | 同步事件 SSE 续传与心跳 | 契约候选待裁决 | Issue6 §6.5 第6项 |
 | I8-R12 | 阿里云错误码重试范围 | 行为候选待裁决 | Issue6 §6.5 第8项 |
 | I8-R13 | 运行时间戳重启展示 | 产品边界待确认 | Issue6 §6.5 第11项 |
@@ -172,9 +172,14 @@
 
 ### I8-R10 日志持久化回调并发与背压
 
-- **状态与来源：** 容量候选待定型；Issue6 §6.5 第5项。
-- **证据与边界：** EventBus.Publish 对接口订阅者派生goroutine；StoreLogWriter同步写SQLite，慢库可能积压回调。现有发送在途限制不限制日志持久化，本次确认调用机制，不宣称已复现生产堆积。
-- **后续与完成条件：** 先定义队列容量、丢弃/背压、退出等待、日志顺序和失败恢复要求；独立于邮件/Webhook在途策略，不能顺手改EventBus全局语义。
+- **状态、裁决、授权与基线：** 2026-10-14 用户选择A：日志专用入队、单writer、256条待写、满载淘汰最旧待写；退出最多尝试排空10秒，到期放弃待写记录、取消在途SQL，再等待worker结束。完成深入研究和仓外准备后，用户在本聊天授权正式修复及文档同步。本地正式修复、默认回归和门禁已完成。实施前 `main == 本地 origin/main == a6e322461a89a38ab192e24557398c7c9346065d`，工作树/暂存区干净，未 fetch。旧来源为Issue6 §6.5第5项。
+- **原问题与定性：** 原生产日志将StoreLogWriter注册为普通接口订阅，逐事件派生goroutine同步写SQLite；仓外真实写锁与合法调度屏障证明回调积压、落库顺序反转和取消不排空。生产仍有平台冷却，未宣称生产OOM或长期堆积已复现。本轮以局部日志准入和生命周期修复收口，不把EventBus所有订阅者统一改成队列或同步回调。
+- **日志准入与顺序：** EventBus新增独立 `SubscribeIngress` 与共同 `ReportEventError`；锁内复制注册快照，锁外先执行原普通订阅/SSE投递，再同步调用日志准入。准入只进行事件→日志值转换和短内存操作，不写SQLite、不输出诊断、不等worker、不派生日志回调。两种目标结果共用一个256待写环形队列与1在途writer，满载淘汰最旧待写、不动在途，按准入FIFO处理；并发发布按入队锁决定先后，不保证跨平台时间戳排序。槽位弹出/淘汰/清空释放引用，不保留事件map或观察对象；数量上限不等于字节内存上限。原结果、已确认计数和观察详情共用同一纯转换，旧同步StoreLogWriter入口仍保留。
+- **SQL与失败合同：** `AddSyncLog` 原签名委托Background context，新 `AddSyncLogContext` 在INSERT/COUNT/DELETE三个独立语句贯穿同一context，不改事务、连接池、PRAGMA或1000条保留。INSERT失败返回错误；已INSERT后COUNT失败（含取消）WARN并返回nil/跳过DELETE；DELETE失败返回错误但不回滚INSERT。不自动重试，避免部分成功后重复插入；worker错误沿共同事件WARN并继续后续记录，入队成功不称已落库，日志失败/丢弃不修改云同步结论或OperationalHealth。准入仅累加固定丢弃计数，worker进展后按约30秒窗口汇总overflow_oldest/shutdown_pending，退出强制冲刷；不输出业务字段或承诺I/O阻塞期间即时诊断，空闲尾计数可等下一次处理或Stop。
+- **退出与清空边界：** 保持当前同步轮 `s.Wait()` 无超时完成，然后冻结日志准入并解除订阅、开始10秒排空；到期清空待写、取消在途SQL，仍等worker结束及已启动timer回调收尾后才能关库。取下一条前也检查deadline；Stop重复/并发幂等；构造后立即defer Stop，HTTP绑定失败等提前返回也先join再关闭Store。取消订阅不回收既有快照，晚到入队由关闭态拒绝，不关闭wake数据channel。10秒从日志阶段起算，是软预算，不保证SIGTERM后进程/容器硬10秒退出。固定驱动下100ms SQL context实测约5.07秒才结束忙锁；10秒排空实测约10.14秒，4条中2尝试失败、2到期放弃、0落库，随后安全关库。清空仍只删除已落库内容，旧待写可能稍后落库，不在持写事务时等排空。Compose停止宽限未自动修改，README说明需覆盖当前轮与日志阶段。
+- **正式默认回归与范围：** 新增 `notifier/bus_ingress_test.go`（显式准入/锁外调用/取消快照/注册并发）、`config/synclog_context_test.go`（逐语句context/部分成功/预取消与已INSERT后取消/真实锁库恢复）、`webui/api/logqueue_test.go`（实际256容量、FIFO/值隔离、告警/SSE不受队列满影响、10秒数值锚点/取消与join、正常排空/timer停止、并发Stop/晚到拒绝、失败不重试/共同WARN、30秒聚合、真实Syncer→publisher→新队列→SQLite清理计数链）。虚拟时间只用于单Stop的时限合同，多Stop用独立真时间回归，失败路径用测试专用强制回收保证负向按断言结束；生产不加入测试接缝/研究环境入口。生产仅 `notifier/bus.go`、`config/store.go`、`webui/api/logwriter.go`、新增 `webui/api/logqueue.go`、`run.go`；AGENTS/本文/README配套，共11文件。不改HTTP API/schema、前端、SDK/依赖、Provider/DNS/同步目标状态机、告警在途策略、SSE协议、共享数据库事务或池。
+- **正式专项、判别力与进程补充：** `go test ./notifier ./config ./webui/api -race -run '^TestI8R10' -count=1 -timeout=90s -v` 通过，包含真实SQLite锁等待与10秒软排空；快合同及真实Syncer日志链 `-run '^TestI8R10(Ingress|SQLContext|SQLCanceled|SQLActive|Capacity|Drain|Normal|Failure|Concurrent|LogMaterialization|Drop|SyncerQueue)' -count=20 -timeout=2m` 三包通过。20类仓外组件生产源码overlay只替换生产文件，使用正式仓内测试，各20次均按行为断言变红；3类进程收尾错误变体各5次由对应行为/顺序断言检出。逐项复核根测试失败次数，无编译失败/panic/race/整体超时混入。以本轮正式源码重新生成的仓外本地Provider/文件屏障/生命周期trace，验证SIGTERM后最后目标日志落库再关库、HTTP绑定失败提前返回也join，各5次通过；这些研究夹具未进入产品源码或默认测试，不访问云API，TestMain普通go build的子进程不冒称race插桩。正式命令、退出码、源码哈希、结果和日志在 `/Users/kyle/.codex/outputs/i8-r10-implementation-20261014/`，不复用研究/准备结果当作正式证据。
+- **完整门禁与外部边界：** 原样 `make all`（真实npm ci/vue-tsc/Vite、全仓vet/race、产品构建）通过，其中5个Go包复用缓存；追加 `go test ./... -race -count=1 -timeout=5m`，12包禁缓存完整race一轮全部通过。`go build ./...`、8份受影响Go文件gofmt检查与最终 `git diff --check` 通过。本机Go1.27.1 darwin/arm64、Node26.7.0/npm11.19.0；npm ci报告0漏洞，不记为另行执行独立npm audit。未执行Linux/Docker、真实云/SMTP/Webhook/Kuma、产品浏览器或远端CI/GHCR，不外推长期稳定或外部通过；用户既有真机收口/人工豁免保持，SMTP仍由I8-R01跟踪。本轮源码、正式回归及文档尚未提交或推送。
 
 <a id="i8-r11"></a>
 
@@ -306,7 +311,7 @@
 | 2 写了却报0 | 已由043ac36及后续目标级链收口，归档。 |
 | 3 buildDesired静默丢弃 | 旧链已由I8-14删除；正式planner有unsupported/partial/清理冻结，归档。 |
 | 4 dangling引用 | I8-R09，历史候选先复核。 |
-| 5 日志回调积压 | I8-R10，独立容量候选。 |
+| 5 日志回调积压 | I8-R10，已按方案A本地修复日志准入、容量与退出等待；正式证据见该项。 |
 | 6 SSE续传/心跳 | I8-R11；日志续传P3-04已完成，同步流另定合同。 |
 | 7 Dashboard数字双口径 | 已由043ac36及后续Dashboard观察修复收口，归档。 |
 | 8 阿里云重试码 | I8-R12，待验证形态并裁决。 |

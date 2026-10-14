@@ -38,6 +38,15 @@ func toInt(v any) int {
 
 // OnEvent 实现 notifier.Subscriber 接口
 func (w *StoreLogWriter) OnEvent(event notifier.Event) error {
+	log, ok := syncLogForEvent(event)
+	if !ok {
+		return nil
+	}
+	return w.Store.AddSyncLog(log)
+}
+
+// syncLogForEvent materializes a log before admission; queued records hold no event map or observation pointers.
+func syncLogForEvent(event notifier.Event) (config.SyncLog, bool) {
 	log := config.SyncLog{Timestamp: event.Timestamp}
 	if v, ok := event.Data["provider"].(string); ok {
 		// 提取资源 ID：从 "tc_lighthouse(lhins-xxx)" 格式中取括号内部分
@@ -79,14 +88,9 @@ func (w *StoreLogWriter) OnEvent(event notifier.Event) error {
 		}
 		log.Error = joinDetails("", targetDetailLines(event))
 	default:
-		return nil
+		return config.SyncLog{}, false
 	}
-
-	if err := w.Store.AddSyncLog(log); err != nil {
-		// 由 EventBus 的统一「事件处理失败」WARN 处理，这里不吞错
-		return err
-	}
-	return nil
+	return log, true
 }
 
 // targetDetailLines 生成目标级可读详情：无法实施项与清理延后都只追加详情，

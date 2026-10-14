@@ -45,6 +45,7 @@ type EventBus struct {
 	// channel 订阅者（用于 SSE）：取消订阅只删除记录，不关闭 channel
 	chanSubs map[int]chan Event
 	nextID   int
+	ingress  map[EventType]map[int]func(Event)
 }
 
 // NewEventBus 创建事件总线
@@ -52,6 +53,7 @@ func NewEventBus() *EventBus {
 	return &EventBus{
 		subscribers: make(map[EventType][]Subscriber),
 		chanSubs:    make(map[int]chan Event),
+		ingress:     make(map[EventType]map[int]func(Event)),
 	}
 }
 
@@ -101,7 +103,28 @@ func (b *EventBus) SubscribeChan() (<-chan Event, func()) {
 	}
 }
 
-// Publish 异步投递，不阻塞调用方
+// SubscribeIngress registers an explicit fast in-memory ingress. Callbacks execute
+// outside the bus lock, without per-event goroutines; no I/O or waiting for consumers.
+// Cancellation removes registration, but already captured callbacks must reject late events.
+func (b *EventBus) SubscribeIngress(eventType EventType, enqueue func(Event)) func() {
+	b.mu.Lock()
+	id := b.nextID
+	b.nextID++
+	if b.ingress[eventType] == nil {
+		b.ingress[eventType] = make(map[int]func(Event))
+	}
+	b.ingress[eventType][id] = enqueue
+	b.mu.Unlock()
+	var once sync.Once
+	return func() { once.Do(func() { b.mu.Lock(); delete(b.ingress[eventType], id); b.mu.Unlock() }) }
+}
+
+// ReportEventError is the shared subscriber/worker diagnostic path.
+func ReportEventError(eventType EventType, err error) {
+	slog.Warn("事件处理失败", "type", eventType, "error", err)
+}
+
+// Publish preserves ordinary subscriber and SSE delivery and admits log work inline.
 func (b *EventBus) Publish(event Event) {
 	b.mu.RLock()
 	// 必须复制接口订阅者 slice：直接使用 map 中的 slice 会与 Subscribe/Unsubscribe 的原地修改竞态
@@ -111,13 +134,17 @@ func (b *EventBus) Publish(event Event) {
 	for _, ch := range b.chanSubs {
 		chanSubs = append(chanSubs, ch)
 	}
+	ingress := make([]func(Event), 0, len(b.ingress[event.Type]))
+	for _, f := range b.ingress[event.Type] {
+		ingress = append(ingress, f)
+	}
 	b.mu.RUnlock()
 
 	// 接口订阅者：锁外异步回调，慢订阅者不阻塞事件总线全局锁
 	for _, sub := range subs {
 		go func(s Subscriber) {
 			if err := s.OnEvent(event); err != nil {
-				slog.Warn("事件处理失败", "type", event.Type, "error", err)
+				ReportEventError(event.Type, err)
 			}
 		}(sub)
 	}
@@ -127,5 +154,8 @@ func (b *EventBus) Publish(event Event) {
 		case ch <- event:
 		default:
 		}
+	}
+	for _, enqueue := range ingress {
+		enqueue(event)
 	}
 }

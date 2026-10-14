@@ -1079,7 +1079,12 @@ func (s *Store) GetSettingsTx(ctx context.Context, q DBTX) (map[string]string, e
 
 // AddSyncLog 添加同步日志
 func (s *Store) AddSyncLog(log SyncLog) error {
-	_, err := s.db.Exec(
+	return s.AddSyncLogContext(context.Background(), log)
+}
+
+// AddSyncLogContext preserves separate INSERT/COUNT/DELETE commits and outcomes.
+func (s *Store) AddSyncLogContext(ctx context.Context, log SyncLog) error {
+	_, err := s.db.ExecContext(ctx,
 		"INSERT INTO sync_logs (timestamp, target, domain, result, added, deleted, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		log.Timestamp, log.Target, log.Domain, log.Result, log.Added, log.Deleted, log.Error,
 	)
@@ -1091,12 +1096,12 @@ func (s *Store) AddSyncLog(log SyncLog) error {
 	// Issue6 A14：COUNT 查询失败也必须处理。此处保留「查询失败就不裁剪」的保守
 	// 语义（不改变裁剪阈值与行为），但记录安全错误日志，不再静默吞掉。
 	var count int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM sync_logs").Scan(&count); err != nil {
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sync_logs").Scan(&count); err != nil {
 		slog.Warn("统计同步日志条数失败，跳过本次裁剪", "error", err)
 		return nil
 	}
 	if count > 1000 {
-		if _, err := s.db.Exec("DELETE FROM sync_logs WHERE id NOT IN (SELECT id FROM sync_logs ORDER BY id DESC LIMIT 1000)"); err != nil {
+		if _, err := s.db.ExecContext(ctx, "DELETE FROM sync_logs WHERE id NOT IN (SELECT id FROM sync_logs ORDER BY id DESC LIMIT 1000)"); err != nil {
 			return err
 		}
 	}

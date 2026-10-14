@@ -15,7 +15,6 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/app"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/health"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/webui"
 	webapi "github.com/alcaprophet/cloudhost-firewall-autoupdater/webui/api"
@@ -171,10 +170,10 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 	srv.SetHealth(supervisor)
 	srv.SetPush(pusher)
 
-	// 同步日志写入：订阅 sync:complete 和 sync:error 事件
-	logWriter := &webapi.StoreLogWriter{Store: store}
-	s.EventBus().Subscribe(notifier.EventTargetSyncComplete, logWriter)
-	s.EventBus().Subscribe(notifier.EventSyncError, logWriter)
+	// Target-result log queue is independent of alert/SSE dispatch.
+	logWriter := webapi.NewQueuedLogWriter(store, s.EventBus())
+	// Also covers HTTP bind failure; registered after Store.Close defer, so joins before closing SQLite.
+	defer logWriter.Stop()
 
 	// 信号监听必须在 HTTP 绑定前建立：绑定失败时的极早信号也不会丢失。
 	sigCh := make(chan os.Signal, 1)
@@ -255,6 +254,7 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 
 	// 无论 HTTP 是否超时，都无超时等待当前同步轮次完成（强要求）
 	s.Wait()
+	logWriter.Stop()
 
 	if serveErr != nil {
 		return 1
