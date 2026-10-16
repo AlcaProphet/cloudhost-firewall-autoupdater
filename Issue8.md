@@ -26,7 +26,7 @@
 | I8-R11 | 同步事件 SSE 续传与心跳 | 即时通知契约已裁决；心跳本地已修复 | Issue6 §6.5 第6项 |
 | I8-R12 | 阿里云错误码重试范围 | 本地已修复 | Issue6 §6.5 第8项 |
 | I8-R13 | 运行时间戳重启展示 | 本地已修复 | Issue6 §6.5 第11项 |
-| I8-R14 | SQLite 容量与辅助事务边界 | 研究候选待复核 | Issue6 §6.5 第12项 |
+| I8-R14 | SQLite 容量与辅助事务边界 | 扫描取消/裁剪本地完成；容量暂缓、外键不适用 | Issue6 §6.5 第12项 |
 | I8-R15 | Server.Addr 关闭后语义 | 低收益接口候选 | Issue6 §6.5 第14项剩余 |
 | I8-R16 | 其他清理符号清单 | 维护候选未裁决 | 旧 I8-42；Q-13剩余 |
 | I8-R17 | 日志渲染失败仓内长期回归 | 证据缺口 | 旧 I8-22；P3-10出口④ |
@@ -217,9 +217,17 @@
 
 ### I8-R14 SQLite 容量与辅助事务边界
 
-- **状态与来源：** 研究候选待复核；Issue6 §6.5 第12项。
-- **证据与边界：** 历史队列包括无连接池上限、AddSyncLog COUNT全表计数/与写入非同事务、WithTransaction使用无context Begin、未启用foreign_keys。已完成_txlock=immediate、COUNT错误处理和导出只读合同不关闭这些不同方向。
-- **后续与完成条件：** 分别评估连接容量、裁剪一致性、辅助入口取消和外键是否符合schema；先证明当前调用者/性能或损坏后果，再定每个子项，不擅自加PRAGMA、重试或事务锁策略。
+- **状态与来源：** 2026-10-17 用户授权按定型方案正式修复并同步文档，扫描持久化取消与日志裁剪已完成本地修复和正式门禁；来源为 Issue6 §6.5 第12项。四个方向分项处理：扫描持久化取消已实施、日志裁剪已优化、连接容量暂缓、外键当前 schema 不适用，不将整项写成全部修复完成。
+- **修复前根因：** 扫描 handler 在云扫描成功后调用无请求 context 的 ReplaceScannedResources，WithTransaction 以 Background 开启，DELETE/INSERT 也未接入请求生命周期。请求取消后仍可能覆盖缓存。普通配置协调器/导出已有带 context 的事务，不扩大为所有事务缺陷。用户已选择 SQLite 阶段响应取消并保留旧缓存，云扫描本身仍使用独立 120 秒预算。
+- **扫描定型合同：** 新增 WithTransactionContext 与 ReplaceScannedResourcesContext，旧签名保持并以 Background 委托；正式 handler 传入 r.Context()，事务和各条写语句共享该 context。取消在提交前被观察到时完整回滚；已经提交后取消不撤销提交，取消/提交并发不保证必然回滚。合法空结果仍可清空所选产品地域，其他地域/产品不变。保持原错误传播、panic 回滚、ErrTxDone 清理、连接恢复和安全 HTTP500；不增加硬时间预算、SQL 重试或生产测试钩子。当前驱动在真实写锁竞争中可能约5秒后返回 SQLITE_BUSY，即使 context 更早到期，也不承诺毫秒级结束或固定 context 错误身份。
+- **日志定型合同：** 保留 INSERT、COUNT、必要时 DELETE 独立提交和 I8-R10 的结果：COUNT失败时已插入记录保留、返回成功并跳过裁剪；DELETE失败返回错误但不回滚INSERT。只把 NOT IN 裁剪改为按第1000大id找边界、删除更旧主键；保留最新1000条的插入ID语义，不依赖ID连续、不按timestamp排序、不重置序列。修正“避免每次全表扫描”注释，COUNT仍每次执行且有成本；不承诺固定倍速或严格磁盘字节上限。清空/队列/健康语义保持。
+- **容量与外键保留结论：** 无连接池上限是事实，仓外持留24连接不是实际资源耗尽事故。固定小池会引入排队与健康探活等待，单连接会损失WAL读写并行；本轮不设置固定上限，继续保留独立容量候选，后续有真实并发资源压力/排队证据再研究。当前schema无外键声明，rules.targets为JSON文本；只开foreign_keys不能保护引用，沿I8-R09应用层完整性合同，不改PRAGMA或迁移关系表。已完成_txlock=immediate、COUNT错误处理和导出只读合同继续有效。
+- **正式范围与回归：** 生产仅config/store.go与webui/api/scan.go，新增config/store_context_test.go、config/synclog_retention_test.go、webui/api/scan_context_test.go，并同步AGENTS/本条，共7文件。覆盖取消前、DELETE后空/非空、首条INSERT后取消、第二条INSERT失败、提交前取消、panic/回调失败/已结束事务/旧签名/锁竞争恢复；日志999/1000边界、ID缺口、积压、清空后序列与清空发生在COUNT/DELETE之间、DELETE故障保留INSERT；保留既有COUNT/取消结果回归。保留既有人工收口/通知豁免及SMTP独立清单。
+
+- **实施基线与正式判别力：** 实施前 `main / c08154496bc916ed0ba21929165395e35c409d38`，相对本地 `origin/main` ahead 2，工作树/暂存区干净；未 fetch/push。原文件与准备包SHA-256逐份核对一致后，三份测试先落入正式仓库。旧生产逻辑仅在仓外补齐新方法签名以便编译，仍按旧路径执行；正式测试在取消后错误提交/缓存改变等行为断言判红，不以缺失方法导致的编译失败充数。应用两个生产改动后，正式 `go test ./config ./webui/api -run '^TestI8R14' -race -count=20 -v -timeout=3m` 退出0，8组专项覆盖空/非空取消、部分写入回滚、提交前取消和正常/旧入口对照。锁竞争用例只要求零提交与恢复，不宣称通用回调必不进入或毫秒级结束。
+- **正式负向对照：** 从本轮正式生产源码重新生成8类仓外overlay，使用仓内正式测试：旧行为、handler漏接、Begin使用Background、语句丢context、最大id减1000、OFFSET偏一、timestamp排序、合并日志事务。全部退出1并命中预期行为或驱动context传播断言，无编译失败、panic或超时冒充判别力。日志SQL属于语义保持的优化，旧正确SQL不要求在保留正确性测试中失败；范围访问方式的查询计划为准备阶段固定驱动研究证据，本轮不重复计为正式性能基准。命令、退出码、源码与日志保存在 `/Users/kylechen/.codex/outputs/i8-r14-implementation-20261017-_s6sw10m/`。
+- **完整本地门禁：** `make all` 退出0，包含真实npm ci、vue-tsc/Vite前置、全仓vet、Go race与产品构建；其中5包实跑、7包复用测试缓存。随后独立 `go test ./... -race -count=1 -timeout=5m` 全仓12包禁缓存一轮全部通过。5份受影响Go文件gofmt与最终diff-check通过。正式门禁显式将已安装Go1.27.1工具链置于任务子进程PATH并设置GOTOOLCHAIN=local；Node26.7.0/npm11.19.0，npm使用任务独立缓存，ci报告0漏洞，不计作独立npm audit。前端源码/依赖未改，没有增加前端行为测试或将候选overlay结果替代正式门禁。重复专项与单轮全仓绿色不外推长期稳定。
+- **外部与保留边界：** 本机Go1.27.1 darwin/arm64；本轮未执行真实浏览器断连、Linux/Docker、真实云/SMTP/Webhook/Kuma或当前revision远端CI/GHCR，不外推外部验收或发布通过。保持既有用户真机收口与通知豁免，不恢复普通人工待执行项；SMTP继续由I8-R01/ProdTestList跟踪。源码、正式回归和本轮文档尚未提交或推送。连接容量仍为暂缓候选，外键当前schema不适用，不能把这两个方向写成代码已修复或把I8-R14整体无保留关闭。
 
 <a id="i8-r15"></a>
 
@@ -326,7 +334,7 @@
 | 9 Webhook Close/drain | 已按P3-21接受及时关闭/有界清理边界，Push正文上限也已实施；不作为待修项。真实Webhook/Kuma豁免不阻断。 |
 | 10 SMTP收件人空格 | 后续共用邮件出口已逐项Trim；旧缺陷归档。真实投递仍由I8-R01跟踪，不能因归档宣称SMTP通过。 |
 | 11 内存时间戳 | I8-R13，已按方案B本地修复：保留本进程语义，明确启动范围并区分无记录与真实零；正式证据见该项。 |
-| 12 SQLite其余方向 | I8-R14；已修事务锁/错误处理不等于这些容量方向完成。 |
+| 12 SQLite其余方向 | I8-R14；扫描取消/日志裁剪已本地修复并通过正式门禁，容量暂缓，外键当前schema不适用；已修事务锁/错误处理不代替这些分项结论。 |
 | 13 skipped日志语义 | 当前目标级success/partial/failed与unsupported详情已固定，旧逐域skipped观察归档。 |
 | 14 生命周期边角 | Syncer未启动Wait已修；Server.Addr剩余转I8-R15。 |
 
