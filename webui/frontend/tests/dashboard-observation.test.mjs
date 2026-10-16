@@ -13,32 +13,38 @@ const { descriptor } = parse(readFileSync(`${root}/src/views/Dashboard.vue`, 'ut
 const compiled = compileScript(descriptor, { id: 'i802' })
 const template = compileTemplate({ source: descriptor.template.content, filename: 'Dashboard.vue', id: 'i802', compilerOptions: { bindingMetadata: compiled.bindings } })
 assert.deepEqual(template.errors, [])
-function evaluate(source) {
+function evaluate(source, request = async () => ({})) {
   const module = { exports: {} }
   const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
   new Script(js).runInNewContext({ module, exports: module.exports, setTimeout, clearTimeout, setInterval, clearInterval, require(name) {
     if (name === 'vue') return { ...vue, onMounted() {}, onUnmounted() {} }
     if (name === 'vue-router') return { useRouter: () => ({ push() {} }) }
     if (name === 'naive-ui') return { ...Object.fromEntries(['NCard','NGrid','NGi','NButton','NAlert','NTooltip','NSpace'].map(name => [name, { name }])), useMessage: () => ({}) }
-    if (name.endsWith('/api')) return { request: async () => ({}) }
+    if (name.endsWith('/api')) return { request }
     if (name.endsWith('useSettings')) return { useSettings: () => ({ refresh: async () => {}, tcReady: vue.ref(true), aliReady: vue.ref(true) }) }
     throw new Error(name)
   } })
   return module.exports
 }
 const render = evaluate(template.code).render
-function mount(round) {
-  const s = evaluate(compiled.content).default.setup({}, { expose() {} })
-  s.status.value.last_round = round
+function view(s) {
   const nodes = render({}, [], {}, vue.proxyRefs(s), {}, {})
-  const text = []
-  function visit(node) {
-    if (typeof node === 'string') text.push(node)
-    else if (Array.isArray(node)) node.forEach(visit)
-    else if (node) { if (typeof node.children === 'object' && !Array.isArray(node.children)) { for (const [name, slot] of Object.entries(node.children)) if (name !== '_' && typeof slot === 'function') visit(slot()) } else visit(node.children) }
+  function textOf(node) {
+    if (typeof node === 'string' || typeof node === 'number') return String(node)
+    if (Array.isArray(node)) return node.map(textOf).join(' ')
+    if (!node || node.type === vue.Comment) return ''
+    if (node.children && typeof node.children === 'object' && !Array.isArray(node.children)) {
+      return Object.entries(node.children).filter(([name, slot]) => name !== '_' && typeof slot === 'function').map(([, slot]) => textOf(slot())).join(' ')
+    }
+    return textOf(node.children)
   }
-  visit(nodes)
-  return { s, text: text.join(' ') }
+  const text = textOf(nodes).replace(/\s+/g, ' ').trim()
+  return { s, text }
+}
+function mount(round, overrides = {}, request) {
+  const s = evaluate(compiled.content, request).default.setup({}, { expose() {} })
+  s.status.value = { ...s.status.value, last_round: round, ...overrides }
+  return view(s)
 }
 const summary = { observed_targets: 1, estimated_targets: 0, historical_targets: 0, unknown_targets: 0, observed_candidates: 1, observed_deferred: 0, complete: true }
 const round = extra => ({ total: 1, failed: 0, skipped: 0, added: 0, deleted: 2, cleanup_candidates: 99, cleanup_deleted: 2, cleanup_deferred: 99, outcome: 'success', cleanup_observation_summary: { ...summary }, ...extra })
@@ -82,4 +88,113 @@ test('旧响应缺失观察字段时显示未确认', () => {
   const { s, text } = mount(round({ cleanup_observation_summary: undefined, cleanup_deferred: 0 }))
   assert.match(text, /缺少观察信息/)
   assert.equal(s.healthHint.value.type, 'warning')
+})
+
+// I8-R13：只检查页面可观察行为；null 与已确认的零有不同含义。
+const completedAt = '2026-10-17T01:02:03Z'
+const oldSuccessAt = '2026-10-16T01:02:03Z'
+const fullStatus = (overrides = {}) => ({ running: true, enabled: true, last_sync: completedAt, last_success: oldSuccessAt, last_round: round({ added: 3, deleted: 2 }), round_started_at: null, process_started_at: '2026-10-17T00:00:00Z', ...overrides })
+function deferred() {
+  let resolve, reject
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
+}
+
+test('I8R13 时间和轮次统计说明限定本次服务启动范围', () => {
+  const { text } = mount(null)
+  assert.match(text, /本次启动后的最近一轮完成时间，重启后重新记录/)
+  assert.match(text, /以下为本次启动后的最近一轮同步统计/)
+  assert.doesNotMatch(text, /从未成功|从未同步|尚未执行|无变更/)
+})
+
+test('I8R13 无轮次用暂无记录，目标与规则数量仍显示当前配置', () => {
+  const { s } = mount(null)
+  s.stats.value = { targets: 3, rules: 7 }
+  const { text } = view(s)
+  assert.match(text, /最近同步增删 暂无记录/)
+  assert.doesNotMatch(text, /最近同步 新增 0 \/ 删除 0/)
+  assert.match(text, /云资源目标 3 个/)
+  assert.match(text, /域名规则 7 条/)
+  assert.equal(s.healthHint.value, null)
+})
+
+for (const outcome of ['success', 'failed', 'partial', 'idle']) {
+  test(`I8R13 ${outcome} 的真实零增删仍显示0`, () => {
+    const r = round({ added: 0, deleted: 0, cleanup_deleted: 0, outcome, total: outcome === 'idle' ? 0 : 1, failed: outcome === 'failed' ? 1 : 0, skipped: outcome === 'partial' ? 1 : 0 })
+    const { text } = mount(r, { last_sync: completedAt })
+    assert.match(text, /最近同步 新增 0 \/ 删除 0/)
+    assert.doesNotMatch(text, /最近同步增删 暂无记录/)
+  })
+}
+
+test('I8R13 最近完成时间不替换成旧成功时间，失败确认计数继续展示', () => {
+  const { s, text } = mount(round({ outcome: 'failed', failed: 1, added: 3, deleted: 2 }), { last_sync: completedAt, last_success: oldSuccessAt })
+  assert.ok(text.includes(new Date(completedAt).toLocaleString()))
+  assert.ok(!text.includes(new Date(oldSuccessAt).toLocaleString()))
+  assert.match(text, /最近同步 新增 3 \/ 删除 2/)
+  assert.equal(s.healthHint.value.type, 'error')
+})
+
+test('I8R13 暂停保留时间和已知轮次，只抑制原有健康提示', () => {
+  const { s, text } = mount(round({ outcome: 'failed', failed: 1, added: 3, deleted: 2 }), { running: true, enabled: false, last_sync: completedAt })
+  assert.match(text, /已暂停/)
+  assert.match(text, /最近同步 新增 3 \/ 删除 2/)
+  assert.ok(text.includes(new Date(completedAt).toLocaleString()))
+  assert.equal(s.healthHint.value, null)
+})
+
+test('I8R13 在途轮次保留最近完成轮次，首轮在途仍为暂无记录', () => {
+  const during = { round_started_at: completedAt }
+  assert.match(mount(round({ added: 3, deleted: 2 }), during).text, /最近同步 新增 3 \/ 删除 2/)
+  const first = mount(null, during)
+  assert.match(first.text, /最近同步增删 暂无记录/)
+  assert.equal(first.s.healthHint.value, null)
+})
+
+test('I8R13 初次读取挂起或失败维持中性空记录，收到真实零后展示0', async t => {
+  const pending = deferred()
+  const { s } = mount(null, {}, () => pending.promise)
+  const task = s.fetchStatus()
+  t.after(async () => { pending.resolve(fullStatus({ last_round: round({ added: 0, deleted: 0 }) })); await task })
+  assert.match(view(s).text, /最近同步增删 暂无记录/)
+  pending.resolve(fullStatus({ last_round: round({ added: 0, deleted: 0 }) }))
+  await task
+  assert.match(view(s).text, /最近同步 新增 0 \/ 删除 0/)
+  const failed = mount(null, {}, async () => { throw new Error('local read failure') })
+  await failed.s.fetchStatus()
+  assert.match(view(failed.s).text, /最近同步增删 暂无记录/)
+  assert.doesNotMatch(view(failed.s).text, /从未成功|尚未执行/)
+})
+
+test('I8R13 轮询等待或失败保留已有轮次，后续新进程空响应清除旧统计', async t => {
+  const pending = deferred()
+  let calls = 0
+  const { s } = mount(round({ added: 3, deleted: 2 }), fullStatus(), async () => {
+    calls++
+    if (calls === 1) return pending.promise
+    if (calls === 2) throw new Error('local poll failure')
+    return fullStatus({ last_sync: null, last_success: null, last_round: null, process_started_at: '2026-10-17T02:00:00Z' })
+  })
+  const task = s.fetchStatus()
+  t.after(async () => { pending.resolve(fullStatus()); await task })
+  assert.match(view(s).text, /最近同步 新增 3 \/ 删除 2/)
+  pending.resolve(fullStatus())
+  await task
+  await s.fetchStatus()
+  assert.match(view(s).text, /最近同步 新增 3 \/ 删除 2/)
+  assert.ok(view(s).text.includes(new Date(completedAt).toLocaleString()))
+  await s.fetchStatus()
+  assert.match(view(s).text, /最近同步增删 暂无记录/)
+  assert.doesNotMatch(view(s).text, /最近同步 新增 3 \/ 删除 2/)
+  assert.ok(!view(s).text.includes(new Date(completedAt).toLocaleString()))
+  assert.equal(s.healthHint.value, null)
+})
+
+test('I8R13 页面重新挂载后读取同一引擎状态，已完成时间和计数一致', async () => {
+  for (let i = 0; i < 2; i++) {
+    const { s } = mount(null, {}, async () => fullStatus())
+    await s.fetchStatus()
+    assert.match(view(s).text, /最近同步 新增 3 \/ 删除 2/)
+    assert.ok(view(s).text.includes(new Date(completedAt).toLocaleString()))
+  }
 })

@@ -163,9 +163,9 @@ onUnmounted(() => {
       <NGi>
         <NCard title="上次同步" style="min-height: 200px">
           <div style="font-size: 24px; font-weight: 600; margin-top: 20px">
-            {{ status.last_sync ? new Date(status.last_sync).toLocaleString() : '暂无' }}
+            {{ status.last_sync ? new Date(status.last_sync).toLocaleString() : '暂无记录' }}
           </div>
-          <div style="font-size: 14px; color: #888; margin-top: 8px">最近一轮同步完成时间</div>
+          <div style="font-size: 14px; color: #888; margin-top: 8px">本次启动后的最近一轮完成时间，重启后重新记录</div>
         </NCard>
       </NGi>
       <NGi>
@@ -173,7 +173,11 @@ onUnmounted(() => {
           <NSpace vertical size="large" style="margin-top: 20px">
             <div style="font-size: 20px">云资源目标 <b style="font-size: 28px">{{ stats.targets }}</b> 个</div>
             <div style="font-size: 20px">域名规则 <b style="font-size: 28px">{{ stats.rules }}</b> 条</div>
-            <div style="font-size: 20px">最近同步 新增 <b style="font-size: 28px">{{ status.last_round?.added ?? 0 }}</b> / 删除 <b style="font-size: 28px">{{ status.last_round?.deleted ?? 0 }}</b></div>
+            <div style="font-size: 14px; color: #888">以下为本次启动后的最近一轮同步统计</div>
+            <div style="font-size: 20px">
+              <template v-if="status.last_round">最近同步 新增 <b style="font-size: 28px">{{ status.last_round.added }}</b> / 删除 <b style="font-size: 28px">{{ status.last_round.deleted }}</b></template>
+              <template v-else>最近同步增删 暂无记录</template>
+            </div>
             <div style="font-size: 20px" data-testid="cleanup-operations">本轮累计确认清理 {{ status.last_round ? `${status.last_round.cleanup_deleted} 条` : '暂无记录' }}</div>
             <div style="font-size: 16px" data-testid="cleanup-observation">{{ cleanupHint }}</div>
           </NSpace>
