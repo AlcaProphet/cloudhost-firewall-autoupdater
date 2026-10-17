@@ -27,7 +27,7 @@
 | I8-R12 | 阿里云错误码重试范围 | 本地已修复 | Issue6 §6.5 第8项 |
 | I8-R13 | 运行时间戳重启展示 | 本地已修复 | Issue6 §6.5 第11项 |
 | I8-R14 | SQLite 容量与辅助事务边界 | 扫描取消/裁剪本地完成；容量暂缓、外键不适用 | Issue6 §6.5 第12项 |
-| I8-R15 | Server.Addr 关闭后语义 | 低收益接口候选 | Issue6 §6.5 第14项剩余 |
+| I8-R15 | Server.Addr 关闭后语义 | 方案A语义与回归本地完成 | Issue6 §6.5 第14项剩余 |
 | I8-R16 | 其他清理符号清单 | 维护候选未裁决 | 旧 I8-42；Q-13剩余 |
 | I8-R17 | 日志渲染失败仓内长期回归 | 证据缺口 | 旧 I8-22；P3-10出口④ |
 | I8-R18 | A20 修复前负向控制 | 历史证据未重演 | 旧 I8-23 |
@@ -233,9 +233,13 @@
 
 ### I8-R15 Server.Addr 关闭后语义
 
-- **状态与来源：** 低收益接口候选；Issue6 §6.5 第14项剩余。
-- **证据与边界：** Addr文案只规定Start成功前为空；Shutdown后保留listener地址的历史观察未裁决。Syncer.Wait未启动永久阻塞已经修复，不重开。
-- **后续与完成条件：** 复核当前调用者是否依赖关闭后地址，选择明确语义或清理；若改动，用启动/关闭生命周期判别，不扩为HTTP重构。
+- **状态与来源：** 方案 A 语义与回归本地完成（2026-10-17）；来源为 Issue6 §6.5 第14项剩余。用户在本聊天选择 A、完成研究定型后授权正式实施与同步文档。实施前 `main == 本地 origin/main == f1f5a621fd83dd2a7ddb9bb4bb26939318ae2951`，工作树与暂存区干净，未 fetch。
+- **裁决与合同：** `Server.Addr()` 表达本实例成功发布的实际绑定地址，以现有 `mu` 保护下的 `s.listener = ln` 为发布点，而非 Start 返回时刻。尚未发布时为空，包括监听失败、启动前关闭及绑定成功但因并发 Shutdown 未能发布；发布后即使在 Shutdown 中、正常/超时强制关闭后或 Serve 异常退出后也保留地址，拒绝重复 Start 不改变地址。端口降级使用实际分配端口；非空地址不证明仍在监听、仍占用端口或 HTTP 健康。当前生产实现已符合选定语义，本项为合同说明与回归补强，不宣称修复端口泄漏或关闭失败，也不虚构基线生产行为的红到绿。
+- **调用者与正式范围：** 仓内唯一直接生产调用为 `run.go` 绑定成功后的启动提示，关闭与健康判断不读取 Addr；未承诺仓外调用习惯。范围为 `webui/server.go`、`webui/server_test.go`、AGENTS 与本文，共四文件。server.go 只改 Addr、ServeStarted 及信号字段的注释；ServeStarted 实际在发布后、创建 Serve goroutine 前关闭，仅供测试同步，不承诺收到信号时仍在监听。与实施前 HEAD 的 Go 扫描标记序列比较，排除注释后完全一致；未改方法签名、状态字段、锁、监听/关闭/Wait 时序、错误归一化、超时或生产测试钩子。
+- **正式回归：** 十个既有生命周期测试补充地址断言，覆盖未启动、端口降级、正常/重复/超时强制关闭、异常 Serve 退出、关闭后拒绝启动、监听失败与监听成功尚未发布的并发关闭窗口；正常关闭后同时证明地址保留且同地址可重新绑定。新增 `TestAddrRetainedWhileRequestDrains` 用真实阻塞请求、Shutdown 信号与 Serve 完成信号证明 Serve 已退出而 Shutdown 尚未完成时地址仍保留，释放请求后再次确认；失败路径也释放 handler、关闭服务并有界等待所启动任务。新增 `TestAddrConcurrentWithShutdown` 用8个读取任务各最多100次查询，与 Shutdown 同期调度，检查发布后地址一致并有界回收；不据 race 通过声称穷举所有调度。新用例不增加固定 sleep。
+- **正式负向控制：** 在仓外仅替换生产文件、直接使用正式仓内测试，五类错误变体（Shutdown 后隐藏地址、Serve 完成后隐藏地址、关闭时清空 listener、返回配置端口而非实际端口、仅凭 started 提前暴露地址）均退出码1并命中 Addr 行为断言，无编译失败、超时或 DATA RACE；证明正式回归对选定合同有判别力，不把错误变体当作历史产品缺陷。另在新请求收尾用例释放请求前注入 t.Fatal，按指定断言失败并有界退出，无任务清理超时或 DATA RACE；此项只证明夹具失败清理，不计作生产负向行为。
+- **正式门禁：** 12项定向测试 `go test ./webui -race -run '^(TestStartUsesPreferredPort|TestStartFallsBackOnlyAfterEADDRINUSE|TestShutdownNormalizesServeResult|TestShutdownIdempotent|TestServeRuntimeErrorSurfacedToCaller|TestShutdownTimeoutForcesCloseOfInflightRequest|TestStartAfterShutdownRejected|TestStartAfterShutdownBeforeFirstStartRejected|TestShutdownDuringFirstStartClosesUnpublishedListener|TestStartListenFailureStillCannotRetry|TestAddr)' -count=20 -timeout=3m` 通过（8.129s）；`go test ./webui -race -count=1 -timeout=2m` 通过（2.774s）。真实 `make all` 的 npm ci、前端 build、全仓 vet、race 与产品构建全部通过；npm ci 安装时审计为0漏洞，未独立运行两条 npm audit。Make 的12包测试中10包命中缓存，因此追加 `go test ./... -race -count=1 -timeout=20m`，12包全部重新执行并通过（health 45.469s、webui/api 40.457s），不把缓存结果写成重新执行。受影响 Go 文件 gofmt、生产无注释标记一致性及 `git diff --check` 均通过。
+- **保留与外部边界：** 本机 Go1.27.1 darwin/arm64、Node v26.7.0、npm11.19.0；本轮未执行固定Node24环境、Linux/Docker、真实浏览器/云/SMTP/Webhook/Kuma或当前revision远端CI/GHCR，不外推长期稳定或外部发布通过。未改前端源码/依赖、API/schema、数据库、同步引擎或通知；Syncer.Wait未启动问题不重开，已归档历史事实不重写。保留用户既有真机收口、SMTP待验收与Webhook/Kuma豁免，不新增本开发接口的浏览器/云人工待办。源码、正式回归与本轮文档尚未提交或推送。
 
 <a id="i8-r16"></a>
 
@@ -336,7 +340,7 @@
 | 11 内存时间戳 | I8-R13，已按方案B本地修复：保留本进程语义，明确启动范围并区分无记录与真实零；正式证据见该项。 |
 | 12 SQLite其余方向 | I8-R14；扫描取消/日志裁剪已本地修复并通过正式门禁，容量暂缓，外键当前schema不适用；已修事务锁/错误处理不代替这些分项结论。 |
 | 13 skipped日志语义 | 当前目标级success/partial/failed与unsupported详情已固定，旧逐域skipped观察归档。 |
-| 14 生命周期边角 | Syncer未启动Wait已修；Server.Addr剩余转I8-R15。 |
+| 14 生命周期边角 | Syncer未启动Wait已修；I8-R15已按A明确Server.Addr绑定地址语义并补正式回归，本地完成。 |
 
 ## 4. 已完成与旧编号对照
 

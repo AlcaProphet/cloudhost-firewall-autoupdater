@@ -61,7 +61,7 @@ type Server struct {
 	shutdownCh   chan struct{} // 服务器级 SSE shutdown 信号（只关闭一次，永不写入）
 	shutdownOnce sync.Once
 
-	serveStarted chan struct{} // Serve goroutine 已启动（测试用确定性同步）
+	serveStarted chan struct{} // listener 已发布、即将启动 Serve（测试用确定性同步）
 
 	// 生命周期状态（由 mu 保护）
 	mu         sync.Mutex
@@ -130,13 +130,16 @@ func (s *Server) ShutdownCh() <-chan struct{} {
 	return s.shutdownCh
 }
 
-// ServeStarted 返回 Serve goroutine 启动信号（关闭表示已启动）。
-// 仅用于测试确定性同步：得到该信号后端口必然仍被同一个 listener 占用。
+// ServeStarted 返回监听对象已发布、即将启动 Serve goroutine 的信号。
+// 仅用于测试确定性同步；收到信号不保证监听仍然开放，也不表示 HTTP 健康。
 func (s *Server) ServeStarted() <-chan struct{} {
 	return s.serveStarted
 }
 
-// Addr 返回实际监听地址；Start 成功前返回空字符串。
+// Addr 返回本实例成功发布的实际绑定地址；尚未发布 listener 时返回空字符串。
+// 发布发生在 Start 返回之前；并发调用可能在 Start 返回前读到地址。
+// 发布后即使进入 Shutdown、完成关闭或 Serve 异常退出，也保留该地址。
+// 地址仅用于标识绑定位置，不表示仍在监听、占用端口或 HTTP 健康。
 func (s *Server) Addr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

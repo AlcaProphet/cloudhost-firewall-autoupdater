@@ -64,13 +64,13 @@ func startTestServer(t *testing.T, s *Server) (*Server, int) {
 	return s, port
 }
 
-// mustServeStarted 等待 Serve goroutine 启动（确定性同步，不依赖固定 sleep）
+// mustServeStarted 等待监听发布信号（确定性同步，不依赖固定 sleep）
 func mustServeStarted(t *testing.T, s *Server) {
 	t.Helper()
 	select {
 	case <-s.ServeStarted():
 	case <-time.After(3 * time.Second):
-		t.Fatal("Serve goroutine 未在限期内启动")
+		t.Fatal("监听发布信号未在限期内到达")
 	}
 }
 
@@ -110,6 +110,7 @@ func httpGet(t *testing.T, url string) (string, int) {
 func TestStartUsesPreferredPort(t *testing.T) {
 	preferred := freeTCPPort(t)
 	s := newTestServer(t, preferred)
+	assertServerAddr(t, s, "")
 
 	port, err := s.Start()
 	if err != nil {
@@ -169,6 +170,7 @@ func TestStartFallsBackOnlyAfterEADDRINUSE(t *testing.T) {
 	if port == 0 {
 		t.Fatal("降级后的随机端口不应为 0")
 	}
+	assertServerAddr(t, s, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 	mustServeStarted(t, s)
 
 	body, status := httpGet(t, fmt.Sprintf("http://127.0.0.1:%d/api/health", port))
@@ -388,6 +390,7 @@ func TestShutdownNormalizesServeResult(t *testing.T) {
 		t.Fatalf("健康端点状态码 = %d, want 200", status)
 	}
 
+	wantAddr := s.Addr()
 	shutdownDone := make(chan error, 1)
 	go func() { shutdownDone <- s.Shutdown(context.Background()) }()
 
@@ -410,6 +413,15 @@ func TestShutdownNormalizesServeResult(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("Shutdown 后 Wait 未返回（Serve goroutine 可能泄漏）")
 	}
+	assertServerAddr(t, s, wantAddr)
+	// 地址仍可读取，而原监听已经释放；不把非空地址当作端口仍被占用。
+	probe, err := net.Listen("tcp", wantAddr)
+	if err != nil {
+		t.Fatalf("Shutdown 后原地址未释放: %v", err)
+	}
+	if err := probe.Close(); err != nil {
+		t.Fatalf("关闭重绑定探针失败: %v", err)
+	}
 }
 
 // TestShutdownIdempotent 重复 Shutdown 安全且不 double close，shutdown channel 只关闭一次
@@ -419,6 +431,7 @@ func TestShutdownIdempotent(t *testing.T) {
 		t.Fatalf("Start 失败: %v", err)
 	}
 
+	wantAddr := s.Addr()
 	shutdownCh := s.ShutdownCh()
 	if shutdownCh == nil {
 		t.Fatal("服务器必须拥有服务器级 shutdown channel")
@@ -428,6 +441,7 @@ func TestShutdownIdempotent(t *testing.T) {
 		if err := s.Shutdown(context.Background()); err != nil {
 			t.Fatalf("第 %d 次 Shutdown 失败: %v", i, err)
 		}
+		assertServerAddr(t, s, wantAddr)
 		select {
 		case <-shutdownCh:
 		default:
@@ -526,7 +540,7 @@ func TestWaitBeforeStartBlocksUntilServeExits(t *testing.T) {
 // TestServeRuntimeErrorSurfacedToCaller 非关闭流程下的 Serve 错误必须原样交给调用方
 func TestServeRuntimeErrorSurfacedToCaller(t *testing.T) {
 	s, port := startTestServer(t, newTestServer(t, freeTCPPort(t)))
-	_ = port
+	wantAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 
 	// 在 Server 背后强制关闭同一个 listener，制造非正常 Serve 退出
 	s.mu.Lock()
@@ -551,10 +565,12 @@ func TestServeRuntimeErrorSurfacedToCaller(t *testing.T) {
 		t.Fatal("listener 被关闭后 Wait 未返回")
 	}
 
+	assertServerAddr(t, s, wantAddr)
 	// 清理：Serve 已退出，Shutdown 仍必须安全
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Errorf("Serve 已退出后 Shutdown 失败: %v", err)
 	}
+	assertServerAddr(t, s, wantAddr)
 }
 
 // ─── shutdown 后的普通请求收尾 ───
@@ -637,7 +653,7 @@ func TestShutdownDrainsInflightRequest(t *testing.T) {
 // Shutdown 有界返回（DeadlineExceeded），并强制关闭残余连接
 func TestShutdownTimeoutForcesCloseOfInflightRequest(t *testing.T) {
 	s, port := startTestServer(t, newTestServer(t, freeTCPPort(t)))
-	_ = port
+	wantAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -678,6 +694,7 @@ func TestShutdownTimeoutForcesCloseOfInflightRequest(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("超时 Shutdown 错误 = %v, want context.DeadlineExceeded", err)
 	}
+	assertServerAddr(t, s, wantAddr)
 	if elapsed > 3*time.Second {
 		t.Errorf("Shutdown 耗时 %v，未按 context 有界返回", elapsed)
 	}
@@ -845,6 +862,7 @@ func TestStartAfterShutdownRejected(t *testing.T) {
 		t.Fatalf("首次 Start 失败: %v", err)
 	}
 	mustServeStarted(t, s)
+	wantAddr := s.Addr()
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown 失败: %v", err)
 	}
@@ -857,6 +875,7 @@ func TestStartAfterShutdownRejected(t *testing.T) {
 	if port != 0 {
 		t.Errorf("Shutdown 后 Start 返回端口 = %d, want 0", port)
 	}
+	assertServerAddr(t, s, wantAddr)
 }
 
 // TestStartAfterShutdownBeforeFirstStartRejected 在首次 Start 之前已经进入
@@ -875,6 +894,7 @@ func TestStartAfterShutdownBeforeFirstStartRejected(t *testing.T) {
 		t.Errorf("首次 Start 前已 Shutdown 后的 Start 返回端口 = %d, want 0", port)
 	}
 
+	assertServerAddr(t, s, "")
 	s.mu.Lock()
 	hs, ln := s.httpServer, s.listener
 	s.mu.Unlock()
@@ -919,9 +939,11 @@ func TestShutdownDuringFirstStartClosesUnpublishedListener(t *testing.T) {
 		t.Fatal("Start 未进入监听成功、发布前窗口")
 	}
 
+	assertServerAddr(t, s, "")
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Fatalf("监听成功、发布前 Shutdown 失败: %v", err)
 	}
+	assertServerAddr(t, s, "")
 	releaseOnce.Do(func() { close(releaseListen) })
 
 	select {
@@ -939,6 +961,7 @@ func TestShutdownDuringFirstStartClosesUnpublishedListener(t *testing.T) {
 	s.mu.Lock()
 	hs, published := s.httpServer, s.listener
 	s.mu.Unlock()
+	assertServerAddr(t, s, "")
 	if hs != nil || published != nil {
 		t.Error("并发 Shutdown 后不得发布 http.Server 或 listener")
 	}
@@ -977,6 +1000,7 @@ func TestStartListenFailureStillCannotRetry(t *testing.T) {
 		t.Errorf("监听失败时端口 = %d, want 0", port)
 	}
 
+	assertServerAddr(t, s, "")
 	port, err = s.Start()
 	if !errors.Is(err, ErrAlreadyStarted) {
 		t.Fatalf("Listen 失败后的第二次 Start 错误 = %v, want ErrAlreadyStarted", err)
@@ -984,6 +1008,7 @@ func TestStartListenFailureStillCannotRetry(t *testing.T) {
 	if port != 0 {
 		t.Errorf("Listen 失败后的第二次 Start 返回端口 = %d, want 0", port)
 	}
+	assertServerAddr(t, s, "")
 	if listenCalls != 1 {
 		t.Errorf("listen 调用次数 = %d, want 1", listenCalls)
 	}
@@ -1206,4 +1231,175 @@ func TestOperationalEndpoint503WhileStaticHealthStaysOK(t *testing.T) {
 	if code != http.StatusOK || body != `{"status":"ok"}` {
 		t.Errorf("静态 /api/health = (%d, %q), want (200, {\"status\":\"ok\"})", code, body)
 	}
+}
+
+// assertServerAddr 以调用方保存的地址验证生命周期合同，不读取私有 listener 推导期望值。
+func assertServerAddr(t *testing.T, s *Server, want string) {
+	t.Helper()
+	if got := s.Addr(); got != want {
+		t.Errorf("Addr() = %q, want %q", got, want)
+	}
+}
+
+// TestAddrRetainedWhileRequestDrains 监听已关闭、Serve 已退出，但请求仍收尾时保留地址。
+func TestAddrRetainedWhileRequestDrains(t *testing.T) {
+	s := newTestServer(t, freeTCPPort(t))
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	s.mux.HandleFunc("GET /addr-drain", func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+		w.WriteHeader(http.StatusNoContent)
+	})
+	requestFinished, shutdownFinished := make(chan struct{}), make(chan struct{})
+	requestStarted, shutdownStarted := false, false
+	// 失败路径同样先释放请求，再关闭服务并有界等待本测试启动的任务。
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := s.Shutdown(ctx); err != nil {
+			t.Errorf("清理 Shutdown 失败: %v", err)
+		}
+		for _, task := range []struct {
+			started bool
+			done    <-chan struct{}
+		}{
+			{requestStarted, requestFinished}, {shutdownStarted, shutdownFinished},
+		} {
+			if task.started {
+				select {
+				case <-task.done:
+				case <-time.After(3 * time.Second):
+					t.Error("清理时任务未完成")
+				}
+			}
+		}
+	})
+	port, err := s.Start()
+	if err != nil {
+		t.Fatalf("Start 失败: %v", err)
+	}
+	wantAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	assertServerAddr(t, s, wantAddr)
+	requestDone := make(chan error, 1)
+	requestStarted = true
+	go func() {
+		defer close(requestFinished)
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Get("http://" + wantAddr + "/addr-drain")
+		if resp != nil {
+			closeErr := resp.Body.Close()
+			if err == nil {
+				err = closeErr
+			}
+		}
+		requestDone <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("请求未进入 handler")
+	}
+	shutdownDone := make(chan error, 1)
+	shutdownStarted = true
+	go func() {
+		defer close(shutdownFinished)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		shutdownDone <- s.Shutdown(ctx)
+	}()
+	select {
+	case <-s.ShutdownCh():
+	case <-time.After(3 * time.Second):
+		t.Fatal("未进入 Shutdown")
+	}
+	select {
+	case <-s.waitDone:
+		if err := s.Wait(); err != nil {
+			t.Fatalf("正常收尾 Wait 错误: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("关闭监听后 Serve 未退出")
+	}
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("释放请求前 Shutdown 已返回: %v", err)
+	default:
+	}
+	assertServerAddr(t, s, wantAddr)
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case err := <-requestDone:
+		if err != nil {
+			t.Fatalf("收尾请求失败: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("请求未完成")
+	}
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("Shutdown 失败: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Shutdown 未完成")
+	}
+	assertServerAddr(t, s, wantAddr)
+}
+
+// TestAddrConcurrentWithShutdown 并发查询地址与关闭时，已发布地址保持一致。
+func TestAddrConcurrentWithShutdown(t *testing.T) {
+	s := newTestServer(t, freeTCPPort(t))
+	port, err := s.Start()
+	if err != nil {
+		t.Fatalf("Start 失败: %v", err)
+	}
+	wantAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := s.Shutdown(ctx); err != nil {
+			t.Errorf("清理 Shutdown 失败: %v", err)
+		}
+	})
+	gate := make(chan struct{})
+	badAddr := make(chan string, 1)
+	var readers sync.WaitGroup
+	for range 8 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			<-gate
+			for range 100 {
+				if got := s.Addr(); got != wantAddr {
+					select {
+					case badAddr <- got:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+	close(gate)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Errorf("Shutdown 失败: %v", err)
+	}
+	done := make(chan struct{})
+	go func() { readers.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("地址读取未完成")
+	}
+	select {
+	case got := <-badAddr:
+		t.Errorf("并发 Addr() = %q, want %q", got, wantAddr)
+	default:
+	}
+	assertServerAddr(t, s, wantAddr)
+	waitBounded(t, s, 3*time.Second)
 }
