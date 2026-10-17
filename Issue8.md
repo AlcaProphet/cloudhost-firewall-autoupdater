@@ -28,7 +28,7 @@
 | I8-R13 | 运行时间戳重启展示 | 本地已修复 | Issue6 §6.5 第11项 |
 | I8-R14 | SQLite 容量与辅助事务边界 | 扫描取消/裁剪本地完成；容量暂缓、外键不适用 | Issue6 §6.5 第12项 |
 | I8-R15 | Server.Addr 关闭后语义 | 方案A语义与回归本地完成 | Issue6 §6.5 第14项剩余 |
-| I8-R16 | 其他清理符号清单 | 维护候选未裁决 | 旧 I8-42；Q-13剩余 |
+| I8-R16 | 其他清理符号清单 | 方案B维护清理与测试迁移本地完成 | 旧 I8-42；Q-13剩余 |
 | I8-R17 | 日志渲染失败仓内长期回归 | 证据缺口 | 旧 I8-22；P3-10出口④ |
 | I8-R18 | A20 修复前负向控制 | 历史证据未重演 | 旧 I8-23 |
 | I8-R19 | 组件退出与资源泄漏证明 | 测试覆盖候选 | 旧 Issue8 §3 goroutine/fd/ticker |
@@ -245,9 +245,13 @@
 
 ### I8-R16 其他清理符号清单
 
-- **状态与来源：** 维护候选未裁决；旧 I8-42；Q-13剩余。
-- **证据与边界：** 旧I8-14身份链与I8-15注释/死赋值已完成；其他候选缺当前完整符号清单，历史8/5/2/14等数量不能证明安全。
-- **后续与完成条件：** 先列具体符号、生产/测试消费者及保留合同，再决定是否清理。合理前置条件不是缺陷；不得删除安全字段、辅助验收夹具或为整洁改变行为。
+- **状态与授权：** 2026-10-17用户选择并定型方案B、完成仓外候选与修复前检查后，明确授权正式修复并同步文档；限定维护清理、有效测试迁移及正式门禁已本地完成；其余已评估候选明确暂留。来源为旧I8-42、Q-13剩余。本项不登记为新的同步/安全产品缺陷，也不宣称全仓不存在其他维护候选。
+- **实施基线与范围：** `main / 6b9edb6e3472490350195009b44df48948981158`，本地`origin/main / f1f5a621fd83dd2a7ddb9bb4bb26939318ae2951`，ahead1，工作树与暂存区干净；未fetch。329份跟踪文件基线、16份候选源码及补丁SHA-256全部复核一致、只检查可应用性后才落地；正式16份源码/测试与审阅候选逐份哈希一致。加本文/AGENTS共18份文件，未改依赖/锁文件、Make/CI/Docker、API/schema、配置包、网络超时、调度/健康或目标状态机。
+- **根因与实际清理：** 正式启动已使用LoadBusinessSnapshot→ToRuntimeConfig→BuildRuntimeState，旧config.Config/Store.LoadConfig/BusinessSnapshot.ToConfig仅由旧包装子图及五份测试文件维持；删除该链，不留类型别名或兼容包装。另删除EventRuleChanged、ResolvedIPs及该文件专属dns导入、IssueCleanupDisabled、前端SyncEvent、clearAllCache及返回成员；useSettings只移除settings/load/refreshCredentialState三个页面未消费的返回成员，内部实现保留；Push测试删除三个var _，仅移除失去用途的syncer导入；validate.go只更新注释。保留的222个生产声明非注释token与实施前完全一致，只移除上述6个声明，无新增或改写保留声明；这是删除维护残留，不虚构旧生产行为故障的红到绿。
+- **测试迁移与保留：** store_tx/settings_policy测试改走正式快照，成功检查后才转换为RuntimeConfig；保留默认值、归一化、凭据原值、开关、非法设置及不回显原值。损坏targets/引用测试保留完整快照、给定事务和引用检查，移除退役包装的重复分支并同步名称/说明；syncer测试改RuntimeConfig与DeepCopy，仅补原先三个测试默认值，继续经真实BuildRuntimeState构造。六份测试的t.Fatal/Error/Fail系列调用由270变269，唯一移除的是旧LoadConfig重复失败断言，计数不是独立等价证明。Push Bus、AddStateUnknown与覆盖/清理门、ErrNoSnapshotLoader、Pause/Resume/Runtime及API Runtime、GetRules/ConvertPorts/ExpandPorts、Store预置/观察与I8-R14旧签名、SetBeforeRoundHook、ServeStarted、Current、两个InFlight、tag.HasPrefix/Parse、PlannedActionKeys及已有消费者的useDryRun.error均保留。DBTX/Provider/LimitedNotifier进一步接口收缩已评估暂留，不作为本次未完成的隐含删除义务。
+- **正式专项与判别力：** 正式工作树配置迁移专项`go test ./config ./webui/api -race -run '^(TestLoadBusinessSnapshotSettingValidation|TestCorruptTargetsBlocksAllLivePaths|TestI8R09SnapshotReferenceIntegrity|TestLoadBusinessSnapshot_IgnoresWebuiPortResidue)$' -count=20 -timeout=3m`退出0（config7.706s、api2.432s）。从正式源码生成五类仓外overlay、直接执行正式迁移测试：错误默认间隔、非法设置回退成功、放过悬空引用、吞掉损坏targets、转换丢凭据均退出1并命中预期行为断言，无编译失败/panic/超时/DATA RACE充数。前端110项正式现有回归通过；另用正式useSettings源码执行五项仓外加载/共享状态/凭据刷新/主题保存与失败恢复探针全部通过，删除加载后凭据刷新和把theme载荷改为tag两类对照均按行为断言失败。这五项未新增进仓内长期测试，不与110项混算。
+- **正式完整门禁：** 真实`make all`退出0，包含独立npm ci、vue-tsc/Vite、全仓vet、race与产品构建，前端dist已在正式仓库真实重建；12包中8包实跑、4包命中缓存。随后独立`go test ./... -race -count=1 -timeout=5m`退出0，12包全部禁缓存执行一轮（health45.247s、api37.470s、config33.700s）。13份受影响Go文件gofmt、18文件限定范围/16源码哈希复核、生产结构比对及最终`git diff --check`均通过，暂存区为空。固定已安装Go1.27.1工具链的任务子进程PATH并设置GOTOOLCHAIN=local，npm使用本任务独立缓存；npm ci内置审计显示0漏洞，未另行独立npm audit。单次全仓绿色与重复专项不外推长期稳定。所有以上结果均来自本轮正式工作树，不以研究或准备副本门禁替代。
+- **保留与外部边界：** 本机Go1.27.1 darwin/arm64、Node26.7.0、npm11.19.0；本轮未执行固定Node24、Linux/Docker、真实浏览器/云/SMTP/Webhook/Kuma或当前revision远端CI/GHCR，不外推长期稳定或外部发布通过。保留用户既有真机收口、通知豁免及SMTP独立清单，不新增人工待执行项；不重写归档历史的当时事实。删除旧Go导出符号可能要求仓外源码消费者迁移，本次只确认仓内调用者，不承诺仓外绝无依赖。源码、测试及本轮文档尚未提交或推送。正式日志/变体/结构比对位于`/Users/kylechen/.codex/outputs/i8-r16-implementation-20261017-mUjfB4/`。
 
 <a id="i8-r17"></a>
 

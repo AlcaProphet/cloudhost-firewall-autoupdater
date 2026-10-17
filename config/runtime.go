@@ -112,24 +112,6 @@ func (s *BusinessSnapshot) ToRuntimeConfig() RuntimeConfig {
 	}
 }
 
-// ToConfig 把业务快照转换为启动期 Config（过渡兼容，最终由 RuntimeConfig 取代）。
-func (s *BusinessSnapshot) ToConfig() *Config {
-	rc := s.ToRuntimeConfig()
-	return &Config{
-		Credentials:      rc.Credentials,
-		Targets:          rc.Targets,
-		DomainRules:      rc.DomainRules,
-		Tag:              rc.Tag,
-		Interval:         rc.Interval,
-		DNS:              rc.DNS,
-		DNSTimeout:       rc.DNSTimeout,
-		DNSFailThreshold: rc.DNSFailThreshold,
-		LogLevel:         rc.LogLevel,
-		SyncEnabled:      rc.SyncEnabled,
-		Theme:            rc.Theme,
-	}
-}
-
 // mustDuration 解析已完成校验的时长设置。
 //
 // 非法值不可能到达这里：LoadBusinessSnapshotTx 已在同一事务内用

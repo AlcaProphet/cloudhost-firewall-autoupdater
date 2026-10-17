@@ -1149,33 +1149,6 @@ func (s *Store) ClearSyncLogs() error {
 	return err
 }
 
-// LoadConfig 从 SQLite 构建启动期 Config。
-//
-// 走与导出、导入、协调器完全相同的「事务内完整业务快照」路径（Build6 §12.10）：
-// 同一个 LoadBusinessSnapshotTx 负责读出 targets/rules/settings/alerts 并复用
-// validate.go 的归一化与校验，避免出现「API 能写入但重启加载失败」的双口径。
-func (s *Store) LoadConfig() (*Config, error) {
-	ctx := context.Background()
-	tx, err := s.BeginReadOnlyTx(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("开始只读事务失败: %w", err)
-	}
-	defer func() {
-		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
-			slog.Error("回滚只读事务失败", "error", rbErr)
-		}
-	}()
-
-	snapshot, err := s.LoadBusinessSnapshotTx(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("提交只读事务失败: %w", err)
-	}
-	return snapshot.ToConfig(), nil
-}
-
 // LoadBusinessSnapshot 读取一次完整业务配置快照（启动路径使用；内部走只读事务）。
 //
 // 与导出、导入、协调器共用同一读取与校验路径，避免出现第二套配置加载语义。

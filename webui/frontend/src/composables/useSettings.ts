@@ -67,5 +67,5 @@ function refreshCredentialState() {
 }
 
 export function useSettings() {
-  return { settings, theme, tcReady, aliReady, load, refresh, applyTheme, setTheme, refreshCredentialState }
+  return { theme, tcReady, aliReady, refresh, applyTheme, setTheme }
 }

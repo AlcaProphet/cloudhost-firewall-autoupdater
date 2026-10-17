@@ -19,7 +19,6 @@ const (
 	// EventDomainSyncComplete 历史逐域名完成事件：不再承载云端增删数量，生产链不再发布。
 	EventDomainSyncComplete EventType = "domain:sync_complete"
 	EventSyncError          EventType = "sync:error"
-	EventRuleChanged        EventType = "rule:changed"
 	EventDNSFailed          EventType = "dns:failed"
 	// EventOperationalUnhealthy 是运行健康异常的**边沿**事件（Build7 §7.3）：
 	// 仅在健康→异常（以及开关开启时补发）时发布一次，持续异常不重复发布。

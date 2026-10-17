@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
 )
 
 // CreateResult 一次 CreateRules 调用中「实际提交写入」与「明确跳过」的规则条数
@@ -81,6 +80,3 @@ type Provider interface {
 	// TargetIndex 返回目标的数据库 ID
 	TargetIndex() int
 }
-
-// ResolvedIPs 便捷别名
-type ResolvedIPs = []dns.ResolvedIP

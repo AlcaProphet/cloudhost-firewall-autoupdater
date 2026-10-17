@@ -48,7 +48,7 @@ func (m *stubProvider) ConvertPorts(port string) []string {
 
 // TestDryRun_EmptyConfig 无 providers 无规则 → Warnings 两条、Results 为空数组
 func TestDryRun_EmptyConfig(t *testing.T) {
-	cfg := &config.Config{Tag: "auto-dns"}
+	cfg := &config.RuntimeConfig{Tag: "auto-dns"}
 	s := newSyncer(t, cfg, nil)
 
 	resp, err := s.DryRun()
@@ -67,7 +67,7 @@ func TestDryRun_EmptyConfig(t *testing.T) {
 // 使用 CVM 云类型（限速 200ms），避免 Lighthouse/SWAS 的 5s 间隔拖慢测试
 func TestDryRun_Detail(t *testing.T) {
 	p := &stubProvider{cloudType: config.CloudTCCVM, targetIndex: 0}
-	cfg := &config.Config{
+	cfg := &config.RuntimeConfig{
 		Tag: "auto-dns",
 		DomainRules: []config.DomainRule{
 			{Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Comment: "测试", Targets: []int{0}},
@@ -118,7 +118,7 @@ func TestDryRun_Detail(t *testing.T) {
 func TestDryRun_Concurrent(t *testing.T) {
 	release := make(chan struct{})
 	p := &stubProvider{cloudType: config.CloudTCCVM, targetIndex: 0, block: release}
-	cfg := &config.Config{
+	cfg := &config.RuntimeConfig{
 		Tag: "auto-dns",
 		DomainRules: []config.DomainRule{
 			{Host: "localhost", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Targets: []int{0}},
@@ -147,7 +147,7 @@ func TestDryRun_Concurrent(t *testing.T) {
 func newGateSyncer(t *testing.T, syncEnabled bool) (*Syncer, *stubProvider) {
 	t.Helper()
 	p := &stubProvider{cloudType: config.CloudTCCVM, targetIndex: 0}
-	cfg := &config.Config{
+	cfg := &config.RuntimeConfig{
 		Tag:         "auto-dns",
 		Interval:    time.Hour,
 		SyncEnabled: syncEnabled,
@@ -195,7 +195,7 @@ func TestPauseResume_Flow(t *testing.T) {
 		t.Fatalf("启动后应已同步, GetRules 调用次数 = %d, want >= 1", n0)
 	}
 
-	pausedCfg := &config.Config{
+	pausedCfg := &config.RuntimeConfig{
 		Tag:         "auto-dns",
 		Interval:    time.Hour,
 		SyncEnabled: false,
@@ -238,7 +238,7 @@ func TestApplyState_SyncEnabledSync(t *testing.T) {
 	}
 
 	// 状态替换关闭同步（携带 DomainRules，保证恢复后可计数）
-	pausedCfg := &config.Config{
+	pausedCfg := &config.RuntimeConfig{
 		Tag:         "auto-dns",
 		Interval:    time.Hour,
 		SyncEnabled: false,
@@ -274,7 +274,7 @@ func TestApplyState_SyncEnabledSync(t *testing.T) {
 
 // TestIsEnabled 状态镜像正确性
 func TestIsEnabled(t *testing.T) {
-	s1 := newSyncer(t, &config.Config{SyncEnabled: false}, nil)
+	s1 := newSyncer(t, &config.RuntimeConfig{SyncEnabled: false}, nil)
 	if s1.IsEnabled() {
 		t.Error("SyncEnabled=false 初始化应 IsEnabled()==false")
 	}
@@ -287,7 +287,7 @@ func TestIsEnabled(t *testing.T) {
 		t.Error("Pause 后应 IsEnabled()==false")
 	}
 
-	s2 := newSyncer(t, &config.Config{SyncEnabled: true}, nil)
+	s2 := newSyncer(t, &config.RuntimeConfig{SyncEnabled: true}, nil)
 	if !s2.IsEnabled() {
 		t.Error("SyncEnabled=true 初始化应 IsEnabled()==true")
 	}
@@ -380,20 +380,9 @@ func (m *fakeTagProvider) createdDescs() []string {
 	return append([]string(nil), m.created...)
 }
 
-// testRuntimeConfig 把测试用 Config 映射为完整运行时配置（补齐同步所需的默认值）
-func testRuntimeConfig(cfg *config.Config) config.RuntimeConfig {
-	rc := config.RuntimeConfig{
-		Tag:              cfg.Tag,
-		Interval:         cfg.Interval,
-		DNS:              cfg.DNS,
-		DNSTimeout:       cfg.DNSTimeout,
-		DNSFailThreshold: cfg.DNSFailThreshold,
-		LogLevel:         cfg.LogLevel,
-		SyncEnabled:      cfg.SyncEnabled,
-		Theme:            cfg.Theme,
-		DomainRules:      config.DeepCopyRules(cfg.DomainRules),
-		Targets:          append([]config.TargetConfig(nil), cfg.Targets...),
-	}
+// testRuntimeConfig 深复制测试用运行时配置，仅补齐同步所需的三个默认值。
+func testRuntimeConfig(cfg *config.RuntimeConfig) config.RuntimeConfig {
+	rc := cfg.DeepCopy()
 	if rc.Interval == 0 {
 		rc.Interval = time.Hour
 	}
@@ -407,7 +396,7 @@ func testRuntimeConfig(cfg *config.Config) config.RuntimeConfig {
 }
 
 // newSyncer 用给定配置与 Provider 构造 Syncer（内部发布一份初始运行时状态）
-func newSyncer(t *testing.T, cfg *config.Config, providers []provider.Provider) *Syncer {
+func newSyncer(t *testing.T, cfg *config.RuntimeConfig, providers []provider.Provider) *Syncer {
 	t.Helper()
 	rc := testRuntimeConfig(cfg)
 	st, err := BuildRuntimeState(nil, rc, BreakerReset)
@@ -421,8 +410,8 @@ func newSyncer(t *testing.T, cfg *config.Config, providers []provider.Provider) 
 }
 
 // newRoundConfig 构造替换用配置：同一目标与规则，仅 TAG 不同
-func newRoundConfig(tagStr string) *config.Config {
-	return &config.Config{
+func newRoundConfig(tagStr string) *config.RuntimeConfig {
+	return &config.RuntimeConfig{
 		Tag:         tagStr,
 		Interval:    time.Hour,
 		SyncEnabled: false,
@@ -432,14 +421,14 @@ func newRoundConfig(tagStr string) *config.Config {
 	}
 }
 
-// newRoundState 用给定 Config 构造替换用运行时状态（保留当前 Provider 列表）
-func newRoundState(t *testing.T, s *Syncer, cfg *config.Config) *RuntimeState {
+// newRoundState 用给定 RuntimeConfig 构造替换用运行时状态（保留当前 Provider 列表）
+func newRoundState(t *testing.T, s *Syncer, cfg *config.RuntimeConfig) *RuntimeState {
 	t.Helper()
 	st, err := BuildRuntimeState(s.runtime.Snapshot(), testRuntimeConfig(cfg), BreakerPreserve)
 	if err != nil {
 		t.Fatalf("构造候选运行时状态失败: %v", err)
 	}
-	// 测试用 Config 不含 Targets，Provider 由调用方以 stub 形式注入，这里沿用旧列表
+	// 测试用 RuntimeConfig 不含 Targets，Provider 由调用方以 stub 形式注入，这里沿用旧列表
 	if prev := s.runtime.Snapshot(); prev != nil {
 		st.Providers = prev.Providers
 	}
@@ -462,7 +451,7 @@ func startConfigWriter(t *testing.T, s *Syncer) {
 }
 
 // applyStateAndWait 触发真实 ApplyState 并等待 Run 循环消费通知
-func applyStateAndWait(t *testing.T, s *Syncer, cfg *config.Config) {
+func applyStateAndWait(t *testing.T, s *Syncer, cfg *config.RuntimeConfig) {
 	t.Helper()
 	s.ApplyState(newRoundState(t, s, cfg))
 	deadline := time.Now().Add(3 * time.Second)
@@ -622,7 +611,7 @@ func TestSyncRound_ConcurrentReloadStress(t *testing.T) {
 
 // ─── Step 7：部分写入计数、Provider 快照隔离、描述/TAG 边界 ───
 
-// TestSyncRoundUsesSingleProviderSnapshot Step 7「Provider/Resolver/TAG/Config 完整单轮快照」：
+// TestSyncRoundUsesSingleProviderSnapshot Step 7「Provider/Resolver/TAG/RuntimeConfig 完整单轮快照」：
 // 本轮 Describe 阻塞期间把 Provider 列表整体替换为另一个 Provider，
 // 本轮必须继续使用开始时的 Provider（旧快照），下一轮才使用新 Provider。
 func TestSyncRoundUsesSingleProviderSnapshot(t *testing.T) {

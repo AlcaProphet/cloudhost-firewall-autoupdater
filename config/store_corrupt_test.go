@@ -102,8 +102,8 @@ func TestLoadRulesTargetsFourStateContract(t *testing.T) {
 	}
 }
 
-// TestCorruptTargetsBlocksAllFourPaths 损坏必须阻断四条调用链（同步快照/导出/引用检查/启动加载）。
-func TestCorruptTargetsBlocksAllFourPaths(t *testing.T) {
+// TestCorruptTargetsBlocksAllLivePaths 损坏必须阻断现行读取入口（完整业务快照/引用检查/只读事务）。
+func TestCorruptTargetsBlocksAllLivePaths(t *testing.T) {
 	s, err := OpenStore(filepath.Join(t.TempDir(), "block.db"))
 	if err != nil {
 		t.Fatalf("OpenStore 失败: %v", err)
@@ -112,17 +112,12 @@ func TestCorruptTargetsBlocksAllFourPaths(t *testing.T) {
 
 	insertRawRule(t, s, "example.com", "'null'")
 
-	// 1) 完整业务快照（同步与导出共用）
+	// 1) 完整业务快照（启动、同步与导出共用）
 	if _, err := s.LoadBusinessSnapshot(); err == nil {
-		t.Error("LoadBusinessSnapshot 必须因损坏 targets 失败（同步/导出路径）")
+		t.Error("LoadBusinessSnapshot 必须因损坏 targets 失败（启动/同步/导出路径）")
 	}
 
-	// 2) 启动加载
-	if _, err := s.LoadConfig(); err == nil {
-		t.Error("LoadConfig 必须因损坏 targets 失败（启动路径）")
-	}
-
-	// 3) 引用检查（目标删除的 409 判定）
+	// 2) 引用检查（目标删除的 409 判定）
 	tx, err := s.BeginTx(context.Background())
 	if err != nil {
 		t.Fatalf("BeginTx 失败: %v", err)
@@ -134,7 +129,7 @@ func TestCorruptTargetsBlocksAllFourPaths(t *testing.T) {
 		t.Fatalf("Rollback 失败: %v", err)
 	}
 
-	// 4) 只读事务导出路径
+	// 3) 只读事务导出路径
 	rtx, err := s.BeginReadOnlyTx(context.Background())
 	if err != nil {
 		t.Fatalf("BeginReadOnlyTx 失败: %v", err)
