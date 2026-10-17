@@ -366,6 +366,7 @@
 - **所有 error 必须处理**，不可忽略返回值
 - SMTP 清理错误（I8-16d，d-A）仅记固定阶段/类别 WARN，不记录原始错误、SMTP 原文或 cause，不覆盖发送主错误；正常 Quit 后不重复关闭，预期 net.ErrClosed 不告警。QUIT 失败仍为发送失败，不将本规范补齐扩大为 DATA/QUIT 成功边界调整。
 - 同步事件 SSE 的序列化失败只记录固定 WARN、事件类型与错误类型，跳过坏事件并保持连接；不记录事件负载或序列化错误原文。日志渲染失败向 Handler 调用方返回错误，不在同一 Handler 内递归记录；静态 `/api/health` 写失败记录 Debug，不补写第二个响应。
+- 日志渲染长期回归（I8-R17，方案 A）：默认 `TestI8R17RenderFailure` 仅在临时测试构建中通过 overlay 替换 `TextHandler` 的 writer，保留真实 `renderLine` / `LogBroadcaster.Handle` 与发布代码，不增加生产 hook。立即写失败及部分写失败均须原样返回错误，失败不改变序号/ring/订阅登记、不投递或递归记录，下一条成功日志与回放仍连续；属性格式化的 `!ERROR` / `!PANIC` 文本不作为 writer 失败替代。注入锚点改变或三项预期顶层子测试未实际通过必须明确失败；父测试读取 testdata 以追踪夹具缓存依赖，子进程只运行固定注入测试，显式 `-race -count=1`，沿用现有 race 工具链前提，不进入产品构建。固定 `bytes.Buffer` 的 error 保证为 nil，本项补长期证据，不宣称复现生产 buffer 故障或 `slog.Logger` 自动报告 Handler 错误。正式结果与外部证据边界见 [Issue8 I8-R17](./Issue8.md#i8-r17)。
 - 日志使用 `log/slog`（Go 1.21+ 内置结构化日志）
 - 注释使用**中文**（面向国内开发者）
 - 遵守 `PlatformAPIDocs/` 中的 API 文档要求（参数格式、字段长度限制、频率限制）

@@ -29,7 +29,7 @@
 | I8-R14 | SQLite 容量与辅助事务边界 | 扫描取消/裁剪本地完成；容量暂缓、外键不适用 | Issue6 §6.5 第12项 |
 | I8-R15 | Server.Addr 关闭后语义 | 方案A语义与回归本地完成 | Issue6 §6.5 第14项剩余 |
 | I8-R16 | 其他清理符号清单 | 方案B维护清理与测试迁移本地完成 | 旧 I8-42；Q-13剩余 |
-| I8-R17 | 日志渲染失败仓内长期回归 | 证据缺口 | 旧 I8-22；P3-10出口④ |
+| I8-R17 | 日志渲染失败仓内长期回归 | 方案 A 仓内长期回归本地完成 | 旧 I8-22；P3-10出口④ |
 | I8-R18 | A20 修复前负向控制 | 历史证据未重演 | 旧 I8-23 |
 | I8-R19 | 组件退出与资源泄漏证明 | 测试覆盖候选 | 旧 Issue8 §3 goroutine/fd/ticker |
 | I8-R20 | 启动宽限10秒数值锚点 | 低成本证据缺口 | 旧 Issue8 §3 DefaultStartupGrace |
@@ -257,9 +257,13 @@
 
 ### I8-R17 日志渲染失败仓内长期回归
 
-- **状态与来源：** 证据缺口；旧 I8-22；P3-10出口④。
-- **证据与边界：** 生产使用bytes.Buffer，正常写入不产生该错误；历史TestRenderFailureNoPublish来自仓外writer overlay。仓内未找到同名不能否认历史证据，本次未重演。
-- **后续与完成条件：** 若补长期守护，验证原错误返回且序号、ring、投递不变；不扩大生产故障面，不宣称slog会自动报告Handler错误。
+- **状态与授权：** 2026-10-17用户选择方案A、完成修复前检查后明确授权正式修复并同步文档；默认仓内长期回归、正式门禁与文档同步已本地完成。来源为旧I8-22、P3-10出口④。
+- **实施基线与范围：** `main / 196af2ddc7b0e2b0bc4da80a4da15888d89703a4`，本地`origin/main / f1f5a621fd83dd2a7ddb9bb4bb26939318ae2951`，ahead2，开始时工作树与暂存区干净，未fetch。两份候选和补丁SHA-256与审阅版本一致，`git apply --check --whitespace=error-all`通过后才落地。新增`webui/api/logstream_render_failure_test.go`与`webui/api/testdata/logstream_render_failure.go.txt`，同步本文与AGENTS，共四份文件；生产源码、依赖、前端、API/schema、SSE/健康/通知、Make/CI/Docker保持。
+- **根因与长期回归合同：** 当前生产固定使用`bytes.Buffer`，Write返回error保证为nil；已有`renderLine`错误检查及`Handle`发布前提前返回属于规范性补齐。历史`TestRenderFailureNoPublish`来自仓外writer overlay，不因仓内无同名而否认历史记录；本次建立当前基线的正式回归，不宣称取回旧夹具或复演旧revision。默认父测试生成临时overlay，仅替换TextHandler的writer，保留真实renderLine、Handle与发布代码，不增加生产hook；现有Make/CI的全仓Go测试可自动发现，无需改门禁入口。
+- **正式测试覆盖：** 立即失败与向临时buffer写入部分字节后失败，均验证renderLine返回空文本与原`io.ErrClosedPipe`、Handle原样返回错误。空缓存/非空缓存/1000条回绕缓存三种状态各搭配两类writer，验证完整ring、序号、位置/数量、epoch与订阅登记不变，两个既有订阅者零投递、零递归诊断，后续成功日志连续编号、历史与增量回放可用。属性MarshalText错误/可恢复panic返回`!ERROR`/`!PANIC`文本且不返回Handler error，作为语义对照而非writer故障替代。父测试读取夹具文件以跟踪缓存依赖；注入锚点唯一性及JSON事件中的三项预期顶层子测试实际pass检查，防止注入漂移、零匹配或整项Skip形成静默绿灯。子进程使用当前测试GOROOT工具链，仅运行固定注入测试，显式`-race -count=1`；子测试60秒、父命令90秒为测试保护预算，不是产品超时。
+- **正式专项与判别力：** 正式工作树`go test ./webui/api -race -run '^TestI8R17RenderFailure$' -count=20 -v -timeout=3m`退出0（47.493s），20次父测试均确认三项注入顶层子测试实际通过。重新从正式源码/正式测试生成仓外副本，七类错误变体（renderLine吞错、Handle吞错、错误身份丢失、失败推进序号、失败污染ring、失败投递、递归诊断）均退出1并命中预期行为断言，无编译失败/panic/超时/DATA RACE充数；不把这些当前源码变体称为历史修复前revision复演。独立保护检查首次执行通过、第二次命中缓存，改名夹具子测试后未复用旧绿灯而明确失败；注入锚点漂移也明确失败。两类测试基础设施保护不混入七类生产行为判别计数。
+- **正式完整门禁：** API整包`go test ./webui/api -race -count=1 -timeout=3m`退出0（36.912s）。真实`make all`退出0，包含独立npm ci、vue-tsc/Vite、全仓vet、race与产品构建；新增父测试在默认入口实际执行并通过，12包中2包实跑、10包命中缓存。随后独立`go test ./... -race -count=1 -timeout=5m`退出0，12包全部禁缓存执行一轮（health43.720s、api40.777s、config32.533s）。两份测试资产gofmt、候选哈希、四文件范围、327份其他既有跟踪文件逐字节未变及最终`git diff --check`通过；暂存区为空、临时overlay未在正式源码目录留下注入文件。全部以上正式正向门禁来自正式工作树，不以研究/准备副本替代；错误变体和基础设施故障验证在正式文件副本中执行，不修改正式生产代码。
+- **证据边界：** 本机Go1.27.1 darwin/arm64、Node26.7.0、npm11.19.0；任务子进程固定工具链PATH/GOTOOLCHAIN=local，npm使用任务独立缓存。npm ci内置审计显示0漏洞，未另行独立npm audit或前端行为回归。本轮未执行固定Node24、Linux/Docker、真实浏览器/云/SMTP/Webhook/Kuma或当前revision远端CI/GHCR。本项不把规范性分支写成当前生产buffer故障，不宣称slog.Logger会自动报告Handler错误；本地回归不穷尽并发时序，不外推长期稳定或外部发布。保留既有用户真机收口、通知豁免及SMTP独立清单，不新增人工待执行项。两份测试及本轮文档尚未提交或推送。完整正式记录见`/Users/kylechen/Desktop/Repo/2026-10-17/issue8-md-issue8-md-i8-r17/outputs/i8-r17-implementation.md`与同目录`i8-r17-implementation-evidence.zip`。
 
 <a id="i8-r18"></a>
 
