@@ -32,7 +32,7 @@
 | I8-R17 | 日志渲染失败仓内长期回归 | 方案 A 仓内长期回归本地完成 | 旧 I8-22；P3-10出口④ |
 | I8-R18 | A20 修复前负向控制与四入口长期回归 | 方案 B 本地完成 | 旧 I8-23 |
 | I8-R19 | 组件退出与资源泄漏证明 | 方案 B 生命周期修复与长期回归本地完成 | 旧 Issue8 §3 goroutine/fd/ticker |
-| I8-R20 | 启动宽限10秒数值锚点 | 低成本证据缺口 | 旧 Issue8 §3 DefaultStartupGrace |
+| I8-R20 | 启动宽限10秒数值锚点 | 数值与默认边界长期回归本地完成 | 旧 Issue8 §3 DefaultStartupGrace |
 | I8-R21 | 前端长期行为覆盖与异步门禁 | 补强候选待复核 | TODOLIST P2-06/08/09/P3-16；旧 Issue8 §3/ I8-102 |
 | I8-R22 | 当前 revision 远端发布证据 | 独立证据待完成 | PT-B7-08；Issue5 O5-02历史边界；旧 I8-25部分 |
 | I8-R23 | 特定平台与长期运行证据 | 证据范围待核对 | 历史audit/Issue8外部边界 |
@@ -294,9 +294,14 @@
 
 ### I8-R20 启动宽限10秒数值锚点
 
-- **状态与来源：** 低成本证据缺口；旧 Issue8 §3 DefaultStartupGrace。
-- **证据与边界：** DefaultStartupGrace为10秒合同；现有测试引用常量作相对时间计算，历史10s改12s仍绿记录未在本次重演。其他告警/Push默认常量已有直接或间接锚点。
-- **后续与完成条件：** 补独立字面数值与真实边界行为断言；不能仅把同一常量同时用于输入和预期。
+- **状态与授权（2026-10-19）：** 用户确认研究推荐方案并授权进一步检查后正式修复、同步文档；数值与默认边界长期回归本地完成。来源为旧 Issue8 §3 DefaultStartupGrace；本项补测试证据，不改变产品行为。
+- **正式基线与范围：** 实施前 `main / 39ead637342594f23d65dc54633e2463295f481b`，相对本地 `origin/main` ahead 2，工作树与暂存区干净，未 fetch。新增 `internal/health/startup_grace_test.go`，同步 AGENTS 与本节，共三文件；生产代码、旧测试、依赖、API/schema、前端及 Make/CI/Docker 不变。
+- **根因与研究证据：** 原测试把 `DefaultStartupGrace` 同时用于夹具与超限输入，常量改变时输入跟随移动；夹具显式传入该值，也没有直接保护生产省略该字段后由 `New` 填默认值的接线。2026-10-19 仓外研究已重新验证：当前健康整包 race/count=1 通过（43.368s），仅10s改12s后同一整包仍通过（43.185s）；不再沿用“本次未重演”。研究候选与正式工作树门禁分开，研究目录为 `/Users/kylechen/Desktop/Repo/2026-10-19/i8-r20-research-9e54n069/`。
+- **长期回归合同：** `TestI8R20StartupGraceValue` 独立断言固定10秒；`TestI8R20StartupGraceDefaultBoundary` 使用固定 `Now`、真实 `New → Evaluate` 和立即返回的 SQLite 桩，不经显式传入默认常量的公共夹具。省略 `StartupGrace` 与负值回退两种接线，分别在同步启用/暂停下覆盖6场景，共24个叶子用例：从未运行的 `10s−1ns`、恰好10秒均健康，`10s+1ns` 才报引擎未运行；已运行后停止立即异常；运行中超过10秒不因此异常；宽限内SQLite失败仍异常。检查 `Healthy` 与完整原因数组，输入不从被测常量推导；无真实10秒等待、生产hook或默认子进程测试。基准保留Syncer构造时间，10秒为判定阈值，不承诺第10秒发出告警。
+- **正式专项：** `go test ./internal/health -race -run '^TestI8R20' -count=20 -timeout=2m -json` 退出0，墙钟2.314s；核对两个顶层及全部24个叶子场景（含分组共32个测试节点）run/pass各20次，无Skip或零匹配。
+- **正式判别力：** 基于当前正式生产源码的六类仓外overlay（10s改12s、10s改9s、`>` 改 `>=`、默认值填充失效、负值不再回退默认值、漏掉已运行后停止分支）均退出1且命中预期叶子场景的 `I8R20_BEHAVIOR` 断言。各变体只运行正式 `TestI8R20StartupGraceDefaultBoundary`，排除数值锚点入口，确认由实际行为独立判红；无编译失败、panic、DATA RACE或整体测试超时充数。overlay仅用于本次判别力核验，不加入默认测试框架。
+- **完整本地门禁：** 健康整包 `go test ./internal/health -race -count=1 -timeout=2m` 退出0（墙钟43.611s）。真实 `make all` 退出0（墙钟53.560s），包括任务独立npm缓存下的 `npm ci`、vue-tsc/Vite、全仓vet/race与产品构建；12包中健康包实际执行、其余11包命中缓存，新增两个顶层和24个叶子场景在默认入口实际运行并通过。随后独立 `go test ./... -race -count=1 -timeout=5m` 退出0（墙钟45.869s），12包全部禁缓存执行一轮。全部Go门禁显式将Go1.27.1置于PATH首位并设 `GOTOOLCHAIN=local`；npm ci附带审计显示0漏洞，未另行执行独立npm audit或前端行为回归。新增文件gofmt、git diff --check、三文件范围及空暂存区检查通过，另338份既有跟踪文件哈希保持。
+- **证据边界：** 本机 Go1.27.1 darwin/arm64、Node26.7.0、npm11.19.0；不修改固定10秒、`>` 边界、启动顺序或健康消费者。未执行 Linux/Docker、固定Node24、真实浏览器/云/SMTP/Webhook/Kuma或当前revision远端CI/GHCR，不外推长期稳定或发布通过；既有人工收口、Webhook/Kuma豁免与SMTP独立清单保持。本轮测试与文档尚未提交或推送。正式证据目录：`/Users/kylechen/Desktop/Repo/2026-10-19/i8-r20-implementation/`。
 
 <a id="i8-r21"></a>
 

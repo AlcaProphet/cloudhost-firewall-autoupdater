@@ -365,6 +365,7 @@
 ## 十一、代码规范
 
 - **所有 error 必须处理**，不可忽略返回值
+- 启动宽限合同回归（I8-R20，2026-10-19）：`internal/health/startup_grace_test.go` 的默认测试独立断言 `DefaultStartupGrace == 10*time.Second`，固定 `Now` 后直接走真实 `New → Evaluate`，省略 `StartupGrace` 与负值输入分别覆盖默认接线。输入时间不从被测常量推导：从未运行时 `10s−1ns` 与恰好 `10s` 健康、`10s+1ns` 才报引擎未运行；已运行后停止立即异常、运行中超过10秒不因此异常、宽限内SQLite失败仍异常。同步启用/暂停均检查 `Healthy` 与完整原因数组，不用真实10秒等待、不增加生产hook或默认子进程测试。宽限基准仍为Syncer构造时间，10秒为判定阈值而非告警发出时限；生产常量、`>` 边界与启动顺序保持。范围及本地证据见 [Issue8 I8-R20](./Issue8.md#i8-r20)。
 - 组件退出与资源归属（I8-R19，方案 B）：Pusher 和 AlertManager 分别克隆标准默认 HTTP Transport 并持有私有池；通知器在发布前注入管理器池，保留原 client 超时，候选失败/回滚及 Apply 不关池、不等待旧通知。Push 退出先关闭本实例空闲连接再广播 done；Webhook 在请求与普通回调完成后关池，不关闭进程共享默认池。Server 保留原 ResponseWriter，准入登记与冻结共用 mu；冻结后迟到请求固定 503 + no-store，WaitRequests 只负责等待业务 handler，不等同 Serve/连接退出，不得从 handler 内调用。EventBus 在锁内捕获订阅时登记普通回调、锁外执行，最终锁内冻结再锁外等待；禁止从 OnEvent 内 drain，channel/SSE 与日志 ingress 保持独立。限流器最终停止只阻止诊断续约、取消未开始 timer 并等待已开始回调；不新增强制汇总，不用于热重载或渠道关闭。等待期间不持业务锁。测试优先真实完成信号、虚拟时间与具体句柄回收；Publish 捕获后接缝只进入临时测试构建，父测试读取夹具追踪缓存并核对子测试实际 run/pass，定位漂移/Skip/零匹配明确失败。不宣称 SDK 全局池、标准库后台任务或全仓 goroutine/FD/ticker 零泄漏；HTTP/日志窗口均不构成进程硬退出上限。
 - SMTP 清理错误（I8-16d，d-A）仅记固定阶段/类别 WARN，不记录原始错误、SMTP 原文或 cause，不覆盖发送主错误；正常 Quit 后不重复关闭，预期 net.ErrClosed 不告警。QUIT 失败仍为发送失败，不将本规范补齐扩大为 DATA/QUIT 成功边界调整。
 - 同步事件 SSE 的序列化失败只记录固定 WARN、事件类型与错误类型，跳过坏事件并保持连接；不记录事件负载或序列化错误原文。日志渲染失败向 Handler 调用方返回错误，不在同一 Handler 内递归记录；静态 `/api/health` 写失败记录 Debug，不补写第二个响应。
