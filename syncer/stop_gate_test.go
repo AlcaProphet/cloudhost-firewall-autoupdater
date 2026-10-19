@@ -1,6 +1,19 @@
 package syncer
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -119,9 +132,9 @@ func TestWaitBeforeRunAndStopBlocksUntilStop(t *testing.T) {
 
 // TestStopBeforeRunStartsNoRound Stop() 先于 go Run()：不得启动任何轮次。
 //
-// 这是 100% 确定性的红灯证据：修复前 Run 入口的启动轮位于循环之外、stop 检查之前，
-// 因此「启动即收到 SIGTERM」（run.go 的 go s.Run() / s.Stop() 调度顺序）会照常
-// 执行一整轮真实云写入（Describe → Diff → Create/Delete）。
+// 历史修复前，Run 入口启动轮位于 stop 检查之前，本场景会确定性调用 Provider。
+// 当前还受 Run 入口的停止吸收态保护；四处轮次调用点的独立拒绝由
+// TestI8R18StopGateEntrances 验证，不能由本用例单独推断。
 func TestStopBeforeRunStartsNoRound(t *testing.T) {
 	p := newCountingProvider(config.CloudTCCVM, false)
 	st := gatedState(t, true, time.Hour)
@@ -147,10 +160,9 @@ func TestStopBeforeRunStartsNoRound(t *testing.T) {
 	}
 }
 
-// TestStopInjectedDuringRoundBlocksNextRound 确定性 trigger/stop 交错：
-//
-// hook 在「stop 门控通过、syncAll 之前」触发；hook 内调用 Stop()，因此下一次门控
-// 判定必然看到已停止。断言 Provider 调用次数恒为 1（只保留当轮，不启动新轮）。
+// TestStopInjectedDuringRoundBlocksNextRound 固定门控通过后 Stop 的语义：
+// 已准入的一轮必须完成，Provider 恰好完成 S0/S1 两次快照。
+// 本用例不保证后续到达 ticker/trigger 等入口；四入口拒绝由独立回归保护。
 func TestStopInjectedDuringRoundBlocksNextRound(t *testing.T) {
 	p := newCountingProvider(config.CloudTCCVM, true)
 	st := gatedState(t, true, 20*time.Millisecond)
@@ -281,4 +293,195 @@ func waitForRunning(t *testing.T, s *Syncer, timeout time.Duration) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("Syncer 未进入 running 状态")
+}
+
+// TestI8R18StopGateEntrances 仅在临时测试构建中注入门控前接缝，保留真实 Run 与目标链。
+func TestI8R18StopGateEntrances(t *testing.T) {
+	sourcePath, err := filepath.Abs("syncer.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, sourcePath, source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := map[string]string{
+		"同步引擎已停止，跳过启动轮": "startup",
+		"丢弃已停止状态下的定时同步": "ticker",
+		"丢弃已停止状态下的同步触发": "trigger",
+		"同步引擎已停止，跳过恢复轮": "resume",
+	}
+	seen := map[string]int{}
+	insertions := map[int]string{}
+	runCount, gateCalls := 0, 0
+	isGateCall := func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return false
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "beginRound" {
+			return false
+		}
+		receiver, ok := selector.X.(*ast.Ident)
+		return ok && receiver.Name == "s"
+	}
+	for _, declaration := range file.Decls {
+		fn, ok := declaration.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "Run" || fn.Recv == nil || len(fn.Recv.List) != 1 {
+			continue
+		}
+		receiver, ok := fn.Recv.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		typ, ok := receiver.X.(*ast.Ident)
+		if !ok || typ.Name != "Syncer" {
+			continue
+		}
+		runCount++
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if isGateCall(n) {
+				gateCalls++
+			}
+			guard, ok := n.(*ast.IfStmt)
+			if !ok {
+				return true
+			}
+			calls := 0
+			ast.Inspect(guard.Cond, func(n ast.Node) bool {
+				if isGateCall(n) {
+					calls++
+				}
+				return true
+			})
+			if calls != 1 {
+				return true
+			}
+			for _, statement := range guard.Body.List {
+				expression, ok := statement.(*ast.ExprStmt)
+				if !ok {
+					continue
+				}
+				call, ok := expression.X.(*ast.CallExpr)
+				if !ok || len(call.Args) == 0 {
+					continue
+				}
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || (selector.Sel.Name != "Info" && selector.Sel.Name != "Debug") {
+					continue
+				}
+				logger, ok := selector.X.(*ast.Ident)
+				if !ok || logger.Name != "slog" {
+					continue
+				}
+				literal, ok := call.Args[0].(*ast.BasicLit)
+				if !ok || literal.Kind != token.STRING {
+					continue
+				}
+				message, err := strconv.Unquote(literal.Value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if entry, ok := entries[message]; ok {
+					seen[entry]++
+					insertions[fset.Position(guard.Pos()).Offset] = entry
+				}
+			}
+			return true
+		})
+	}
+	if runCount != 1 || gateCalls != 4 || len(insertions) != 4 {
+		t.Fatalf("Stop 门控注入点已变更，需复核夹具：Run=%d，调用=%d，位置=%d", runCount, gateCalls, len(insertions))
+	}
+	for _, entry := range entries {
+		if seen[entry] != 1 {
+			t.Fatalf("Stop 门控入口标识已变更，需复核夹具：%s=%d", entry, seen[entry])
+		}
+	}
+	injected := make([]byte, 0, len(source)+256)
+	for offset := 0; offset < len(source); offset++ {
+		if entry, ok := insertions[offset]; ok {
+			injected = append(injected, fmt.Sprintf("i8r18BeforeStopGate(s, %q)\n", entry)...)
+		}
+		injected = append(injected, source[offset])
+	}
+	dir := t.TempDir()
+	injectedPath := filepath.Join(dir, "syncer.go")
+	if err := os.WriteFile(injectedPath, injected, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// 父测试直接读取夹具，使默认 go test 缓存追踪其内容。
+	fixtureData, err := os.ReadFile("testdata/stop_gate_entrances.go.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixturePath := filepath.Join(dir, "injected_test.go")
+	if err := os.WriteFile(fixturePath, fixtureData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	overlayData, err := json.Marshal(struct{ Replace map[string]string }{map[string]string{
+		sourcePath: injectedPath,
+		filepath.Join(filepath.Dir(sourcePath), "i8r18_injected_stop_gate_test.go"): fixturePath,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlayPath := filepath.Join(dir, "overlay.json")
+	if err := os.WriteFile(overlayPath, overlayData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	defer cancel()
+	// 固定子测试入口避免父测试递归；沿用当前 GOROOT 及项目 race 工具链前提。
+	cmd := exec.CommandContext(ctx, filepath.Join(runtime.GOROOT(), "bin/go"), "test", "-json", "-race", "-count=1", "-timeout=60s", "-overlay="+overlayPath, "-run=^TestI8R18InjectedStopGate$", ".")
+	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Stop 门控注入子测试失败：%v（context=%v）\n%s", err, ctx.Err(), output)
+	}
+	wanted := map[string]bool{"TestI8R18InjectedStopGate": true}
+	for _, entry := range entries {
+		wanted["TestI8R18InjectedStopGate/"+entry] = true
+	}
+	runs, passes := map[string]int{}, map[string]int{}
+	packagePasses := 0
+	decoder := json.NewDecoder(bytes.NewReader(output))
+	for {
+		var event struct{ Action, Test string }
+		if err := decoder.Decode(&event); err != nil {
+			if err == io.EOF {
+				break
+			}
+			t.Fatalf("Stop 子测试输出不是合法事件流：%v\n%s", err, output)
+		}
+		if event.Action == "fail" || event.Action == "skip" {
+			t.Fatalf("Stop 子测试未完整通过：%s %s\n%s", event.Action, event.Test, output)
+		}
+		if wanted[event.Test] {
+			switch event.Action {
+			case "run":
+				runs[event.Test]++
+			case "pass":
+				passes[event.Test]++
+			}
+		}
+		if event.Action == "pass" && event.Test == "" {
+			packagePasses++
+		}
+	}
+	for name := range wanted {
+		if runs[name] != 1 || passes[name] != 1 {
+			t.Fatalf("Stop 注入子测试未实际运行并通过一次：%s run=%d pass=%d\n%s", name, runs[name], passes[name], output)
+		}
+	}
+	if packagePasses != 1 {
+		t.Fatalf("Stop 注入子测试缺少唯一包通过事件：%d\n%s", packagePasses, output)
+	}
+	t.Log("四个 Stop 入口子用例均实际运行并通过，未以零匹配或 Skip 充当成功")
 }

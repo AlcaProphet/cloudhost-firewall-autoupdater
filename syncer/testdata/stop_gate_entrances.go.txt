@@ -1,0 +1,123 @@
+package syncer
+
+import (
+	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
+)
+
+// 每个 Syncer 独立登记接缝；只在临时测试构建中存在，不修改生产结构或公开 API。
+var i8r18StopGates sync.Map
+
+type i8r18StopGateProbe struct {
+	entry string
+	hits  atomic.Int32
+}
+
+func i8r18BeforeStopGate(s *Syncer, entry string) {
+	if value, ok := i8r18StopGates.Load(s); ok {
+		probe := value.(*i8r18StopGateProbe)
+		if probe.entry == entry {
+			probe.hits.Add(1)
+			s.Stop()
+		}
+	}
+}
+
+// TestI8R18InjectedStopGate 在具体入口选中后、门控判定前确定性停止。
+func TestI8R18InjectedStopGate(t *testing.T) {
+	for _, entry := range []string{"startup", "ticker", "trigger", "resume"} {
+		t.Run(entry, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				st := gatedState(t, entry != "resume", time.Hour)
+				p := newProbeProvider(config.CloudTCCVM, 0)
+				st.Providers = []provider.Provider{p}
+				s := New(NewRuntimeManager(st))
+				s.resolveHostFn = func(string) ([]dns.ResolvedIP, error) {
+					return []dns.ResolvedIP{{IP: net.ParseIP("192.0.2.18")}}, nil
+				}
+				events, cancel := s.EventBus().SubscribeChan()
+				defer cancel()
+				probe := &i8r18StopGateProbe{entry: entry}
+				i8r18StopGates.Store(s, probe)
+				done := make(chan struct{})
+				go func() {
+					s.Run()
+					close(done)
+				}()
+				t.Cleanup(func() {
+					s.Stop()
+					select {
+					case <-done:
+					case <-time.After(5 * time.Second):
+						t.Error("Stop 夹具清理未等到 Run 退出")
+					}
+					i8r18StopGates.Delete(s)
+				})
+				synctest.Wait()
+				switch entry {
+				case "ticker":
+					synctest.Sleep(time.Hour)
+				case "trigger":
+					s.TriggerSync()
+				case "resume":
+					s.Resume()
+				}
+				synctest.Wait()
+				// 等待实际 Run 返回，允许错误变体完成真实目标冷却后再断言。
+				// 此处不主动 Stop：退出必须由目标入口的测试接缝触发。
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Fatal("Stop 门控夹具未有界退出；不能作为行为负向控制成功")
+				}
+				if got := probe.hits.Load(); got != 1 {
+					t.Fatalf("Stop 门控接缝未准确命中一次：%s=%d", entry, got)
+				}
+				wantRounds := 0
+				if entry == "ticker" || entry == "trigger" {
+					wantRounds = 1
+				}
+				starts, completes := 0, 0
+			drain:
+				for {
+					select {
+					case event := <-events:
+						switch event.Type {
+						case notifier.EventSyncStart:
+							starts++
+						case notifier.EventSyncComplete:
+							completes++
+						}
+					default:
+						break drain
+					}
+				}
+				if starts != wantRounds || completes != wantRounds {
+					t.Errorf("I8R18_BEHAVIOR %s：实际轮次 start=%d complete=%d，want=%d", entry, starts, completes, wantRounds)
+				}
+				if p.snapshotCalls != wantRounds*2 {
+					t.Errorf("I8R18_BEHAVIOR %s：Provider 快照=%d，want=%d", entry, p.snapshotCalls, wantRounds*2)
+				}
+				if p.createCalls != wantRounds || p.deleteCalls != 0 {
+					t.Errorf("I8R18_BEHAVIOR %s：Provider 新增=%d 删除=%d，want=%d/0", entry, p.createCalls, p.deleteCalls, wantRounds)
+				}
+				if !s.IsEnabled() {
+					t.Error("Stop 不得改变已发布的 enabled 状态")
+				}
+				if s.Status().Running {
+					t.Error("Run 返回后 running 必须为 false")
+				}
+				t.Logf("entry=%s 接缝=%d 轮次=%d/%d 快照=%d 新增=%d 删除=%d", entry, probe.hits.Load(), starts, completes, p.snapshotCalls, p.createCalls, p.deleteCalls)
+			})
+		})
+	}
+}
