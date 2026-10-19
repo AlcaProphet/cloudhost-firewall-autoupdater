@@ -50,6 +50,9 @@ jobs:
       - name: 构建前端
         run: cd webui/frontend && npm ci && npm run build
 
+      - name: 前端行为回归
+        run: cd webui/frontend && npm test
+
       # 依赖审计门禁（Build6 Step 6）：两层均阻断。
       # 生产依赖审计只统计会进入发布链路的生产依赖；完整审计覆盖 devDependency 构建链；
       # 二者在 Step 6 升级后均为 0 漏洞，故都作为阻断项，失败即阻止后续镜像构建与推送。

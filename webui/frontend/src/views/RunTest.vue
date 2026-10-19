@@ -1,21 +1,26 @@
 <script setup lang="ts">
 // 模拟测试页（原「运行测试」页：移除连接测试 Tab 与双标签结构，路由 /dry-run）
 // 连接测试能力保留在目标添加/编辑弹窗（POST /api/test-connection）
+import { onUnmounted } from 'vue'
 import { NButton, NSpace, useMessage } from 'naive-ui'
 import DryRunResults from '../components/DryRunResults.vue'
 import { useDryRun } from '../composables/useDryRun'
 
 const message = useMessage()
+let pageActive = true
+onUnmounted(() => { pageActive = false })
 
 // 模拟测试：按当前云资源目标与域名规则计算变更预览，不实际写入
 const { status, loading, results, warnings, error, lastFinishedAt, run } = useDryRun()
 
 async function runDryRun() {
-  if (loading.value) return
+  if (!pageActive || loading.value) return
   try {
     await run()
+    if (!pageActive) return
     message.info('模拟测试请求完成，请查看结果与提示')
   } catch {
+    if (!pageActive) return
     message.error(`模拟测试失败：${error.value}`)
   }
 }

@@ -29,6 +29,12 @@ case "$*" in
         sleep 1
         : > "$READY"
         ;;
+    test)
+        printf '%s\n' 'npm test' >> "$TRACE"
+        if [ ! -f "$READY" ]; then exit 19; fi
+        if [ "$FAIL_STAGE" = frontend-test ]; then exit 17; fi
+        : > "$TEST_READY"
+        ;;
     *) exit 29 ;;
 esac
 SH
@@ -38,6 +44,10 @@ set -eu
 printf 'go %s\n' "$1" >> "$TRACE"
 if [ ! -f "$READY" ]; then
     printf '%s\n' 'go-before-frontend' >> "$TRACE"
+    exit 19
+fi
+if [ "$1" = test ] && [ ! -f "$TEST_READY" ]; then
+    printf '%s\n' 'go-before-frontend-test' >> "$TRACE"
     exit 19
 fi
 if [ "$FAIL_STAGE" = "$1" ]; then exit 23; fi
@@ -51,19 +61,25 @@ run_case() {
     failure=$2
     expected_go=$3
     shift 3
+    expected_behavior=0
+    for goal in "$@"; do
+        case "$goal" in test|all|frontend-test) expected_behavior=1 ;; esac
+    done
     case_dir="$tmp_dir/$label"
     mkdir -p "$case_dir/webui/frontend"
     cp "$source_makefile" "$case_dir/Makefile"
     # 同名文件不能让 .PHONY frontend 被误判为已经准备完成。
     : > "$case_dir/frontend"
+    : > "$case_dir/frontend-test"
     : > "$case_dir/trace"
     if (
         cd "$case_dir"
         PATH="$tmp_dir/bin:$PATH"
         TRACE="$case_dir/trace"
         READY="$case_dir/frontend-complete"
+        TEST_READY="$case_dir/frontend-test-complete"
         FAIL_STAGE=$failure
-        export PATH TRACE READY FAIL_STAGE
+        export PATH TRACE READY TEST_READY FAIL_STAGE
         make "$@"
     ) > "$case_dir/output" 2>&1; then
         result=0
@@ -78,17 +94,20 @@ run_case() {
         valid=0
     fi
     # 每次调用共享一次安装/构建；前端失败不执行 Go，Go 失败也必须传出。
-    if ! awk -v failure="$failure" -v expected_go="$expected_go" -v goal="$1" '
+    if ! awk -v failure="$failure" -v expected_go="$expected_go" -v goal="${1:-}" -v expected_behavior="$expected_behavior" '
         $0 == "npm ci" { ci++ }
         $0 == "npm run build" { frontend++ }
+        $0 == "npm test" { behavior++ }
         $1 == "go" { go++; called[$2]++ }
-        $0 == "go-before-frontend" { early++ }
+        $0 ~ /^go-before-frontend/ { early++ }
         END {
             if (ci != 1 || early) exit 1
             if (frontend != (failure == "ci" ? 0 : 1)) exit 1
+            if (behavior != ((failure == "ci" || failure == "frontend-build") ? 0 : expected_behavior)) exit 1
             if (expected_go >= 0 && go != expected_go) exit 1
             if (expected_go == 1 && called[goal] != 1) exit 1
             if (expected_go == 3 && (called["test"] != 1 || called["vet"] != 1 || called["build"] != 1)) exit 1
+            if (failure == "frontend-test" && called["test"]) exit 1
             if (failure ~ /^(test|vet|build)$/ && !called[failure]) exit 1
         }
     ' "$case_dir/trace"; then
@@ -103,6 +122,8 @@ run_case() {
     printf 'PASS: %s\n' "$label"
 }
 
+run_case default '' 0
+run_case frontend-test '' 0 frontend-test
 run_case test '' 1 test
 run_case vet '' 1 vet
 run_case build '' 1 build
@@ -114,6 +135,8 @@ for stage in ci frontend-build; do
         run_case "fail-$stage-$goal" "$stage" 0 -j4 "$goal"
     done
 done
+run_case fail-behavior-test frontend-test 0 test
+run_case fail-behavior-parallel-all frontend-test -1 -j4 all
 for stage in vet test build; do
     run_case "fail-go-$stage" "$stage" -1 -j4 all
 done

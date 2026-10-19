@@ -4,16 +4,19 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "test:dryrun": "node --test tests/dryrun-state.test.mjs",
-    "test:dashboard": "node --test tests/dashboard-observation.test.mjs",
-    "test:alerts": "node --test --test-timeout=30000 tests/alerts-load.test.mjs",
+    "test:dryrun": "node scripts/test-frontend.mjs dryrun",
+    "test:dashboard": "node scripts/test-frontend.mjs dashboard",
+    "test:alerts": "node scripts/test-frontend.mjs alerts",
     "dev": "vite",
     "build": "vue-tsc && vite build",
     "preview": "vite preview",
-    "test:delete": "node --test tests/delete-confirm.test.mjs",
-    "test:logs": "node --test tests/logs-stream.test.mjs",
-    "test:state": "node --test tests/p316-state.test.mjs",
-    "test:import": "node --test --test-timeout=30000 tests/import-presence.test.mjs"
+    "test:delete": "node scripts/test-frontend.mjs delete",
+    "test:logs": "node scripts/test-frontend.mjs logs",
+    "test:state": "node scripts/test-frontend.mjs state",
+    "test:import": "node scripts/test-frontend.mjs import",
+    "test": "node scripts/test-frontend.mjs",
+    "test:behavior": "node scripts/test-frontend.mjs behavior",
+    "test:runner": "node scripts/test-frontend.mjs runner"
   },
   "dependencies": {
     "naive-ui": "^2.45.3",

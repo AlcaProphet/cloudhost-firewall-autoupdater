@@ -33,13 +33,13 @@ function mount() {
   }
   const api = evaluate(read('api.ts'), name => { throw new Error(name) })
   const hook = evaluate(read('composables/useDryRun.ts'), name => {
-    if (name === 'vue') return vue
+    if (name === 'vue') return { ...vue, onUnmounted() {} }
     if (name === '../api') return api
     throw new Error(name)
   }).useDryRun
   const components = Object.fromEntries(['NButton','NSpace','NCard','NDataTable','NAlert','NStatistic','NGrid','NGi','NTag'].map(name => [name, { name }]))
   function dependencies(name) {
-    if (name === 'vue') return vue
+    if (name === 'vue') return { ...vue, onUnmounted() {} }
     if (name === 'naive-ui') return { ...components, useMessage: () => Object.fromEntries(['info','success','error'].map(kind => [kind, text => messages.push({ kind, text })])) }
     if (name.endsWith('/useDryRun')) return { useDryRun: () => state = hook() }
     if (name.endsWith('/constants')) return { cloudLabelMap: { tc_cvm: '腾讯云 CVM' } }

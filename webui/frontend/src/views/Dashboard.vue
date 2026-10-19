@@ -24,6 +24,11 @@ const showGuide = ref(false) // 首次使用引导条
 const router = useRouter()
 const message = useMessage()
 const { refresh, tcReady, aliReady } = useSettings()
+let pageActive = true
+// 状态与统计各自只接受最新发起请求的响应。
+let statusSequence = 0
+let statsSequence = 0
+let triggerTimer: ReturnType<typeof setTimeout> | null = null
 let timer: ReturnType<typeof setInterval> | null = null
 
 // 三态标签：同步引擎状态（唯一展示：28px 大字 + 状态色；Build4 Step 9 去重）
@@ -35,9 +40,11 @@ const engineTag = computed(() => {
 })
 
 async function fetchStatus() {
+  if (!pageActive) return
+  const sequence = ++statusSequence
   try {
     const s = await request<SyncStatus>('/api/sync/status')
-    status.value = s
+    if (pageActive && sequence === statusSequence) status.value = s
   } catch { /* 轮询失败忽略 */ }
 }
 
@@ -79,11 +86,14 @@ const healthHint = computed(() => {
 
 // 统计概览：目标数 / 规则数（最近一轮增删直接使用同步状态快照）
 async function fetchStats() {
+  if (!pageActive) return
+  const sequence = ++statsSequence
   try {
     const [targets, rules] = await Promise.all([
       request<any[]>('/api/targets'),
       request<any[]>('/api/rules'),
     ])
+    if (!pageActive || sequence !== statsSequence) return
     stats.value = {
       targets: targets.length,
       rules: rules.length,
@@ -95,28 +105,40 @@ async function fetchStats() {
 // 用 refresh() 强制拉取：用户在设置页配置凭据后返回本页，引导条应立即消失（避免模块级缓存导致旧状态）
 async function checkGuide() {
   await refresh()
+  if (!pageActive) return
   showGuide.value = !(tcReady.value || aliReady.value)
 }
 
 function closeGuide() { showGuide.value = false }
 
 async function triggerSync() {
+  if (!pageActive) return
   try {
     await request('/api/sync/trigger', { method: 'POST' })
+    if (!pageActive) return
     message.success('同步已触发')
   } catch (e: any) {
+    if (!pageActive) return
     message.error(`触发失败: ${e.message}`) // 暂停时后端返回 409
   }
-  setTimeout(fetchStatus, 1000)
+  if (!pageActive) return
+  if (triggerTimer) clearTimeout(triggerTimer)
+  triggerTimer = setTimeout(() => {
+    triggerTimer = null
+    fetchStatus()
+  }, 1000)
 }
 
 async function toggleSync() {
+  if (!pageActive) return
   switching.value = true
   try {
     await request(`/api/sync/${status.value.enabled ? 'pause' : 'resume'}`, { method: 'POST' })
+    if (!pageActive) return
     status.value.enabled = !status.value.enabled
     message.success(status.value.enabled ? '同步已开启' : '同步已暂停')
   } catch (e: any) {
+    if (!pageActive) return
     message.error(`操作失败: ${e.message}`)
   } finally {
     switching.value = false
@@ -132,6 +154,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  pageActive = false
+  if (triggerTimer) clearTimeout(triggerTimer)
   if (timer) clearInterval(timer)
 })
 </script>

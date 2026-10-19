@@ -433,7 +433,7 @@ cd cloudhost-firewall-autoupdater
 make all
 ```
 
-`make test`、`make vet`、`make build` 均会先执行 `npm ci` 和前端生产构建，清洁检出可直接使用；需要 Go 1.27.1+、Node.js 和 npm。同一次 Make 调用中的多个目标共享一次前端构建，分别执行三次 Make 则会构建三次。`make -j4 all` 同样先完成前端，再并行执行 Go 检查、测试与构建；任一阶段失败会使 Make 非零退出。
+`make test`、`make vet`、`make build` 均会先执行 `npm ci` 和前端生产构建，清洁检出可直接使用；需要 Go 1.27.1+、Node.js 和 npm。同一次 Make 调用中的多个目标共享一次前端构建，分别执行三次 Make 则会构建三次。`make test` / `make all` 还会在 Go 测试前执行前端行为回归；可单独使用 `make frontend-test` 完成前端准备与行为检查。`make -j4 all` 允许 vet/build 与行为测试并行，任一阶段失败会使 Make 非零退出，不保证其他并行任务从未运行。默认无参数make仍只构建前端。
 
 日常只检查 Go 时，可以先执行 `make frontend`，随后直接运行 `go test ./... -race` 或 `go vet ./...`。裸 Go 命令不会生成前端产物；前端源码、配置或锁文件变化后应重新执行 `make frontend`。默认 DNS 测试通过本地 IPv4/IPv6 随机回环 UDP 服务运行真实解析器，不转发查询；普通完整 Go 测试与默认 CI 不访问真实 DNS 上游，无需为了避开 DNS 使用全仓 `-short`。npm/Go 依赖准备仍可能访问网络，这不等同整个构建离线。
 
@@ -474,18 +474,23 @@ npm run dev
 npm run build
 ```
 
-### 告警页行为回归
+### 前端行为回归
 
-告警页的本地行为回归使用独立入口（先准备前端依赖）：
+准备前端依赖后，可运行完整门禁或专项入口：
 
 ```bash
 cd webui/frontend
+npm test
 npm run test:alerts
-# 直接使用 Node 时也需保留超时参数：
-node --test --test-timeout=30000 tests/alerts-load.test.mjs
+npm run test:behavior  # I8-R21 模板、页面退出与响应顺序
+npm run test:runner    # 测试进程预算、回收与信号转发
 ```
 
-每项测试有 30 秒预算；加载中保存和重复保存会在等待前检查请求次数，失败时也清理挂起的模拟请求。以命令退出码 0 判绿，超时可能计入 cancelled，不能只检查 `fail=0`。该预算不对应真实 SMTP 请求时限，也不是整套测试的 30 秒总上限；同步死循环和遗留活动句柄仍不属于原生超时的硬终止保证。其他前端测试入口未统一增加预算，Make、CI 与 Docker 当前也不自动执行这组行为回归。
+既有 `test:dryrun/dashboard/alerts/delete/logs/state/import` 均保留，并与完整入口共享监督器。默认逐项预算30秒，保留部分用例已有的更窄预算；每次命令另有120秒总预算，超限返回非零，先通知独立测试进程组，再用1秒收尾窗口回收同组进程。支持Linux/macOS，不承诺终止自行脱离进程组的子孙。预算不含npm安装/构建，也不改变真实SMTP的35秒请求上限。以命令退出码0判绿，不能只检查 `fail=0`；基础设施用例会故意验证挂起和失败，父用例仍须通过。
+
+`make test` / `make all` 和CI自动执行完整入口；CI失败阻止后续镜像发布。`make build`、直接Docker构建仍只构建。裸 `node --test` 可用于定向诊断，但没有共同父进程的总预算。告警加载/重复保存及新异步夹具在等待前检查请求，失败时也释放挂起Promise并等待任务结束。
+
+页面退出后，旧页面不再发送消息、安排查询timer或启动后续预加载；已发送的保存、模拟测试、SMTP请求继续完成，离页不代表服务端操作撤销。Dashboard状态/统计只接收最新发起请求的响应，失败保留已知记录。共享设置/扫描缓存的在途工作保持。44px回归验证主题与按钮尺寸接线，不替代浏览器实际尺寸测量；详见 [Issue8 I8-R21](./Issue8.md#i8-r21)。
 
 ### 构建完整二进制（含前端）
 
@@ -611,7 +616,7 @@ Docker 需在容器内设置 `WEBUI_HOST=0.0.0.0`。宿主机的暴露范围由�
 
 ### 配置导入诊断回归（I8-43）
 
-在 `webui/frontend` 执行 `npm run test:import`，每项测试预算为 30 秒；测试执行真实请求封装、编译后的 Settings 组件与模板，覆盖原文件上传、字段列表/截断展示、取消/在途/卸载和刷新窗口。后端可用 `go test ./webui/api -race -run '^TestI843' -count=1` 验证正式 handler、临时 SQLite 与运行时的诊断和零副作用边界。裸 Go 命令须先按构建章节准备真实前端 dist；本入口不替代全量门禁或真实浏览器验收，也未接入 Make/CI/Docker。
+在 `webui/frontend` 执行 `npm run test:import`，逐项30秒、命令总预算120秒加1秒收尾；测试执行真实请求封装、编译后的 Settings 组件与模板，覆盖原文件上传、字段列表/截断展示、取消/在途/卸载和刷新窗口。它随完整 `npm test` 接入 Make测试及CI，直接Docker构建不执行。后端可用 `go test ./webui/api -race -run '^TestI843' -count=1` 验证正式 handler、临时 SQLite 与运行时的诊断和零副作用边界。裸 Go 命令须先按构建章节准备真实前端 dist；本入口不替代全量门禁或真实浏览器验收。
 
 ---
 

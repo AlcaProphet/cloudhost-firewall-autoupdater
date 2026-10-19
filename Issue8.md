@@ -33,7 +33,7 @@
 | I8-R18 | A20 修复前负向控制与四入口长期回归 | 方案 B 本地完成 | 旧 I8-23 |
 | I8-R19 | 组件退出与资源泄漏证明 | 方案 B 生命周期修复与长期回归本地完成 | 旧 Issue8 §3 goroutine/fd/ticker |
 | I8-R20 | 启动宽限10秒数值锚点 | 数值与默认边界长期回归本地完成 | 旧 Issue8 §3 DefaultStartupGrace |
-| I8-R21 | 前端长期行为覆盖与异步门禁 | 补强候选待复核 | TODOLIST P2-06/08/09/P3-16；旧 Issue8 §3/ I8-102 |
+| I8-R21 | 前端长期行为覆盖与异步门禁 | 方案B生命周期修复与前端门禁本地完成 | TODOLIST P2-06/08/09/P3-16；旧 Issue8 §3/ I8-102 |
 | I8-R22 | 当前 revision 远端发布证据 | 独立证据待完成 | PT-B7-08；Issue5 O5-02历史边界；旧 I8-25部分 |
 | I8-R23 | 特定平台与长期运行证据 | 证据范围待核对 | 历史audit/Issue8外部边界 |
 | I8-R24 | 合理前置条件与防御接口 | 方案 A 保持契约；注释与文档维护收口 | 旧 I8-17e/I8-47/I8-44-1/2/3 |
@@ -307,9 +307,13 @@
 
 ### I8-R21 前端长期行为覆盖与异步门禁
 
-- **状态与来源：** 补强候选待复核；TODOLIST P2-06/08/09/P3-16；旧 Issue8 §3/ I8-102。
-- **证据与边界：** 后续已有Alerts、Dashboard观察、Dry Run请求阶段等正式回归，旧“完全无组件测试”不再沿用；仍需逐场景检查模板disabled、outcome完整矩阵、target_id稳定key、44px尺寸和卸载晚到覆盖。test:alerts逐项30秒已修，总命令预算/其他入口/CI接线未统一。
-- **后续与完成条件：** 先建立当前用例与行为映射，再决定补缺；优先有判别力的请求/模板/虚拟时间观察，不机械替换全部sleep或新增镜像实现的测试。
+- **授权与基线（2026-10-20）：** 用户选择研究推荐B，授权进一步研究准备后正式修复并同步文档。正式实施前 `main / 68ca03fbc726cf6c346055caa82a6ce34a1b620f`，与本地origin/main一致、工作树/暂存区干净；341份既有跟踪文件哈希与准备快照一致，未fetch。来源为TODOLIST P2-06/08/09/P3-16、旧Issue8 §3/I8-102；不是“完全无组件测试”。
+- **研究与准备：** 既有七入口110项已通过，但保存按钮disabled、卡片key、44px接线及禁止前端按时间派生健康等错误变体仍可全绿。实际确认Dashboard状态/统计响应乱序、离页后消息和触发timer、Alerts/RunTest晚到消息、Settings初读后继续预加载。四种outcome为idle/success/partial/failed，cleanup_deferred为附加观察。准备候选在Node24.21.0/26.7.0各完整151项通过，11类错误变体和旧生产源码均按行为断言变红；Make隔离替身21项通过。研究目录 `/Users/kylechen/Desktop/Repo/2026-10-19/i8-r21-research-c3hvi0xh/`，准备目录 `/Users/kylechen/Desktop/Repo/2026-10-20/i8-r21-preparation/`，不混作正式工作树证据。
+- **正式范围与合同：** 仅4份生产Vue页面（Dashboard/Alerts/RunTest/Settings）增加页面退出保护，Dashboard分别按请求序号接收最新状态/统计，管理5秒轮询和触发后1秒timer；最新查询失败保留已知状态，不接受旧在途成功回填。离页后不发本页消息、不创建timer或启动后续页面请求；已发HTTP操作自然完成，不称服务端撤销、不自动重试。共享缓存已开始的跨页面工作保持，不要求所有已销毁私有ref冻结；不改useDryRun/API/schema/Go生产代码、依赖或锁文件、SMTP35秒及其他生产预算。
+- **长期回归与接线：** 新增33项页面行为回归及SFC编译辅助、8项真实进程门禁回归；既有Alerts/DryRun夹具仅补卸载注册桩。统一npm test与九个专项别名使用同一父监督器：Node逐项30秒、保留既有更窄预算，命令120秒总预算与1秒同组回收；收到SIGINT/SIGTERM后统一TERM收尾并非零退出。嵌套独立测试根进程移除NODE_TEST_CONTEXT，拒绝零文件/未知入口，故障夹具证明实际执行而非递归检测假绿。Make新增frontend-test依赖，test/all执行一次行为门禁后才运行Go test；CI在构建前端后执行同一命令。默认make、vet/build及直接Docker构建保持构建语义，make -j4 all的其他任务仍可并行。共17文件（4生产、4新测试/工具文件、2旧夹具、package、Make/替身/CI、AGENTS/README/本文）。
+- **正式专项与判别力：** 正式工作树Node24.21.0逐一执行九个npm专项，合计151项全部通过（原110项+新增33项页面行为+8项进程门禁），无fail/cancelled/skipped；Node26.7.0完整共同入口151项通过（6.928s）。Make隔离替身21项通过（14.520s），含默认入口、共享准备/行为门禁、并行多目标和失败传播。基于正式文件生成的15类仓外错误变体全部以预期断言退出1：disabled/key/44px/前端时间派生、状态/统计序号、Alerts/DryRun/触发晚到消息、timer清理、Settings预加载、继承worker身份、专项别名绕预算、Make漏依赖及吞失败；无编译错误、异常崩溃或整体超时充数。证据见focused-results.json、negative-results.json。
+- **完整本地门禁：** 正式 `make all` 退出0（57.453s），包括任务独立npm缓存下的npm ci、vue-tsc/Vite、151项前端行为、全仓Go vet/race与产品构建；12个Go包中6包实际执行、6包命中缓存。随后独立 `go test ./... -race -count=1 -timeout=5m` 退出0（44.670s），12包全部禁缓存执行一轮。最终Go门禁显式将Go1.27.1置于PATH首位并设GOTOOLCHAIN=local，Node24.21.0/npm11.19.0；首次Make因PATH误指系统Go1.26.6在vet入口被版本要求拒绝，原失败日志保留，未计作通过证据。npm ci附带审计0漏洞，未另行运行两条独立npm audit。新增JS语法、shell语法、git diff --check、17文件范围与空暂存区检查通过，其余328份既有跟踪文件哈希不变。I8-R21本地完成；正式证据目录 `/Users/kylechen/Desktop/Repo/2026-10-20/i8-r21-implementation/`。
+- **证据边界：** 44px仅验证明暗主题覆盖传递和large按钮接线，不称浏览器实际布局测量；既有队列推进保留，不批量替换sleep或迁移测试框架。父监督器只覆盖项目支持的Linux/macOS及未脱离本次组的进程，不承诺任意子孙或生产进程硬退出时限。本机Go1.27.1 darwin/arm64、Node24.21.0/26.7.0；Linux/Docker、真实浏览器/云/SMTP/Webhook/Kuma、当前revision远端CI/GHCR未执行，不外推长期稳定或发布通过；普通人工收口、Webhook/Kuma豁免及SMTP独立清单保持。本轮源码/测试/文档尚未提交或推送。
 
 <a id="i8-r22"></a>
 

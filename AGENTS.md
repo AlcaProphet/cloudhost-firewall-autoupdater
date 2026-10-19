@@ -349,11 +349,14 @@
 - 裸 Go 命令使用已准备好的真实 dist，不自动生成前端；前端源码/配置/锁文件变化后重新构建。默认无参数 `make` 仍只构建前端，不引入增量缓存或新的 Make 版本要求。
 - 依赖顺序与失败传播回归使用 `sh build/makefile_test.sh`，仅用隔离目录与本地命令替身；真实前端、静态嵌入与 Go 门禁需另行验证。默认 DNS 测试已按 I8-04 定型 B 使用本地回环服务；完整构建仍可能下载 npm/Go 依赖，不将本地收口写成完全离线或远端 CI/Docker 已通过。
 
-### 告警前端测试门禁（I8-102 / Q-15，2026-10-08 方案 B）
+### 前端行为测试门禁（I8-R21，2026-10-20 方案 B；扩展 I8-102 / Q-15）
 
-- `npm run test:alerts` 固定使用 `node --test --test-timeout=30000 tests/alerts-load.test.mjs`，为每项测试设置 30 秒预算；裸 Node 运行需显式携带同一参数。正常退出码必须为 0，超时可能计入 cancelled，不以 `fail=0` 单独判绿。
+- `npm test` 通过 `scripts/test-frontend.mjs` 执行全部 `tests/*.test.mjs`；七个既有 `test:*` 专项及新增 `test:behavior` / `test:runner` 都经过同一入口。子进程使用 `node --test --test-timeout=30000`，保留 Dry Run/state 既有更窄的逐项预算。正常退出码必须为 0，超时可能计入 cancelled，不以 `fail=0` 单独判绿。裸 Node 命令只用于定向诊断，不提供共同入口的总预算。
+- 父进程独立监督测试命令的120秒总预算；超限或收到 SIGINT/SIGTERM 时通知本次独立进程组，1秒后回收仍在同组的测试进程，最终非零。即使直接子进程已退出，也不能提前丢弃升级清理计时。只承诺项目支持的 Linux/macOS 和未脱离该组的进程；不使用强制成功退出掩盖遗留句柄。测试内启动独立测试根进程时移除继承的 `NODE_TEST_CONTEXT`，不能把递归检测导致的零执行当通过。预算不含npm安装/构建，不对应SMTP的35秒或其他产品请求时限。
+- `make frontend-test` 依赖真实 `frontend` 准备；`make test` / `make all` 必须执行行为门禁，Go test 在其成功后执行，同一次Make共享一次准备和行为测试。默认make、vet/build继续各自构建语义；`make -j4 all` 的vet/build仍可与行为测试并行，任一失败整体非零，不承诺其他任务从未执行。CI在前端构建后、Go检查及镜像发布前执行同一 `npm test`；直接Docker构建仍只负责构建，不因此声称运行行为回归。依赖顺序和失败传播由 `build/makefile_test.sh` 的隔离替身回归保护。
 - 加载中保存和重复保存的回归先记录调用返回的 Promise、在 await 前检查请求次数，再保留正常等待与后续状态断言；使用 `t.after` 在失败路径也结算挂起夹具并等待已启动任务。
-- 该预算针对本地模拟请求回归，不对应产品测试邮件的 35 秒请求上限；整套测试可累计等待多个预算，原生超时不承诺中断同步死循环或清除遗留活动句柄。未增加进程级监督、统一其他五个前端测试入口，或将前端行为回归接入 Make/CI/Docker；这些保持独立范围。
+- 页面异步边界：Dashboard/Alerts/RunTest/Settings离页后不发本页消息、不创建timer或启动页面后续请求；已发送操作自然完成，不把离页称为服务端撤销、不自动重试。Dashboard状态/统计分别只接收最新发起请求的响应，最新请求失败保留已知状态；清理5秒轮询和触发后1秒timer，捕获的旧回调也不得重新准入。共享设置/扫描缓存继续其已开始的跨页面工作，不要求所有已销毁组件私有ref冻结。
+- 长期回归编译真实SFC/模板，保护保存disabled矩阵、四种outcome及暂停/清理观察、target_id卡片key、明暗主题44px与large按钮接线，观察消息/请求/timer及响应乱序。`cleanup_deferred`不是第五种outcome；44px接线检查不等于浏览器实际布局测量。同步死循环、未解Promise、遗留interval、忽略TERM的worker与信号转发由真实进程故障夹具覆盖；不机械替换现有队列推进或重写全部旧用例。范围与本地证据见 [Issue8 I8-R21](./Issue8.md#i8-r21)。
 
 ### DNS 测试门禁（I8-04 / Q-06，2026-10-08 定型 B）
 
