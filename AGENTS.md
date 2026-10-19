@@ -146,6 +146,7 @@
 - 聚焦核心场景，不对极端边界做过度防御性编程
 - 合理假设输入有效性，不做无意义的 nil 检查链
 - 错误处理到位即可，不堆叠冗余的 fallback 逻辑
+- 合理前置条件（I8-R24，方案 A）：正式 DNS 轮次只处理同一运行时快照中的配置域名；数据库业务入口与配置协调器必须提供非 nil Store，静态 health/SPA 路由可独立使用；`ToRuntimeConfig` 只转换已归一化业务快照，解析帮助函数不提供有效默认值；`Checker.Evaluate` 必须获得 Pinger/Status/Policy/Interval，`TriggerEnabled` 的局部 nil 保护不扩大该契约；固定 embed 路径的 `fs.Sub` 不检查目录或首页内容。新增内置云平台时在配置入口、Provider 构造与云响应转换边界校验，不因此扩大这些内部函数的可空或任意输入契约；未来需要独立复用时另行研究。分项结论与本地证据见 [Issue8 I8-R24](./Issue8.md#i8-r24)。
 
 ### 安全设计（内部使用导向）
 

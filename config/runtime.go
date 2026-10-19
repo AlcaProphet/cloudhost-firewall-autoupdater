@@ -92,6 +92,9 @@ func (rc RuntimeConfig) DeepCopy() RuntimeConfig {
 }
 
 // ToRuntimeConfig 把已归一化的业务快照转换为运行时配置（含深拷贝）。
+//
+// Settings 必须已经归一化并通过校验；生产调用方通过 LoadBusinessSnapshot
+// 或 LoadBusinessSnapshotTx 取得快照。本方法不补默认值或重新校验。
 func (s *BusinessSnapshot) ToRuntimeConfig() RuntimeConfig {
 	return RuntimeConfig{
 		Credentials:      s.Credentials(),
@@ -114,8 +117,9 @@ func (s *BusinessSnapshot) ToRuntimeConfig() RuntimeConfig {
 
 // mustDuration 解析已完成校验的时长设置。
 //
-// 非法值不可能到达这里：LoadBusinessSnapshotTx 已在同一事务内用
-// ParsePositiveDuration 校验并在失败时返回错误；解析失败时返回调用方兜底值。
+// 生产调用前，LoadBusinessSnapshotTx 已在同一事务内用 ParsePositiveDuration
+// 拒绝非正数或格式非法的值。此处解析失败返回 0，并不提供有效默认值；
+// 本函数也不独立检查正数，调用方不得绕过快照校验。
 func mustDuration(v string) time.Duration {
 	d, err := time.ParseDuration(v)
 	if err != nil {
@@ -124,7 +128,8 @@ func mustDuration(v string) time.Duration {
 	return d
 }
 
-// mustThreshold 解析已完成校验的正整数阈值设置；非法值同样不可能到达这里。
+// mustThreshold 解析已完成校验的正整数阈值设置。
+// 生产调用前已通过快照校验；此处失败返回 0，不承担默认阈值的补齐。
 func mustThreshold(v string) int {
 	_, n, err := NormalizeDNSFailThreshold(v)
 	if err != nil {

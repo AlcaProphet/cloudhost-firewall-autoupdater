@@ -79,7 +79,10 @@ type Server struct {
 	serveResult error
 }
 
-// NewServer 创建 WebUI 服务器
+// NewServer 创建 WebUI 服务器。
+//
+// 静态 health 与 SPA 路由本身不读取 Store；调用读写数据库的业务入口必须提供
+// 非 nil Store。生产启动在成功打开数据库并加载业务快照后才创建服务器。
 func NewServer(store *config.Store, host string, port int) *Server {
 	s := &Server{
 		host:         host,
@@ -308,6 +311,8 @@ func (s *Server) registerRoutes() {
 	// 所有业务 API 端点
 	s.deps.Register(s.mux)
 	// 静态文件（Vue SPA）
+	// 固定合法路径下的 fs.Sub 只建立 embed.FS 子目录视图，不验证目录或 index.html
+	// 是否存在；内容完整性由前端构建与静态资源回归检查。
 	distFS, err := fs.Sub(frontendFS, "frontend/dist")
 	if err == nil {
 		s.mux.Handle("/", http.FileServer(http.FS(distFS)))

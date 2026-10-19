@@ -54,6 +54,8 @@ type Pinger interface {
 }
 
 // Deps 是 Checker 的依赖集合。所有函数字段都必须是快速、无阻塞的内存读取。
+// Pinger、Status、Policy 与 Interval 是 Evaluate 的必需依赖，调用方必须完整提供；
+// Now、PingTimeout 与 StartupGrace 的默认规则见各字段说明。
 type Deps struct {
 	// Pinger 执行 SQLite 探活；不得在内部持有 Syncer 或配置协调器锁。
 	Pinger Pinger
@@ -191,6 +193,7 @@ func (c *Checker) Evaluate(ctx context.Context) Result {
 //
 // 监督器始终计算与记录健康状态；本开关只决定异常事件是否发布给
 // 邮件/Webhook 订阅者，不影响 operational 端点与 Push。
+// 本方法的 nil Policy 分支仅返回关闭状态，不表示 Evaluate 支持缺少 Policy。
 func (c *Checker) TriggerEnabled() bool {
 	if c.deps.Policy == nil {
 		return false
