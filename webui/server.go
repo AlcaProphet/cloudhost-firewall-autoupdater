@@ -64,11 +64,13 @@ type Server struct {
 	serveStarted chan struct{} // listener 已发布、即将启动 Serve（测试用确定性同步）
 
 	// 生命周期状态（由 mu 保护）
-	mu         sync.Mutex
-	httpServer *http.Server
-	listener   net.Listener
-	shutdown   bool // 是否已进入关闭流程（用于归一化 ErrServerClosed/net.ErrClosed）
-	started    bool // Start 是否已被调用过（重复调用门控，Issue6 A16）
+	mu             sync.Mutex
+	httpServer     *http.Server
+	listener       net.Listener
+	requestWG      sync.WaitGroup
+	requestsClosed bool
+	shutdown       bool // 是否已进入关闭流程（用于归一化 ErrServerClosed/net.ErrClosed）
+	started        bool // Start 是否已被调用过（重复调用门控，Issue6 A16）
 
 	// Wait 的唯一结果广播（Issue6 A16）：Serve 结果只投递一次并被缓存，
 	// 使多次/并发 Wait 返回同一结果，而不是从容量 1 的 channel 各读一次而永久阻塞。
@@ -195,7 +197,7 @@ func (s *Server) Start() (int, error) {
 	actualPort := tcpAddr.Port
 
 	hs := &http.Server{
-		Handler:           s.mux,
+		Handler:           http.HandlerFunc(s.serveRequest),
 		ReadHeaderTimeout: ReadHeaderTimeout,
 		IdleTimeout:       IdleTimeout,
 		// ReadTimeout/WriteTimeout 保持零值：不设置会周期性切断
@@ -270,6 +272,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// 关闭流程标记必须在最早时机置位，使 Serve 收尾按正常退出归一化
 	s.mu.Lock()
 	s.shutdown = true
+	s.requestsClosed = true
 	hs := s.httpServer
 	s.mu.Unlock()
 
@@ -309,4 +312,29 @@ func (s *Server) registerRoutes() {
 	if err == nil {
 		s.mux.Handle("/", http.FileServer(http.FS(distFS)))
 	}
+}
+
+// serveRequest 在业务 handler 前登记，拒绝冻结后的迟到请求。
+func (s *Server) serveRequest(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	if s.requestsClosed {
+		s.mu.Unlock()
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "服务正在关闭", http.StatusServiceUnavailable)
+		return
+	}
+	s.requestWG.Add(1)
+	s.mu.Unlock()
+	defer s.requestWG.Done()
+	s.mux.ServeHTTP(w, r)
+}
+
+// WaitRequests 冻结准入后等待实际 handler 返回，可重复或并发等待。
+// 由 main 在 Shutdown 后调用；不代替 Shutdown，也不得在本 Server 的 handler 内调用。
+// 强制关闭连接与 Serve 返回不代表 handler 已完成，此处不新增取消或硬时限。
+func (s *Server) WaitRequests() {
+	s.mu.Lock()
+	s.requestsClosed = true
+	s.mu.Unlock()
+	s.requestWG.Wait()
 }

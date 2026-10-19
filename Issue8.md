@@ -31,7 +31,7 @@
 | I8-R16 | 其他清理符号清单 | 方案B维护清理与测试迁移本地完成 | 旧 I8-42；Q-13剩余 |
 | I8-R17 | 日志渲染失败仓内长期回归 | 方案 A 仓内长期回归本地完成 | 旧 I8-22；P3-10出口④ |
 | I8-R18 | A20 修复前负向控制与四入口长期回归 | 方案 B 本地完成 | 旧 I8-23 |
-| I8-R19 | 组件退出与资源泄漏证明 | 测试覆盖候选 | 旧 Issue8 §3 goroutine/fd/ticker |
+| I8-R19 | 组件退出与资源泄漏证明 | 方案 B 生命周期修复与长期回归本地完成 | 旧 Issue8 §3 goroutine/fd/ticker |
 | I8-R20 | 启动宽限10秒数值锚点 | 低成本证据缺口 | 旧 Issue8 §3 DefaultStartupGrace |
 | I8-R21 | 前端长期行为覆盖与异步门禁 | 补强候选待复核 | TODOLIST P2-06/08/09/P3-16；旧 Issue8 §3/ I8-102 |
 | I8-R22 | 当前 revision 远端发布证据 | 独立证据待完成 | PT-B7-08；Issue5 O5-02历史边界；旧 I8-25部分 |
@@ -282,9 +282,13 @@
 
 ### I8-R19 组件退出与资源泄漏证明
 
-- **状态与来源：** 测试覆盖候选；旧 Issue8 §3 goroutine/fd/ticker。
-- **证据与边界：** 已有TestShutdownNoGoroutineLeak和重复Shutdown回归；撤销“全仓零泄漏断言”。Syncer/Push/Supervisor/FD/ticker尚无全面确定性退出证明。
-- **后续与完成条件：** 按组件评估需要补的真实退出观察、任务完成信号和句柄回收；单次goroutine数量、固定sleep或有限时间内没出现现象不等于全面无泄漏。
+- **状态与来源：** 旧 Issue8 §3 goroutine/fd/ticker；2026-10-19 按用户批准的方案 B 实施，生命周期修复与长期回归本地完成。用户明确选择等待在途自然完成，不新增退出取消预算。实施前 `main / ef0cdc1bf1bb83d3805436882098ab5fcfbfe2ce`，相对本地 origin/main ahead 1，工作树/暂存区干净；与准备基线303份跟踪文件及八份候选哈希一致，未 fetch/push。
+- **生产范围：** 八文件为 `internal/health/push.go`、`notifier/bus.go`、`notifier/inflight.go`、`notifier/webhook.go`、`webui/server.go`、`webui/api/alertset.go`、`webui/api/deps.go`、`run.go`。Pusher 持有私有 Transport；AlertManager 跨热重载持有另一私有池，通知器保留自己的 client/原超时。候选构造/回滚/Apply 不关闭长期池，旧发送不取消。EventBus 在订阅快照锁内登记普通回调，最终冻结准入并等待，覆盖尚未启动的回调与错误诊断；不抢先停止 SSE channel 或日志 ingress。Server 包装原 ResponseWriter，登记与冻结共锁，迟到请求安全 503 + no-store，独立等待实际 handler。限流器最终停止诊断续约、取消未开始 timer 并等待已开始回调，不新增强制汇总。
+- **退出合同：** 开始 HTTP Shutdown → Push/监督器停止 → Stop Syncer → HTTP 收尾与 Serve 结果转发实际返回 → 当前轮及已准入 handler 完成 → 普通告警冻结/join → 诊断回调停止及私有 Webhook 空闲池关闭 → 日志 writer 既有10秒软排空/join → Store.Close → pidfile。Push 私有空闲池在其 done 前关闭；HTTP 10秒只限制优雅连接等待，不承诺进程硬10秒退出。保留原 SMTP/HTTP/云预算及已有请求/SQL取消，正式同步当前轮不取消；自然完成包括错误/超时返回，不代表真实投递。
+- **正式回归：** 新增八份测试资产，覆盖 Syncer 多云分组和多个 Wait 等待者、Supervisor 在途检查与实际 Run 返回、Push 关闭/timer/检查停止及 HTTP/1/HTTP/2 私有连接回收、请求冻结/并发准入/强制关闭后 handler 完成/Flush 透传、旧新告警并存与回滚保池、普通回调 drain 与 SSE/ingress 独立、诊断 timer 等待/输出中停止。默认父测试 `TestI8R19CapturedCallback` 仅临时注入 Publish 解锁后、启动回调前接缝；读取 testdata 追踪缓存，固定当前 GOROOT/GOTOOLCHAIN=local、子进程 race/count=1 并核对实际 run/pass，产品无新 hook。真实产品进程测试在默认10秒HTTP窗口强制关连接后放行本地假SMTP，要求实际邮件会话完成、正常退出及数据目录锁最终释放，不把客户端断开当作 handler 已完成。
+- **专项与判别力：** 正式工作树五包15个新增顶层专项 race/count=20 退出0（35.810s），全部顶层及8个子场景的 run/pass 各20次；捕获回调父测试每次确认子测试实际运行并通过。真实产品进程新增回归 race/count=1 退出0（包耗时12.500s）。九类基于正式文件的仓外副本错误变体均以预期行为断言退出1：漏关 Push 空闲池、回调登记过晚、请求未 join、请求未冻结、诊断回调未 join、Webhook 沿用共享池、Supervisor/Push 未等待在途检查、main 漏等请求。不以编译失败、panic、DATA RACE 或测试总超时充数；捕获回调与进程变体使用真实写入的仓外副本，避免父测试/产品子构建未读到外层 overlay。详见本次证据目录的 focused-results.json、negative-results.json。 父测试基础设施另在仓外副本核实：重复运行命中缓存，仅改夹具为 Skip 后缓存失效且失败，零匹配同样拒绝，恢复后通过；该检查不混入九类行为判别数。
+- **完整本地门禁：** 正式工作树六个受影响包（含真实产品进程）完整 race/count=1 退出0（墙钟44.117s）。真实 `make all` 退出0（墙钟54.463s），包含独立 npm ci、vue-tsc/Vite、全仓vet/race及产品构建；12包中6包实际执行、6包命中缓存，新增父测试与真实10秒HTTP窗口进程回归均在默认入口实际执行并通过。随后独立 `go test ./... -race -count=1 -timeout=5m` 退出0（墙钟44.801s），12包全部禁缓存执行一轮。Make及最终全仓门禁显式将Go1.27.1置于PATH首位并设GOTOOLCHAIN=local，npm使用任务独立缓存；npm ci附带审计显示0漏洞，未另行执行独立npm audit或前端行为回归。受影响Go/夹具gofmt与git diff --check通过；范围为8份生产文件、8份测试资产、AGENTS/Issue8/README/Build7共20文件，另291份既有跟踪文件哈希保持，暂存区为空。
+- **证据边界：** 本机 Go1.27.1 darwin/arm64、Node26.7.0、npm11.19.0。仓外准备原型证据与本次正式工作树证据分开；不恢复“全仓零泄漏断言”，既有 Server 栈扫描仅为辅助诊断。具体任务完成与连接关闭不证明 SDK 全局池、Go/runtime 或标准库后台任务全部销毁。HTTP及日志10秒不是进程总上限；Compose 默认停止宽限可能先行SIGKILL，README说明按部署配置，不擅自固定一个全场景够用的秒数。未执行 Linux/Docker、固定Node24、真实浏览器/云/SMTP/Webhook/Kuma或当前revision远端CI/GHCR，不外推长期稳定或发布通过；既有普通人工收口、Webhook/Kuma豁免与SMTP独立清单保持。源码/测试/本轮文档尚未提交或推送。证据目录：`/Users/kylechen/Desktop/Repo/2026-10-19/i8-r19-implementation/`。
 
 <a id="i8-r20"></a>
 

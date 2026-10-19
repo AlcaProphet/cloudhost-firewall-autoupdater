@@ -330,7 +330,11 @@ docker run -d --name fwalizer --restart=always \
 
 容器只需要三个部署变量（镜像已默认 `WEBUI_HOST=0.0.0.0`、`WEBUI_PORT=60200`、`FWALIZER_DATA_DIR=/app/data`）。如需修改监听端口，除设置 `WEBUI_PORT` 外还需同步修改 Compose 的 `healthcheck` 端口与端口映射。
 
-停止时会先等待当前同步轮次完成，再最多尝试排空日志10秒；到期放弃未写记录并取消在途写入，仍需等写入结束才能关闭数据库。10秒是日志阶段的软预算，不是收到SIGTERM后的总退出上限。容器停止等待应覆盖当前同步轮和日志收尾；Linux容器未配置时通常只等待10秒，随后SIGKILL，可根据部署需要配置停止宽限或 `docker stop --timeout`。固定增大的宽限也不保证覆盖任意长的当前轮次，详见[Docker停止说明](https://docs.docker.com/reference/cli/docker/container/stop/)。
+收到 SIGTERM/SIGINT 后，程序先关闭 HTTP 入口并通知 SSE 退出，停止 Push 与运行健康监督器，再阻止新的同步轮次。Push 退出时释放其私有空闲连接。HTTP 最多等待 10 秒后强制关闭剩余连接，但连接关闭不代表请求处理已完成：进程继续等待当前同步轮、已准入的请求和自动告警按原有超时/错误路径结束，再停止告警诊断回调、释放 Webhook 私有空闲连接。热重载前已在途的告警同样会等待完成，不重试或补发；SMTP 接受不代表收件箱投递。
+
+之后最多尝试排空日志 10 秒；到期放弃未写记录并取消在途写入，仍需等写入结束才能关闭数据库、释放数据目录锁。HTTP 的 10 秒和日志阶段的 10 秒都不是收到信号后的总退出上限。本程序没有统一硬退出预算；云读取、多个目标的模拟测试、邮件或日志 I/O 可能延长等待。
+
+容器停止等待应覆盖上述在途任务和日志收尾。Compose 未配置 `stop_grace_period` 时默认等待 10 秒后可发送 SIGKILL；可按部署需求配置该宽限或 `docker stop --timeout`。固定增大的宽限也不保证覆盖任意长的在途任务，详见 [Compose 停止宽限](https://docs.docker.com/reference/compose-file/services/#stop_grace_period) 与 [Docker 停止说明](https://docs.docker.com/reference/cli/docker/container/stop/)。
 
 ### docker-compose 示例
 

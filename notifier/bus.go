@@ -39,8 +39,10 @@ type Subscriber interface {
 
 // EventBus 事件总线
 type EventBus struct {
-	mu          sync.RWMutex
-	subscribers map[EventType][]Subscriber
+	mu               sync.RWMutex
+	callbackWG       sync.WaitGroup
+	callbacksStopped bool
+	subscribers      map[EventType][]Subscriber
 	// channel 订阅者（用于 SSE）：取消订阅只删除记录，不关闭 channel
 	chanSubs map[int]chan Event
 	nextID   int
@@ -128,6 +130,12 @@ func (b *EventBus) Publish(event Event) {
 	b.mu.RLock()
 	// 必须复制接口订阅者 slice：直接使用 map 中的 slice 会与 Subscribe/Unsubscribe 的原地修改竞态
 	subs := append([]Subscriber(nil), b.subscribers[event.Type]...)
+	if b.callbacksStopped {
+		subs = nil
+	}
+	// 与最终冻结共用 mu：已捕获但尚未启动的回调也属于在途任务。
+	// 不能把 Add 放到 goroutine 内，否则零计数的 Wait 可能提前返回。
+	b.callbackWG.Add(len(subs))
 	// 复制 channel 订阅表快照：快照取得后的取消订阅不影响本次投递
 	chanSubs := make([]chan Event, 0, len(b.chanSubs))
 	for _, ch := range b.chanSubs {
@@ -142,6 +150,7 @@ func (b *EventBus) Publish(event Event) {
 	// 接口订阅者：锁外异步回调，慢订阅者不阻塞事件总线全局锁
 	for _, sub := range subs {
 		go func(s Subscriber) {
+			defer b.callbackWG.Done()
 			if err := s.OnEvent(event); err != nil {
 				ReportEventError(event.Type, err)
 			}
@@ -157,4 +166,14 @@ func (b *EventBus) Publish(event Event) {
 	for _, enqueue := range ingress {
 		enqueue(event)
 	}
+}
+
+// DrainSubscribers 冻结普通回调准入并等待已登记任务（含错误诊断）完成。
+// 调用方须先等待 Syncer 与 HTTP handler 等生产者退出；不得从 OnEvent 内调用。
+// 可重复或并发等待，不取消通知、不增加队列或重试；channel/ingress 保持独立。
+func (b *EventBus) DrainSubscribers() {
+	b.mu.Lock()
+	b.callbacksStopped = true
+	b.mu.Unlock()
+	b.callbackWG.Wait()
 }

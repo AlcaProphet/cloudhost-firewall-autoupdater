@@ -224,6 +224,7 @@
 - true→false Stop；false→false 不操作 ticker；最终为 true 且 Run 观察到 false→true 或有尚未消费恢复标记时，始终用最新 interval Reset，立即同步并清空既有排队 trigger，保留 Stop 门控。一次消费前多个恢复合并为一轮，最终暂停时不补轮；标记在补轮前与最新状态同锁消费，补轮期间的新恢复留待下一次处理。启动消费此前标记，由最终状态决定启动轮，避免重复补轮。ticker/trigger 的普通轮准入前遇到既有标记则转入恢复处理，检查后新增边沿属于下一批；不承诺 select 绝对优先级，不取消已开始轮次。“最终暂停不补轮”以状态消费的决策点为准。
 - 当前 Go 1.27.1 合同使用同步 timer channel；asynctimerchan 已在 Go 1.27 移除，不加入 stale-tick drain 或旧 timer channel 兼容分支。
 - 优雅退出：收到 `SIGTERM`/`SIGINT` 后，完成当前轮次再退出
+- 最终收尾（I8-R19，2026-10-19 方案 B，用户选择等待在途自然完成）：HTTP Shutdown 先冻结业务请求准入并通知 SSE，Push 取消原有在途并退出、Supervisor 完成当前检查后停止，再 Stop Syncer；保留 HTTP 内部 10 秒窗口，但 main 必须等待 HTTP 收尾及 Serve 结果转发任务实际返回。随后等待当前同步轮与已准入 handler，冻结普通告警回调准入并等待全部已登记回调（含旧配置与错误诊断），停止渠道诊断回调并关闭私有 Webhook 空闲连接，再按既有合同 Stop 日志 writer、关库、释放 pidfile。不得新增进程统一硬取消预算或中断当前同步轮；既有请求 context/SQL 取消与 Push shutdown 取消继续生效，自然完成包括原超时/错误返回，不代表外部投递成功。具体范围、正式回归与证据见 [Issue8 I8-R19](./Issue8.md#i8-r19)。
 - 支持配置热重载（WebUI 修改后通过 channel 通知 Syncer）
 - 同步全局开关（SQLite `sync_enabled`，默认 true）：暂停时 ticker 与手动 trigger 均不触发同步；模拟测试与连接测试不受影响（独立于 Run() 主循环）
 - 运行时开关更新（I8-R07，2026-10-12 方案 A）：保留具体 `Syncer.Pause()/Resume()`，只修改运行时，产品端点继续经 SQLite 配置协调器提交后发布。`setSyncEnabled` 的读取、空状态/同值判断、配置深复制和发布全程持有 `s.mu`，与 `ApplyState` 共用不自行加锁的 `applyStateLocked`，统一维护状态指针、`enabled` 镜像与真实 false→true 的 `pendingResume`；解锁后再投递可合并通知。空状态/同值控制不发布、不通知、不新增恢复边沿，普通完整发布不得提前清除待消费恢复。沿用 `s.mu → RuntimeManager.mu` 锁顺序，保留 Pool/Providers/Resolver/Breaker 引用；开关更新先完成时后续完整状态可覆盖其开关，完整发布先完成时控制只改变最新状态的开关。生产锁内不执行日志、状态消费回调、网络或同步轮次，不等待/取消在途轮，不持锁调用自锁的 `ApplyState`。实例私有 `afterSyncEnabledReadHook` 默认 nil、无导出 setter，仅测试在并发开始前设置；调用时持锁，禁止重入 Syncer。正式行为回归与证据边界见 [Issue8 I8-R07](./Issue8.md#i8-r07)。
@@ -364,6 +365,7 @@
 ## 十一、代码规范
 
 - **所有 error 必须处理**，不可忽略返回值
+- 组件退出与资源归属（I8-R19，方案 B）：Pusher 和 AlertManager 分别克隆标准默认 HTTP Transport 并持有私有池；通知器在发布前注入管理器池，保留原 client 超时，候选失败/回滚及 Apply 不关池、不等待旧通知。Push 退出先关闭本实例空闲连接再广播 done；Webhook 在请求与普通回调完成后关池，不关闭进程共享默认池。Server 保留原 ResponseWriter，准入登记与冻结共用 mu；冻结后迟到请求固定 503 + no-store，WaitRequests 只负责等待业务 handler，不等同 Serve/连接退出，不得从 handler 内调用。EventBus 在锁内捕获订阅时登记普通回调、锁外执行，最终锁内冻结再锁外等待；禁止从 OnEvent 内 drain，channel/SSE 与日志 ingress 保持独立。限流器最终停止只阻止诊断续约、取消未开始 timer 并等待已开始回调；不新增强制汇总，不用于热重载或渠道关闭。等待期间不持业务锁。测试优先真实完成信号、虚拟时间与具体句柄回收；Publish 捕获后接缝只进入临时测试构建，父测试读取夹具追踪缓存并核对子测试实际 run/pass，定位漂移/Skip/零匹配明确失败。不宣称 SDK 全局池、标准库后台任务或全仓 goroutine/FD/ticker 零泄漏；HTTP/日志窗口均不构成进程硬退出上限。
 - SMTP 清理错误（I8-16d，d-A）仅记固定阶段/类别 WARN，不记录原始错误、SMTP 原文或 cause，不覆盖发送主错误；正常 Quit 后不重复关闭，预期 net.ErrClosed 不告警。QUIT 失败仍为发送失败，不将本规范补齐扩大为 DATA/QUIT 成功边界调整。
 - 同步事件 SSE 的序列化失败只记录固定 WARN、事件类型与错误类型，跳过坏事件并保持连接；不记录事件负载或序列化错误原文。日志渲染失败向 Handler 调用方返回错误，不在同一 Handler 内递归记录；静态 `/api/health` 写失败记录 Debug，不补写第二个响应。
 - 日志渲染长期回归（I8-R17，方案 A）：默认 `TestI8R17RenderFailure` 仅在临时测试构建中通过 overlay 替换 `TextHandler` 的 writer，保留真实 `renderLine` / `LogBroadcaster.Handle` 与发布代码，不增加生产 hook。立即写失败及部分写失败均须原样返回错误，失败不改变序号/ring/订阅登记、不投递或递归记录，下一条成功日志与回放仍连续；属性格式化的 `!ERROR` / `!PANIC` 文本不作为 writer 失败替代。注入锚点改变或三项预期顶层子测试未实际通过必须明确失败；父测试读取 testdata 以追踪夹具缓存依赖，子进程只运行固定注入测试，显式 `-race -count=1`，沿用现有 race 工具链前提，不进入产品构建。固定 `bytes.Buffer` 的 error 保证为 nil，本项补长期证据，不宣称复现生产 buffer 故障或 `slog.Logger` 自动报告 Handler 错误。正式结果与外部证据边界见 [Issue8 I8-R17](./Issue8.md#i8-r17)。
