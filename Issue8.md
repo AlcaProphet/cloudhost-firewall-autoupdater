@@ -34,7 +34,7 @@
 | I8-R19 | 组件退出与资源泄漏证明 | 方案 B 生命周期修复与长期回归本地完成 | 旧 Issue8 §3 goroutine/fd/ticker |
 | I8-R20 | 启动宽限10秒数值锚点 | 数值与默认边界长期回归本地完成 | 旧 Issue8 §3 DefaultStartupGrace |
 | I8-R21 | 前端长期行为覆盖与异步门禁 | 方案B生命周期修复与前端门禁本地完成 | TODOLIST P2-06/08/09/P3-16；旧 Issue8 §3/ I8-102 |
-| I8-R22 | 当前 revision 远端发布证据 | 独立证据待完成 | PT-B7-08；Issue5 O5-02历史边界；旧 I8-25部分 |
+| I8-R22 | 当前 revision 远端发布证据 | v3.0.0 远端发布与本地容器部署验证通过 | PT-B7-08；Issue5 O5-02历史边界；旧 I8-25部分 |
 | I8-R23 | 特定平台与长期运行证据 | 证据范围待核对 | 历史audit/Issue8外部边界 |
 | I8-R24 | 合理前置条件与防御接口 | 方案 A 保持契约；注释与文档维护收口 | 旧 I8-17e/I8-47/I8-44-1/2/3 |
 | I8-R25 | 历史统计与测试命名精度 | 文档/测试注释候选 | TODO-004/007；旧 Issue8附录B |
@@ -319,9 +319,18 @@
 
 ### I8-R22 当前 revision 远端发布证据
 
-- **状态与来源：** 独立证据待完成；PT-B7-08；Issue5 O5-02历史边界；旧 I8-25部分。
-- **证据与边界：** v2.0.0旧Actions/GHCR成功不证明当前HEAD。最近本地全量race/make门禁已有补记，旧“本轮仅11包、dns未跑”不得用作现状；本次没有fetch或触发CI。
-- **后续与完成条件：** 发布时记录确切SHA、真实Actions结论、镜像tag/digest与对应部署结果；自动SDK更新策略与固定工具链分别记录。不因用户真机确认推定远端CI通过。
+- **状态与来源：** 2026-10-20 按用户授权检查脚本后发布，用户明确选择 `v3.0.0`；该标签对应 revision 的远端 Actions/GHCR 与本地容器部署证据已取得。来源为 PT-B7-08、Issue5 O5-02历史边界、旧 I8-25部分；v2.0.0旧成功继续只作为历史事实。
+- **发布基线与授权：** 开始时工作树/暂存区干净，`main == 本地 origin/main == 实际远端 main == ac863ba85441b70a26c2c67557d471bef2e8cf4d`。发布前再次确认无漂移后创建并推送 annotated tag `v3.0.0`，tag object 为 `dd1b06c8436926b669b010b05004488c7944feaa`，解引用为上述源码 SHA。没有额外源码提交或分支推送；本节证据在发布后回写，未包含在该标签中，尚未提交/推送。
+- **脚本核验：** 唯一活跃工作流 `docker-publish.yml` 的标签触发、PR 不推镜像、GHCR 权限、semver 元数据、`linux/amd64` 平台与前置门禁正确，actionlint 1.7.12 退出0；没有发现本次发布阻断项，未修改工作流/Dockerfile。七条 `go get -u` 与 tidy 是 AGENTS 有意策略，继续保留；Docker `context: .` 包含更新后的 `go.mod/go.sum`。固定工具链分别为 Go1.27.1 + `GOTOOLCHAIN=local`、前端 Node24.21.0，Docker 对应 Go1.27.1 与 Node24.21 系列。发布前仓外副本执行相同SDK更新后，Go build/vet、真实DNS只编译与禁缓存全仓12包race通过；正式前端151项回归、两条独立npm审计0漏洞通过。本地副本使用既有真实dist，未冒称重建前端或已取得远端结果。
+- **真实远端结果：** [Actions run 39413051133](https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/39413051133)，event=`push`、attempt=1、head_sha为上述SHA，整体及job `118595289534` 均为 `success`，北京时间2026-10-20 19:10触发、19:16完成；仅本次标签推送触发一次，没有rerun。远端Go1.27.1 linux/amd64与固定Node24.21.0下，前端构建、151项行为回归、两条依赖审计（各0漏洞）、Go build/vet、真实DNS测试只编译、默认全仓12包race及Docker构建/推送均成功。SDK实际自动更新为腾讯common `v1.3.192 → v1.3.195`、vpc `v1.3.188 → v1.3.194`，由远端日志及发布二进制构建信息共同核对；仓内依赖文件未回写。
+- **镜像身份：** `ghcr.io/alcaprophet/fwalizer:3.0.0`，同时发布 `3.0`、`3`、`latest`；四标签在本次查询均指向 `sha256:aedac7f7087cc21eef6842a442abaa8b83b19fb42325e6df47fe403bee5f5a73`，与build-push日志一致，并独立计算各manifest响应字节SHA256核对。OCI index包含linux/amd64运行产物及provenance条目；镜像revision标签为上述源码SHA。Git标签带`v`，镜像semver标签不带`v`。
+- **对应本地部署：** 从GHCR按该digest拉取，在linux/aarch64 Docker VM中兼容执行linux/amd64镜像；临时空配置、独立可写层、随机127.0.0.1端口，无生产数据库或云凭据挂载。UID1000、Docker `healthy`，静态`/api/health`、`/api/health/operational`、首页及首页三个JS（含`_common`）全部200；二进制Go1.27.1、`CGO_ENABLED=0`与实际SDK版本核对通过。`docker stop --time 15`约0.118秒返回、容器退出码0，临时容器已删除；发布镜像保留本地缓存。该证据不等于原生amd64服务器、用户生产部署或完整浏览器业务验收。
+- **非阻断优化与边界：** 实际日志警告七个Action声明Node20、runner强制以Node24执行；本次全部成功，建议后续升级为原生Node24的Action版本并单独验证，见[GitHub官方迁移说明](https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/)。另可增加CI/Go测试预算、npm缓存，以及自动更新后的依赖清单和digest摘要；本轮不改变SDK更新策略或门禁。完整检查报告、远端日志/状态、manifest与部署记录保存于 `/Users/kylechen/.codex/outputs/i8-r22-release-20261020/`。本次不新增真实云、SMTP/收件箱、Webhook/Kuma或长期稳定通过结论；保留SMTP待验收、Webhook/Kuma豁免与I8-R23独立范围。以后新增revision不能沿用本次发布通过结论。
+
+- **2026-10-20 后续CI优化（用户授权，本地已实施）：** 用户随后明确授权升级Action运行时及增加CI/Go测试预算；基线仍为 `ac863ba85441b70a26c2c67557d471bef2e8cf4d`，开始时仅有上述发布证据的Issue8未提交回写，该内容已保留。仅修改工作流、AGENTS与本文，共三文件；不新增标签或移动 `v3.0.0`，未提交/推送或触发新CI。
+- **原生Node24与迁移兼容：** 联网逐一核对最新稳定release及实际major ref的`action.yml`：checkout `v4→v7`、setup-go `v5→v7`、setup-node `v4→v7`、setup-buildx/login `v3→v4`、metadata `v5→v6`、build-push `v5→v7`，七项均声明`runs.using: node24`，现有输入与metadata的tags/labels输出均受支持。采集时对应稳定补丁为7.0.1、7.0.0、7.1.0、4.4.1、4.6.0、6.2.0、7.4.0；工作流继续引用major tag，后续可随上游更新，不宣称固定Action补丁可复现。最低Node24 runner要求为2.327.1，checkout凭据调整涉及的容器认证命令要求2.329.0；上一轮实际runner为2.337.0，本工作流继续使用GitHub托管`ubuntu-latest`。setup-go从v6起默认缓存依据变为go.mod，故显式`cache-dependency-path: go.sum`保留既有依据；setup-node显式`package-manager-cache: false`，本批不引入新版自动npm缓存。前端Node24.21.0、Go1.27.1/GOTOOLCHAIN=local、七条SDK更新、触发/权限/条件、镜像命名/平台/标签/path context及其他门禁语义保持。
+- **分层测试预算：** job `timeout-minutes: 30`；完整Go测试步骤`timeout-minutes: 15`，涵盖编译及全部包；命令`go test -race -v -timeout=5m ./...`限制每包测试，不能把5分钟说成整个命令上限。真实DNS仅编译步骤`timeout-minutes: 5`，仍不执行真实上游查询。参考此前远端总计约6分半、最慢包约49秒留出余量；job剩余预算可能先于步骤预算耗尽。不改本地Make、生产超时、固定Node/Go版本或已有测试子进程的更窄预算，不承诺任意子孙进程硬回收。
+- **本地验证与新证据边界：** actionlint 1.7.12与diff-check通过；使用YAML解析将工作流与本轮开始时副本做精确语义比较，仅允许上述七项版本、两个缓存兼容配置及预算差异，其他触发/命令/条件/权限/Docker输入保持；逐项核对上游声明的Node24运行时、现用输入与metadata输出。正式工作树macOS Go1.27.1下，真实DNS只编译检查通过；`go test -race -v -timeout=5m -count=1 ./...`全仓12包通过（45.725秒，`-count=1`仅为本次验证禁缓存，不加入CI命令）。本批未重新运行前端、Linux/Docker或新工作流远端CI，不能把上述旧版工作流的v3.0.0成功外推为升级后的远端通过。SMTP待验收、Webhook/Kuma豁免及I8-R23保持。上游定义/release快照、原有未提交差异、正式日志、工作流语义核对和范围哈希证据位于 `/Users/kylechen/.codex/outputs/i8-r22-actions-upgrade-20261020-6o313ph7/`。
 
 <a id="i8-r23"></a>
 

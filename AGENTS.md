@@ -337,6 +337,8 @@
 - 镜像命名：`ghcr.io/alcaprophet/fwalizer:<tag>`
 - 构建平台：`linux/amd64`
 - CI 的 setup-go 固定 `1.27.1`，构建环境设置 `GOTOOLCHAIN=local`；云 SDK 更新若要求更高版本应显式失败，再单独决定升级，不隐式切换工具链。
+- CI Action 原生使用 Node24：checkout/setup-go/setup-node 为 v7，setup-buildx/login 为 v4，metadata 为 v6，build-push 为 v7；这与前端固定 Node24.21.0 是不同层次。setup-go 显式使用 `go.sum` 作为缓存依据，setup-node 关闭自动包管理器缓存，避免运行时升级顺带改变缓存策略。
+- CI job 总预算30分钟；完整Go测试步骤预算15分钟（含编译与所有包），命令显式 `-timeout=5m` 约束每包测试二进制；真实DNS仅编译步骤预算5分钟。外层job预算可先于步骤预算到期；这些预算不改变产品请求/关闭时限，不保证任意子孙进程的硬退出时间，也不修改本地Make入口或测试夹具已有更窄预算。
 - PR 时仅编译检查，不推送镜像
 - **SDK 版本策略（有意设计）**：腾讯云/阿里云要求使用较新的 SDK，使用过期 SDK 无法调用新接口/功能；因此每次构建前执行 `go get -u` 将云厂商 SDK 升级到最新（见 `docker-publish.yml`「更新所有 SDK 到最新版」步骤），镜像始终携带最新 SDK，SDK 可复现性要求服从该策略
 
