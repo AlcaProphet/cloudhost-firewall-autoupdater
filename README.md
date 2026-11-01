@@ -328,7 +328,7 @@ docker run -d --name fwalizer --restart=always \
 然后可在宿主机访问 `http://127.0.0.1:60200`，或在防火墙允许的前提下通过 `http://<宿主机IP>:60200` 访问。
 如果只允许同机反向代理访问，将端口映射改为 `-p 127.0.0.1:60200:60200`。
 
-容器只需要三个部署变量（镜像已默认 `WEBUI_HOST=0.0.0.0`、`WEBUI_PORT=60200`、`FWALIZER_DATA_DIR=/app/data`）。如需修改监听端口，除设置 `WEBUI_PORT` 外还需同步修改 Compose 的 `healthcheck` 端口与端口映射。
+容器只需要三个部署变量（镜像已默认 `WEBUI_HOST=0.0.0.0`、`WEBUI_PORT=60200`、`FWALIZER_DATA_DIR=/app/data`）。通常只需修改端口映射中的宿主机端口，容器内继续使用 `60200`。如需修改容器内监听端口，设置 `WEBUI_PORT` 并同步修改端口映射中的容器端口；镜像和下方 Compose 示例的健康检查会自动跟随容器内的 `WEBUI_PORT`。
 
 收到 SIGTERM/SIGINT 后，程序先关闭 HTTP 入口并通知 SSE 退出，停止 Push 与运行健康监督器，再阻止新的同步轮次。Push 退出时释放其私有空闲连接。HTTP 最多等待 10 秒后强制关闭剩余连接，但连接关闭不代表请求处理已完成：进程继续等待当前同步轮、已准入的请求和自动告警按原有超时/错误路径结束，再停止告警诊断回调、释放 Webhook 私有空闲连接。热重载前已在途的告警同样会等待完成，不重试或补发；SMTP 接受不代表收件箱投递。
 
@@ -338,27 +338,26 @@ docker run -d --name fwalizer --restart=always \
 
 ### docker-compose 示例
 
-完整示例见 [docker-compose.yml.example](docker-compose.yml.example)：
+完整配置统一维护在 [docker-compose.yml.example](docker-compose.yml.example)。在仓库目录首次部署时复制并检查，再拉取镜像启动；已有 `docker-compose.yml` 时按需合并示例中的更新：
 
-```yaml
-services:
-  fwalizer:
-    image: ghcr.io/alcaprophet/fwalizer:latest
-    container_name: fwalizer
-    restart: unless-stopped
-    environment:
-      - FWALIZER_DATA_DIR=/app/data
-      - WEBUI_HOST=0.0.0.0
-      - WEBUI_PORT=60200
-    ports:
-      - "60200:60200"              # 仅同机反代可改为 127.0.0.1:60200:60200
-    volumes:
-      - fwalizer_data:/app/data    # 数据持久化（SQLite）
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null \"http://127.0.0.1:${WEBUI_PORT:-60200}/api/health\" || exit 1"]
+```bash
+cp docker-compose.yml.example docker-compose.yml
+# 按部署需求编辑 docker-compose.yml
+docker compose config --quiet
+docker compose pull
+docker compose up -d
+docker compose logs -f fwalizer
 ```
 
+示例固定使用已发布的 `ghcr.io/alcaprophet/fwalizer:3.0.0` 和 `linux/amd64` 平台；ARM 主机需要 amd64 仿真能力。升级时显式修改镜像标签，再执行 `pull` / `up -d`；如需滚动更新可自行选择 `latest`。本地构建方式见示例内注释。
+
+Compose 默认映射 `127.0.0.1:60200:60200`，浏览器访问 `http://127.0.0.1:60200`。远程服务器可使用 SSH 隧道或受控反向代理；局域网 / VPN 直连时将映射中的宿主机 IP 改为受信任网卡地址并限制访问来源。容器内继续监听 `0.0.0.0`；若反向代理也在容器中，应接入同一 Docker 网络并通过 `fwalizer:60200` 访问。WebUI 没有内置登录鉴权。
+
+示例设置 `stop_grace_period: 5m`，按在途任务规模调整；到期仍会被 Docker 强制终止，不保证任意长的同步轮都能完成。容器 stdout/stderr 使用 `json-file` 轮转（每文件 `10m`，最多 `3` 个），与 SQLite 中的同步历史独立。`restart: unless-stopped` 在进程退出后生效，`unhealthy` 状态本身不会触发自动重启。
+
 镜像会预先创建 `/app/data` 并将其授权给非 root 用户 `appuser`。首次创建的命名卷会继承该目录权限，容器无需以 root 用户运行。
+
+升级时保持 Compose 项目名与 `fwalizer_data` 卷配置稳定，避免连接到新建空卷；一个数据目录只供一个实例使用。
 
 镜像自带 `HEALTHCHECK`，只请求 `http://127.0.0.1:<WEBUI_PORT>/api/health`；**不使用进程存活检查**，因此进程仍在但 WebUI 不可用时会如实判为 `unhealthy`。
 
