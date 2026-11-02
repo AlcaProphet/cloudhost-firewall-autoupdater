@@ -12,6 +12,51 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
 
+// TestI9R03RuleTargetsJSON 历史空串与显式空数组都输出 []，限定目标仍保留引用。
+func TestI9R03RuleTargetsJSON(t *testing.T) {
+	for _, name := range []string{"历史空串", "空数组", "限定目标"} {
+		t.Run(name, func(t *testing.T) {
+			e := newTestEnv(t)
+			targetID := e.seedTarget(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-1")
+			ruleID := e.seedRule(t, config.DomainRule{
+				Host: "legacy.example.com", Protocol: "TCP", Ports: "443", Action: "ACCEPT",
+				Targets: []int{targetID},
+			})
+			want := "[]"
+			if name == "限定目标" {
+				want = "[" + strconv.Itoa(targetID) + "]"
+			} else {
+				raw := "[]"
+				if name == "历史空串" {
+					raw = ""
+				}
+				// 仅在临时库模拟历史存量，生产读取不得改写它。
+				e.execRaw(t, "UPDATE rules SET targets = '"+raw+"' WHERE id = "+strconv.Itoa(ruleID))
+			}
+
+			w := e.do(t, http.MethodGet, "/api/rules", "")
+			if w.Code != http.StatusOK {
+				t.Fatalf("GET 状态码 = %d; body=%s", w.Code, w.Body.String())
+			}
+			var rows []map[string]json.RawMessage
+			if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
+				t.Fatal(err)
+			}
+			// RawMessage 区分 []、null 和缺失，不能只解成 []int 后检查长度。
+			if len(rows) != 1 || string(rows[0]["targets"]) != want {
+				t.Fatalf("targets 应为 %s; body=%s", want, w.Body.String())
+			}
+			if e.applyCount() != 0 {
+				t.Fatal("GET 不得发布运行时状态")
+			}
+			w = e.do(t, http.MethodDelete, pathWithID("/api/rules/", ruleID), "")
+			if w.Code != http.StatusOK || e.applyCount() != 1 {
+				t.Fatalf("DELETE 状态码 = %d, 发布次数 = %d; body=%s", w.Code, e.applyCount(), w.Body.String())
+			}
+		})
+	}
+}
+
 // TestRuleCreateNormalizes ICMP 归一化、Trim、大写与空目标数组语义
 func TestRuleCreateNormalizes(t *testing.T) {
 	e := newTestEnv(t)

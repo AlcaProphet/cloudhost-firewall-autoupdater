@@ -33,7 +33,7 @@ func TestLoadRulesTargetsFourStateContract(t *testing.T) {
 	tests := []struct {
 		name      string
 		expr      string
-		wantAll   bool // 期望解析为「全部目标」（Targets 为 nil/空）
+		wantAll   bool // 期望解析为「全部目标」（Targets 为非 nil 空数组）
 		wantIDs   []int
 		wantError bool
 		// forbidden 是该用例错误文本中不得出现的「原始值回显」片段
@@ -43,6 +43,7 @@ func TestLoadRulesTargetsFourStateContract(t *testing.T) {
 	}{
 		{name: "历史空串=全部目标", expr: "''", wantAll: true},
 		{name: "空数组=合法的全部目标", expr: "'[]'", wantAll: true},
+		{name: "纯空白=内部错误", expr: "'   '", wantError: true},
 		{name: "null=内部错误", expr: "'null'", wantError: true},
 		{name: "对象=内部错误", expr: "'{}'", wantError: true, forbidden: []string{"{}"}},
 		{name: "标量=内部错误", expr: "'1'", wantError: true},
@@ -85,8 +86,15 @@ func TestLoadRulesTargetsFourStateContract(t *testing.T) {
 				t.Fatalf("规则数 = %d, want 1", len(rules))
 			}
 			if tt.wantAll {
-				if len(rules[0].Targets) != 0 {
-					t.Errorf("Targets = %v, want 空（全部目标）", rules[0].Targets)
+				if rules[0].Targets == nil || len(rules[0].Targets) != 0 {
+					t.Errorf("Targets = %#v, want 非 nil 空数组（全部目标）", rules[0].Targets)
+				}
+				var stored string
+				if err := s.db.QueryRow("SELECT targets FROM rules WHERE id = ?", id).Scan(&stored); err != nil {
+					t.Fatal(err)
+				}
+				if stored != strings.Trim(tt.expr, "'") {
+					t.Errorf("读取不得改写数据库：targets = %q", stored)
 				}
 				return
 			}

@@ -517,7 +517,7 @@ func parseRuleTargets(ruleID int, raw sql.NullString) ([]int, error) {
 	text := raw.String
 	// 历史空串兼容为「全部目标」（空 Targets 的既有语义）
 	if text == "" {
-		return nil, nil
+		return []int{}, nil
 	}
 
 	var nums []int

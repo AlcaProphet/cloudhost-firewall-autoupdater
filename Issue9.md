@@ -4,6 +4,7 @@
 > **产品边界：** 个人使用、内部访问、简单稳定的静默工具；允许过期目标、旧 IP 或旧端口未及时清理。不要求高精度清理、完整审计或极端异常防护。候选、条件性限制和证据范围不等于产品缺陷，更不自动成为发布阻断项。
 > **建账范围：** 建立台账时只更新和归档文档，未实施下列代码、测试、依赖、构建配置或部署改动，未创建提交、标签或发布。后续按具体事项安排实施并在对应条目记录；归档表示阶段完成或剩余事项已转交，不表示所有外部链路均已通过。
 > **后续实施（2026-11-02）：** 用户选择 A 并授权修复 I9-R01，现已落地独立 SDK/HTTP 读取实例与正式回归；本地验证及未发布边界见该项。其他事项未随本次修复实施。
+> **I9-R03 后续实施（2026-11-02）：** 同日研究后用户选择 A，已实施历史空串读取出口修复与对应回归；范围及验证记录见 I9-R03。此记录不改写上轮建账和 I9-R01 实施时的事实。
 
 ## 1. 当前基线与证据
 
@@ -22,7 +23,7 @@ I9-R01 已本地修复，后续可安排工具链维护。兼容小缺陷和测�
 |---|---|---|---|
 | [I9-R01](#i9-r01) | SWAS 共享 SDK client 数据竞争 | 2026-11-02 已按 A 本地修复；未发布 | 第三方 P1-2；同日双请求 race 复现 |
 | [I9-R02](#i9-r02) | Go 标准库安全补丁与构建工具链一致升级 | 待维护；常规安全更新 | 第三方 P0-2，撤销 P0 定级 |
-| [I9-R03](#i9-r03) | 历史空串 targets 返回 null，前端删除报错 | 确认未修复；低优先级兼容 | 第三方 P1-3 / C-01 |
+| [I9-R03](#i9-r03) | 历史空串 targets 返回 null，前端删除报错 | 2026-11-02 已按 A 本地修复；未发布 | 第三方 P1-3 / C-01 |
 | [I9-R04](#i9-r04) | 空邮件正文保存与 GET/导出不一致 | 确认未修复；低优先级 | 第三方 P2-1 / C-02 |
 | [I9-R05](#i9-r05) | R06 专项脚本在符号链接路径下空跑成功 | 确认未修复；测试工具维护 | 第三方 P2-2；原 I8-R06 |
 | [I9-R06](#i9-r06) | 读取预算测试的短墙钟时序敏感性 | 维护候选；本轮未复现失败 | 第三方 P2-6 |
@@ -60,9 +61,14 @@ I9-R01 已本地修复，后续可安排工具链维护。兼容小缺陷和测�
 
 ### I9-R03 历史空串 targets 的 JSON 兼容
 
-- **现状：** [parseRuleTargets](config/store.go) 明确兼容历史 `rules.targets=''`，但返回 nil；GET `/api/rules` 直接编码为 `targets:null`。[Rules.vue](webui/frontend/src/views/Rules.vue) 删除确认使用 `[...row.targets]`，会抛 TypeError。同日临时测试确认 null JSON，前端后果按当前代码核对；未声称用户数据库一定存在该数据。
-- **影响与范围：** 仅历史空串数据；新写入已归一化为数组。建议在历史兼容出口返回非 nil 空数组，保持“空数组适用于全部目标”。SQL NULL、JSON null 和损坏值的既有拒绝合同继续保持，不增加自动修库或迁移框架。
-- **完成条件：** 历史空串经正式读取/API 输出 `[]`，删除确认正常；有效数组与损坏值对照仍成立。只做与该兼容路径相称的回归。
+- **原问题与复核：** [parseRuleTargets](config/store.go) 明确兼容历史 `rules.targets=''`，但原实现返回 nil；GET `/api/rules` 直接编码为 `targets:null`。[Rules.vue](webui/frontend/src/views/Rules.vue) 删除确认使用 `[...row.targets]`，会抛 TypeError。同日仓外探针以临时 SQLite 走 `GetRules`、完整业务快照、只读事务和正式 API，均复现该表示差异；编译真实 Rules SFC 脚本复现确认前报错、零 DELETE。直接后端 DELETE 正常，列表展示与编辑已有容错，导出的 `target_export_ids` 已独立返回 `[]`；不能把本项扩大为同步或导出故障，也未检查用户实际数据库是否存在该历史数据。
+- **方案研究与裁决：** 用户选择 A：在公共历史兼容出口返回非 nil 空数组，直接消除当前 API 根因。前端单独兜底只能修复按钮而遗留 API 契约问题；API handler/DTO 单独归一化可行但使相同读取值在不同出口重复补齐；后端加前端兜底可兼容旧后端的 null，但当前单二进制包含前端、没有该额外兼容需求，故未采用。启动迁移/自动修库会增加持久化变更而无必要；为此切换普通 API 的 JSON 编码器影响面过大。`DeepCopyRules` 仍可将空切片拷为 nil，当前既不参与规则 GET 的直接编码，导出又有独立数组构造，故不扩为运行时全局非 nil 合同。
+- **正式实施（2026-11-02）：** 实施前 `main / 590a7d6eaf0f471f5eb8c2dc849efd0362619018`，工作树/暂存区干净。唯一生产变更是 `config/store.go` 的历史精确空串分支从 `return nil, nil` 改为 `return []int{}, nil`。新写入仍由既有 `ruleColumns` 归一化。前端生产代码、schema/迁移、API 请求 DTO、JSON 编码器、SDK/依赖和同步流程均未修改。
+- **保持的合同：** 空数组仍表示适用于全部目标；有效非空数组保留引用，SQL NULL、JSON null、纯空白和原有损坏值仍失败。缺失/null 请求不新增兼容，悬空引用校验与删除安全门保持。不自动改写存量数据库，不把未知或损坏值归为全部目标，不增加人工验收阻断项。
+- **正式回归：** [store_corrupt_test.go](config/store_corrupt_test.go) 强化既有四态测试，历史空串和显式空数组必须非 nil、长度为零，读取后存量文本保持不变，增加纯空白拒绝对照；其余损坏值原回归保留。[rules_test.go](webui/api/rules_test.go) 新增 `TestI9R03RuleTargetsJSON`，临时 SQLite 经正式 GET 用 RawMessage 区分 `[]`、null 与缺失，覆盖历史空串、显式空数组、限定目标，并核对 GET 零发布与正式 DELETE 仅发布一次。[delete-confirm.test.mjs](webui/frontend/tests/delete-confirm.test.mjs) 编译真实页面脚本，通过真实行按钮验证空数组规则可打开确认、取消零删除、确认仅发送一次 DELETE。
+- **反向判别：** 仓外 overlay 只恢复原生产 `store.go`，正式 `TestLoadRulesTargetsFourStateContract` 与 `TestI9R03RuleTargetsJSON` 均在历史空串场景明确失败（分别为 nil 和 API null）；未通过测试替身修改生产行为。研究候选还核对了 GET/导出对 SQL NULL、JSON null、纯空白、对象与混合类型数组继续返回 500，以及普通 POST 的缺失/null targets 继续返回 400。
+- **本地验证（2026-11-02）：** 正式 `go test ./config ./webui/api -race -run '^Test(I9R03RuleTargetsJSON|LoadRulesTargetsFourStateContract|CorruptTargetsBlocksAllLivePaths|I8R09SnapshotReferenceIntegrity|RuleTargetsMustBeExplicit)$' -count=1 -timeout=90s` 通过。`make all` 通过：真实 `npm ci`/前端构建、152 项前端行为测试（fail/cancelled/skipped 均 0）、`go vet ./...`、全仓 12 包 `go test ./... -race -v` 和产品构建成功；其中 7 包使用 Go 测试缓存，根包/config/internal-health/webui/API 五包实际执行，不称全仓禁缓存重跑。受影响 Go 文件 gofmt 与 `git diff --check` 通过。环境为 macOS darwin/arm64、Go 1.27.3、Node 26.7.0、npm 11.19.0；单次全量绿色不外推长期稳定。
+- **范围与发布状态：** 共六文件（一份生产、三份测试、AGENTS/Issue9）。本轮未提交、推送、部署或发布；未执行真实云、SMTP、产品浏览器、Linux/Docker 或新 revision 的远端 CI/GHCR，不外推外部验收或长期稳定通过，也不将本地修复写成已进入 v3.0.1。
 
 <a id="i9-r04"></a>
 

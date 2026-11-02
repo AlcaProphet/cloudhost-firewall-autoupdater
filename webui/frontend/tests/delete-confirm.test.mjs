@@ -62,6 +62,27 @@ const rule = id => ({ id, host: `host-${id}.example`, protocol: 'TCP', ports: '4
 const turn = () => new Promise(resolve => setImmediate(resolve))
 const ids = value => Array.from(value, row => row.id)
 
+test('I9-R03：全部目标规则的空数组能打开确认，取消零删除，确认仅删除一次', async () => {
+  const calls = []
+  const { state: s } = mount('Rules', (url, opts) => {
+    calls.push({ url, opts })
+    return []
+  })
+  const row = { ...rule(1), targets: [] }
+  const buttons = s.columns.find(column => column.key === 'actions').render(row).children.default()
+  buttons[1].props.onClick({ currentTarget: null })
+  assert.equal(s.deletePhase.value, 'confirming')
+  assert.deepEqual(Array.from(s.pendingDelete.value.targets), [])
+  assert.equal(calls.length, 0)
+  s.cancelDelete()
+  await s.confirmDelete()
+  assert.equal(calls.length, 0)
+  buttons[1].props.onClick({ currentTarget: null })
+  await s.confirmDelete()
+  assert.deepEqual(calls.filter(call => call.opts?.method === 'DELETE').map(call => call.url), ['/api/rules/1'])
+  assert.equal(s.deletePhase.value, 'idle')
+})
+
 for (const [page, key, row] of [['Targets', 'targets', target], ['Rules', 'rules', rule]]) {
   test(`${page}：真实行按钮只打开确认；未确认、取消和关闭均零 DELETE`, async () => {
     const calls = []
