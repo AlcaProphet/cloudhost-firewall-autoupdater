@@ -2,7 +2,7 @@
 
 > **2026-10-10 用户授权整合。** 本文件是唯一活跃问题台账，汇总 Issue5～7、审计报告和旧 TODO/Issue8 的剩余事项。整理仅修改文档，不授权实施下列生产、测试、依赖或发布改动。
 > **当前验收：** 用户确认已完成测试并真机核验，除 SMTP 外暂无问题。Webhook 与 Uptime Kuma HTTP/Push 继续豁免且不阻断项目，豁免不等于真实链路通过；SMTP 详见 [ProdTestList](./ProdTestList.md)。已收口的普通云/浏览器人工项目不再登记待执行。
-> **编号：** 当前采用连续 `I8-R01`～`I8-R26`，R 表示本次整合的剩余事项。旧 `I8-xx`、Q、TODO、A/P/R7 编号保留在来源字段与归档中，不能把新 R 编号与旧编号混用。未来追加从 I8-R27 开始，关闭后保留编号及结果，不重复使用。
+> **编号：** 当前采用连续 `I8-R01`～`I8-R27`，R 表示本次整合的剩余事项。旧 `I8-xx`、Q、TODO、A/P/R7 编号保留在来源字段与归档中，不能把新 R 编号与旧编号混用。未来追加从 I8-R28 开始，关闭后保留编号及结果，不重复使用。
 > **整合时证据：** 2026-10-10 整合仅做文档/关键源码静态对账，未重跑测试、npm audit、外部探针或 CI；后续实施的实际证据以各条目补记为准。历史结果仍为历史证据；“候选/待研究”不等于确认产品缺陷，真机暂无问题也不关闭独立代码或测试候选。
 
 ## 1. 基线与顺序
@@ -39,6 +39,7 @@
 | I8-R24 | 合理前置条件与防御接口 | 非缺陷维护候选 | 旧 I8-17e/I8-47/I8-44-1/2/3 |
 | I8-R25 | 历史统计与测试命名精度 | 文档/测试注释候选 | TODO-004/007；旧 Issue8附录B |
 | I8-R26 | 阿里云 TCP/UDP 全端口转换与收敛 | 本地已修复，正式门禁通过 | 2026-11-01 真实 ECS 报错；本聊天研究与授权 |
+| I8-R27 | 云端裸 IP 误判导致清理冻结 | 本地已修复，正式门禁通过 | 2026-11-02 computer use 发现；本聊天研究与授权 |
 
 ## 2. 剩余事项详情
 
@@ -317,6 +318,18 @@
 - **完整门禁与完成状态：** 原样 `make all` 通过（仅设置任务独立npm_config_cache，真实npm ci/vue-tsc/Vite、Go vet、12包完整race及产品构建，Go输出无cached项）；追加 `go test ./... -race -count=1 -timeout=5m`，禁缓存全仓12包均通过。`go build ./...`、四份受影响Go文件gofmt检查和最终diff-check通过。npm ci报告0漏洞，不记为另行独立npm audit。本机Go1.27.1 darwin/arm64、Node26.7.0/npm11.19.0。正式范围为一份生产、三份测试、AGENTS/README/本文件三份文档，共七文件；I8-R26本地修复与文档收口，单轮全仓不外推长期稳定。
 - **外部与状态边界：** 本轮未执行真实云/通知链路、产品浏览器、Linux/Docker或当前revision远端CI/GHCR，未部署、提交或推送；既有用户真机收口/豁免与SMTP清单保持。本地门禁不外推真实云、发布或长期稳定通过。
 
+<a id="i8-r27"></a>
+
+### I8-R27 云端单 IP 规范化与清理安全
+
+- **问题、授权与基线：** 2026-11-02 本聊天通过 computer use 观察到四个配置目标的 Dry Run 将多条裸 IPv4 云规则标为“字段不足”，冻结目标清理；这是当时页面观察，不冒称本轮重新采集的云 API 原始响应。用户随后要求进一步研究、完成修复前准备，并明确授权正式修复和同步文档。实施前 `main / b387e44a05d3be32ef81e14c539d5df62ff8af45`，相对本地 origin/main ahead 1，工作树与暂存区干净，未 fetch；I8-R26 已包含在该基线。
+- **根因与合同：** 四平台保留 SDK 原始地址，旧 `CanonicalCIDR` 只调用 ParsePrefix，合法裸地址因此返回 false；planner 在 TAG 判断前将其登记为 snapshot_rule_invalid，全部冲突进入目标清理安全门。一条无关手工裸 IP 也可冻结其他陈旧 TAG 的清理；Owned 裸 IP 还可能无法确认覆盖、重复尝试新增。合法单 IP 依据为 [Lighthouse FirewallRuleInfo](https://cloud.tencent.com/document/api/1207/47576#FirewallRuleInfo)、[ECS 地址参数](https://help.aliyun.com/zh/ecs/developer-reference/api-ecs-2014-05-26-authorizesecuritygroup)。
+- **定型与范围：** 唯一生产文件 `provider/plan.go` 新增私有前缀解析函数，CIDR 保持 ParsePrefix→Masked，单 IP 使用 ParseAddr→/32 或 /128；字段与实际地址族必须一致，zone/双空/双字段/非法地址继续拒绝。补齐字段校验是为了避免“只新增 ParseAddr”的最小候选新增接受放错字段的裸地址；旧带掩码错族地址也统一转为冲突。IPv4-mapped IPv6 在 IPv6 字段中仍为 IPv6，不自动 Unmap，不沿用研究阶段对全部 mapped 地址的拒绝。只改功能 key，不改写原始 RuleInfo、描述或定位。TAG、精确等价、Lighthouse 唯一定位、四平台版本/RuleID 安全门、I8-R26 端口、能力限制与重试/健康分类保持。新增两份正式测试并同步本文/AGENTS，共五文件；不修改 Provider、SDK/依赖、数据库/API/schema 或前端源码。
+- **正式回归：** `provider/ip_identity_test.go` 覆盖单 IP/CIDR、地址族错放、zone、mapped 身份、输入快照不可变、四平台 Owned/External/陈旧规则、协议/网段不作包含推断、严格 TAG、别名与动作冲突、0.0.0.0/:: 不扩大为通配。另循环 256 个 IPv4 与 256 个 IPv6 地址检查裸地址/主机前缀等价，不把循环次数算作独立 Go 子测试。`syncer/ip_identity_sdk_test.go` 走四平台真实 SDK→NewProvider→syncAll→S1→删除→S2→下一轮；覆盖替换/已有覆盖/外部覆盖、原值与 S1 版本/索引/ID、增删及 S1/S2 失败、DNS 失败、缺定位、歧义/动作冲突、下一轮零增删，以及腾讯版本竞争整目标重试。全部请求仅本地 httptest、凭据为 fake，DNS 沿用确定性夹具，不构成真实云验收。
+- **正式专项与判别力：** `go test ./provider ./syncer -race -json -run '^TestI8R27' -count=20 -timeout=4m`通过；75个provider与69个syncer叶子场景共144项，各重复20次、共2880次叶子通过，无失败/Skip。随后两包完整 `-race -count=1 -timeout=10m`通过。仅替换生产源码的九组正式overlay（HEAD旧实现、移除字段族检查、IPv6错用/32、放行zone、自动Unmap、原地改写回读规则、忽略外部非法规则、删除复用S0版本、复用S0候选）各自所选正式用例race20次均由行为断言变红，没有编译失败/panic/race/整体超时或无测试运行混入。研究与准备阶段成绩未充当本轮正式证据；命令/返回码/日志与机器汇总位于 `/Users/kyle/.codex/outputs/i8-r27-implementation-20261102-1tm2sfzo/`，见formal-summary.json、negative-results.json。
+- **完整门禁与完成状态：** 原样 `make all`通过（仅设置任务独立npm_config_cache，真实npm ci/vue-tsc/Vite、Go vet、全仓12包race入口与产品构建；6包命中结果缓存，不能视为第二轮禁缓存证据）；随后独立 `go test ./... -race -count=1 -timeout=5m`全仓12包均通过，明确禁用结果缓存。额外 `go build ./...`、三份受影响Go文件gofmt检查、最终diff-check通过。npm ci报告0漏洞，不写成另行执行独立npm audit。本机Go1.27.1 darwin/arm64、Node26.7.0/npm11.19.0。唯一生产文件、两份新增测试与AGENTS/本文共五文件，本地修复与文档收口；一次全仓禁缓存绿色不外推长期稳定。
+- **行为与外部边界：** 修复后此前因裸 IP 误冻结的陈旧当前 TAG 规则，在全部安全门满足时会恢复自动清理；不带 TAG 的历史手工规则继续保留。真实冲突或 Lighthouse 定位歧义仍可延后清理，健康正常仍不等于旧权限已全部撤销。本轮不操作生产服务或真实云，不新增 Linux/Docker、浏览器/反向代理、真实通知、远端 CI/GHCR 或长期稳定通过结论；既有人工收口/豁免与 SMTP 清单保持，尚未部署、提交或推送。
+
 ## 3. Issue6 历史14项去向对账
 
 本表关闭的是重复登记或完成事项；转交的候选保持未处理。旧具体证据见 [Issue6 §6.5](./HistoryDocs/Issue6.md#65-历史复核发现但未纳入当时合同的后续候选2026-09-27)。
@@ -364,4 +377,4 @@
 - [AGENTS](./AGENTS.md)仍是唯一强要求；归档Issue7继续供查询已实施合同。旧Q编号在AGENTS中是已固定裁决来源，当前待办使用本文件新编号。
 - [TODOLIST](./TODOLIST.md)只保留入口，不复制第二份状态；[ProdTestList](./ProdTestList.md)只记录SMTP人工操作。
 - 不重新登记用户已完成的普通云/浏览器验收；特殊平台、压力/故障注入、远端发布证据须按对应声明范围记录。Webhook/Kuma人工豁免不因研究候选而撤销。
-- 本轮没有实施候选、修改源码/测试/依赖、运行门禁或触发发布。后续逐项记录决定、授权、差异、判别性验证与完成日期。
+- 2026-10-10 整合轮次没有实施候选、修改源码/测试/依赖、运行门禁或触发发布。后续实施逐项记录决定、授权、差异、判别性验证与完成日期。

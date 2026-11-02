@@ -1,6 +1,6 @@
 # AGENTS.md — FWAlizer AI 编码指令
 
-> **文档整合与归档（2026-10-10，用户授权）：** 当前剩余事项统一见 [Issue8.md](./Issue8.md)，连续编号 I8-R01～I8-R26；旧 I8/Q/TODO 编号仅为历史来源。Issue5～7 已按阶段完成移入 HistoryDocs，audit 按“报告完成、剩余事项转交”归档；Issue7 已实施合同仍可查阅。下文历史实施补记中“见 Issue8 文末/审计补记”的详细记录分别位于 [Issue8历史快照](./HistoryDocs/Issue8-history.md) 与 [归档audit](./HistoryDocs/fwalizer-audit-final1.md)，不指新活跃台账。历史人工未执行状态以本次用户确认优先，SMTP见ProdTestList，Webhook/Kuma豁免且不阻断。
+> **文档整合与归档（2026-10-10，用户授权）：** 当前剩余事项统一见 [Issue8.md](./Issue8.md)，连续编号 I8-R01～I8-R27；旧 I8/Q/TODO 编号仅为历史来源。Issue5～7 已按阶段完成移入 HistoryDocs，audit 按“报告完成、剩余事项转交”归档；Issue7 已实施合同仍可查阅。下文历史实施补记中“见 Issue8 文末/审计补记”的详细记录分别位于 [Issue8历史快照](./HistoryDocs/Issue8-history.md) 与 [归档audit](./HistoryDocs/fwalizer-audit-final1.md)，不指新活跃台账。历史人工未执行状态以本次用户确认优先，SMTP见ProdTestList，Webhook/Kuma豁免且不阻断。
 
 > **当前人工验收结论（2026-10-10，用户确认，优先于下文历史人工验收状态）：** 用户确认当前测试已完成、已真机核验，除 SMTP 外暂无问题。原 ProdTestList 的浏览器、真实云及其他非 SMTP、非豁免人工项目按本次确认收口，不再作为待执行或项目阻断项；已完成记录已从清单删除。Webhook 与 Uptime Kuma（HTTP Monitor / Push Monitor）继续人工验收豁免，不阻断项目，豁免不记为真实链路通过。SMTP 测试发送、自动告警邮件与运行健康异常邮件仍待完成，统一见 [ProdTestList.md](ProdTestList.md)。本次证据为用户真机确认，未附逐场景原始记录，不据此新增云响应字段、故障注入或配额边界的实测细节；未重新执行测试，也不推定当前 revision 远端 CI/GHCR、依赖审计或长期稳定性通过。下文各实施批次的“未执行/免除”保留为当时事实；与本次人工收口冲突时以本段为准，独立代码候选及待裁决事项保持原状态。
 
@@ -134,6 +134,8 @@
 
 **I8-R26 阿里云全端口修复（2026-11-02）**：用户确认本聊天研究方案后授权正式实施及文档同步；基线 main 与本地 origin/main 同为 `0f7fe9fbc6fb48830f9b5b3e0c14e2a677848187`，实施前工作树/暂存区干净。唯一可执行生产文件为 provider/plan.go；协议感知的全端口转换同时修复 ECS/SWAS 参数、回读覆盖与去重，纠正原 TCP/UDP `ALL → -1/-1` 测试预期。正式回归、门禁与外部边界见 [Issue8 I8-R26](./Issue8.md#i8-r26)。正式专项race20次、四类生产overlay负向控制各20次、原样make all（使用任务独立npm缓存）、额外禁缓存全仓12包race一轮、go build/格式/diff-check均通过；新增真实SDK目标链覆盖三协议各八种场景。范围为一份生产、三份测试、AGENTS/README/Issue8三份文档，共七文件。本机Go1.27.1 darwin/arm64、Node26.7.0；未执行真实云、浏览器、Linux/Docker或当前revision远端CI/GHCR，不外推外部或长期稳定通过。尚未部署、提交或推送。
 
+**I8-R27 云端单 IP 身份修复（2026-11-02）**：用户确认进一步研究与修复准备后授权正式实施及文档同步；实施前 `main / b387e44a05d3be32ef81e14c539d5df62ff8af45`、相对本地 origin/main ahead 1，工作树/暂存区干净，未 fetch。唯一生产文件为 `provider/plan.go`，统一 CIDR/单 IP 规范化并校验字段实际地址族，保留原始云规则与 mapped IPv6 身份；两份正式回归为 `provider/ip_identity_test.go`、`syncer/ip_identity_sdk_test.go`。TAG、精确匹配、平台能力、S1 覆盖、版本/稳定定位、失败计数和健康合同保持。正式144项专项race各20次、九组生产overlay负向控制各20次、受影响两包完整race、原样make all、额外禁缓存全仓12包race、Go build/格式/diff-check均通过；make all中6包缓存与额外禁缓存证据分开登记。范围为一份生产、两份新增测试与AGENTS/Issue8两份文档，共五文件。正式证据与外部边界见 [Issue8 I8-R27](./Issue8.md#i8-r27)；未执行真实云、浏览器、Linux/Docker或当前revision远端CI/GHCR，不外推外部或长期稳定通过；本轮尚未部署、提交或推送。
+
 ## 二、核心编码原则
 
 ### 简单轻量化
@@ -184,6 +186,7 @@
 - comment 只用于人类可读，可为空、重复、修改或被平台截断，不参与所有权、功能身份、Diff、删除定位或唯一性校验；修改 comment 不触发云规则重建
 - 非当前 TAG 规则可以被只读用于判定所需功能是否已存在，但永远不得被修改、删除或接管；只有功能 key 精确等价才算满足，不推断更宽 CIDR/端口的包含关系
 - 功能 key 固定由 `address-family + canonical CIDR + canonical protocol + canonical port expression + action` 组成；TAG、comment、description、本地规则 ID、域名、云端 RuleID/PolicyIndex 均不进入 key
+- 云端地址身份（I8-R27，2026-11-02）：共享 canonical 层同时接受 CIDR 与单 IP，裸 IPv4/IPv6 分别规范为 `/32`、`/128`，CIDR 继续掩码化；`CidrBlock` 必须实际为 IPv4，`Ipv6CidrBlock` 必须实际为 IPv6，双空/双字段、非法地址、带 zone 或字段地址族不符仍登记快照冲突并冻结清理。IPv4-mapped IPv6 在 IPv6 字段中保留 IPv6 身份，不自动 Unmap，也不整体拒绝原有合法 mapped 前缀。只规范功能 key，不原地修改云端 `RuleInfo` 或删除定位；Lighthouse 使用同一 S1 原始规则及 FirewallVersion，CVM 使用 S1 PolicyIndex/Version，ECS/SWAS 使用 S1 RuleID。非 TAG 只读、精确等价、真实歧义与相反动作冻结保持；此前仅被裸 IP 误冻结的陈旧 TAG 规则可在全部安全门满足后恢复清理。
 - 同一云目标上的所有适用规则必须先汇总为目标级完整期望功能集，同一功能 key 只创建一条；新建规则的 comment 按本地规则 ID 升序取第一个非空值，全空时只写 `[TAG]`
 - 同步顺序固定为“获取快照 → 目标级规划 → 增量添加 → 重读并验证所需功能已存在 → 经安全门条件删除陈旧 TAG 规则”；任何 Add 都必须在 Delete 之前，Add 失败或结果不确定时保留旧规则
 - 自动清理只在完整期望集非空、所有适用域名解析成功且非空、无平台能力跳过、新快照已证明覆盖完整、候选仍属于当前 TAG、平台删除定位无歧义且不会删除任何期望 key 时执行；其他情况只记录 `cleanup_deferred` 并保留残留
@@ -428,7 +431,7 @@
 | [Build6.md](Build6.md) | 开发者 | 已完成的历史构建记录：Step 0-7（version 2 配置包边界已被 Build7 的 version 3 取代，仅用于核查） | 已完成 |
 | [Issue5.md](./HistoryDocs/Issue5.md) | 开发者 | Build6阶段完成记录 | 已归档 |
 | [Issue6.md](./HistoryDocs/Issue6.md) | 开发者 | A1～A20及后续修复完成记录；14项候选去向见Issue8 §3 | 已归档，剩余已转交 |
-| [Issue8.md](./Issue8.md) | 开发者 | 唯一活跃剩余事项、研究裁决、测试与发布证据台账，I8-R01～R26 | 活跃 |
+| [Issue8.md](./Issue8.md) | 开发者 | 唯一活跃剩余事项、研究裁决、测试与发布证据台账，I8-R01～R27 | 活跃 |
 | [TODOLIST.md](./TODOLIST.md) | 开发者 | 待办入口，只指向Issue8，不重复维护状态 | 导航 |
 | [Issue7.md](./HistoryDocs/Issue7.md) | 开发者 | P1-01阶段完成记录及已实施合同，R7复核与人工真机已收口 | 已归档，合同保留查询 |
 | [ProdTestList.md](ProdTestList.md) | 人类（用户） | 仅保留 SMTP 待验收；Webhook/Kuma 豁免且不阻断 | 活跃 |

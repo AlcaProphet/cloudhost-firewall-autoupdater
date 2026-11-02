@@ -324,18 +324,31 @@ func canonicalPortExpression(protocol, port string) string {
 	return p
 }
 
-// CanonicalCIDR 返回掩码后的规范 CIDR 字符串；非法输入返回 ok=false。
-func CanonicalCIDR(cidr string) (string, bool) {
-	prefix, err := netip.ParsePrefix(strings.TrimSpace(cidr))
-	if err != nil {
-		return "", false
+// canonicalIPPrefix 将 CIDR 或单 IP 转为规范前缀；不接受带 zone 的地址。
+func canonicalIPPrefix(value string) (netip.Prefix, bool) {
+	value = strings.TrimSpace(value)
+	prefix, err := netip.ParsePrefix(value)
+	if err == nil {
+		return prefix.Masked(), true
 	}
-	return prefix.Masked().String(), true
+	addr, err := netip.ParseAddr(value)
+	if err != nil || addr.Zone() != "" {
+		return netip.Prefix{}, false
+	}
+	return netip.PrefixFrom(addr, addr.BitLen()), true
 }
 
-// ruleFamilyCIDR 解析云端规则的地址族与 canonical CIDR。
-//
-// 两个字段同时有值或都为空视为快照冲突（ok=false），该规则不进入可删除集合。
+// CanonicalCIDR 返回规范 CIDR；单 IPv4/IPv6 分别使用 /32、/128。
+func CanonicalCIDR(cidr string) (string, bool) {
+	prefix, ok := canonicalIPPrefix(cidr)
+	if !ok {
+		return "", false
+	}
+	return prefix.String(), true
+}
+
+// ruleFamilyCIDR 解析地址身份，并要求实际地址族与云端字段一致。
+// 两字段同时有值或都为空、地址非法或字段地址族不匹配时不授权清理。
 func ruleFamilyCIDR(cidrBlock, ipv6CidrBlock string) (AddressFamily, string, bool) {
 	hasV4 := strings.TrimSpace(cidrBlock) != ""
 	hasV6 := strings.TrimSpace(ipv6CidrBlock) != ""
@@ -343,11 +356,17 @@ func ruleFamilyCIDR(cidrBlock, ipv6CidrBlock string) (AddressFamily, string, boo
 		return "", "", false
 	}
 	if hasV6 {
-		cidr, ok := CanonicalCIDR(ipv6CidrBlock)
-		return AddressIPv6, cidr, ok
+		prefix, ok := canonicalIPPrefix(ipv6CidrBlock)
+		if !ok || !prefix.Addr().Is6() {
+			return "", "", false
+		}
+		return AddressIPv6, prefix.String(), true
 	}
-	cidr, ok := CanonicalCIDR(cidrBlock)
-	return AddressIPv4, cidr, ok
+	prefix, ok := canonicalIPPrefix(cidrBlock)
+	if !ok || !prefix.Addr().Is4() {
+		return "", "", false
+	}
+	return AddressIPv4, prefix.String(), true
 }
 
 // buildKeys 由地址族/CIDR/协议/端口字段/action 构造 canonical key 集合（唯一入口）。
@@ -385,8 +404,8 @@ func buildKeys(family AddressFamily, cidr, protocol, portField, action string) (
 // SnapshotRuleKeys 把一条云端规则展开为其 canonical 功能 key 集合。
 //
 // 一条规则可能对应多个 key（如 Lighthouse 逗号端口 "80,443"）。
-// ok=false 表示字段不足以安全判定（地址族字段同时有值或都为空、协议/端口/action 缺失、
-// CIDR 非法、TCP/UDP 缺端口），该规则不得进入删除集合，并使目标清理门冻结。
+// ok=false 表示字段不足以安全判定（地址族字段同时有值或都为空、实际地址族与字段不符、
+// 地址非法、协议/端口/action 缺失或 TCP/UDP 缺端口），该规则不得进入删除集合，并使目标清理门冻结。
 func SnapshotRuleKeys(r config.RuleInfo) ([]FunctionalKey, bool) {
 	family, cidr, ok := ruleFamilyCIDR(r.CidrBlock, r.Ipv6CidrBlock)
 	if !ok {
