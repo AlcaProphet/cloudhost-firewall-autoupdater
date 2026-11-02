@@ -1,6 +1,7 @@
 # FWAlizer — 防火墙 DNS 自动同步工具
 
-> **当前入口（2026-10-10）：** 剩余事项统一见 [Issue8.md](./Issue8.md)（I8-R01～I8-R25）；Issue5～7与audit已归档至HistoryDocs，旧I8实施补记见 [Issue8历史快照](./HistoryDocs/Issue8-history.md)。用户已确认普通真机验收收口，SMTP仍待完成，Webhook/Kuma继续豁免且不阻断；下文未执行/尚未提交等批次状态按历史阅读，当前revision发布证据独立跟踪。
+> **当前文档入口（2026-11-02）：** 当前问题与维护统一见 [Issue9.md](Issue9.md)（I9-R01～I9-R11）；已达标的 Design5、Build6/7 和旧 Issue8 已归档，索引见 [HistoryDocs](HistoryDocs/README.md)。历史批次的未执行/尚未提交按当时事实阅读；普通真机验收按用户确认收口，SMTP 仍见 [ProdTestList](ProdTestList.md)，Webhook/Kuma 继续豁免且不阻断。
+> **已核对发布：** `v3.0.1` 对应源码 `26e5c8f`，包含 I8-R26/R27，测试与镜像构建推送见 [Actions 41374458503](https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/41374458503)。下方部署示例仍固定已发布的 `3.0.0`；需要这两项修复时选择 `3.0.1`，不要把旧标签视为包含所有最新改动。推荐版本的文档/示例同步见 Issue9 I9-R11。
 
 **FWAlizer**（Firewall DNS Synchronizer）是一个轻量级自动化工具：定时解析指定域名的 IP 地址，自动同步到云防火墙/安全组白名单中。专为域名 IP 频繁变动的场景设计（如动态 DNS、API 网关、VPN 入口）。
 
@@ -413,12 +414,10 @@ cloudhost-firewall-autoupdater/
 ├── internal/                # 内部工具（端口转换、标签解析、运行健康 internal/health）
 ├── ReadmeAsset/             # README 截图资源
 ├── PlatformAPIDocs/         # 各云平台 API 使用要求 + 地域可用区指南文档
-├── HistoryDocs/             # 历史工程文档（含 Issue5～7、audit、旧Issue8/TODO证据快照）
-├── Design5.md               # 当前设计记录
-├── Build7.md                # 当前构建方案（告警与运行健康）
-├── Build6.md                # 已完成的历史构建记录
-├── Issue8.md                # 唯一活跃剩余事项台账（I8-R01～R25）
-├── TODOLIST.md              # 待办导航，统一指向Issue8
+├── HistoryDocs/             # 已归档 Design1～5、Build1～7、Issue1～8、audit 与历史快照
+│   └── README.md            # 归档索引与剩余事项迁移说明
+├── Issue9.md                # 唯一活跃问题与维护台账（I9-R01～R11）
+├── TODOLIST.md              # 待办导航，统一指向Issue9
 ├── ProdTestList.md          # 仅保留SMTP人工验收
 └── build/                   # Dockerfile
 ```
@@ -458,7 +457,7 @@ sh build/makefile_test.sh
 
 ### 前端开发
 
-2026-10-11 已按用户授权刷新前端与 Go 依赖到当时最新稳定版本；具体锁定版本见 `package-lock.json` 与 `go.mod`，升级及验证记录见 [Issue8 I8-R02](./Issue8.md#i8-r02)。Go 与 Node 构建工具链继续遵循仓库固定版本。
+2026-10-11 已按用户授权刷新前端与 Go 依赖到当时最新稳定版本；具体锁定版本见 `package-lock.json` 与 `go.mod`，升级及验证记录见 [Issue8 I8-R02](HistoryDocs/Issue8.md#i8-r02)。Go 与 Node 构建工具链继续遵循仓库固定版本。
 
 前端的 `typescript` 使用 Microsoft 官方兼容包别名 `npm:@typescript/typescript6@^6.0.2`。原生 TypeScript 7 已更换编译器接口，不能直接供当前 `vue-tsc` 及使用 `transpileModule` 的行为回归使用；官方兼容包保留 TypeScript 6 API，现有构建和测试命令无需改写。详见 [Microsoft 的 TypeScript 6/7 兼容包说明](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-60)。后续原生版本迁移须先验证 Vue 类型检查与全部前端回归。
 
@@ -491,7 +490,7 @@ npm run test:runner    # 测试进程预算、回收与信号转发
 
 `make test` / `make all` 和CI自动执行完整入口；CI失败阻止后续镜像发布。`make build`、直接Docker构建仍只构建。裸 `node --test` 可用于定向诊断，但没有共同父进程的总预算。告警加载/重复保存及新异步夹具在等待前检查请求，失败时也释放挂起Promise并等待任务结束。
 
-页面退出后，旧页面不再发送消息、安排查询timer或启动后续预加载；已发送的保存、模拟测试、SMTP请求继续完成，离页不代表服务端操作撤销。Dashboard状态/统计只接收最新发起请求的响应，失败保留已知记录。共享设置/扫描缓存的在途工作保持。44px回归验证主题与按钮尺寸接线，不替代浏览器实际尺寸测量；详见 [Issue8 I8-R21](./Issue8.md#i8-r21)。
+页面退出后，旧页面不再发送消息、安排查询timer或启动后续预加载；已发送的保存、模拟测试、SMTP请求继续完成，离页不代表服务端操作撤销。Dashboard状态/统计只接收最新发起请求的响应，失败保留已知记录。共享设置/扫描缓存的在途工作保持。44px回归验证主题与按钮尺寸接线，不替代浏览器实际尺寸测量；详见 [Issue8 I8-R21](HistoryDocs/Issue8.md#i8-r21)。
 
 ### 构建完整二进制（含前端）
 
