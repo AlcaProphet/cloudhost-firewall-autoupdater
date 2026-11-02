@@ -8,7 +8,7 @@ COPY webui/frontend/ ./
 RUN npm run build
 
 # 编译阶段
-FROM golang:1.27.1-alpine AS builder
+FROM golang:1.27.3-alpine AS builder
 ENV GOTOOLCHAIN=local
 WORKDIR /src
 COPY go.mod go.sum ./

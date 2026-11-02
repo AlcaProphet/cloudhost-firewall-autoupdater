@@ -30,7 +30,7 @@ jobs:
       - name: 设置 Go 环境
         uses: actions/setup-go@v7
         with:
-          go-version: '1.27.1'
+          go-version: '1.27.3'
           # v6 起默认改用 go.mod；显式保留原有 go.sum 缓存依据。
           cache-dependency-path: go.sum
 
@@ -67,6 +67,12 @@ jobs:
 
       - name: 前端依赖审计（完整，阻断）
         run: cd webui/frontend && npm audit --audit-level=high
+
+      # 扫描 SDK 更新后的实际依赖；默认文本输出按符号可达性阻断。
+      # 固定扫描器由当前 Go 构建，漏洞、扫描错误或数据库不可用均阻止发布。
+      - name: Go 可达漏洞检查（阻断）
+        timeout-minutes: 5
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
       - name: 编译检查
         run: |

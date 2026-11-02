@@ -7,7 +7,7 @@
 > 本文档是给 AI 编码助手的指令集，也是项目**唯一的强要求文档**（详见「十二、文档体系与优先级」）。
 > 项目既有设计见 [Design5.md](HistoryDocs/Design5.md)（已归档），已完成构建记录见 [Build7.md](HistoryDocs/Build7.md)（告警与运行健康，Step 0～7），当前剩余工作见 [Issue9.md](Issue9.md)；已完成阶段合同见 [Issue7.md](HistoryDocs/Issue7.md)（P1-01 TAG 所有权与目标级同步，Step 0～5 主体已本地实施；§12.5 记录 R7-01～R7-07 本地复核项已修复提交；人工真机验收已于 2026-10-10 用户确认收口，SMTP 与发布证据边界见下文）；问题历史见 [Issue5.md](HistoryDocs/Issue5.md) 与 [Issue6.md](HistoryDocs/Issue6.md)，人工验收清单见 [ProdTestList.md](ProdTestList.md)。
 
-> **当前发布基线与归档时审阅（2026-11-02）：** 已发布源码基线为 `26e5c8f7f824cd10c2bfa57e1c2177251db4e1cc`，`v3.0.1` 指向该提交，[Actions run 41374458503](https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/41374458503) 的测试、构建与镜像推送成功，包含 I8-R26/R27。它不证明用户容器已升级或真实 SMTP 已验收。归档时只读核对的保留问题与旧台账剩余均见 Issue9；该次仅整理文档，未修改生产合同、工具链或配置。后续 I9-R01 本地修复见下段，不能外推已进入上述发布。Go 1.27.1 与 Alpine 3.20 仍是实际固定版本，补丁/基础镜像维护分别由 I9-R02/R07 跟踪。
+> **当前发布基线与归档时审阅（2026-11-02）：** 已发布源码基线为 `26e5c8f7f824cd10c2bfa57e1c2177251db4e1cc`，`v3.0.1` 指向该提交，[Actions run 41374458503](https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/41374458503) 的测试、构建与镜像推送成功，包含 I8-R26/R27。它不证明用户容器已升级或真实 SMTP 已验收。归档时只读核对的保留问题与旧台账剩余均见 Issue9；该次仅整理文档，未修改生产合同、工具链或配置。后续 I9-R01/R02 本地实施不能外推已进入上述发布。归档时固定 Go 1.27.1 与 Alpine 3.20；当前 Go 补丁与 CI 门禁见 I9-R02，运行镜像仍为 Alpine 3.20，基础镜像维护由 I9-R07 独立跟踪。
 >
 > **当前取舍（用户本聊天确认）：** 个人内部使用、简单稳定的静默工具，允许过期目标、旧 IP 或端口残留。模板/组引用导致保守清理冻结、合并端口部分残留按现状接受；畸形云响应、外部直接改坏数据库及隔离停机时序不列为当前必修项。不因此削弱既有 TAG 所有权、S1 覆盖、版本/稳定定位或自动删除安全门；不增加精确清理、健康告警或极端场景验收要求。详细接受与排除记录见 [Issue9 §5](Issue9.md#5-接受排除和已失效的报告项目)。
 
@@ -20,7 +20,7 @@
 - **模块路径**：`github.com/alcaprophet/cloudhost-firewall-autoupdater`
 - **仓库名称**：`cloudhost-firewall-autoupdater`
 - **产品与兼容标识**：产品显示名、二进制名、`FWALIZER_DATA_DIR` 部署变量、数据目录及 GHCR 镜像继续使用 `FWAlizer` / `fwalizer`，避免破坏保留的部署边界
-- **Go 版本**：`go 1.27.1`（源码构建最低补丁要求；CI/Docker 固定该版本）
+- **Go 版本**：`go 1.27.3`（源码构建最低补丁要求；CI/Docker 固定该版本）
 - **平台约束**：仅支持 **Linux 与 macOS 13+**（平台文件 build tag 精确为 `linux || darwin`）；**不支持 Windows**（Windows pidfile 实现与 `%APPDATA%` 数据目录分支已移除，`GOOS=windows` 构建按预期失败）；构建与发布面向 `linux/amd64`
 - **文档定位与优先级**：编码前先阅读本文件（强要求）。设计记录见 [Design5.md](HistoryDocs/Design5.md)（已归档，非强制，供参考）；Build6/Build7 为已完成的历史构建记录；当前剩余事项与顺序见 [Issue9.md](Issue9.md)；已实施合同与历史步骤见 [Issue7.md](HistoryDocs/Issue7.md)（Step 0～5 主体已实施，§12.5 记录 R7-01～R7-07 本地复核收口）；问题历史见 [Issue5.md](HistoryDocs/Issue5.md) 与 [Issue6.md](HistoryDocs/Issue6.md)；人工验收清单见 [ProdTestList.md](ProdTestList.md)；历史文档（Design1-4、Build1-5、Issue1-4）见 [HistoryDocs/](HistoryDocs)
 - **Build6 已完成构建（历史记录）**：目标形态固定为 WebUI 单二进制 + SQLite。截至 2026-09-27，Step 0～7 已验收通过。Step 5 的工程实现、本地自动门禁、浏览器人工回归及真实云/DNS/同步链路已经完成并由用户确认真机通过；跨实例不同自增历史的人工交叉导入因当前无该使用场景而免除（底层 ID 映射仍由自动化覆盖）。Step 7 的自动补测、统一验收门禁、真实二进制/Docker 容器验收与文档闭环已完成，并按用户确认的最小边界修复 Issue6 A10/A5/A7/A6/A8；**在此之后按用户一次性授权完成 Issue6 批次 1（A1、A12）、批次 3（A20、A16）、批次 2（A2）、批次 4（A3、A18、A13、A15 与 A11 接口部分）、批次 5（A4、A9、A14、A17）、批次 6（A11 收尾）与批次 7（A19、A8 文档收口）**，批次 8（低风险清理）亦已完成，Issue6 §2.1 状态表为权威记录。远端 GitHub Actions 已取得真实结果（tag `v2.0.0` → 运行 `36300428681` 成功，含远端 `go test -race -v ./...`，并真实推送 `ghcr.io/alcaprophet/fwalizer:2.0.0`），Issue5 O5-02 已关闭。真实 Email/SMTP/收件箱与 Webhook 的人工验收（原 `ProdTestList.md` PT-B6-08/09）经用户 2026-09-27 明确决定跳过、由用户自行处理，属**人工验收免除**（沿用 PT-B6-04 先例），不阻塞 Step 7，**但这两个外部链路仍无真实通过结论，不得写成已经通过**。
@@ -235,7 +235,7 @@
 - Run 记录 ticker 实际使用的 `time.Duration`；纯配置通知只有 interval 实际变化才 Reset，同间隔保存保留剩余等待，不额外立即同步。间隔变更从 Run 处理最新状态时重新计时，不取消在途轮；普通配置通知只承诺最终状态，真实 false→true 恢复另由 `pendingResume` 保留。
 - 定时/手动轮返回后（含 failed/partial/idle）按最新 interval Reset，保留完整轮后等待；启动/恢复仍在轮前创建/重置 ticker，不新增任意两轮的统一最小间隔。排队的显式手动 trigger 仍可在当前轮完成后立即执行，各轮在单一 Run 中串行。
 - true→false Stop；false→false 不操作 ticker；最终为 true 且 Run 观察到 false→true 或有尚未消费恢复标记时，始终用最新 interval Reset，立即同步并清空既有排队 trigger，保留 Stop 门控。一次消费前多个恢复合并为一轮，最终暂停时不补轮；标记在补轮前与最新状态同锁消费，补轮期间的新恢复留待下一次处理。启动消费此前标记，由最终状态决定启动轮，避免重复补轮。ticker/trigger 的普通轮准入前遇到既有标记则转入恢复处理，检查后新增边沿属于下一批；不承诺 select 绝对优先级，不取消已开始轮次。“最终暂停不补轮”以状态消费的决策点为准。
-- 当前 Go 1.27.1 合同使用同步 timer channel；asynctimerchan 已在 Go 1.27 移除，不加入 stale-tick drain 或旧 timer channel 兼容分支。
+- 当前 Go 1.27.3 合同使用同步 timer channel；asynctimerchan 已在 Go 1.27 移除，不加入 stale-tick drain 或旧 timer channel 兼容分支。
 - 优雅退出：收到 `SIGTERM`/`SIGINT` 后，完成当前轮次再退出
 - 最终收尾（I8-R19，2026-10-19 方案 B，用户选择等待在途自然完成）：HTTP Shutdown 先冻结业务请求准入并通知 SSE，Push 取消原有在途并退出、Supervisor 完成当前检查后停止，再 Stop Syncer；保留 HTTP 内部 10 秒窗口，但 main 必须等待 HTTP 收尾及 Serve 结果转发任务实际返回。随后等待当前同步轮与已准入 handler，冻结普通告警回调准入并等待全部已登记回调（含旧配置与错误诊断），停止渠道诊断回调并关闭私有 Webhook 空闲连接，再按既有合同 Stop 日志 writer、关库、释放 pidfile。不得新增进程统一硬取消预算或中断当前同步轮；既有请求 context/SQL 取消与 Push shutdown 取消继续生效，自然完成包括原超时/错误返回，不代表外部投递成功。具体范围、正式回归与证据见 [Issue8 I8-R19](HistoryDocs/Issue8.md#i8-r19)。
 - 支持配置热重载（WebUI 修改后通过 channel 通知 Syncer）
@@ -272,7 +272,7 @@
 ## 八、Docker 约束
 
 - 基础镜像：`alpine:3.20`
-- 编译镜像：`golang:1.27.1-alpine`，编译阶段设置 `GOTOOLCHAIN=local`
+- 编译镜像：`golang:1.27.3-alpine`，编译阶段设置 `GOTOOLCHAIN=local`
 - `CGO_ENABLED=0` 静态编译（Docker 构建）
 - 非 root 用户运行（`adduser -D appuser`）
 - 日志输出到 stdout（Text 格式，`docker logs` 查看）
@@ -349,9 +349,10 @@
 - 推送 tag（如 `v1.0.0`）时自动构建 Docker 镜像推送到 **ghcr.io**
 - 镜像命名：`ghcr.io/alcaprophet/fwalizer:<tag>`
 - 构建平台：`linux/amd64`
-- CI 的 setup-go 固定 `1.27.1`，构建环境设置 `GOTOOLCHAIN=local`；云 SDK 更新若要求更高版本应显式失败，再单独决定升级，不隐式切换工具链。
+- CI 的 setup-go 固定 `1.27.3`，构建环境设置 `GOTOOLCHAIN=local`；云 SDK 更新若要求更高版本应显式失败，再单独决定升级，不隐式切换工具链。
+- Go 漏洞发布门禁（I9-R02，用户裁决 B）：SDK 自动更新与真实前端构建之后、镜像构建推送之前执行 `go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...`，扫描器由当前工具链构建、版本固定，不进入产品运行依赖。使用默认文本/符号级判定；可达漏洞、工具执行错误或漏洞数据库不可用均阻止发布，不使用 JSON/SARIF 输出的成功退出码替代漏洞判定。仅模块级且未导入漏洞包的公告不自动升级为此门禁的阻断项；精简二进制扫描的模块级回退不能称为已证实符号可达。此门禁不自动升级工具链，不改变七条 SDK 更新策略，本地 `make all` 不自动执行联网扫描。
 - CI Action 原生使用 Node24：checkout/setup-go/setup-node 为 v7，setup-buildx/login 为 v4，metadata 为 v6，build-push 为 v7；这与前端固定 Node24.21.0 是不同层次。setup-go 显式使用 `go.sum` 作为缓存依据，setup-node 关闭自动包管理器缓存，避免运行时升级顺带改变缓存策略。
-- CI job 总预算30分钟；完整Go测试步骤预算15分钟（含编译与所有包），命令显式 `-timeout=5m` 约束每包测试二进制；真实DNS仅编译步骤预算5分钟。外层job预算可先于步骤预算到期；这些预算不改变产品请求/关闭时限，不保证任意子孙进程的硬退出时间，也不修改本地Make入口或测试夹具已有更窄预算。
+- CI job 总预算30分钟；完整Go测试步骤预算15分钟（含编译与所有包），命令显式 `-timeout=5m` 约束每包测试二进制；Go漏洞检查、真实DNS仅编译步骤各预算5分钟。外层job预算可先于步骤预算到期；这些预算不改变产品请求/关闭时限，不保证任意子孙进程的硬退出时间，也不修改本地Make入口或测试夹具已有更窄预算。
 - PR 时仅编译检查，不推送镜像
 - **SDK 版本策略（有意设计）**：腾讯云/阿里云要求使用较新的 SDK，使用过期 SDK 无法调用新接口/功能；因此每次构建前执行 `go get -u` 将云厂商 SDK 升级到最新（见 `docker-publish.yml`「更新所有 SDK 到最新版」步骤），镜像始终携带最新 SDK，SDK 可复现性要求服从该策略
 

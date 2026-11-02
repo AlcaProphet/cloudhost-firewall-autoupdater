@@ -87,7 +87,7 @@
 
 ### 第 1 步：获取程序
 
-**方式 A：从源码编译**（需要 Go 1.27.1+，前端构建需要 Node.js；macOS 运行要求 13 或更新版本）
+**方式 A：从源码编译**（需要 Go 1.27.3+，前端构建需要 Node.js；macOS 运行要求 13 或更新版本）
 
 ```bash
 make build
@@ -433,7 +433,9 @@ cd cloudhost-firewall-autoupdater
 make all
 ```
 
-`make test`、`make vet`、`make build` 均会先执行 `npm ci` 和前端生产构建，清洁检出可直接使用；需要 Go 1.27.1+、Node.js 和 npm。同一次 Make 调用中的多个目标共享一次前端构建，分别执行三次 Make 则会构建三次。`make test` / `make all` 还会在 Go 测试前执行前端行为回归；可单独使用 `make frontend-test` 完成前端准备与行为检查。`make -j4 all` 允许 vet/build 与行为测试并行，任一阶段失败会使 Make 非零退出，不保证其他并行任务从未运行。默认无参数make仍只构建前端。
+`make test`、`make vet`、`make build` 均会先执行 `npm ci` 和前端生产构建，清洁检出可直接使用；需要 Go 1.27.3+、Node.js 和 npm。同一次 Make 调用中的多个目标共享一次前端构建，分别执行三次 Make 则会构建三次。`make test` / `make all` 还会在 Go 测试前执行前端行为回归；可单独使用 `make frontend-test` 完成前端准备与行为检查。`make -j4 all` 允许 vet/build 与行为测试并行，任一阶段失败会使 Make 非零退出，不保证其他并行任务从未运行。默认无参数make仍只构建前端。
+
+CI 与 Docker 编译阶段固定 Go 1.27.3，并设置 `GOTOOLCHAIN=local`，依赖要求更高版本时明确失败。CI 在云 SDK 更新与前端构建后执行 `go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...`；扫描器版本固定并由当前 Go 构建，不进入产品运行依赖。默认文本模式发现符号级可达漏洞、扫描出错或漏洞数据库不可用时，均阻止后续镜像构建与发布；仅模块级但未导入漏洞包的公告不作为这一门禁的阻断依据。本地可在真实前端产物准备完成后执行同一命令；`make all` 不自动包含该联网扫描。
 
 日常只检查 Go 时，可以先执行 `make frontend`，随后直接运行 `go test ./... -race` 或 `go vet ./...`。裸 Go 命令不会生成前端产物；前端源码、配置或锁文件变化后应重新执行 `make frontend`。默认 DNS 测试通过本地 IPv4/IPv6 随机回环 UDP 服务运行真实解析器，不转发查询；普通完整 Go 测试与默认 CI 不访问真实 DNS 上游，无需为了避开 DNS 使用全仓 `-short`。npm/Go 依赖准备仍可能访问网络，这不等同整个构建离线。
 
