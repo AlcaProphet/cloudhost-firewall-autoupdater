@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -61,6 +62,15 @@ func (p *AliSWAS) TargetIndex() int {
 // Issue7 §6.3 / I8-11：首次可用 TotalCount 固定本次遍历基准，后页可用总数必须一致，
 // 累计条数精确相等才完成；缺失总数不清除基准，始终不可用时保留短页终止。
 func (p *AliSWAS) GetSnapshot() (RuleSnapshot, error) {
+	// I9-R01：SDK 会修改 Headers，默认 HTTP 池也会修改共享 Client.Timeout。
+	// 每次快照独立持有 SDK/HTTP 实例，各页串行复用；不新增快照总预算。
+	operation := newAliReadHTTP(context.Background(), tea.IntValue(p.client.ConnectTimeout), tea.IntValue(p.client.ReadTimeout))
+	defer operation.close()
+	client, err := swas.NewClient(aliReadConfig(&p.client.Client, operation))
+	if err != nil {
+		return RuleSnapshot{}, fmt.Errorf("创建 SWAS 读取 Client 失败: %w", err)
+	}
+
 	var allRules []config.RuleInfo
 	pageNumber := int32(1)
 	pageSize := int32(100)
@@ -83,7 +93,7 @@ func (p *AliSWAS) GetSnapshot() (RuleSnapshot, error) {
 			PageSize:   tea.Int32(pageSize),
 		}
 
-		resp, err := p.client.ListFirewallRules(req)
+		resp, err := client.ListFirewallRules(req)
 		if err != nil {
 			return RuleSnapshot{}, fmt.Errorf("查询防火墙规则失败: %w", err)
 		}

@@ -7,9 +7,11 @@
 > 本文档是给 AI 编码助手的指令集，也是项目**唯一的强要求文档**（详见「十二、文档体系与优先级」）。
 > 项目既有设计见 [Design5.md](HistoryDocs/Design5.md)（已归档），已完成构建记录见 [Build7.md](HistoryDocs/Build7.md)（告警与运行健康，Step 0～7），当前剩余工作见 [Issue9.md](Issue9.md)；已完成阶段合同见 [Issue7.md](HistoryDocs/Issue7.md)（P1-01 TAG 所有权与目标级同步，Step 0～5 主体已本地实施；§12.5 记录 R7-01～R7-07 本地复核项已修复提交；人工真机验收已于 2026-10-10 用户确认收口，SMTP 与发布证据边界见下文）；问题历史见 [Issue5.md](HistoryDocs/Issue5.md) 与 [Issue6.md](HistoryDocs/Issue6.md)，人工验收清单见 [ProdTestList.md](ProdTestList.md)。
 
-> **当前审阅与发布基线（2026-11-02）：** 源码基线为 `26e5c8f7f824cd10c2bfa57e1c2177251db4e1cc`，`v3.0.1` 指向该提交，[Actions run 41374458503](https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/41374458503) 的测试、构建与镜像推送成功，包含 I8-R26/R27。它不证明用户容器已升级或真实 SMTP 已验收。本聊天只读核对的保留问题与旧台账剩余均见 Issue9；本轮只整理文档，未修改生产合同、工具链或配置。Go 1.27.1 与 Alpine 3.20 仍是实际固定版本，补丁/基础镜像维护分别由 I9-R02/R07 跟踪。
+> **当前发布基线与归档时审阅（2026-11-02）：** 已发布源码基线为 `26e5c8f7f824cd10c2bfa57e1c2177251db4e1cc`，`v3.0.1` 指向该提交，[Actions run 41374458503](https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/41374458503) 的测试、构建与镜像推送成功，包含 I8-R26/R27。它不证明用户容器已升级或真实 SMTP 已验收。归档时只读核对的保留问题与旧台账剩余均见 Issue9；该次仅整理文档，未修改生产合同、工具链或配置。后续 I9-R01 本地修复见下段，不能外推已进入上述发布。Go 1.27.1 与 Alpine 3.20 仍是实际固定版本，补丁/基础镜像维护分别由 I9-R02/R07 跟踪。
 >
 > **当前取舍（用户本聊天确认）：** 个人内部使用、简单稳定的静默工具，允许过期目标、旧 IP 或端口残留。模板/组引用导致保守清理冻结、合并端口部分残留按现状接受；畸形云响应、外部直接改坏数据库及隔离停机时序不列为当前必修项。不因此削弱既有 TAG 所有权、S1 覆盖、版本/稳定定位或自动删除安全门；不增加精确清理、健康告警或极端场景验收要求。详细接受与排除记录见 [Issue9 §5](Issue9.md#5-接受排除和已失效的报告项目)。
+
+> **I9-R01 后续修复（2026-11-02，用户选择并授权 A）：** 实施前 `main / d50daa5b9e619e70a7818349dcc6039bd125199f`，工作树/暂存区干净。唯一生产文件为 `provider/ali_swas.go`；每次规则快照独立创建 SDK 与 HTTP client，避免共享 Headers 和 dara 默认 HTTP 池 Timeout 竞争，分页内复用连接并统一收尾。保留原单请求超时与 100 页限制，不新增 120 秒总预算。正式回归见 `provider/swas_concurrency_test.go` 与 `syncer/swas_concurrency_test.go`；实施证据、验证范围和发布边界统一见 [Issue9 I9-R01](Issue9.md#i9-r01)。本轮未部署、提交或推送。
 
 ---
 
@@ -252,6 +254,7 @@
 - Lighthouse 和 CVM 的增删必须传入与当次快照一致的 `FirewallVersion` / `Version`；版本不匹配时重新 Describe/规划，不得降级为无版本保护删除
 - 写入失败自动重试（最多 3 次，指数退避）
 - SWAS 与 ECS 使用当次重读快照中的稳定 RuleID 删除；Lighthouse 只在功能 key 唯一且当前 TAG 归属唯一时删除；CVM 使用同一快照的 `PolicyIndex + Version` 定位并避免逐条删除导致索引漂移
+- SWAS 快照读取隔离（I9-R01，2026-11-02 方案 A）：每次 `GetSnapshot` 通过官方构造器，从池中基础 client 的不可变配置/凭据创建独立 SDK client，配合操作私有 HTTP client；不整体浅拷贝 Client、不访问可变 Headers、不进入 dara 默认全局 HTTP 池、不在 Provider 字段缓存操作实例。各页串行复用同一操作的 Transport，所有返回路径统一 cancel、关闭响应体和空闲连接；沿用现有安全关闭诊断，不覆盖主结果。保留 Connect 10s/Read 30s/HTTP 整体40s 与原 100 页限制，不新增 120 秒快照总预算或 HTTP 断开/Stop 取消源。读取可以与正式同步增删、Dry Run、连接测试及扫描重叠；现有同平台正式写调用仍串行，本项不承诺任意并发写安全。分页计数、TAG、S1/S2、RuleID 删除定位、失败计数与重试分类保持。
 - SWAS 规则快照计数（I8-11 / Q-17，2026-10-09 用户裁决 B）：每次 `GetSnapshot` 的首个可用 `TotalCount` 必须非负，复制数值固定基准；后续可用值必须相同，增长/下降均失败。已有基准时后页缺失或 null 不清除基准；中途首次出现总数约束此前全部累计规则，始终不可用时沿用短页终止。累计超过总数失败，精确相等才完成，不足且空页失败，不足且非空短页继续。保留 PageSize=100 与 100 页上限，第 100 页证明完成仍可成功。计数矛盾返回空快照与 `ErrSnapshotIncomplete`，不自动重扫、不新增整目标重试；普通 SDK 错误链/分类保持。S0/S1/S2 基准独立，允许合法增删造成三次快照总数不同；S0 失败零新增/删除，S1 失败保留已确认新增且零删除，S2 失败保留已确认增删和估计观察。只拒绝已观察计数矛盾，不保证分页期间无等量替换/重复 ID；集合结构、资源扫描、总预算与重试状态机不在本项范围。
 
 ---

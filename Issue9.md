@@ -2,7 +2,8 @@
 
 > **建立日期：2026-11-02，用户授权。** 本文件是唯一活跃问题台账，承接 [归档 Issue8](HistoryDocs/Issue8.md) 的全部未完事项，以及本聊天对第三方审阅报告的筛选结果。旧编号不重用，新事项从 `I9-R01` 连续编号；完成后保留结果与日期。
 > **产品边界：** 个人使用、内部访问、简单稳定的静默工具；允许过期目标、旧 IP 或旧端口未及时清理。不要求高精度清理、完整审计或极端异常防护。候选、条件性限制和证据范围不等于产品缺陷，更不自动成为发布阻断项。
-> **本轮范围：** 只更新和归档文档，不实施下列代码、测试、依赖、构建配置或部署改动，不创建提交、标签或发布。后续按具体事项安排实施；归档表示阶段完成或剩余事项已转交，不表示所有外部链路均已通过。
+> **建账范围：** 建立台账时只更新和归档文档，未实施下列代码、测试、依赖、构建配置或部署改动，未创建提交、标签或发布。后续按具体事项安排实施并在对应条目记录；归档表示阶段完成或剩余事项已转交，不表示所有外部链路均已通过。
+> **后续实施（2026-11-02）：** 用户选择 A 并授权修复 I9-R01，现已落地独立 SDK/HTTP 读取实例与正式回归；本地验证及未发布边界见该项。其他事项未随本次修复实施。
 
 ## 1. 当前基线与证据
 
@@ -15,11 +16,11 @@
 
 ## 2. 活跃事项总表
 
-建议先处理正常使用可触发的 SWAS 竞态，再安排工具链维护。兼容小缺陷和测试工具可分别处理；暂缓项只保留触发条件，不要求全部完成后才能发布。本表没有 P0 项。
+I9-R01 已本地修复，后续可安排工具链维护。兼容小缺陷和测试工具可分别处理；暂缓项只保留触发条件，不要求全部完成后才能发布。本表没有 P0 项，已完成项保留结果供查询。
 
 | 编号 | 内容 | 状态与优先顺序 | 来源 |
 |---|---|---|---|
-| [I9-R01](#i9-r01) | SWAS 共享 SDK client 数据竞争 | 确认未修复；优先处理 | 第三方 P1-2；同日双请求 race 复现 |
+| [I9-R01](#i9-r01) | SWAS 共享 SDK client 数据竞争 | 2026-11-02 已按 A 本地修复；未发布 | 第三方 P1-2；同日双请求 race 复现 |
 | [I9-R02](#i9-r02) | Go 标准库安全补丁与构建工具链一致升级 | 待维护；常规安全更新 | 第三方 P0-2，撤销 P0 定级 |
 | [I9-R03](#i9-r03) | 历史空串 targets 返回 null，前端删除报错 | 确认未修复；低优先级兼容 | 第三方 P1-3 / C-01 |
 | [I9-R04](#i9-r04) | 空邮件正文保存与 GET/导出不一致 | 确认未修复；低优先级 | 第三方 P2-1 / C-02 |
@@ -37,10 +38,14 @@
 
 ### I9-R01 SWAS 共享 SDK client 数据竞争
 
-- **现状与证据：** [AliSWAS.GetSnapshot](provider/ali_swas.go) 直接调用池中共享 client 的 `ListFirewallRules`；当前 OpenAPI v2.2.4 的 `GetRpcHeaders` 会读取并清空 client.Headers。同日仓外测试仅两个并发读取即可由 `-race` 报告 client.go:1758/1759 的读写竞争。没有据此证明生产中已经发生认证错误或误删。
-- **实际触发：** 正式同步同一云平台的目标内部串行，但 Dry Run、连接测试与正式同步可重叠访问共享 client，属于正常操作；不以大量 goroutine 压力作为唯一成立前提。
-- **建议范围：** 优先沿 ECS 已有独立读实例/HTTP 隔离思路解决，或核对全部共享调用后做适当串行化；不能只给单个 Provider 实例加锁便假定池中其他实例也受保护。保持既有规则快照分页、TAG、S1/S2、删除授权和失败计数。
-- **完成条件：** 两个并发 GetSnapshot，以及同步与预览重叠的相关调用不再竞争；有正常读取和失败传播对照，运行相关 race 回归。R06 的 120 秒合同范围为 ECS 快照与四平台扫描；SWAS 快照总预算扩展另行取舍，不作为本项已确认违约或必选改造。
+- **原问题与研究结论：** [AliSWAS.GetSnapshot](provider/ali_swas.go) 原来直接调用池中共享 client 的 `ListFirewallRules`；OpenAPI v2.2.4 的 `GetRpcHeaders` 读取并清空 client.Headers，两个并发读取即可由 `-race` 报告竞争。只独立 SDK client 仍不足够：tea v1.5.3 的 dara 默认 HTTP 池在发送前修改共享 `http.Client.Timeout`，与另一请求中的读取竞争。源码依据见 [OpenAPI](https://github.com/alibabacloud-go/darabonba-openapi/blob/v2.2.4/client/client.go#L1757-L1762) 与 [tea/dara](https://github.com/alibabacloud-go/tea/blob/v1.5.3/dara/core.go#L349-L357)。没有据此证明生产中已经发生认证错误或误删。
+- **正常触发路径：** 正式同步同平台目标内部串行，但 Dry Run 与正式同步可使用同一 Provider；连接测试另建 Provider 仍复用池条目。各入口可重叠，单 Provider 锁或仅保护池查表不能覆盖全部共享调用。
+- **用户裁决与实施（2026-11-02，A）：** 基线 `main / d50daa5b9e619e70a7818349dcc6039bd125199f`，实施前工作树/暂存区干净。唯一生产文件为 `provider/ali_swas.go`：每次快照以 `context.Background()` 创建操作私有 `newAliReadHTTP`，通过 `swas.NewClient(aliReadConfig(...))` 从基础 client 的不可变配置/凭据创建独立 SDK client；不整体浅拷贝、不访问 Headers。分页内复用同一连接，所有返回路径经 `defer operation.close()` 收尾。代价是快照之间不共享读取连接，可能增加建连开销，未做性能量化。
+- **保持的合同：** 单请求 Connect 10s/Read 30s/HTTP 整体40s，PageSize=100 与最多100页保持；不增加120秒快照总预算，也不接入HTTP断开/Stop新取消源。既有总数/分页完整性、TAG、S1/S2、稳定RuleID删除、失败计数和重试分类保持。ClientPool、共享读取设施、ECS、扫描、API/schema、前端、SDK/依赖、工具链与镜像配置均未修改；现有写调用仍按正式同步串行，不扩为任意并发写安全合同。
+- **正式回归：** [provider/swas_concurrency_test.go](provider/swas_concurrency_test.go) 覆盖同实例双读、同池不同实例双读、读取与新增/删除/扫描重叠；各快照跨两页，要求两条操作实际同时到达HTTP端点，并核对完整结果与请求数。另覆盖正常成功、第二页SDK错误及总数变化的空快照/错误链，检查分页内连接复用和各出口的空闲连接关闭。[syncer/swas_concurrency_test.go](syncer/swas_concurrency_test.go) 走真实SWAS SDK、正式syncAll与DryRun重叠，核对覆盖、success、S0/S1读取数与零额外写入。均使用本地HTTP与虚假凭据，DNS/等待使用现有本地替身。
+- **本地验证（2026-11-02）：** 最终正式文件执行 `go test ./provider ./syncer -race -run '^TestI9R01' -count=20 -timeout=2m` 通过。`make all` 通过：真实 `npm ci`/前端构建、151项行为测试（fail/cancelled/skipped均0）、`go vet ./...`、全仓12包 `go test ./... -race -v` 与产品构建均成功；其中6包使用Go测试缓存，provider/syncer/webui/API及其余受影响包实际执行，不称12包禁缓存重跑。`gofmt`检查与`git diff --check`通过。环境为macOS darwin/arm64、Go1.27.1、Node24.21.0、npm11.19.0。首轮Make在前端构建后因默认Go启动器1.26.4配合`GOTOOLCHAIN=local`而于vet前拒绝运行；随后显式使用本机已有Go1.27.1、保留`GOTOOLCHAIN=local`重跑完整入口成功，未修改工具链配置。
+- **反向判别：** 对正式新测试使用仓外overlay：恢复原实现（并发专项与同步/预览各20轮）报race；只独立SDK而保留默认HTTP池（并发专项20轮）仍报Timeout race；移除操作close（成功/SDK错误/总数变化各1轮）均被连接关闭断言判失败。反例均明确非零，未修改正式源码或加入生产测试hook。
+- **范围与发布状态：** 共五文件（一份生产、两份新增测试、AGENTS/Issue9）。本轮尚未部署、提交或推送；未执行真实云、SMTP、浏览器、Linux/Docker或新revision的远端CI/GHCR，不外推外部验收或长期稳定通过，也不将本地修复写成已进入v3.0.1。既有用户真机收口与SMTP人工清单保持。
 
 <a id="i9-r02"></a>
 
