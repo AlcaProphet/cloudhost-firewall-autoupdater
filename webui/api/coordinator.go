@@ -58,7 +58,8 @@ var ErrNoSnapshotLoader = errors.New("协调器未配置候选构造能力")
 
 // NewConfigCoordinator 创建协调器。
 //
-// buildCandidate 与 apply 必须同时提供；仅做纯写入（无运行时）的场景可传 nil，
+// store 是必需依赖，必须非 nil。buildCandidate 与 apply 必须同时提供；
+// 仅做纯写入（无运行时）的场景，两个回调均可传 nil，
 // 此时 Mutate 只提交事务、不做运行时发布。
 func NewConfigCoordinator(
 	store *config.Store,

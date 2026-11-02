@@ -24,19 +24,19 @@
 | I8-R09 | dangling 目标引用 | 本地已修复 | Issue6 §6.5 第4项 |
 | I8-R10 | 日志持久化回调并发与背压 | 本地已修复 | Issue6 §6.5 第5项 |
 | I8-R11 | 同步事件 SSE 续传与心跳 | 即时通知契约已裁决；心跳本地已修复 | Issue6 §6.5 第6项 |
-| I8-R12 | 阿里云错误码重试范围 | 行为候选待裁决 | Issue6 §6.5 第8项 |
-| I8-R13 | 运行时间戳重启展示 | 产品边界待确认 | Issue6 §6.5 第11项 |
-| I8-R14 | SQLite 容量与辅助事务边界 | 研究候选待复核 | Issue6 §6.5 第12项 |
-| I8-R15 | Server.Addr 关闭后语义 | 低收益接口候选 | Issue6 §6.5 第14项剩余 |
-| I8-R16 | 其他清理符号清单 | 维护候选未裁决 | 旧 I8-42；Q-13剩余 |
-| I8-R17 | 日志渲染失败仓内长期回归 | 证据缺口 | 旧 I8-22；P3-10出口④ |
-| I8-R18 | A20 修复前负向控制 | 历史证据未重演 | 旧 I8-23 |
-| I8-R19 | 组件退出与资源泄漏证明 | 测试覆盖候选 | 旧 Issue8 §3 goroutine/fd/ticker |
-| I8-R20 | 启动宽限10秒数值锚点 | 低成本证据缺口 | 旧 Issue8 §3 DefaultStartupGrace |
-| I8-R21 | 前端长期行为覆盖与异步门禁 | 补强候选待复核 | TODOLIST P2-06/08/09/P3-16；旧 Issue8 §3/ I8-102 |
-| I8-R22 | 当前 revision 远端发布证据 | 独立证据待完成 | PT-B7-08；Issue5 O5-02历史边界；旧 I8-25部分 |
+| I8-R12 | 阿里云错误码重试范围 | 本地已修复 | Issue6 §6.5 第8项 |
+| I8-R13 | 运行时间戳重启展示 | 本地已修复 | Issue6 §6.5 第11项 |
+| I8-R14 | SQLite 容量与辅助事务边界 | 扫描取消/裁剪本地完成；容量暂缓、外键不适用 | Issue6 §6.5 第12项 |
+| I8-R15 | Server.Addr 关闭后语义 | 方案A语义与回归本地完成 | Issue6 §6.5 第14项剩余 |
+| I8-R16 | 其他清理符号清单 | 方案B维护清理与测试迁移本地完成 | 旧 I8-42；Q-13剩余 |
+| I8-R17 | 日志渲染失败仓内长期回归 | 方案 A 仓内长期回归本地完成 | 旧 I8-22；P3-10出口④ |
+| I8-R18 | A20 修复前负向控制与四入口长期回归 | 方案 B 本地完成 | 旧 I8-23 |
+| I8-R19 | 组件退出与资源泄漏证明 | 方案 B 生命周期修复与长期回归本地完成 | 旧 Issue8 §3 goroutine/fd/ticker |
+| I8-R20 | 启动宽限10秒数值锚点 | 数值与默认边界长期回归本地完成 | 旧 Issue8 §3 DefaultStartupGrace |
+| I8-R21 | 前端长期行为覆盖与异步门禁 | 方案B生命周期修复与前端门禁本地完成 | TODOLIST P2-06/08/09/P3-16；旧 Issue8 §3/ I8-102 |
+| I8-R22 | 当前 revision 远端发布证据 | v3.0.0 远端发布与本地容器部署验证通过 | PT-B7-08；Issue5 O5-02历史边界；旧 I8-25部分 |
 | I8-R23 | 特定平台与长期运行证据 | 证据范围待核对 | 历史audit/Issue8外部边界 |
-| I8-R24 | 合理前置条件与防御接口 | 非缺陷维护候选 | 旧 I8-17e/I8-47/I8-44-1/2/3 |
+| I8-R24 | 合理前置条件与防御接口 | 方案 A 保持契约；注释与文档维护收口 | 旧 I8-17e/I8-47/I8-44-1/2/3 |
 | I8-R25 | 历史统计与测试命名精度 | 文档/测试注释候选 | TODO-004/007；旧 Issue8附录B |
 | I8-R26 | 阿里云 TCP/UDP 全端口转换与收敛 | 本地已修复，正式门禁通过 | 2026-11-01 真实 ECS 报错；本聊天研究与授权 |
 | I8-R27 | 云端裸 IP 误判导致清理冻结 | 本地已修复，正式门禁通过 | 2026-11-02 computer use 发现；本聊天研究与授权 |
@@ -198,89 +198,141 @@
 
 ### I8-R12 阿里云错误码重试范围
 
-- **状态与来源：** 行为候选待裁决；Issue6 §6.5 第8项。
-- **证据与边界：** isRetryable保留网络/超时与既有字符串分类；历史Throttling/ServiceUnavailable不在显式列表。未重新复现真实供应商错误形态，不能仅凭名称泛化重试。
-- **后续与完成条件：** 验证当前SDK错误链和已存在/不存在优先级，逐错误码决定是否重试；保留权限/配额/不完整快照失败闭合，测试实际目标重规划次数。
+- **状态、来源与授权：** 2026-10-17 按用户定型的方案 B 正式修复并同步文档，本地已修复；来源为 Issue6 §6.5 第8项。实施前 `main == 本地 origin/main == 0f7fe9fbc6fb48830f9b5b3e0c14e2a677848187`，工作树/暂存区干净，未 fetch。研究/准备阶段的仓外成绩不作为本次正式工作树证据。
+- **根因与方案选择：** 原 `isRetryable` 匹配完整错误文本，常规 `Throttling`/`ServiceUnavailable` 漏重试，权限/配额业务错误又可被消息中的 `timeout`/`InternalError` 误判；新增/删除幂等及版本判断同样可能被消息干扰。当前固定 SDK 默认把业务响应转换为 `*tea.SDKError`，Provider/目标层 `%w` 包装保留可提取的 Code。用户选择结构化有限白名单而非追加字符串，保留三次整目标尝试与既有退避，不扩大到 SDK 内部重试或限流专用长等待。
+- **正式范围与合同：** 唯一生产文件为 `syncer/retry.go`，新增 `syncer/ali_retry_test.go`，文档为 AGENTS 与本文件，共四文件。先保留结构化 deadline/网络超时，再按 Code 精确接受 `Throttling`、`Throttling.User`、`Throttling.Api`、`ServiceUnavailable`、`InternalError`；提取结果区分“业务错误缺码”与“不是该类型”，前者及未知码直接不重试，不以 Message/Detail/Data/外层文本兜底，不改大小写/去空格或按前缀、子串、HTTP状态泛化。非阿里云业务错误保留既有字符串兼容行为。既有幂等码集合不扩大，阿里云仅精确匹配 Code，消息不能进入幂等或腾讯版本竞争分支；S1/S2 核验和确认计数保持。纯 `ErrSnapshotIncomplete` 不重试；I8-R06 预算耗尽保留 deadline 与当时业务cause时，结构化超时仍优先，不能误解为权限码本身可重试。每次 attempt 仍重新解析DNS、取S0和规划，删除使用当次最新S1定位；默认退避实际为1s/2s，清理耗尽和 `PartialDeleteError → S2` 优先级保持。不改目标状态机、Provider、超时/预算、API/schema、前端、依赖或发布配置。
+- **正式专项与判别力：** 先把正式回归加入仓库，旧生产实现的 `go test ./syncer -race -run '^TestI8R12' -count=1 -timeout=2m` 在预期行为断言判红；修复后同一专项 `-count=20` 通过。五个顶层测试共194个叶子场景，覆盖实际 ECS/SWAS SDK 的错误类型/Code/状态与单次HTTP请求、30种码×4类包装、空/未知/消息干扰、合法幂等仍需覆盖核验、S0/Add/S1/Delete/S2恢复、三次耗尽、已生效但响应失败不虚增确认新增、重试采用变化后的DNS及最新S1 RuleID、真实生产退避1s/2s。`go test ./syncer -race -count=1 -timeout=5m` 整包通过，包含既有腾讯/重试/清理与ECS分批回归。使用本次正式生产源码和正式仓内测试重新生成仓外生产overlay：旧基线、只补关键字，以及业务码回退消息/新增幂等消息/删除幂等消息/版本消息/业务码抢先吞deadline/缓存成功DNS/复用S0定位/退避误为毫秒，共10组，各自选定专项 `-race -count=20` 均在预期行为断言判红；已核对根测试失败次数，无编译失败/panic/race/整体超时混入。全部SDK请求只访问回环HTTP与假凭据，不是实际云故障注入。命令、退出码、正式源码快照和日志保存在 `/Users/kylechen/.codex/outputs/i8-r12-implementation-20261017-yp96udy0/`。
+- **完整门禁与环境：** `make all` 通过，包含真实 npm ci/vue-tsc/Vite 前置、全仓vet、Go race测试和产品构建；部分包使用测试缓存，另行 `go test ./... -race -count=1 -timeout=5m` 12包禁缓存完整race一轮通过。两份受影响Go文件gofmt与最终diff-check通过。系统Go启动器为1.26.6，首次尝试 `GOTOOLCHAIN=local` 在进入测试前因最低1.27.1要求被拒绝，该结果不计为负向控制；正式门禁显式将已安装Go1.27.1工具链置于本任务子进程PATH前端，并设 `GOTOOLCHAIN=local`，未更改系统配置/项目工具链。npm使用任务独立缓存，未修改或清理全局缓存；npm ci报告0漏洞，不记为独立npm audit。I8-R12本地收口，重复专项或单轮全仓绿色不外推长期稳定。
+- **外部与保留边界：** 本机Go1.27.1 darwin/arm64、Node26.7.0/npm11.19.0；未执行真实云错误形态/限流故障注入、真实浏览器、Linux/Docker、真实SMTP/Webhook/Kuma或当前revision远端CI/GHCR。五个业务码是有限兼容合同，尤其 `Throttling.User/Api` 不宣称本项目真实接口已返回；既有幂等集合也不代表每个码均已真机观察。短退避不保证跨过云端限流窗口，不新增整目标/整轮硬时间预算。保持用户既有真机收口和通知豁免，不恢复普通人工待执行项目，SMTP继续由I8-R01/ProdTestList跟踪。本轮源码、正式回归和文档尚未提交或推送。
 
 <a id="i8-r13"></a>
 
 ### I8-R13 运行时间戳重启展示
 
-- **状态与来源：** 产品边界待确认；Issue6 §6.5 第11项。
-- **证据与边界：** last_sync/last_success为内存状态，重启可为空；当前Dashboard用“暂无”，原“从未成功”担忧不能直接登记为现存文案缺陷。
-- **后续与完成条件：** 复核全部消费页面并决定保持本进程语义或持久化；若无需持久化，可明确接受边界后关闭，不因时间戳为空改变运行健康。
+- **状态、裁决与基线：** 2026-10-17 用户选择方案B，完成仓外候选准备后授权正式修复与文档同步；现已本地修复。实施前 `main / 1d5f49cc39a9404df582e025b5cca937b0a69db9`，相对本地 `origin/main` ahead 1，工作树与暂存区干净，未 fetch/push。来源为 Issue6 §6.5 第11项；旧“从未成功”文案担忧不作为现存缺陷。
+- **根因与选择：** `last_sync`、`last_success`、`last_round` 为本次进程内存状态，服务重启归空是已有生命周期设计。旧 Dashboard 使用中性“暂无”，但未注明启动范围，且无 `last_round` 时通过零值回退显示新增0/删除0，与清理区的“暂无记录”不一致。用户选择保留本进程语义、澄清展示；现有 SQLite 目标日志不是整轮汇总，不用于还原这些字段，也不将旧进程记录回填至健康计算使用的实时状态。
+- **正式范围与合同：** 共四文件：`webui/frontend/src/views/Dashboard.vue`、`webui/frontend/tests/dashboard-observation.test.mjs`、AGENTS 与本文件。唯一产品源码改动是 Dashboard 模板：完成时间空值统一“暂无记录”，说明“本次启动后的最近一轮完成时间，重启后重新记录”；当前配置目标/规则数之后注明最近轮次统计范围；没有 `last_round` 时显示“最近同步增删 暂无记录”，存在轮次时显示实际增删，包括真实0。时间仍取 `last_sync`，失败/partial/idle 的完成不冒称成功，不新增成功时间卡片。暂停或新轮次在途保留最近已完成轮次，轮询等待/失败保留已知记录，读到新进程空状态后清除旧统计；上述既有读取行为由新增回归保护，未修改请求脚本。清理观察、警告与唯一运行健康计算源保持；不新增持久化/API/schema、依赖或轮询请求代际治理。
+- **正式回归与判别力：** 测试先入正式仓库，旧 Dashboard 在20项中15通过、5项预期展示断言失败，无取消；修复后专项20/20通过。保留原8项清理观察回归，新增12项覆盖启动范围、无记录与真实零、四种轮次结论、完成时间与旧成功时间分离、失败已确认增删、暂停/在途、首次等待/读取失败、后续轮询保留/重启空响应和页面重新挂载。执行真实 Vue setup/模板，不以源码字符串检查代替展示；挂起夹具用 `t.after` 结算。全部前端110/110通过，且在 `make all` 的 `npm ci` 后重跑仍全绿，逐项30秒预算，无取消/跳过。基于正式源码重新生成仓外对照：旧实现、只补说明、隐藏真实零、误用成功时间、请求开始清空、请求失败清空、新空响应沿用旧轮次、暂停隐藏记录，共8组，均由同一正式测试在预期行为断言判红；确认 exit=1、AssertionError，无语法/运行类型异常或超时混入。对照源码和日志保存在 `/Users/kylechen/.codex/outputs/i8-r13-implementation-20261017-_63pect9/`。
+- **完整本地门禁与证据边界：** `make all` 通过，包含真实 `npm ci`、vue-tsc/Vite 前置、`go vet ./...`、`go test ./... -race -v` 与产品构建。Go12包中11包复用测试缓存，webui包实跑通过；不写成全仓禁缓存重跑。正式子进程显式使用Go1.27.1并设 `GOTOOLCHAIN=local`；Node26.7.0/npm11.19.0，npm使用本任务独立缓存，ci报告0漏洞，不计作独立审计。最终diff-check与四文件范围检查通过。本轮构建产物与准备阶段本地模拟浏览器检查所用产物逐文件SHA-256一致；该阶段检查了空记录、真实零和失败含确认增删的桌面亮色布局，本轮未重新执行浏览器，也不记为正式后端/真实云或新增用户人工验收。前期引擎重建/SQLite重开与健康反例继续只是仓外研究证据，未将夹具写入产品。I8-R13本地收口；本轮未执行全仓禁缓存Go测试、Linux/Docker、真实云/SMTP/Webhook/Kuma或当前revision远端CI/GHCR，不外推长期稳定或外部发布。保留用户既有真机收口与通知豁免，SMTP仍由I8-R01/ProdTestList跟踪。源码、正式回归和本轮文档尚未提交或推送。
 
 <a id="i8-r14"></a>
 
 ### I8-R14 SQLite 容量与辅助事务边界
 
-- **状态与来源：** 研究候选待复核；Issue6 §6.5 第12项。
-- **证据与边界：** 历史队列包括无连接池上限、AddSyncLog COUNT全表计数/与写入非同事务、WithTransaction使用无context Begin、未启用foreign_keys。已完成_txlock=immediate、COUNT错误处理和导出只读合同不关闭这些不同方向。
-- **后续与完成条件：** 分别评估连接容量、裁剪一致性、辅助入口取消和外键是否符合schema；先证明当前调用者/性能或损坏后果，再定每个子项，不擅自加PRAGMA、重试或事务锁策略。
+- **状态与来源：** 2026-10-17 用户授权按定型方案正式修复并同步文档，扫描持久化取消与日志裁剪已完成本地修复和正式门禁；来源为 Issue6 §6.5 第12项。四个方向分项处理：扫描持久化取消已实施、日志裁剪已优化、连接容量暂缓、外键当前 schema 不适用，不将整项写成全部修复完成。
+- **修复前根因：** 扫描 handler 在云扫描成功后调用无请求 context 的 ReplaceScannedResources，WithTransaction 以 Background 开启，DELETE/INSERT 也未接入请求生命周期。请求取消后仍可能覆盖缓存。普通配置协调器/导出已有带 context 的事务，不扩大为所有事务缺陷。用户已选择 SQLite 阶段响应取消并保留旧缓存，云扫描本身仍使用独立 120 秒预算。
+- **扫描定型合同：** 新增 WithTransactionContext 与 ReplaceScannedResourcesContext，旧签名保持并以 Background 委托；正式 handler 传入 r.Context()，事务和各条写语句共享该 context。取消在提交前被观察到时完整回滚；已经提交后取消不撤销提交，取消/提交并发不保证必然回滚。合法空结果仍可清空所选产品地域，其他地域/产品不变。保持原错误传播、panic 回滚、ErrTxDone 清理、连接恢复和安全 HTTP500；不增加硬时间预算、SQL 重试或生产测试钩子。当前驱动在真实写锁竞争中可能约5秒后返回 SQLITE_BUSY，即使 context 更早到期，也不承诺毫秒级结束或固定 context 错误身份。
+- **日志定型合同：** 保留 INSERT、COUNT、必要时 DELETE 独立提交和 I8-R10 的结果：COUNT失败时已插入记录保留、返回成功并跳过裁剪；DELETE失败返回错误但不回滚INSERT。只把 NOT IN 裁剪改为按第1000大id找边界、删除更旧主键；保留最新1000条的插入ID语义，不依赖ID连续、不按timestamp排序、不重置序列。修正“避免每次全表扫描”注释，COUNT仍每次执行且有成本；不承诺固定倍速或严格磁盘字节上限。清空/队列/健康语义保持。
+- **容量与外键保留结论：** 无连接池上限是事实，仓外持留24连接不是实际资源耗尽事故。固定小池会引入排队与健康探活等待，单连接会损失WAL读写并行；本轮不设置固定上限，继续保留独立容量候选，后续有真实并发资源压力/排队证据再研究。当前schema无外键声明，rules.targets为JSON文本；只开foreign_keys不能保护引用，沿I8-R09应用层完整性合同，不改PRAGMA或迁移关系表。已完成_txlock=immediate、COUNT错误处理和导出只读合同继续有效。
+- **正式范围与回归：** 生产仅config/store.go与webui/api/scan.go，新增config/store_context_test.go、config/synclog_retention_test.go、webui/api/scan_context_test.go，并同步AGENTS/本条，共7文件。覆盖取消前、DELETE后空/非空、首条INSERT后取消、第二条INSERT失败、提交前取消、panic/回调失败/已结束事务/旧签名/锁竞争恢复；日志999/1000边界、ID缺口、积压、清空后序列与清空发生在COUNT/DELETE之间、DELETE故障保留INSERT；保留既有COUNT/取消结果回归。保留既有人工收口/通知豁免及SMTP独立清单。
+
+- **实施基线与正式判别力：** 实施前 `main / c08154496bc916ed0ba21929165395e35c409d38`，相对本地 `origin/main` ahead 2，工作树/暂存区干净；未 fetch/push。原文件与准备包SHA-256逐份核对一致后，三份测试先落入正式仓库。旧生产逻辑仅在仓外补齐新方法签名以便编译，仍按旧路径执行；正式测试在取消后错误提交/缓存改变等行为断言判红，不以缺失方法导致的编译失败充数。应用两个生产改动后，正式 `go test ./config ./webui/api -run '^TestI8R14' -race -count=20 -v -timeout=3m` 退出0，8组专项覆盖空/非空取消、部分写入回滚、提交前取消和正常/旧入口对照。锁竞争用例只要求零提交与恢复，不宣称通用回调必不进入或毫秒级结束。
+- **正式负向对照：** 从本轮正式生产源码重新生成8类仓外overlay，使用仓内正式测试：旧行为、handler漏接、Begin使用Background、语句丢context、最大id减1000、OFFSET偏一、timestamp排序、合并日志事务。全部退出1并命中预期行为或驱动context传播断言，无编译失败、panic或超时冒充判别力。日志SQL属于语义保持的优化，旧正确SQL不要求在保留正确性测试中失败；范围访问方式的查询计划为准备阶段固定驱动研究证据，本轮不重复计为正式性能基准。命令、退出码、源码与日志保存在 `/Users/kylechen/.codex/outputs/i8-r14-implementation-20261017-_s6sw10m/`。
+- **完整本地门禁：** `make all` 退出0，包含真实npm ci、vue-tsc/Vite前置、全仓vet、Go race与产品构建；其中5包实跑、7包复用测试缓存。随后独立 `go test ./... -race -count=1 -timeout=5m` 全仓12包禁缓存一轮全部通过。5份受影响Go文件gofmt与最终diff-check通过。正式门禁显式将已安装Go1.27.1工具链置于任务子进程PATH并设置GOTOOLCHAIN=local；Node26.7.0/npm11.19.0，npm使用任务独立缓存，ci报告0漏洞，不计作独立npm audit。前端源码/依赖未改，没有增加前端行为测试或将候选overlay结果替代正式门禁。重复专项与单轮全仓绿色不外推长期稳定。
+- **外部与保留边界：** 本机Go1.27.1 darwin/arm64；本轮未执行真实浏览器断连、Linux/Docker、真实云/SMTP/Webhook/Kuma或当前revision远端CI/GHCR，不外推外部验收或发布通过。保持既有用户真机收口与通知豁免，不恢复普通人工待执行项；SMTP继续由I8-R01/ProdTestList跟踪。源码、正式回归和本轮文档尚未提交或推送。连接容量仍为暂缓候选，外键当前schema不适用，不能把这两个方向写成代码已修复或把I8-R14整体无保留关闭。
 
 <a id="i8-r15"></a>
 
 ### I8-R15 Server.Addr 关闭后语义
 
-- **状态与来源：** 低收益接口候选；Issue6 §6.5 第14项剩余。
-- **证据与边界：** Addr文案只规定Start成功前为空；Shutdown后保留listener地址的历史观察未裁决。Syncer.Wait未启动永久阻塞已经修复，不重开。
-- **后续与完成条件：** 复核当前调用者是否依赖关闭后地址，选择明确语义或清理；若改动，用启动/关闭生命周期判别，不扩为HTTP重构。
+- **状态与来源：** 方案 A 语义与回归本地完成（2026-10-17）；来源为 Issue6 §6.5 第14项剩余。用户在本聊天选择 A、完成研究定型后授权正式实施与同步文档。实施前 `main == 本地 origin/main == f1f5a621fd83dd2a7ddb9bb4bb26939318ae2951`，工作树与暂存区干净，未 fetch。
+- **裁决与合同：** `Server.Addr()` 表达本实例成功发布的实际绑定地址，以现有 `mu` 保护下的 `s.listener = ln` 为发布点，而非 Start 返回时刻。尚未发布时为空，包括监听失败、启动前关闭及绑定成功但因并发 Shutdown 未能发布；发布后即使在 Shutdown 中、正常/超时强制关闭后或 Serve 异常退出后也保留地址，拒绝重复 Start 不改变地址。端口降级使用实际分配端口；非空地址不证明仍在监听、仍占用端口或 HTTP 健康。当前生产实现已符合选定语义，本项为合同说明与回归补强，不宣称修复端口泄漏或关闭失败，也不虚构基线生产行为的红到绿。
+- **调用者与正式范围：** 仓内唯一直接生产调用为 `run.go` 绑定成功后的启动提示，关闭与健康判断不读取 Addr；未承诺仓外调用习惯。范围为 `webui/server.go`、`webui/server_test.go`、AGENTS 与本文，共四文件。server.go 只改 Addr、ServeStarted 及信号字段的注释；ServeStarted 实际在发布后、创建 Serve goroutine 前关闭，仅供测试同步，不承诺收到信号时仍在监听。与实施前 HEAD 的 Go 扫描标记序列比较，排除注释后完全一致；未改方法签名、状态字段、锁、监听/关闭/Wait 时序、错误归一化、超时或生产测试钩子。
+- **正式回归：** 十个既有生命周期测试补充地址断言，覆盖未启动、端口降级、正常/重复/超时强制关闭、异常 Serve 退出、关闭后拒绝启动、监听失败与监听成功尚未发布的并发关闭窗口；正常关闭后同时证明地址保留且同地址可重新绑定。新增 `TestAddrRetainedWhileRequestDrains` 用真实阻塞请求、Shutdown 信号与 Serve 完成信号证明 Serve 已退出而 Shutdown 尚未完成时地址仍保留，释放请求后再次确认；失败路径也释放 handler、关闭服务并有界等待所启动任务。新增 `TestAddrConcurrentWithShutdown` 用8个读取任务各最多100次查询，与 Shutdown 同期调度，检查发布后地址一致并有界回收；不据 race 通过声称穷举所有调度。新用例不增加固定 sleep。
+- **正式负向控制：** 在仓外仅替换生产文件、直接使用正式仓内测试，五类错误变体（Shutdown 后隐藏地址、Serve 完成后隐藏地址、关闭时清空 listener、返回配置端口而非实际端口、仅凭 started 提前暴露地址）均退出码1并命中 Addr 行为断言，无编译失败、超时或 DATA RACE；证明正式回归对选定合同有判别力，不把错误变体当作历史产品缺陷。另在新请求收尾用例释放请求前注入 t.Fatal，按指定断言失败并有界退出，无任务清理超时或 DATA RACE；此项只证明夹具失败清理，不计作生产负向行为。
+- **正式门禁：** 12项定向测试 `go test ./webui -race -run '^(TestStartUsesPreferredPort|TestStartFallsBackOnlyAfterEADDRINUSE|TestShutdownNormalizesServeResult|TestShutdownIdempotent|TestServeRuntimeErrorSurfacedToCaller|TestShutdownTimeoutForcesCloseOfInflightRequest|TestStartAfterShutdownRejected|TestStartAfterShutdownBeforeFirstStartRejected|TestShutdownDuringFirstStartClosesUnpublishedListener|TestStartListenFailureStillCannotRetry|TestAddr)' -count=20 -timeout=3m` 通过（8.129s）；`go test ./webui -race -count=1 -timeout=2m` 通过（2.774s）。真实 `make all` 的 npm ci、前端 build、全仓 vet、race 与产品构建全部通过；npm ci 安装时审计为0漏洞，未独立运行两条 npm audit。Make 的12包测试中10包命中缓存，因此追加 `go test ./... -race -count=1 -timeout=20m`，12包全部重新执行并通过（health 45.469s、webui/api 40.457s），不把缓存结果写成重新执行。受影响 Go 文件 gofmt、生产无注释标记一致性及 `git diff --check` 均通过。
+- **保留与外部边界：** 本机 Go1.27.1 darwin/arm64、Node v26.7.0、npm11.19.0；本轮未执行固定Node24环境、Linux/Docker、真实浏览器/云/SMTP/Webhook/Kuma或当前revision远端CI/GHCR，不外推长期稳定或外部发布通过。未改前端源码/依赖、API/schema、数据库、同步引擎或通知；Syncer.Wait未启动问题不重开，已归档历史事实不重写。保留用户既有真机收口、SMTP待验收与Webhook/Kuma豁免，不新增本开发接口的浏览器/云人工待办。源码、正式回归与本轮文档尚未提交或推送。
 
 <a id="i8-r16"></a>
 
 ### I8-R16 其他清理符号清单
 
-- **状态与来源：** 维护候选未裁决；旧 I8-42；Q-13剩余。
-- **证据与边界：** 旧I8-14身份链与I8-15注释/死赋值已完成；其他候选缺当前完整符号清单，历史8/5/2/14等数量不能证明安全。
-- **后续与完成条件：** 先列具体符号、生产/测试消费者及保留合同，再决定是否清理。合理前置条件不是缺陷；不得删除安全字段、辅助验收夹具或为整洁改变行为。
+- **状态与授权：** 2026-10-17用户选择并定型方案B、完成仓外候选与修复前检查后，明确授权正式修复并同步文档；限定维护清理、有效测试迁移及正式门禁已本地完成；其余已评估候选明确暂留。来源为旧I8-42、Q-13剩余。本项不登记为新的同步/安全产品缺陷，也不宣称全仓不存在其他维护候选。
+- **实施基线与范围：** `main / 6b9edb6e3472490350195009b44df48948981158`，本地`origin/main / f1f5a621fd83dd2a7ddb9bb4bb26939318ae2951`，ahead1，工作树与暂存区干净；未fetch。329份跟踪文件基线、16份候选源码及补丁SHA-256全部复核一致、只检查可应用性后才落地；正式16份源码/测试与审阅候选逐份哈希一致。加本文/AGENTS共18份文件，未改依赖/锁文件、Make/CI/Docker、API/schema、配置包、网络超时、调度/健康或目标状态机。
+- **根因与实际清理：** 正式启动已使用LoadBusinessSnapshot→ToRuntimeConfig→BuildRuntimeState，旧config.Config/Store.LoadConfig/BusinessSnapshot.ToConfig仅由旧包装子图及五份测试文件维持；删除该链，不留类型别名或兼容包装。另删除EventRuleChanged、ResolvedIPs及该文件专属dns导入、IssueCleanupDisabled、前端SyncEvent、clearAllCache及返回成员；useSettings只移除settings/load/refreshCredentialState三个页面未消费的返回成员，内部实现保留；Push测试删除三个var _，仅移除失去用途的syncer导入；validate.go只更新注释。保留的222个生产声明非注释token与实施前完全一致，只移除上述6个声明，无新增或改写保留声明；这是删除维护残留，不虚构旧生产行为故障的红到绿。
+- **测试迁移与保留：** store_tx/settings_policy测试改走正式快照，成功检查后才转换为RuntimeConfig；保留默认值、归一化、凭据原值、开关、非法设置及不回显原值。损坏targets/引用测试保留完整快照、给定事务和引用检查，移除退役包装的重复分支并同步名称/说明；syncer测试改RuntimeConfig与DeepCopy，仅补原先三个测试默认值，继续经真实BuildRuntimeState构造。六份测试的t.Fatal/Error/Fail系列调用由270变269，唯一移除的是旧LoadConfig重复失败断言，计数不是独立等价证明。Push Bus、AddStateUnknown与覆盖/清理门、ErrNoSnapshotLoader、Pause/Resume/Runtime及API Runtime、GetRules/ConvertPorts/ExpandPorts、Store预置/观察与I8-R14旧签名、SetBeforeRoundHook、ServeStarted、Current、两个InFlight、tag.HasPrefix/Parse、PlannedActionKeys及已有消费者的useDryRun.error均保留。DBTX/Provider/LimitedNotifier进一步接口收缩已评估暂留，不作为本次未完成的隐含删除义务。
+- **正式专项与判别力：** 正式工作树配置迁移专项`go test ./config ./webui/api -race -run '^(TestLoadBusinessSnapshotSettingValidation|TestCorruptTargetsBlocksAllLivePaths|TestI8R09SnapshotReferenceIntegrity|TestLoadBusinessSnapshot_IgnoresWebuiPortResidue)$' -count=20 -timeout=3m`退出0（config7.706s、api2.432s）。从正式源码生成五类仓外overlay、直接执行正式迁移测试：错误默认间隔、非法设置回退成功、放过悬空引用、吞掉损坏targets、转换丢凭据均退出1并命中预期行为断言，无编译失败/panic/超时/DATA RACE充数。前端110项正式现有回归通过；另用正式useSettings源码执行五项仓外加载/共享状态/凭据刷新/主题保存与失败恢复探针全部通过，删除加载后凭据刷新和把theme载荷改为tag两类对照均按行为断言失败。这五项未新增进仓内长期测试，不与110项混算。
+- **正式完整门禁：** 真实`make all`退出0，包含独立npm ci、vue-tsc/Vite、全仓vet、race与产品构建，前端dist已在正式仓库真实重建；12包中8包实跑、4包命中缓存。随后独立`go test ./... -race -count=1 -timeout=5m`退出0，12包全部禁缓存执行一轮（health45.247s、api37.470s、config33.700s）。13份受影响Go文件gofmt、18文件限定范围/16源码哈希复核、生产结构比对及最终`git diff --check`均通过，暂存区为空。固定已安装Go1.27.1工具链的任务子进程PATH并设置GOTOOLCHAIN=local，npm使用本任务独立缓存；npm ci内置审计显示0漏洞，未另行独立npm audit。单次全仓绿色与重复专项不外推长期稳定。所有以上结果均来自本轮正式工作树，不以研究或准备副本门禁替代。
+- **保留与外部边界：** 本机Go1.27.1 darwin/arm64、Node26.7.0、npm11.19.0；本轮未执行固定Node24、Linux/Docker、真实浏览器/云/SMTP/Webhook/Kuma或当前revision远端CI/GHCR，不外推长期稳定或外部发布通过。保留用户既有真机收口、通知豁免及SMTP独立清单，不新增人工待执行项；不重写归档历史的当时事实。删除旧Go导出符号可能要求仓外源码消费者迁移，本次只确认仓内调用者，不承诺仓外绝无依赖。源码、测试及本轮文档尚未提交或推送。正式日志/变体/结构比对位于`/Users/kylechen/.codex/outputs/i8-r16-implementation-20261017-mUjfB4/`。
 
 <a id="i8-r17"></a>
 
 ### I8-R17 日志渲染失败仓内长期回归
 
-- **状态与来源：** 证据缺口；旧 I8-22；P3-10出口④。
-- **证据与边界：** 生产使用bytes.Buffer，正常写入不产生该错误；历史TestRenderFailureNoPublish来自仓外writer overlay。仓内未找到同名不能否认历史证据，本次未重演。
-- **后续与完成条件：** 若补长期守护，验证原错误返回且序号、ring、投递不变；不扩大生产故障面，不宣称slog会自动报告Handler错误。
+- **状态与授权：** 2026-10-17用户选择方案A、完成修复前检查后明确授权正式修复并同步文档；默认仓内长期回归、正式门禁与文档同步已本地完成。来源为旧I8-22、P3-10出口④。
+- **实施基线与范围：** `main / 196af2ddc7b0e2b0bc4da80a4da15888d89703a4`，本地`origin/main / f1f5a621fd83dd2a7ddb9bb4bb26939318ae2951`，ahead2，开始时工作树与暂存区干净，未fetch。两份候选和补丁SHA-256与审阅版本一致，`git apply --check --whitespace=error-all`通过后才落地。新增`webui/api/logstream_render_failure_test.go`与`webui/api/testdata/logstream_render_failure.go.txt`，同步本文与AGENTS，共四份文件；生产源码、依赖、前端、API/schema、SSE/健康/通知、Make/CI/Docker保持。
+- **根因与长期回归合同：** 当前生产固定使用`bytes.Buffer`，Write返回error保证为nil；已有`renderLine`错误检查及`Handle`发布前提前返回属于规范性补齐。历史`TestRenderFailureNoPublish`来自仓外writer overlay，不因仓内无同名而否认历史记录；本次建立当前基线的正式回归，不宣称取回旧夹具或复演旧revision。默认父测试生成临时overlay，仅替换TextHandler的writer，保留真实renderLine、Handle与发布代码，不增加生产hook；现有Make/CI的全仓Go测试可自动发现，无需改门禁入口。
+- **正式测试覆盖：** 立即失败与向临时buffer写入部分字节后失败，均验证renderLine返回空文本与原`io.ErrClosedPipe`、Handle原样返回错误。空缓存/非空缓存/1000条回绕缓存三种状态各搭配两类writer，验证完整ring、序号、位置/数量、epoch与订阅登记不变，两个既有订阅者零投递、零递归诊断，后续成功日志连续编号、历史与增量回放可用。属性MarshalText错误/可恢复panic返回`!ERROR`/`!PANIC`文本且不返回Handler error，作为语义对照而非writer故障替代。父测试读取夹具文件以跟踪缓存依赖；注入锚点唯一性及JSON事件中的三项预期顶层子测试实际pass检查，防止注入漂移、零匹配或整项Skip形成静默绿灯。子进程使用当前测试GOROOT工具链，仅运行固定注入测试，显式`-race -count=1`；子测试60秒、父命令90秒为测试保护预算，不是产品超时。
+- **正式专项与判别力：** 正式工作树`go test ./webui/api -race -run '^TestI8R17RenderFailure$' -count=20 -v -timeout=3m`退出0（47.493s），20次父测试均确认三项注入顶层子测试实际通过。重新从正式源码/正式测试生成仓外副本，七类错误变体（renderLine吞错、Handle吞错、错误身份丢失、失败推进序号、失败污染ring、失败投递、递归诊断）均退出1并命中预期行为断言，无编译失败/panic/超时/DATA RACE充数；不把这些当前源码变体称为历史修复前revision复演。独立保护检查首次执行通过、第二次命中缓存，改名夹具子测试后未复用旧绿灯而明确失败；注入锚点漂移也明确失败。两类测试基础设施保护不混入七类生产行为判别计数。
+- **正式完整门禁：** API整包`go test ./webui/api -race -count=1 -timeout=3m`退出0（36.912s）。真实`make all`退出0，包含独立npm ci、vue-tsc/Vite、全仓vet、race与产品构建；新增父测试在默认入口实际执行并通过，12包中2包实跑、10包命中缓存。随后独立`go test ./... -race -count=1 -timeout=5m`退出0，12包全部禁缓存执行一轮（health43.720s、api40.777s、config32.533s）。两份测试资产gofmt、候选哈希、四文件范围、327份其他既有跟踪文件逐字节未变及最终`git diff --check`通过；暂存区为空、临时overlay未在正式源码目录留下注入文件。全部以上正式正向门禁来自正式工作树，不以研究/准备副本替代；错误变体和基础设施故障验证在正式文件副本中执行，不修改正式生产代码。
+- **证据边界：** 本机Go1.27.1 darwin/arm64、Node26.7.0、npm11.19.0；任务子进程固定工具链PATH/GOTOOLCHAIN=local，npm使用任务独立缓存。npm ci内置审计显示0漏洞，未另行独立npm audit或前端行为回归。本轮未执行固定Node24、Linux/Docker、真实浏览器/云/SMTP/Webhook/Kuma或当前revision远端CI/GHCR。本项不把规范性分支写成当前生产buffer故障，不宣称slog.Logger会自动报告Handler错误；本地回归不穷尽并发时序，不外推长期稳定或外部发布。保留既有用户真机收口、通知豁免及SMTP独立清单，不新增人工待执行项。两份测试及本轮文档尚未提交或推送。完整正式记录见`/Users/kylechen/Desktop/Repo/2026-10-17/issue8-md-issue8-md-i8-r17/outputs/i8-r17-implementation.md`与同目录`i8-r17-implementation-evidence.zip`。
 
 <a id="i8-r18"></a>
 
-### I8-R18 A20 修复前负向控制
+### I8-R18 A20 修复前负向控制与四入口长期回归
 
-- **状态与来源：** 历史证据未重演；旧 I8-23。
-- **证据与边界：** 历史修复和当前Stop回归保留；旧复核尚未用b38678a之前实现重演修复前红灯。真机确认不补齐该自动化判别记录。
-- **后续与完成条件：** 若要补证明，用固定旧源码overlay准确触发行为断言；编译失败、超时不能记为判别成功，不改生产Stop合同。
+- **状态、来源与授权：** 2026-10-19 用户明确授权按研究与准备完成的方案 B 正式改进并同步文档；仓内长期回归、正式门禁与文档同步已本地完成。来源为旧 I8-23。原 A20 实施记录已有当时临时移除门控的红灯，本项补齐旧复核未重演的历史证据，并加强当前四入口判别，不改写为原始修复从未验证。
+- **正式基线与范围：** `main == 本地 origin/main == b3f90260fbfeef224bc6a7eed69f0b6a661485f5`，开始时工作树与暂存区干净；331 个既有跟踪文件与准备基线逐字节一致，补丁及两份测试资产 SHA256 核对后通过可应用性检查才落地，未 fetch/push。仅 `syncer/stop_gate_test.go`、新增 `syncer/testdata/stop_gate_entrances.go.txt` 与 AGENTS/本文共四份文件；生产源码、依赖、前端/API/schema、Make/CI/Docker 保持。旧测试注释明确停止吸收态保护的边界和门控通过后 Stop 仍完成当轮的合同，Provider 观察准确表述为 S0/S1 两次快照。
+- **固定历史红→绿重演：** 2026-10-17 研究采用完整 `git archive` 快照与各自依赖文件，2026-10-19 正式实施阶段重新校验两份历史生产源码哈希并重跑相同 Stop-before-Run overlay 探针：`ea71f5f1c8657e481e1a6db2358e762f5d519dd7`（`b38678a` 的直接父提交）在 race/count=20 下 20 次均因 Provider 调用 got=1/want=0 行为断言失败，`b38678a8d28612517f3cff4f4fc9610a3cc33b95` 与当前正式工作树各 20 次通过。使用 Go 1.27.1 darwin/arm64，不写成原历史 Go 1.25 环境复演；编译失败、超时、死锁不计行为判别成功。默认长期回归不依赖 Git 历史或旧算法。
+- **长期回归合同：** 默认父测试 `TestI8R18StopGateEntrances` 读取真实 `syncer.go`，解析唯一 `Syncer.Run` 并验证四次 beginRound 调用、四个独立拒绝诊断标识及位置，向临时测试构建插入门控前接缝，不修改生产文件或增加运行时 hook。startup/resume 在目标入口 Stop 后须零轮/零快照/零增删；ticker/trigger 只保留此前启动轮及其 S0/S1 两次快照、一次新增、零删除。使用真实 Run/目标链、固定 DNS 与 mock Provider，虚拟时间驱动 ticker，等待实际 Run 返回后统计，不能把 durable blocked 当作完全退出。断言前不主动 Stop 兜底，退出须由目标入口接缝触发；失败清理独立停止并有界等待。已准入轮完成、Stop 不改变 enabled、Wait 和暂停恢复合同保持。
+- **子进程及缓存保护：** 父测试读取 testdata，使夹具成为默认测试缓存输入；子进程固定当前 GOROOT、`GOTOOLCHAIN=local`、`-race -count=1` 及唯一注入测试入口，避免父测试递归。注入测试和四个子场景均须各有一次 run/pass，包级通过一次；零匹配、缺场景、Skip、失败、无效 JSON 或命令失败一律拒绝。子测试 60 秒、父命令 90 秒仅为测试保护预算，不改变生产超时或承诺任意编译/子孙进程的硬终止。四个拒绝诊断标识为定位锚点，未来改名须复核夹具。
+- **正式专项与判别力：** 正式工作树 `go test ./syncer -race -run '^TestI8R18StopGateEntrances$' -count=20 -timeout=3m -v` 退出 0（40.557s），20 次父测试均确认四入口子用例实际运行并通过。重新从正式文件复制到仓外，四类单点忽略门控 false 返回的错误变体各 count=1 均退出 1 并命中对应 `I8R18_BEHAVIOR` 轮次/Provider 断言，无编译失败、panic、DATA RACE、超时或接缝未命中充数。六类基础设施检查（锚点漂移、多一次门控调用、零匹配、整体 Skip、单入口 Skip、缺入口）均明确拒绝；首次缓存检查通过、重复命中 cached，仅改夹具为 Skip 后缓存失效且失败，恢复后通过。基础设施与缓存检查不混入四类行为判别数，也不把本轮四类各一次与准备原型各 20 次合并。错误变体在正式文件的仓外副本实际写入后运行；不以外层源码 overlay 假定父测试读到了变体。
+- **正式完整门禁：** 正式工作树十项 Stop/Wait/恢复配套回归 race/count=20 退出 0（包耗时11.623s），`go test ./syncer -race -count=1 -timeout=3m` 退出 0（18.559s），包含新增父测试。真实 `make all` 退出 0（墙钟46.320s），包含独立 npm ci、vue-tsc/Vite、全仓 vet/race 和产品构建；新增父测试在默认入口实际执行并通过，12 包中4包实跑、8包命中缓存。随后独立 `go test ./... -race -count=1 -timeout=5m` 退出 0（墙钟45.589s），12 包全部禁缓存执行一轮。两份测试资产 gofmt、候选哈希、四文件范围、其余328份既有跟踪文件逐字节未变、空暂存区及 `git diff --check` 通过；正式源码目录无注入临时文件。正向门禁均来自正式工作树，错误变体及基础设施检查来自正式文件的仓外副本，不以准备结果替代。
+- **证据边界：** 本机 Go1.27.1 darwin/arm64、Node26.7.0、npm11.19.0，任务固定工具链 PATH/GOTOOLCHAIN=local，npm 使用独立缓存。npm ci 附带审计显示0漏洞，未另行执行独立 npm audit 或前端行为回归。本轮未执行固定 Node24、Linux/Docker、真实浏览器/云/SMTP/Webhook/Kuma或当前 revision 远端 CI/GHCR；本地有限交错和缓存检查不穷尽并发时序，不外推长期稳定或外部发布。既有普通云/浏览器人工收口、Webhook/Kuma 豁免及 SMTP 独立清单保持，不新增人工待执行项。两份测试和本轮文档尚未提交或推送。正式记录与原始日志统一保存于 `/Users/kylechen/Desktop/Repo/2026-10-19/i8-r18-implementation/`。
 
 <a id="i8-r19"></a>
 
 ### I8-R19 组件退出与资源泄漏证明
 
-- **状态与来源：** 测试覆盖候选；旧 Issue8 §3 goroutine/fd/ticker。
-- **证据与边界：** 已有TestShutdownNoGoroutineLeak和重复Shutdown回归；撤销“全仓零泄漏断言”。Syncer/Push/Supervisor/FD/ticker尚无全面确定性退出证明。
-- **后续与完成条件：** 按组件评估需要补的真实退出观察、任务完成信号和句柄回收；单次goroutine数量、固定sleep或有限时间内没出现现象不等于全面无泄漏。
+- **状态与来源：** 旧 Issue8 §3 goroutine/fd/ticker；2026-10-19 按用户批准的方案 B 实施，生命周期修复与长期回归本地完成。用户明确选择等待在途自然完成，不新增退出取消预算。实施前 `main / ef0cdc1bf1bb83d3805436882098ab5fcfbfe2ce`，相对本地 origin/main ahead 1，工作树/暂存区干净；与准备基线303份跟踪文件及八份候选哈希一致，未 fetch/push。
+- **生产范围：** 八文件为 `internal/health/push.go`、`notifier/bus.go`、`notifier/inflight.go`、`notifier/webhook.go`、`webui/server.go`、`webui/api/alertset.go`、`webui/api/deps.go`、`run.go`。Pusher 持有私有 Transport；AlertManager 跨热重载持有另一私有池，通知器保留自己的 client/原超时。候选构造/回滚/Apply 不关闭长期池，旧发送不取消。EventBus 在订阅快照锁内登记普通回调，最终冻结准入并等待，覆盖尚未启动的回调与错误诊断；不抢先停止 SSE channel 或日志 ingress。Server 包装原 ResponseWriter，登记与冻结共锁，迟到请求安全 503 + no-store，独立等待实际 handler。限流器最终停止诊断续约、取消未开始 timer 并等待已开始回调，不新增强制汇总。
+- **退出合同：** 开始 HTTP Shutdown → Push/监督器停止 → Stop Syncer → HTTP 收尾与 Serve 结果转发实际返回 → 当前轮及已准入 handler 完成 → 普通告警冻结/join → 诊断回调停止及私有 Webhook 空闲池关闭 → 日志 writer 既有10秒软排空/join → Store.Close → pidfile。Push 私有空闲池在其 done 前关闭；HTTP 10秒只限制优雅连接等待，不承诺进程硬10秒退出。保留原 SMTP/HTTP/云预算及已有请求/SQL取消，正式同步当前轮不取消；自然完成包括错误/超时返回，不代表真实投递。
+- **正式回归：** 新增八份测试资产，覆盖 Syncer 多云分组和多个 Wait 等待者、Supervisor 在途检查与实际 Run 返回、Push 关闭/timer/检查停止及 HTTP/1/HTTP/2 私有连接回收、请求冻结/并发准入/强制关闭后 handler 完成/Flush 透传、旧新告警并存与回滚保池、普通回调 drain 与 SSE/ingress 独立、诊断 timer 等待/输出中停止。默认父测试 `TestI8R19CapturedCallback` 仅临时注入 Publish 解锁后、启动回调前接缝；读取 testdata 追踪缓存，固定当前 GOROOT/GOTOOLCHAIN=local、子进程 race/count=1 并核对实际 run/pass，产品无新 hook。真实产品进程测试在默认10秒HTTP窗口强制关连接后放行本地假SMTP，要求实际邮件会话完成、正常退出及数据目录锁最终释放，不把客户端断开当作 handler 已完成。
+- **专项与判别力：** 正式工作树五包15个新增顶层专项 race/count=20 退出0（35.810s），全部顶层及8个子场景的 run/pass 各20次；捕获回调父测试每次确认子测试实际运行并通过。真实产品进程新增回归 race/count=1 退出0（包耗时12.500s）。九类基于正式文件的仓外副本错误变体均以预期行为断言退出1：漏关 Push 空闲池、回调登记过晚、请求未 join、请求未冻结、诊断回调未 join、Webhook 沿用共享池、Supervisor/Push 未等待在途检查、main 漏等请求。不以编译失败、panic、DATA RACE 或测试总超时充数；捕获回调与进程变体使用真实写入的仓外副本，避免父测试/产品子构建未读到外层 overlay。详见本次证据目录的 focused-results.json、negative-results.json。 父测试基础设施另在仓外副本核实：重复运行命中缓存，仅改夹具为 Skip 后缓存失效且失败，零匹配同样拒绝，恢复后通过；该检查不混入九类行为判别数。
+- **完整本地门禁：** 正式工作树六个受影响包（含真实产品进程）完整 race/count=1 退出0（墙钟44.117s）。真实 `make all` 退出0（墙钟54.463s），包含独立 npm ci、vue-tsc/Vite、全仓vet/race及产品构建；12包中6包实际执行、6包命中缓存，新增父测试与真实10秒HTTP窗口进程回归均在默认入口实际执行并通过。随后独立 `go test ./... -race -count=1 -timeout=5m` 退出0（墙钟44.801s），12包全部禁缓存执行一轮。Make及最终全仓门禁显式将Go1.27.1置于PATH首位并设GOTOOLCHAIN=local，npm使用任务独立缓存；npm ci附带审计显示0漏洞，未另行执行独立npm audit或前端行为回归。受影响Go/夹具gofmt与git diff --check通过；范围为8份生产文件、8份测试资产、AGENTS/Issue8/README/Build7共20文件，另291份既有跟踪文件哈希保持，暂存区为空。
+- **证据边界：** 本机 Go1.27.1 darwin/arm64、Node26.7.0、npm11.19.0。仓外准备原型证据与本次正式工作树证据分开；不恢复“全仓零泄漏断言”，既有 Server 栈扫描仅为辅助诊断。具体任务完成与连接关闭不证明 SDK 全局池、Go/runtime 或标准库后台任务全部销毁。HTTP及日志10秒不是进程总上限；Compose 默认停止宽限可能先行SIGKILL，README说明按部署配置，不擅自固定一个全场景够用的秒数。未执行 Linux/Docker、固定Node24、真实浏览器/云/SMTP/Webhook/Kuma或当前revision远端CI/GHCR，不外推长期稳定或发布通过；既有普通人工收口、Webhook/Kuma豁免与SMTP独立清单保持。源码/测试/本轮文档尚未提交或推送。证据目录：`/Users/kylechen/Desktop/Repo/2026-10-19/i8-r19-implementation/`。
 
 <a id="i8-r20"></a>
 
 ### I8-R20 启动宽限10秒数值锚点
 
-- **状态与来源：** 低成本证据缺口；旧 Issue8 §3 DefaultStartupGrace。
-- **证据与边界：** DefaultStartupGrace为10秒合同；现有测试引用常量作相对时间计算，历史10s改12s仍绿记录未在本次重演。其他告警/Push默认常量已有直接或间接锚点。
-- **后续与完成条件：** 补独立字面数值与真实边界行为断言；不能仅把同一常量同时用于输入和预期。
+- **状态与授权（2026-10-19）：** 用户确认研究推荐方案并授权进一步检查后正式修复、同步文档；数值与默认边界长期回归本地完成。来源为旧 Issue8 §3 DefaultStartupGrace；本项补测试证据，不改变产品行为。
+- **正式基线与范围：** 实施前 `main / 39ead637342594f23d65dc54633e2463295f481b`，相对本地 `origin/main` ahead 2，工作树与暂存区干净，未 fetch。新增 `internal/health/startup_grace_test.go`，同步 AGENTS 与本节，共三文件；生产代码、旧测试、依赖、API/schema、前端及 Make/CI/Docker 不变。
+- **根因与研究证据：** 原测试把 `DefaultStartupGrace` 同时用于夹具与超限输入，常量改变时输入跟随移动；夹具显式传入该值，也没有直接保护生产省略该字段后由 `New` 填默认值的接线。2026-10-19 仓外研究已重新验证：当前健康整包 race/count=1 通过（43.368s），仅10s改12s后同一整包仍通过（43.185s）；不再沿用“本次未重演”。研究候选与正式工作树门禁分开，研究目录为 `/Users/kylechen/Desktop/Repo/2026-10-19/i8-r20-research-9e54n069/`。
+- **长期回归合同：** `TestI8R20StartupGraceValue` 独立断言固定10秒；`TestI8R20StartupGraceDefaultBoundary` 使用固定 `Now`、真实 `New → Evaluate` 和立即返回的 SQLite 桩，不经显式传入默认常量的公共夹具。省略 `StartupGrace` 与负值回退两种接线，分别在同步启用/暂停下覆盖6场景，共24个叶子用例：从未运行的 `10s−1ns`、恰好10秒均健康，`10s+1ns` 才报引擎未运行；已运行后停止立即异常；运行中超过10秒不因此异常；宽限内SQLite失败仍异常。检查 `Healthy` 与完整原因数组，输入不从被测常量推导；无真实10秒等待、生产hook或默认子进程测试。基准保留Syncer构造时间，10秒为判定阈值，不承诺第10秒发出告警。
+- **正式专项：** `go test ./internal/health -race -run '^TestI8R20' -count=20 -timeout=2m -json` 退出0，墙钟2.314s；核对两个顶层及全部24个叶子场景（含分组共32个测试节点）run/pass各20次，无Skip或零匹配。
+- **正式判别力：** 基于当前正式生产源码的六类仓外overlay（10s改12s、10s改9s、`>` 改 `>=`、默认值填充失效、负值不再回退默认值、漏掉已运行后停止分支）均退出1且命中预期叶子场景的 `I8R20_BEHAVIOR` 断言。各变体只运行正式 `TestI8R20StartupGraceDefaultBoundary`，排除数值锚点入口，确认由实际行为独立判红；无编译失败、panic、DATA RACE或整体测试超时充数。overlay仅用于本次判别力核验，不加入默认测试框架。
+- **完整本地门禁：** 健康整包 `go test ./internal/health -race -count=1 -timeout=2m` 退出0（墙钟43.611s）。真实 `make all` 退出0（墙钟53.560s），包括任务独立npm缓存下的 `npm ci`、vue-tsc/Vite、全仓vet/race与产品构建；12包中健康包实际执行、其余11包命中缓存，新增两个顶层和24个叶子场景在默认入口实际运行并通过。随后独立 `go test ./... -race -count=1 -timeout=5m` 退出0（墙钟45.869s），12包全部禁缓存执行一轮。全部Go门禁显式将Go1.27.1置于PATH首位并设 `GOTOOLCHAIN=local`；npm ci附带审计显示0漏洞，未另行执行独立npm audit或前端行为回归。新增文件gofmt、git diff --check、三文件范围及空暂存区检查通过，另338份既有跟踪文件哈希保持。
+- **证据边界：** 本机 Go1.27.1 darwin/arm64、Node26.7.0、npm11.19.0；不修改固定10秒、`>` 边界、启动顺序或健康消费者。未执行 Linux/Docker、固定Node24、真实浏览器/云/SMTP/Webhook/Kuma或当前revision远端CI/GHCR，不外推长期稳定或发布通过；既有人工收口、Webhook/Kuma豁免与SMTP独立清单保持。本轮测试与文档尚未提交或推送。正式证据目录：`/Users/kylechen/Desktop/Repo/2026-10-19/i8-r20-implementation/`。
 
 <a id="i8-r21"></a>
 
 ### I8-R21 前端长期行为覆盖与异步门禁
 
-- **状态与来源：** 补强候选待复核；TODOLIST P2-06/08/09/P3-16；旧 Issue8 §3/ I8-102。
-- **证据与边界：** 后续已有Alerts、Dashboard观察、Dry Run请求阶段等正式回归，旧“完全无组件测试”不再沿用；仍需逐场景检查模板disabled、outcome完整矩阵、target_id稳定key、44px尺寸和卸载晚到覆盖。test:alerts逐项30秒已修，总命令预算/其他入口/CI接线未统一。
-- **后续与完成条件：** 先建立当前用例与行为映射，再决定补缺；优先有判别力的请求/模板/虚拟时间观察，不机械替换全部sleep或新增镜像实现的测试。
+- **授权与基线（2026-10-20）：** 用户选择研究推荐B，授权进一步研究准备后正式修复并同步文档。正式实施前 `main / 68ca03fbc726cf6c346055caa82a6ce34a1b620f`，与本地origin/main一致、工作树/暂存区干净；341份既有跟踪文件哈希与准备快照一致，未fetch。来源为TODOLIST P2-06/08/09/P3-16、旧Issue8 §3/I8-102；不是“完全无组件测试”。
+- **研究与准备：** 既有七入口110项已通过，但保存按钮disabled、卡片key、44px接线及禁止前端按时间派生健康等错误变体仍可全绿。实际确认Dashboard状态/统计响应乱序、离页后消息和触发timer、Alerts/RunTest晚到消息、Settings初读后继续预加载。四种outcome为idle/success/partial/failed，cleanup_deferred为附加观察。准备候选在Node24.21.0/26.7.0各完整151项通过，11类错误变体和旧生产源码均按行为断言变红；Make隔离替身21项通过。研究目录 `/Users/kylechen/Desktop/Repo/2026-10-19/i8-r21-research-c3hvi0xh/`，准备目录 `/Users/kylechen/Desktop/Repo/2026-10-20/i8-r21-preparation/`，不混作正式工作树证据。
+- **正式范围与合同：** 仅4份生产Vue页面（Dashboard/Alerts/RunTest/Settings）增加页面退出保护，Dashboard分别按请求序号接收最新状态/统计，管理5秒轮询和触发后1秒timer；最新查询失败保留已知状态，不接受旧在途成功回填。离页后不发本页消息、不创建timer或启动后续页面请求；已发HTTP操作自然完成，不称服务端撤销、不自动重试。共享缓存已开始的跨页面工作保持，不要求所有已销毁私有ref冻结；不改useDryRun/API/schema/Go生产代码、依赖或锁文件、SMTP35秒及其他生产预算。
+- **长期回归与接线：** 新增33项页面行为回归及SFC编译辅助、8项真实进程门禁回归；既有Alerts/DryRun夹具仅补卸载注册桩。统一npm test与九个专项别名使用同一父监督器：Node逐项30秒、保留既有更窄预算，命令120秒总预算与1秒同组回收；收到SIGINT/SIGTERM后统一TERM收尾并非零退出。嵌套独立测试根进程移除NODE_TEST_CONTEXT，拒绝零文件/未知入口，故障夹具证明实际执行而非递归检测假绿。Make新增frontend-test依赖，test/all执行一次行为门禁后才运行Go test；CI在构建前端后执行同一命令。默认make、vet/build及直接Docker构建保持构建语义，make -j4 all的其他任务仍可并行。共17文件（4生产、4新测试/工具文件、2旧夹具、package、Make/替身/CI、AGENTS/README/本文）。
+- **正式专项与判别力：** 正式工作树Node24.21.0逐一执行九个npm专项，合计151项全部通过（原110项+新增33项页面行为+8项进程门禁），无fail/cancelled/skipped；Node26.7.0完整共同入口151项通过（6.928s）。Make隔离替身21项通过（14.520s），含默认入口、共享准备/行为门禁、并行多目标和失败传播。基于正式文件生成的15类仓外错误变体全部以预期断言退出1：disabled/key/44px/前端时间派生、状态/统计序号、Alerts/DryRun/触发晚到消息、timer清理、Settings预加载、继承worker身份、专项别名绕预算、Make漏依赖及吞失败；无编译错误、异常崩溃或整体超时充数。证据见focused-results.json、negative-results.json。
+- **完整本地门禁：** 正式 `make all` 退出0（57.453s），包括任务独立npm缓存下的npm ci、vue-tsc/Vite、151项前端行为、全仓Go vet/race与产品构建；12个Go包中6包实际执行、6包命中缓存。随后独立 `go test ./... -race -count=1 -timeout=5m` 退出0（44.670s），12包全部禁缓存执行一轮。最终Go门禁显式将Go1.27.1置于PATH首位并设GOTOOLCHAIN=local，Node24.21.0/npm11.19.0；首次Make因PATH误指系统Go1.26.6在vet入口被版本要求拒绝，原失败日志保留，未计作通过证据。npm ci附带审计0漏洞，未另行运行两条独立npm audit。新增JS语法、shell语法、git diff --check、17文件范围与空暂存区检查通过，其余328份既有跟踪文件哈希不变。I8-R21本地完成；正式证据目录 `/Users/kylechen/Desktop/Repo/2026-10-20/i8-r21-implementation/`。
+- **证据边界：** 44px仅验证明暗主题覆盖传递和large按钮接线，不称浏览器实际布局测量；既有队列推进保留，不批量替换sleep或迁移测试框架。父监督器只覆盖项目支持的Linux/macOS及未脱离本次组的进程，不承诺任意子孙或生产进程硬退出时限。本机Go1.27.1 darwin/arm64、Node24.21.0/26.7.0；Linux/Docker、真实浏览器/云/SMTP/Webhook/Kuma、当前revision远端CI/GHCR未执行，不外推长期稳定或发布通过；普通人工收口、Webhook/Kuma豁免及SMTP独立清单保持。本轮源码/测试/文档尚未提交或推送。
 
 <a id="i8-r22"></a>
 
 ### I8-R22 当前 revision 远端发布证据
 
-- **状态与来源：** 独立证据待完成；PT-B7-08；Issue5 O5-02历史边界；旧 I8-25部分。
-- **证据与边界：** v2.0.0旧Actions/GHCR成功不证明当前HEAD。最近本地全量race/make门禁已有补记，旧“本轮仅11包、dns未跑”不得用作现状；本次没有fetch或触发CI。
-- **后续与完成条件：** 发布时记录确切SHA、真实Actions结论、镜像tag/digest与对应部署结果；自动SDK更新策略与固定工具链分别记录。不因用户真机确认推定远端CI通过。
+- **状态与来源：** 2026-10-20 按用户授权检查脚本后发布，用户明确选择 `v3.0.0`；该标签对应 revision 的远端 Actions/GHCR 与本地容器部署证据已取得。来源为 PT-B7-08、Issue5 O5-02历史边界、旧 I8-25部分；v2.0.0旧成功继续只作为历史事实。
+- **发布基线与授权：** 开始时工作树/暂存区干净，`main == 本地 origin/main == 实际远端 main == ac863ba85441b70a26c2c67557d471bef2e8cf4d`。发布前再次确认无漂移后创建并推送 annotated tag `v3.0.0`，tag object 为 `dd1b06c8436926b669b010b05004488c7944feaa`，解引用为上述源码 SHA。没有额外源码提交或分支推送；本节证据在发布后回写，未包含在该标签中，尚未提交/推送。
+- **脚本核验：** 唯一活跃工作流 `docker-publish.yml` 的标签触发、PR 不推镜像、GHCR 权限、semver 元数据、`linux/amd64` 平台与前置门禁正确，actionlint 1.7.12 退出0；没有发现本次发布阻断项，未修改工作流/Dockerfile。七条 `go get -u` 与 tidy 是 AGENTS 有意策略，继续保留；Docker `context: .` 包含更新后的 `go.mod/go.sum`。固定工具链分别为 Go1.27.1 + `GOTOOLCHAIN=local`、前端 Node24.21.0，Docker 对应 Go1.27.1 与 Node24.21 系列。发布前仓外副本执行相同SDK更新后，Go build/vet、真实DNS只编译与禁缓存全仓12包race通过；正式前端151项回归、两条独立npm审计0漏洞通过。本地副本使用既有真实dist，未冒称重建前端或已取得远端结果。
+- **真实远端结果：** [Actions run 39413051133](https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/39413051133)，event=`push`、attempt=1、head_sha为上述SHA，整体及job `118595289534` 均为 `success`，北京时间2026-10-20 19:10触发、19:16完成；仅本次标签推送触发一次，没有rerun。远端Go1.27.1 linux/amd64与固定Node24.21.0下，前端构建、151项行为回归、两条依赖审计（各0漏洞）、Go build/vet、真实DNS测试只编译、默认全仓12包race及Docker构建/推送均成功。SDK实际自动更新为腾讯common `v1.3.192 → v1.3.195`、vpc `v1.3.188 → v1.3.194`，由远端日志及发布二进制构建信息共同核对；仓内依赖文件未回写。
+- **镜像身份：** `ghcr.io/alcaprophet/fwalizer:3.0.0`，同时发布 `3.0`、`3`、`latest`；四标签在本次查询均指向 `sha256:aedac7f7087cc21eef6842a442abaa8b83b19fb42325e6df47fe403bee5f5a73`，与build-push日志一致，并独立计算各manifest响应字节SHA256核对。OCI index包含linux/amd64运行产物及provenance条目；镜像revision标签为上述源码SHA。Git标签带`v`，镜像semver标签不带`v`。
+- **对应本地部署：** 从GHCR按该digest拉取，在linux/aarch64 Docker VM中兼容执行linux/amd64镜像；临时空配置、独立可写层、随机127.0.0.1端口，无生产数据库或云凭据挂载。UID1000、Docker `healthy`，静态`/api/health`、`/api/health/operational`、首页及首页三个JS（含`_common`）全部200；二进制Go1.27.1、`CGO_ENABLED=0`与实际SDK版本核对通过。`docker stop --time 15`约0.118秒返回、容器退出码0，临时容器已删除；发布镜像保留本地缓存。该证据不等于原生amd64服务器、用户生产部署或完整浏览器业务验收。
+- **非阻断优化与边界：** 实际日志警告七个Action声明Node20、runner强制以Node24执行；本次全部成功，建议后续升级为原生Node24的Action版本并单独验证，见[GitHub官方迁移说明](https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/)。另可增加CI/Go测试预算、npm缓存，以及自动更新后的依赖清单和digest摘要；本轮不改变SDK更新策略或门禁。完整检查报告、远端日志/状态、manifest与部署记录保存于 `/Users/kylechen/.codex/outputs/i8-r22-release-20261020/`。本次不新增真实云、SMTP/收件箱、Webhook/Kuma或长期稳定通过结论；保留SMTP待验收、Webhook/Kuma豁免与I8-R23独立范围。以后新增revision不能沿用本次发布通过结论。
+
+- **2026-10-20 后续CI优化（用户授权，本地已实施）：** 用户随后明确授权升级Action运行时及增加CI/Go测试预算；基线仍为 `ac863ba85441b70a26c2c67557d471bef2e8cf4d`，开始时仅有上述发布证据的Issue8未提交回写，该内容已保留。仅修改工作流、AGENTS与本文，共三文件；不新增标签或移动 `v3.0.0`，未提交/推送或触发新CI。
+- **原生Node24与迁移兼容：** 联网逐一核对最新稳定release及实际major ref的`action.yml`：checkout `v4→v7`、setup-go `v5→v7`、setup-node `v4→v7`、setup-buildx/login `v3→v4`、metadata `v5→v6`、build-push `v5→v7`，七项均声明`runs.using: node24`，现有输入与metadata的tags/labels输出均受支持。采集时对应稳定补丁为7.0.1、7.0.0、7.1.0、4.4.1、4.6.0、6.2.0、7.4.0；工作流继续引用major tag，后续可随上游更新，不宣称固定Action补丁可复现。最低Node24 runner要求为2.327.1，checkout凭据调整涉及的容器认证命令要求2.329.0；上一轮实际runner为2.337.0，本工作流继续使用GitHub托管`ubuntu-latest`。setup-go从v6起默认缓存依据变为go.mod，故显式`cache-dependency-path: go.sum`保留既有依据；setup-node显式`package-manager-cache: false`，本批不引入新版自动npm缓存。前端Node24.21.0、Go1.27.1/GOTOOLCHAIN=local、七条SDK更新、触发/权限/条件、镜像命名/平台/标签/path context及其他门禁语义保持。
+- **分层测试预算：** job `timeout-minutes: 30`；完整Go测试步骤`timeout-minutes: 15`，涵盖编译及全部包；命令`go test -race -v -timeout=5m ./...`限制每包测试，不能把5分钟说成整个命令上限。真实DNS仅编译步骤`timeout-minutes: 5`，仍不执行真实上游查询。参考此前远端总计约6分半、最慢包约49秒留出余量；job剩余预算可能先于步骤预算耗尽。不改本地Make、生产超时、固定Node/Go版本或已有测试子进程的更窄预算，不承诺任意子孙进程硬回收。
+- **本地验证与新证据边界：** actionlint 1.7.12与diff-check通过；使用YAML解析将工作流与本轮开始时副本做精确语义比较，仅允许上述七项版本、两个缓存兼容配置及预算差异，其他触发/命令/条件/权限/Docker输入保持；逐项核对上游声明的Node24运行时、现用输入与metadata输出。正式工作树macOS Go1.27.1下，真实DNS只编译检查通过；`go test -race -v -timeout=5m -count=1 ./...`全仓12包通过（45.725秒，`-count=1`仅为本次验证禁缓存，不加入CI命令）。本批未重新运行前端、Linux/Docker或新工作流远端CI，不能把上述旧版工作流的v3.0.0成功外推为升级后的远端通过。SMTP待验收、Webhook/Kuma豁免及I8-R23保持。上游定义/release快照、原有未提交差异、正式日志、工作流语义核对和范围哈希证据位于 `/Users/kylechen/.codex/outputs/i8-r22-actions-upgrade-20261020-6o313ph7/`。
 
 <a id="i8-r23"></a>
 
@@ -294,9 +346,16 @@
 
 ### I8-R24 合理前置条件与防御接口
 
-- **状态与来源：** 非缺陷维护候选；旧 I8-17e/I8-47/I8-44-1/2/3。
-- **证据与边界：** dnsRound只接收本轮适用域名；Store启动接线保证非nil；mustDuration/mustThreshold前有normalize；Health生产传Policy；固定embed路径fs.Sub不是缺index的根因。旧产品缺陷判断撤销。
-- **后续与完成条件：** 只有扩大可空/任意输入合同或允许独立调用时再定防御处理。不能因理论输入加改动就宣称修复现存产品故障；选择保持边界后可关闭。
+- **状态、裁决与基线：** 2026-10-19 用户选择方案 A，授权进一步研究、准备后实施并同步文档；本项按“合理前置条件保留、非缺陷维护收口”关闭，不记为现存产品故障修复。旧来源为 I8-17e/I8-47/I8-44-1/2/3。实施前 `main == 本地 origin/main == 4995af5c8f9525789d59edba3847a975485c47a8`，工作树与暂存区干净，未 fetch。
+- **DNS 轮次边界：** `newDNSRound` 从本轮 `RuntimeState.Config.DomainRules` 建立全部配置域名集合；`runRound` 从同一快照筛选目标适用规则并传入目标链，因此解析域名是该集合的子集。热更新的新域名由后续轮次处理，不在旧轮动态插入域名或绕开探测协调。仓外研究已验证轮中发布新配置时旧轮仍用旧域名、新轮才用新域名；人为传入集合外域名的 panic 仅证明违反前置条件后的当前表现，不是产品故障复现，也不固化为支持的非法输入契约。
+- **Store 接线边界：** 生产先成功 `OpenStore → LoadBusinessSnapshot`，再创建服务器；导入/导出、配置协调器等数据库业务操作要求 Store 非 nil。静态 health 与 SPA 本身不读取 Store，既有 `NewServer(nil, …)` 独立测试继续有效，不在服务器构造器统一拒绝 nil。已关闭但非 nil 的数据库属于运行故障，沿用原有错误出口，与缺少依赖不同。
+- **配置转换边界：** 两条生产转换路径（启动、协调器候选构造）都先经 `LoadBusinessSnapshotTx → normalizeSettings`；已有非空非法设置直接返回错误，缺失/空白按既有规则补默认值。`ToRuntimeConfig` 不接受未经校验的任意 Settings；`mustDuration` 解析失败返回 0、合法负时长原样返回，`mustThreshold` 校验失败返回 0，均不提供有效默认值。本轮订正原“返回调用方兜底值”的误导性注释，不增加二次校验、panic 或 fallback。
+- **健康依赖边界：** `Checker.Evaluate` 要求非 nil Pinger/Status/Policy/Interval；Now、PingTimeout 与 StartupGrace 保持既有默认规则。生产完整提供这些依赖；`TriggerEnabled` 的 nil Policy 返回 false 只是该方法的局部保护，不表示 Evaluate 支持缺少 Policy，不新增缺配置时的健康原因或默认业务语义。
+- **内嵌资源边界与历史表述订正：** 固定合法路径与 `embed.FS` 下，`fs.Sub` 仅建立视图，不检查目录、index.html 或引用资源。仓外真实 embed 实验已验证：目录仍有 assets 但缺 index.html 时，根路径可返回 200 目录列表；不存在的资源路径才返回 404。因此旧记录“缺 index 就返回 404”不能泛化，吞 fs.Sub error 也不是内容缺失根因。内容完整性继续由真实前端构建及 `TestStaticAssetsServedFromEmbed` 等回归保护，本轮不改静态路由或错误分支。
+- **多平台扩展决策：** 未来新增京东云或其他内置云平台时，校验集中在配置入口、Provider 构造、云响应转换边界；继续保护完整快照、能力表达、增量写入与精确删除。新增平台本身不要求这些内部函数支持 nil 或任意输入；若未来独立库复用、第三方插件或无 Store 业务模式确实需要扩大契约，另行研究方案 B/C，不提前加入通用插件框架或全链 fallback。
+- **正式范围：** 仅 `config/runtime.go`、`syncer/dns_round.go`、`internal/health/health.go`、`webui/server.go`、`webui/api/coordinator.go` 的普通注释及 AGENTS/本文，共七文件。生产可执行逻辑、测试、API/schema/配置包、SDK/依赖、前端、超时与同步/健康状态机均不修改；归档保留为历史，不批量重写。README 无用户可见行为变化，ProdTestList 既有用户真机收口/豁免与 SMTP 待验收状态保持。
+- **正式核验与证据：** Go `1.27.1 darwin/arm64`；五份 Go 文件与实施前源码逐项比较，忽略普通注释后的全部 token 及构建/编译指令保持一致，确认可执行逻辑零改动。现有五包定向 `-race -count=1 -timeout=90s` 回归通过，共 51 个顶层测试实际通过（config 8、syncer 6、health 12、webui 3、api 22），无 Skip；覆盖快照默认值/非法值拒绝、运行时转换与深复制、DNS 目标链/并发探测/跨轮隔离、健康判定/启动宽限、nil Store 下静态路由、内嵌资源、导入导出及协调器校验/回滚。`go vet ./...`、`go build ./...`、五份 Go 文件 gofmt 检查、`git diff --check` 与七文件范围核验通过。本项没有生产行为修复，不新增默认测试或要求旧实现必红；此前仓外探针及归一化绕过负向对照仅为研究证据，不冒称本轮新增正式回归。准备记录、命令、退出码、日志与源码哈希位于 `/Users/kylechen/.codex/outputs/i8-r24-implementation-20261019-738_u3dr/`。
+- **验收与提交边界：** 本轮未执行 `make all`、全仓完整 race、前端重建/npm 审计、Linux/Docker/浏览器、真实云/SMTP/Webhook/Kuma 或当前 revision 远端 CI/GHCR；使用现有 dist 完成静态资源定向回归与 Go 构建，不把历史前端构建记为本轮执行。维护收口不新增外部验收或长期稳定结论。未 fetch、提交或推送；I8-R21/R22/R23/R25 保持各自状态。
 
 <a id="i8-r25"></a>
 
@@ -343,13 +402,13 @@
 | 5 日志回调积压 | I8-R10，已按方案A本地修复日志准入、容量与退出等待；正式证据见该项。 |
 | 6 SSE续传/心跳 | I8-R11；同步流即时通知/允许丢事件的用途已裁决，两类心跳本地已修复，正式证据见该项；日志续传P3-04保持。 |
 | 7 Dashboard数字双口径 | 已由043ac36及后续Dashboard观察修复收口，归档。 |
-| 8 阿里云重试码 | I8-R12，待验证形态并裁决。 |
+| 8 阿里云重试码 | I8-R12，已按方案B本地修复；分类合同、正式回归与外部证据边界见该项。 |
 | 9 Webhook Close/drain | 已按P3-21接受及时关闭/有界清理边界，Push正文上限也已实施；不作为待修项。真实Webhook/Kuma豁免不阻断。 |
 | 10 SMTP收件人空格 | 后续共用邮件出口已逐项Trim；旧缺陷归档。真实投递仍由I8-R01跟踪，不能因归档宣称SMTP通过。 |
-| 11 内存时间戳 | I8-R13，当前“暂无”不等于“从未成功”。 |
-| 12 SQLite其余方向 | I8-R14；已修事务锁/错误处理不等于这些容量方向完成。 |
+| 11 内存时间戳 | I8-R13，已按方案B本地修复：保留本进程语义，明确启动范围并区分无记录与真实零；正式证据见该项。 |
+| 12 SQLite其余方向 | I8-R14；扫描取消/日志裁剪已本地修复并通过正式门禁，容量暂缓，外键当前schema不适用；已修事务锁/错误处理不代替这些分项结论。 |
 | 13 skipped日志语义 | 当前目标级success/partial/failed与unsupported详情已固定，旧逐域skipped观察归档。 |
-| 14 生命周期边角 | Syncer未启动Wait已修；Server.Addr剩余转I8-R15。 |
+| 14 生命周期边角 | Syncer未启动Wait已修；I8-R15已按A明确Server.Addr绑定地址语义并补正式回归，本地完成。 |
 
 ## 4. 已完成与旧编号对照
 
@@ -368,7 +427,7 @@
 | TODO-004/007剩余 | I8-R25；旧规模/行号按历史解释，不算生产缺陷。 |
 | TODO-005/006已完成范围 | 当前planner路径与历史提交说明已整理，归档；剩余引用精度归I8-R25。 |
 | 旧I8-17g、I8-22/23/25 | I8-R04、R17、R18；I8-25的全量本地门禁历史缺口已被后续门禁替代，发布/长期范围分别R22/R23。 |
-| 旧I8-17e/47/44-1/2/3 | I8-R24，合理前置或撤销缺陷判断；不作为强制修复。 |
+| 旧I8-17e/47/44-1/2/3 | I8-R24，已按方案 A 保留合理前置条件并完成注释/文档维护收口；不记为产品故障修复。 |
 | 旧专项I8-50～60与附录撤销项 | 历史专项已执行/误判已撤销，不再登记待派发。 |
 
 ## 5. 文档归档与跟进规则

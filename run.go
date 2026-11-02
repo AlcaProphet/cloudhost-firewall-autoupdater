@@ -124,7 +124,8 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 	// 告警订阅管理器：候选集合在事务提交前构造，commit 后无失败替换。
 	// 每次状态发布完成后重新读取生效中的告警集合并输出安全日志（只含收件人/渠道名）。
 	alertManager := webapi.NewAlertManager(s.EventBus())
-	alertManager.Apply(webapi.BuildAlertSet(runtimeCfg))
+	defer alertManager.CloseResources()
+	alertManager.Apply(alertManager.Build(runtimeCfg))
 	alertManager.LogStatus("已启用")
 	s.SetStateAppliedHook(func(*syncer.RuntimeState) { alertManager.LogStatus("已更新") })
 
@@ -206,10 +207,12 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 
 	// 同时等待 OS 信号与 Serve 结果；两者进入同一收尾路径，退出码按原因区分
 	var serveErr error
+	serveResultReceived := false
 	select {
 	case sig := <-sigCh:
 		slog.Info("收到停止信号，等待当前轮次完成...", "signal", sig.String())
 	case serveErr = <-serveErrCh:
+		serveResultReceived = true
 		if serveErr != nil {
 			slog.Error("HTTP 服务异常退出，进入收尾", "error", serveErr)
 		}
@@ -245,15 +248,17 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 	supervisor.Stop()
 	s.Stop()
 
-	// HTTP 收尾最多等待同一时限；超时后强制关闭已在 Shutdown 内完成，这里不再无限等待
-	select {
-	case <-httpDone:
-	case <-time.After(webui.ShutdownTimeout):
-		slog.Warn("等待 HTTP 收尾超过上限", "timeout", webui.ShutdownTimeout)
+	// 等待实际收尾任务返回；10 秒仍由 Shutdown context 控制，不用外层 timeout 代替 join。
+	<-httpDone
+	if !serveResultReceived {
+		serveErr = <-serveErrCh
 	}
 
 	// 无论 HTTP 是否超时，都无超时等待当前同步轮次完成（强要求）
 	s.Wait()
+	srv.WaitRequests()
+	s.EventBus().DrainSubscribers()
+	alertManager.CloseResources()
 	logWriter.Stop()
 
 	if serveErr != nil {

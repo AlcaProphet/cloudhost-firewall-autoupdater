@@ -20,7 +20,6 @@ import (
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 )
 
 // ─── Build7 §7.6：Uptime Kuma Push 的判别性用例（使用本地 httptest 或虚拟时间与内存 Transport） ───
@@ -531,10 +530,6 @@ func parseQuery(raw string) map[string]string {
 	}
 	return out
 }
-
-var _ = config.DefaultPushInterval
-var _ = notifier.EventOperationalUnhealthy
-var _ = syncer.RoundIdle
 
 // invalidURLLogHandler 用实际日志通知校验时点，避免靠固定 Sleep 猜测首发。
 type invalidURLLogHandler struct {

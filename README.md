@@ -330,33 +330,36 @@ docker run -d --name fwalizer --restart=always \
 然后可在宿主机访问 `http://127.0.0.1:60200`，或在防火墙允许的前提下通过 `http://<宿主机IP>:60200` 访问。
 如果只允许同机反向代理访问，将端口映射改为 `-p 127.0.0.1:60200:60200`。
 
-容器只需要三个部署变量（镜像已默认 `WEBUI_HOST=0.0.0.0`、`WEBUI_PORT=60200`、`FWALIZER_DATA_DIR=/app/data`）。如需修改监听端口，除设置 `WEBUI_PORT` 外还需同步修改 Compose 的 `healthcheck` 端口与端口映射。
+容器只需要三个部署变量（镜像已默认 `WEBUI_HOST=0.0.0.0`、`WEBUI_PORT=60200`、`FWALIZER_DATA_DIR=/app/data`）。通常只需修改端口映射中的宿主机端口，容器内继续使用 `60200`。如需修改容器内监听端口，设置 `WEBUI_PORT` 并同步修改端口映射中的容器端口；镜像和下方 Compose 示例的健康检查会自动跟随容器内的 `WEBUI_PORT`。
 
-停止时会先等待当前同步轮次完成，再最多尝试排空日志10秒；到期放弃未写记录并取消在途写入，仍需等写入结束才能关闭数据库。10秒是日志阶段的软预算，不是收到SIGTERM后的总退出上限。容器停止等待应覆盖当前同步轮和日志收尾；Linux容器未配置时通常只等待10秒，随后SIGKILL，可根据部署需要配置停止宽限或 `docker stop --timeout`。固定增大的宽限也不保证覆盖任意长的当前轮次，详见[Docker停止说明](https://docs.docker.com/reference/cli/docker/container/stop/)。
+收到 SIGTERM/SIGINT 后，程序先关闭 HTTP 入口并通知 SSE 退出，停止 Push 与运行健康监督器，再阻止新的同步轮次。Push 退出时释放其私有空闲连接。HTTP 最多等待 10 秒后强制关闭剩余连接，但连接关闭不代表请求处理已完成：进程继续等待当前同步轮、已准入的请求和自动告警按原有超时/错误路径结束，再停止告警诊断回调、释放 Webhook 私有空闲连接。热重载前已在途的告警同样会等待完成，不重试或补发；SMTP 接受不代表收件箱投递。
+
+之后最多尝试排空日志 10 秒；到期放弃未写记录并取消在途写入，仍需等写入结束才能关闭数据库、释放数据目录锁。HTTP 的 10 秒和日志阶段的 10 秒都不是收到信号后的总退出上限。本程序没有统一硬退出预算；云读取、多个目标的模拟测试、邮件或日志 I/O 可能延长等待。
+
+容器停止等待应覆盖上述在途任务和日志收尾。Compose 未配置 `stop_grace_period` 时默认等待 10 秒后可发送 SIGKILL；可按部署需求配置该宽限或 `docker stop --timeout`。固定增大的宽限也不保证覆盖任意长的在途任务，详见 [Compose 停止宽限](https://docs.docker.com/reference/compose-file/services/#stop_grace_period) 与 [Docker 停止说明](https://docs.docker.com/reference/cli/docker/container/stop/)。
 
 ### docker-compose 示例
 
-完整示例见 [docker-compose.yml.example](docker-compose.yml.example)：
+完整配置统一维护在 [docker-compose.yml.example](docker-compose.yml.example)。在仓库目录首次部署时复制并检查，再拉取镜像启动；已有 `docker-compose.yml` 时按需合并示例中的更新：
 
-```yaml
-services:
-  fwalizer:
-    image: ghcr.io/alcaprophet/fwalizer:latest
-    container_name: fwalizer
-    restart: unless-stopped
-    environment:
-      - FWALIZER_DATA_DIR=/app/data
-      - WEBUI_HOST=0.0.0.0
-      - WEBUI_PORT=60200
-    ports:
-      - "60200:60200"              # 仅同机反代可改为 127.0.0.1:60200:60200
-    volumes:
-      - fwalizer_data:/app/data    # 数据持久化（SQLite）
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null \"http://127.0.0.1:${WEBUI_PORT:-60200}/api/health\" || exit 1"]
+```bash
+cp docker-compose.yml.example docker-compose.yml
+# 按部署需求编辑 docker-compose.yml
+docker compose config --quiet
+docker compose pull
+docker compose up -d
+docker compose logs -f fwalizer
 ```
 
+示例固定使用已发布的 `ghcr.io/alcaprophet/fwalizer:3.0.0` 和 `linux/amd64` 平台；ARM 主机需要 amd64 仿真能力。升级时显式修改镜像标签，再执行 `pull` / `up -d`；如需滚动更新可自行选择 `latest`。本地构建方式见示例内注释。
+
+Compose 默认映射 `127.0.0.1:60200:60200`，浏览器访问 `http://127.0.0.1:60200`。远程服务器可使用 SSH 隧道或受控反向代理；局域网 / VPN 直连时将映射中的宿主机 IP 改为受信任网卡地址并限制访问来源。容器内继续监听 `0.0.0.0`；若反向代理也在容器中，应接入同一 Docker 网络并通过 `fwalizer:60200` 访问。WebUI 没有内置登录鉴权。
+
+示例设置 `stop_grace_period: 5m`，按在途任务规模调整；到期仍会被 Docker 强制终止，不保证任意长的同步轮都能完成。容器 stdout/stderr 使用 `json-file` 轮转（每文件 `10m`，最多 `3` 个），与 SQLite 中的同步历史独立。`restart: unless-stopped` 在进程退出后生效，`unhealthy` 状态本身不会触发自动重启。
+
 镜像会预先创建 `/app/data` 并将其授权给非 root 用户 `appuser`。首次创建的命名卷会继承该目录权限，容器无需以 root 用户运行。
+
+升级时保持 Compose 项目名与 `fwalizer_data` 卷配置稳定，避免连接到新建空卷；一个数据目录只供一个实例使用。
 
 镜像自带 `HEALTHCHECK`，只请求 `http://127.0.0.1:<WEBUI_PORT>/api/health`；**不使用进程存活检查**，因此进程仍在但 WebUI 不可用时会如实判为 `unhealthy`。
 
@@ -431,7 +434,7 @@ cd cloudhost-firewall-autoupdater
 make all
 ```
 
-`make test`、`make vet`、`make build` 均会先执行 `npm ci` 和前端生产构建，清洁检出可直接使用；需要 Go 1.27.1+、Node.js 和 npm。同一次 Make 调用中的多个目标共享一次前端构建，分别执行三次 Make 则会构建三次。`make -j4 all` 同样先完成前端，再并行执行 Go 检查、测试与构建；任一阶段失败会使 Make 非零退出。
+`make test`、`make vet`、`make build` 均会先执行 `npm ci` 和前端生产构建，清洁检出可直接使用；需要 Go 1.27.1+、Node.js 和 npm。同一次 Make 调用中的多个目标共享一次前端构建，分别执行三次 Make 则会构建三次。`make test` / `make all` 还会在 Go 测试前执行前端行为回归；可单独使用 `make frontend-test` 完成前端准备与行为检查。`make -j4 all` 允许 vet/build 与行为测试并行，任一阶段失败会使 Make 非零退出，不保证其他并行任务从未运行。默认无参数make仍只构建前端。
 
 日常只检查 Go 时，可以先执行 `make frontend`，随后直接运行 `go test ./... -race` 或 `go vet ./...`。裸 Go 命令不会生成前端产物；前端源码、配置或锁文件变化后应重新执行 `make frontend`。默认 DNS 测试通过本地 IPv4/IPv6 随机回环 UDP 服务运行真实解析器，不转发查询；普通完整 Go 测试与默认 CI 不访问真实 DNS 上游，无需为了避开 DNS 使用全仓 `-short`。npm/Go 依赖准备仍可能访问网络，这不等同整个构建离线。
 
@@ -472,18 +475,23 @@ npm run dev
 npm run build
 ```
 
-### 告警页行为回归
+### 前端行为回归
 
-告警页的本地行为回归使用独立入口（先准备前端依赖）：
+准备前端依赖后，可运行完整门禁或专项入口：
 
 ```bash
 cd webui/frontend
+npm test
 npm run test:alerts
-# 直接使用 Node 时也需保留超时参数：
-node --test --test-timeout=30000 tests/alerts-load.test.mjs
+npm run test:behavior  # I8-R21 模板、页面退出与响应顺序
+npm run test:runner    # 测试进程预算、回收与信号转发
 ```
 
-每项测试有 30 秒预算；加载中保存和重复保存会在等待前检查请求次数，失败时也清理挂起的模拟请求。以命令退出码 0 判绿，超时可能计入 cancelled，不能只检查 `fail=0`。该预算不对应真实 SMTP 请求时限，也不是整套测试的 30 秒总上限；同步死循环和遗留活动句柄仍不属于原生超时的硬终止保证。其他前端测试入口未统一增加预算，Make、CI 与 Docker 当前也不自动执行这组行为回归。
+既有 `test:dryrun/dashboard/alerts/delete/logs/state/import` 均保留，并与完整入口共享监督器。默认逐项预算30秒，保留部分用例已有的更窄预算；每次命令另有120秒总预算，超限返回非零，先通知独立测试进程组，再用1秒收尾窗口回收同组进程。支持Linux/macOS，不承诺终止自行脱离进程组的子孙。预算不含npm安装/构建，也不改变真实SMTP的35秒请求上限。以命令退出码0判绿，不能只检查 `fail=0`；基础设施用例会故意验证挂起和失败，父用例仍须通过。
+
+`make test` / `make all` 和CI自动执行完整入口；CI失败阻止后续镜像发布。`make build`、直接Docker构建仍只构建。裸 `node --test` 可用于定向诊断，但没有共同父进程的总预算。告警加载/重复保存及新异步夹具在等待前检查请求，失败时也释放挂起Promise并等待任务结束。
+
+页面退出后，旧页面不再发送消息、安排查询timer或启动后续预加载；已发送的保存、模拟测试、SMTP请求继续完成，离页不代表服务端操作撤销。Dashboard状态/统计只接收最新发起请求的响应，失败保留已知记录。共享设置/扫描缓存的在途工作保持。44px回归验证主题与按钮尺寸接线，不替代浏览器实际尺寸测量；详见 [Issue8 I8-R21](./Issue8.md#i8-r21)。
 
 ### 构建完整二进制（含前端）
 
@@ -609,7 +617,7 @@ Docker 需在容器内设置 `WEBUI_HOST=0.0.0.0`。宿主机的暴露范围由�
 
 ### 配置导入诊断回归（I8-43）
 
-在 `webui/frontend` 执行 `npm run test:import`，每项测试预算为 30 秒；测试执行真实请求封装、编译后的 Settings 组件与模板，覆盖原文件上传、字段列表/截断展示、取消/在途/卸载和刷新窗口。后端可用 `go test ./webui/api -race -run '^TestI843' -count=1` 验证正式 handler、临时 SQLite 与运行时的诊断和零副作用边界。裸 Go 命令须先按构建章节准备真实前端 dist；本入口不替代全量门禁或真实浏览器验收，也未接入 Make/CI/Docker。
+在 `webui/frontend` 执行 `npm run test:import`，逐项30秒、命令总预算120秒加1秒收尾；测试执行真实请求封装、编译后的 Settings 组件与模板，覆盖原文件上传、字段列表/截断展示、取消/在途/卸载和刷新窗口。它随完整 `npm test` 接入 Make测试及CI，直接Docker构建不执行。后端可用 `go test ./webui/api -race -run '^TestI843' -count=1` 验证正式 handler、临时 SQLite 与运行时的诊断和零副作用边界。裸 Go 命令须先按构建章节准备真实前端 dist；本入口不替代全量门禁或真实浏览器验收。
 
 ---
 

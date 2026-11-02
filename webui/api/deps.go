@@ -116,7 +116,13 @@ func (d *Deps) buildCandidate(snapshot *config.BusinessSnapshot, policy syncer.B
 		}
 		return Candidate{}, fmt.Errorf("%w: %v", ErrInternalBuild, err)
 	}
-	return Candidate{State: state, Alerts: BuildAlertSet(rc)}, nil
+	var alerts alertSet
+	if d.Alerts != nil {
+		alerts = d.Alerts.Build(rc)
+	} else {
+		alerts = BuildAlertSet(rc)
+	}
+	return Candidate{State: state, Alerts: alerts}, nil
 }
 
 // applyCandidate 在 commit 之后按固定顺序执行无失败发布：

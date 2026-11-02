@@ -44,11 +44,6 @@ async function clear(cloudType: string) {
   cache.value[cloudType] = []
 }
 
-// 清空全部缓存（「清空所有数据」后调用，避免残留旧数据）
-function clearAllCache() {
-  cache.value = {}
-}
-
 // 构造资源 ID 自动补全选项：label = 名称（资源ID·地域），value = 资源 ID
 function resourceOptions(cloudType: string): SelectOption[] {
   return (cache.value[cloudType] || []).map((r) => ({
@@ -63,5 +58,5 @@ function resourcesOf(cloudType: string): ScannedResource[] {
 }
 
 export function useScannedResources() {
-  return { load, scan, clear, clearAllCache, resourceOptions, resourcesOf }
+  return { load, scan, clear, resourceOptions, resourcesOf }
 }

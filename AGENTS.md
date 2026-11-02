@@ -150,6 +150,7 @@
 - 聚焦核心场景，不对极端边界做过度防御性编程
 - 合理假设输入有效性，不做无意义的 nil 检查链
 - 错误处理到位即可，不堆叠冗余的 fallback 逻辑
+- 合理前置条件（I8-R24，方案 A）：正式 DNS 轮次只处理同一运行时快照中的配置域名；数据库业务入口与配置协调器必须提供非 nil Store，静态 health/SPA 路由可独立使用；`ToRuntimeConfig` 只转换已归一化业务快照，解析帮助函数不提供有效默认值；`Checker.Evaluate` 必须获得 Pinger/Status/Policy/Interval，`TriggerEnabled` 的局部 nil 保护不扩大该契约；固定 embed 路径的 `fs.Sub` 不检查目录或首页内容。新增内置云平台时在配置入口、Provider 构造与云响应转换边界校验，不因此扩大这些内部函数的可空或任意输入契约；未来需要独立复用时另行研究。分项结论与本地证据见 [Issue8 I8-R24](./Issue8.md#i8-r24)。
 
 ### 安全设计（内部使用导向）
 
@@ -230,6 +231,7 @@
 - true→false Stop；false→false 不操作 ticker；最终为 true 且 Run 观察到 false→true 或有尚未消费恢复标记时，始终用最新 interval Reset，立即同步并清空既有排队 trigger，保留 Stop 门控。一次消费前多个恢复合并为一轮，最终暂停时不补轮；标记在补轮前与最新状态同锁消费，补轮期间的新恢复留待下一次处理。启动消费此前标记，由最终状态决定启动轮，避免重复补轮。ticker/trigger 的普通轮准入前遇到既有标记则转入恢复处理，检查后新增边沿属于下一批；不承诺 select 绝对优先级，不取消已开始轮次。“最终暂停不补轮”以状态消费的决策点为准。
 - 当前 Go 1.27.1 合同使用同步 timer channel；asynctimerchan 已在 Go 1.27 移除，不加入 stale-tick drain 或旧 timer channel 兼容分支。
 - 优雅退出：收到 `SIGTERM`/`SIGINT` 后，完成当前轮次再退出
+- 最终收尾（I8-R19，2026-10-19 方案 B，用户选择等待在途自然完成）：HTTP Shutdown 先冻结业务请求准入并通知 SSE，Push 取消原有在途并退出、Supervisor 完成当前检查后停止，再 Stop Syncer；保留 HTTP 内部 10 秒窗口，但 main 必须等待 HTTP 收尾及 Serve 结果转发任务实际返回。随后等待当前同步轮与已准入 handler，冻结普通告警回调准入并等待全部已登记回调（含旧配置与错误诊断），停止渠道诊断回调并关闭私有 Webhook 空闲连接，再按既有合同 Stop 日志 writer、关库、释放 pidfile。不得新增进程统一硬取消预算或中断当前同步轮；既有请求 context/SQL 取消与 Push shutdown 取消继续生效，自然完成包括原超时/错误返回，不代表外部投递成功。具体范围、正式回归与证据见 [Issue8 I8-R19](./Issue8.md#i8-r19)。
 - 支持配置热重载（WebUI 修改后通过 channel 通知 Syncer）
 - 同步全局开关（SQLite `sync_enabled`，默认 true）：暂停时 ticker 与手动 trigger 均不触发同步；模拟测试与连接测试不受影响（独立于 Run() 主循环）
 - 运行时开关更新（I8-R07，2026-10-12 方案 A）：保留具体 `Syncer.Pause()/Resume()`，只修改运行时，产品端点继续经 SQLite 配置协调器提交后发布。`setSyncEnabled` 的读取、空状态/同值判断、配置深复制和发布全程持有 `s.mu`，与 `ApplyState` 共用不自行加锁的 `applyStateLocked`，统一维护状态指针、`enabled` 镜像与真实 false→true 的 `pendingResume`；解锁后再投递可合并通知。空状态/同值控制不发布、不通知、不新增恢复边沿，普通完整发布不得提前清除待消费恢复。沿用 `s.mu → RuntimeManager.mu` 锁顺序，保留 Pool/Providers/Resolver/Breaker 引用；开关更新先完成时后续完整状态可覆盖其开关，完整发布先完成时控制只改变最新状态的开关。生产锁内不执行日志、状态消费回调、网络或同步轮次，不等待/取消在途轮，不持锁调用自锁的 `ApplyState`。实例私有 `afterSyncEnabledReadHook` 默认 nil、无导出 setter，仅测试在并发开始前设置；调用时持锁，禁止重入 Syncer。正式行为回归与证据边界见 [Issue8 I8-R07](./Issue8.md#i8-r07)。
@@ -239,6 +241,7 @@
 ## 六、乐观锁与重试
 
 - 每次写入前重新拉取最新规则状态；每次重试都从整个云目标的 Describe/规划重新开始，不沿用上一 attempt 的删除定位
+- 阿里云错误分类（I8-R12，2026-10-17 方案 B）：`isRetryable` 先保留 `errors.Is(context.DeadlineExceeded)` 与 `net.Error.Timeout()`，再用 `errors.As` 提取当前 SDK 默认转换后的 `*tea.SDKError`；仅精确接受 `Throttling`、`Throttling.User`、`Throttling.Api`、`ServiceUnavailable`、`InternalError` 五个业务码。不去空格、不改大小写、不按前缀/子串或 HTTP 状态泛化；已识别为阿里云业务错误但 Code 缺失/未知时直接不重试，不以 Message/Detail/Data 或外层文本兜底。非该类型错误保留既有字符串兼容分类，腾讯网络/业务错误与版本保护保持。阿里云“已存在/不存在”只精确匹配原有幂等码集合，不扩大集合，消息不得触发幂等或腾讯版本竞争分支；幂等仍须经 S1/S2 核验，不虚增确认写入/删除数。纯 `ErrSnapshotIncomplete` 不重试；I8-R06 的预算耗尽同时携带 deadline 和当时 SDK 错误链时，由结构化超时优先，不能因附带权限码而吞掉 deadline，也不表示权限码本身可重试。保留最多三次整目标 attempt、实际默认 1s/2s 退避及每次重新解析 DNS/读取快照/规划；不启用 SDK 内部重试或限流专用长等待。`PartialDeleteError` 继续优先走现有 S2 核验，不直接重发剩余批次；可重试清理耗尽仍沿既有 `success + cleanup_deferred` 合同。五个业务码为有限兼容策略，不宣称本项目真实接口已返回全部码，短退避不保证跨过云端限流窗口。正式回归见 `syncer/ali_retry_test.go`，专项为 `go test ./syncer -race -run '^TestI8R12' -count=20 -timeout=2m`；SDK/错误转换方式变更后须重新核对实际错误链，范围与证据见 [Issue8 I8-R12](./Issue8.md#i8-r12)。
 - Lighthouse 完整快照额度（I8-10 / Q-16，2026-10-09 用户裁决 B）：每次 `GetSnapshot` 固定共用 120 秒请求 context 与最多 100 次 `DescribeFirewallRules` 分页查询，版本重读不重置额度；第 100 次若完整结束仍可成功，需要第 101 次才失败。额度耗尽返回空快照；次数耗尽返回 `ErrSnapshotIncomplete` 且不整目标重试，时间耗尽同时保留 `context.DeadlineExceeded` 并沿用现有超时重试，其他 SDK 错误链保持。S0/S1 不可信的 attempt 不得授权删除；后续可信 attempt 可恢复，S2 失败保持既有观察与计数合同。此为单次快照网络预算，不是整目标/整轮上限或强制终止 Go 计算的硬墙钟保证；不修改共享客户端 60 秒超时、SDK 重试配置、分页终止/版本保护或增删安全门；当前默认内部重试为零，未来改变 SDK 退避配置须重新验证取消。
 - ECS 完整快照读取预算（I8-R06，2026-10-12 用户定型 B）：每次 `GetSnapshot` 的所有 NextToken 页共用固定 120 秒 context，不新增页数上限；S0/S1/S2 与整目标重试后的读取各自重新计时。预算耗尽返回空快照，同时保留 `ErrSnapshotIncomplete`、`context.DeadlineExceeded` 与当时 SDK 错误链（若有），沿现有最多三次整目标 attempt；操作 context 仍有效时，原单页超时不新加不完整标记，普通 SDK 错误分类保持。S0 失败本 attempt 零增删，S1 失败保留已确认新增且零删除，S2 失败沿既有 failed/保守观察合同；后续可信 attempt 可恢复。阿里云读取通过官方构造器从原池客户端的不可变配置/凭据创建独立操作实例，不整体浅拷贝 Client 或访问可变 Headers，避免与 `GetRpcHeaders` 并发竞态；自定义 HTTP 请求绑定操作 context，不进入 dara 默认全局 HTTP 池，不动态修改每页 Timeout。保留 Connect 10s/Read 30s/HTTP 整体40s，操作内复用 SDK Transport，结束 cancel、统一关闭响应体和空闲连接；关闭错误只记固定阶段/错误类型 WARN，不覆盖主结果。当前无 SDK 内部重试，后续 SDK/退避变更须重新复核取消与隔离。此为单次读取网络预算，不是整目标/整轮或严格墙钟返回保证；不修改 Stop 完成当前轮、DNS、增删或重试状态机。
 - CVM Describe 错误分类（I8-R08，2026-10-12 方案 A）：`GetSnapshot` 与新增前配额检查的普通 SDK 调用失败用 `%w` 保留原错误，不额外附加 `ErrSnapshotIncomplete`；成功响应缺少对应快照/计数安全依据时才使用该标记。配额失败返回零 Written/Skipped、本 attempt 不发新增/删除请求，沿既有原错误决定是否整目标重试；后续可信 attempt 可恢复，不能把“失败 attempt 零写入”扩大为整目标永不写入。配额响应 Version 不替代 S0，删除继续使用同一 S1 Version/PolicyIndex。该标记不是所有读取失败的通用基类或重试开关，不改变其他操作预算耗尽的双重错误身份。当前腾讯 common v1.3.192 网络请求包装有 Unwrap/cause，可用 errors.Is/As；普通云业务错误及部分解码/读取错误仍可能没有 cause，保留无 cause 错误的字符串兼容兜底。正式默认回归见 `provider/cvm_describe_errors_test.go` 与 `syncer/cvm_describe_errors_test.go`，专项命令为 `go test ./provider ./syncer -race -run '^TestI8R08' -count=20 -timeout=2m`；网络测试通过 Transport 注入 cause，不冒称默认60秒真实超时或真实云验收，受控消息不构成严格云码重试白名单。范围与正式证据见 [Issue8 I8-R08](./Issue8.md#i8-r08)。
@@ -340,6 +343,8 @@
 - 镜像命名：`ghcr.io/alcaprophet/fwalizer:<tag>`
 - 构建平台：`linux/amd64`
 - CI 的 setup-go 固定 `1.27.1`，构建环境设置 `GOTOOLCHAIN=local`；云 SDK 更新若要求更高版本应显式失败，再单独决定升级，不隐式切换工具链。
+- CI Action 原生使用 Node24：checkout/setup-go/setup-node 为 v7，setup-buildx/login 为 v4，metadata 为 v6，build-push 为 v7；这与前端固定 Node24.21.0 是不同层次。setup-go 显式使用 `go.sum` 作为缓存依据，setup-node 关闭自动包管理器缓存，避免运行时升级顺带改变缓存策略。
+- CI job 总预算30分钟；完整Go测试步骤预算15分钟（含编译与所有包），命令显式 `-timeout=5m` 约束每包测试二进制；真实DNS仅编译步骤预算5分钟。外层job预算可先于步骤预算到期；这些预算不改变产品请求/关闭时限，不保证任意子孙进程的硬退出时间，也不修改本地Make入口或测试夹具已有更窄预算。
 - PR 时仅编译检查，不推送镜像
 - **SDK 版本策略（有意设计）**：腾讯云/阿里云要求使用较新的 SDK，使用过期 SDK 无法调用新接口/功能；因此每次构建前执行 `go get -u` 将云厂商 SDK 升级到最新（见 `docker-publish.yml`「更新所有 SDK 到最新版」步骤），镜像始终携带最新 SDK，SDK 可复现性要求服从该策略
 
@@ -352,11 +357,14 @@
 - 裸 Go 命令使用已准备好的真实 dist，不自动生成前端；前端源码/配置/锁文件变化后重新构建。默认无参数 `make` 仍只构建前端，不引入增量缓存或新的 Make 版本要求。
 - 依赖顺序与失败传播回归使用 `sh build/makefile_test.sh`，仅用隔离目录与本地命令替身；真实前端、静态嵌入与 Go 门禁需另行验证。默认 DNS 测试已按 I8-04 定型 B 使用本地回环服务；完整构建仍可能下载 npm/Go 依赖，不将本地收口写成完全离线或远端 CI/Docker 已通过。
 
-### 告警前端测试门禁（I8-102 / Q-15，2026-10-08 方案 B）
+### 前端行为测试门禁（I8-R21，2026-10-20 方案 B；扩展 I8-102 / Q-15）
 
-- `npm run test:alerts` 固定使用 `node --test --test-timeout=30000 tests/alerts-load.test.mjs`，为每项测试设置 30 秒预算；裸 Node 运行需显式携带同一参数。正常退出码必须为 0，超时可能计入 cancelled，不以 `fail=0` 单独判绿。
+- `npm test` 通过 `scripts/test-frontend.mjs` 执行全部 `tests/*.test.mjs`；七个既有 `test:*` 专项及新增 `test:behavior` / `test:runner` 都经过同一入口。子进程使用 `node --test --test-timeout=30000`，保留 Dry Run/state 既有更窄的逐项预算。正常退出码必须为 0，超时可能计入 cancelled，不以 `fail=0` 单独判绿。裸 Node 命令只用于定向诊断，不提供共同入口的总预算。
+- 父进程独立监督测试命令的120秒总预算；超限或收到 SIGINT/SIGTERM 时通知本次独立进程组，1秒后回收仍在同组的测试进程，最终非零。即使直接子进程已退出，也不能提前丢弃升级清理计时。只承诺项目支持的 Linux/macOS 和未脱离该组的进程；不使用强制成功退出掩盖遗留句柄。测试内启动独立测试根进程时移除继承的 `NODE_TEST_CONTEXT`，不能把递归检测导致的零执行当通过。预算不含npm安装/构建，不对应SMTP的35秒或其他产品请求时限。
+- `make frontend-test` 依赖真实 `frontend` 准备；`make test` / `make all` 必须执行行为门禁，Go test 在其成功后执行，同一次Make共享一次准备和行为测试。默认make、vet/build继续各自构建语义；`make -j4 all` 的vet/build仍可与行为测试并行，任一失败整体非零，不承诺其他任务从未执行。CI在前端构建后、Go检查及镜像发布前执行同一 `npm test`；直接Docker构建仍只负责构建，不因此声称运行行为回归。依赖顺序和失败传播由 `build/makefile_test.sh` 的隔离替身回归保护。
 - 加载中保存和重复保存的回归先记录调用返回的 Promise、在 await 前检查请求次数，再保留正常等待与后续状态断言；使用 `t.after` 在失败路径也结算挂起夹具并等待已启动任务。
-- 该预算针对本地模拟请求回归，不对应产品测试邮件的 35 秒请求上限；整套测试可累计等待多个预算，原生超时不承诺中断同步死循环或清除遗留活动句柄。未增加进程级监督、统一其他五个前端测试入口，或将前端行为回归接入 Make/CI/Docker；这些保持独立范围。
+- 页面异步边界：Dashboard/Alerts/RunTest/Settings离页后不发本页消息、不创建timer或启动页面后续请求；已发送操作自然完成，不把离页称为服务端撤销、不自动重试。Dashboard状态/统计分别只接收最新发起请求的响应，最新请求失败保留已知状态；清理5秒轮询和触发后1秒timer，捕获的旧回调也不得重新准入。共享设置/扫描缓存继续其已开始的跨页面工作，不要求所有已销毁组件私有ref冻结。
+- 长期回归编译真实SFC/模板，保护保存disabled矩阵、四种outcome及暂停/清理观察、target_id卡片key、明暗主题44px与large按钮接线，观察消息/请求/timer及响应乱序。`cleanup_deferred`不是第五种outcome；44px接线检查不等于浏览器实际布局测量。同步死循环、未解Promise、遗留interval、忽略TERM的worker与信号转发由真实进程故障夹具覆盖；不机械替换现有队列推进或重写全部旧用例。范围与本地证据见 [Issue8 I8-R21](./Issue8.md#i8-r21)。
 
 ### DNS 测试门禁（I8-04 / Q-06，2026-10-08 定型 B）
 
@@ -369,8 +377,12 @@
 ## 十一、代码规范
 
 - **所有 error 必须处理**，不可忽略返回值
+- 启动宽限合同回归（I8-R20，2026-10-19）：`internal/health/startup_grace_test.go` 的默认测试独立断言 `DefaultStartupGrace == 10*time.Second`，固定 `Now` 后直接走真实 `New → Evaluate`，省略 `StartupGrace` 与负值输入分别覆盖默认接线。输入时间不从被测常量推导：从未运行时 `10s−1ns` 与恰好 `10s` 健康、`10s+1ns` 才报引擎未运行；已运行后停止立即异常、运行中超过10秒不因此异常、宽限内SQLite失败仍异常。同步启用/暂停均检查 `Healthy` 与完整原因数组，不用真实10秒等待、不增加生产hook或默认子进程测试。宽限基准仍为Syncer构造时间，10秒为判定阈值而非告警发出时限；生产常量、`>` 边界与启动顺序保持。范围及本地证据见 [Issue8 I8-R20](./Issue8.md#i8-r20)。
+- 组件退出与资源归属（I8-R19，方案 B）：Pusher 和 AlertManager 分别克隆标准默认 HTTP Transport 并持有私有池；通知器在发布前注入管理器池，保留原 client 超时，候选失败/回滚及 Apply 不关池、不等待旧通知。Push 退出先关闭本实例空闲连接再广播 done；Webhook 在请求与普通回调完成后关池，不关闭进程共享默认池。Server 保留原 ResponseWriter，准入登记与冻结共用 mu；冻结后迟到请求固定 503 + no-store，WaitRequests 只负责等待业务 handler，不等同 Serve/连接退出，不得从 handler 内调用。EventBus 在锁内捕获订阅时登记普通回调、锁外执行，最终锁内冻结再锁外等待；禁止从 OnEvent 内 drain，channel/SSE 与日志 ingress 保持独立。限流器最终停止只阻止诊断续约、取消未开始 timer 并等待已开始回调；不新增强制汇总，不用于热重载或渠道关闭。等待期间不持业务锁。测试优先真实完成信号、虚拟时间与具体句柄回收；Publish 捕获后接缝只进入临时测试构建，父测试读取夹具追踪缓存并核对子测试实际 run/pass，定位漂移/Skip/零匹配明确失败。不宣称 SDK 全局池、标准库后台任务或全仓 goroutine/FD/ticker 零泄漏；HTTP/日志窗口均不构成进程硬退出上限。
 - SMTP 清理错误（I8-16d，d-A）仅记固定阶段/类别 WARN，不记录原始错误、SMTP 原文或 cause，不覆盖发送主错误；正常 Quit 后不重复关闭，预期 net.ErrClosed 不告警。QUIT 失败仍为发送失败，不将本规范补齐扩大为 DATA/QUIT 成功边界调整。
 - 同步事件 SSE 的序列化失败只记录固定 WARN、事件类型与错误类型，跳过坏事件并保持连接；不记录事件负载或序列化错误原文。日志渲染失败向 Handler 调用方返回错误，不在同一 Handler 内递归记录；静态 `/api/health` 写失败记录 Debug，不补写第二个响应。
+- 日志渲染长期回归（I8-R17，方案 A）：默认 `TestI8R17RenderFailure` 仅在临时测试构建中通过 overlay 替换 `TextHandler` 的 writer，保留真实 `renderLine` / `LogBroadcaster.Handle` 与发布代码，不增加生产 hook。立即写失败及部分写失败均须原样返回错误，失败不改变序号/ring/订阅登记、不投递或递归记录，下一条成功日志与回放仍连续；属性格式化的 `!ERROR` / `!PANIC` 文本不作为 writer 失败替代。注入锚点改变或三项预期顶层子测试未实际通过必须明确失败；父测试读取 testdata 以追踪夹具缓存依赖，子进程只运行固定注入测试，显式 `-race -count=1`，沿用现有 race 工具链前提，不进入产品构建。固定 `bytes.Buffer` 的 error 保证为 nil，本项补长期证据，不宣称复现生产 buffer 故障或 `slog.Logger` 自动报告 Handler 错误。正式结果与外部证据边界见 [Issue8 I8-R17](./Issue8.md#i8-r17)。
+- Stop 四入口长期回归（I8-R18，方案 B）：默认 `TestI8R18StopGateEntrances` 仅在临时测试构建中，按 `Syncer.Run` 的四个门控条件及固定拒绝诊断标识定位，在启动/ticker/trigger/恢复门控前插入测试接缝，不修改生产 `syncer.go` 或增加运行时 hook。四个场景均须真实选中对应入口后调用 Stop，断言 Run 退出、已准入轮完成、实际轮次与 Provider 快照/增删计数；Stop 不改变 enabled，门控通过后停止仍沿既有当轮完成合同。父测试读取 testdata 追踪缓存输入，子进程固定当前 GOROOT、`GOTOOLCHAIN=local`、`-race -count=1` 和唯一注入测试入口，验证父/四子场景各实际运行并通过一次；入口定位漂移、零匹配、缺场景或 Skip 必须明确失败。子测试 60 秒、父命令 90 秒为测试保护预算，不是生产同步超时或任意子孙进程的硬终止承诺。历史 SHA 的红→绿仅作固定基线研究证据，默认回归不读取 Git 历史、不引入旧生产算法；正式证据和边界见 [Issue8 I8-R18](./Issue8.md#i8-r18)。
 - 日志使用 `log/slog`（Go 1.21+ 内置结构化日志）
 - 注释使用**中文**（面向国内开发者）
 - 遵守 `PlatformAPIDocs/` 中的 API 文档要求（参数格式、字段长度限制、频率限制）
@@ -378,9 +390,13 @@
 - 项目交付范围仅包含 WebUI 单二进制 + SQLite 以及 Docker/服务器部署；不包含 `.env` Headless 业务模式、CLI 子命令、桌面托盘、开机自启或原生桌面打包计划
 - 日志多路复用使用标准库 `slog.NewMultiHandler`，只在 `app/logutil.go` 统一装配 stdout 与 WebUI；全部启用路按顺序分发，每路 `Record.Clone()`，错误由标准库聚合，调用方通过 `errors.Is/As` 识别，不依赖单错误直接相等。`slog.Logger` 丢弃 Handler 返回错误，不承诺自动告警。
 - WebUI 模式通过 pidfile（`config/pidfile.go` + 平台文件（linux/darwin））防止多实例运行
+- WebUI 地址语义（I8-R15，方案 A）：`Server.Addr()` 返回本实例成功发布的 listener 的实际绑定地址；以现有 `mu` 保护下的 listener 发布为界，尚未发布时为空，包括监听失败、启动前关闭及绑定成功但被并发关闭而未发布的情况。发布发生在 `Start()` 返回前，并发查询可先读到地址；发布后在 Shutdown 中、正常/超时强制关闭后及 Serve 异常退出后均保留地址，拒绝重复 Start 不改变该地址。返回值仅标识绑定位置，不证明仍在监听、仍占用端口或 HTTP 健康。`ServeStarted()` 是发布后、即将启动 Serve 的测试同步信号，不提供存活保证；不改变现有启动/关闭、Wait、超时或错误归一化逻辑。正式回归和本地证据见 [Issue8 I8-R15](./Issue8.md#i8-r15)。
 - 目标同步观察：清理与平台限制观察用 nullable 对象明确未知，记录 attempt/时间/历史来源；删除进度估计不称当前云状态。latest 与 last_complete 分存，完整新零替换旧非零。RoundSummary 四类观察汇总不影响 outcome/健康/删除授权；旧整数仅作兼容投影，日志和 Dashboard 不把跨尝试累计删除与单次快照候选拼成数量关系（Issue7 §12.9）。
+- 维护清理边界（I8-R16，方案B）：已删除无产品入口消费者的 `config.Config` / `Store.LoadConfig` / `BusinessSnapshot.ToConfig` 链，不保留旧命名包装；有效回归直接保护 `LoadBusinessSnapshot` / `ToRuntimeConfig` 与 `RuntimeConfig`。只清理逐符号核实无消费者的事件/类型/函数、composable 返回成员及空白引用，不因“仅测试使用”批量删除或改成非导出。保留 Push Bus、安全字段与覆盖/清理门、运行时控制、测试预置/观察接口和 I8-R14 旧签名；不改 API/schema/配置包、SDK/依赖、网络超时或生产状态机。历史批次记载的符号保留为当时范围，不取代本次逐符号清单；范围、正式门禁与证据边界见 [Issue8 I8-R16](./Issue8.md#i8-r16)。
 - 事件类型：全局同步完成用 `EventSyncComplete`，目标级云端写入与覆盖验证用 `EventTargetSyncComplete`，DNS 失败继续用 `EventDNSFailed`，运行健康异常边沿用 `EventOperationalUnhealthy`；`EventDomainSyncComplete` 不再承载云端增删数量
 - 目标同步历史持久化（I8-R10，2026-10-14 用户定型 A）：生产日志使用独立显式入队订阅，两个目标结果类型共用256条待写环形队列与一个writer，满载淘汰最旧待写，保留在途记录；普通Subscriber、告警在途及SSE投递保持。准入只做值转换/内存操作，不写SQLite、不输出诊断、不等待worker；待写存SyncLog值，不保留事件map或观察对象。保留目标结论/已确认计数/观察详情及最多一次写入，不重试；SQL错误沿共同事件WARN，COUNT失败在已INSERT后继续成功/跳过裁剪，DELETE失败不回滚INSERT。AddSyncLog保留原签名，新context入口贯穿三个独立语句，不改事务/池/PRAGMA/1000条保留。日志失败和丢弃不改同步健康。Stop在当前轮s.Wait完成后冻结准入、解除订阅，最多尝试排空10秒，到期清空待写并取消在途SQL，必须join后才能关库；提前返回也按defer收尾。10秒从日志阶段起算，是软预算，不保证进程/容器硬10秒退出。顺序发布FIFO，并发按准入锁先后，不承诺时间戳全局排序。丢弃仅保存固定计数，worker进展后按约30秒窗口汇总，退出强制冲刷，不把事件/业务字段写入丢弃WARN，不承诺I/O阻塞期间立即诊断。清空仍仅删除已落库内容，待写可能稍后落库；不在持写事务时等排空。正式专项、进程补充与完整本地门禁证据见 [Issue8 I8-R10](./Issue8.md#i8-r10)；仓外研究夹具不进入产品，当前revision外部发布/真实通知及Linux/Docker验收不由本地门禁外推。
+- SQLite 辅助事务与裁剪（I8-R14，2026-10-17 正式修复）：扫描持久化新增带 context 的事务/替换入口，旧签名以 Background 委托保持兼容；正式扫描 handler 仅将请求 context 接入 SQLite 持久化阶段，云扫描仍沿独立 120 秒预算。事务与每条 DELETE/INSERT 使用同一调用方 context，取消在提交前被观察到时回滚并保留完整旧缓存；已提交后取消不撤销提交，不承诺取消与提交并发时必然回滚。合法空数组仍清空对应产品地域，其他缓存保持；沿用安全 HTTP 500、panic 回滚与连接恢复，不增加取消状态码、SQL 重试、硬取消时限或新生产测试钩子。驱动锁等待可能在 context 到期后才返回 SQLITE_BUSY，不要求错误一定包装 context 取消。同步日志继续独立 INSERT/COUNT/必要时 DELETE，保留查询失败成功返回/跳过裁剪、删除失败不回滚 INSERT；COUNT 仍每次执行且有成本，裁剪按第 1000 大 id 删除更旧主键，不用最大 id 减 1000 或时间戳排序。保持 WAL、_txlock=immediate、busy_timeout、连接池与 schema；容量上限继续为暂缓候选，当前 JSON 引用不通过单开 foreign_keys 获得约束，I8-R09 应用层完整性校验保持。扫描取消与日志裁剪已本地修复并通过正式门禁，证据与分项状态见 [Issue8 I8-R14](./Issue8.md#i8-r14)。
+- 同步运行记录展示（I8-R13，方案 B）：`last_sync`、`last_success` 与 `last_round` 仅记录本次进程；服务重启后归空，浏览器刷新不重置服务端记录。Dashboard 的完成时间与最近一轮统计明确本次启动范围；无 `last_round` 时增删显示“暂无记录”，真实轮次的零增删仍显示 0。完成时间使用 `last_sync`，不以 `last_success` 替代；失败、部分完成与 idle 都可以有完成时间。暂停或新轮次进行中保留最近已完成轮次，轮询等待/失败不清除已知记录，收到新进程空状态后显示暂无记录。目标数/规则数仍为当前配置数量；清理观察、告警和唯一运行健康计算源保持，不从目标历史日志还原运行状态，不新增持久化/API/schema。
 - 同步全局开关：`POST /api/sync/pause|resume` 端点（先写 DB 后通知 Syncer）；`SyncStatus.enabled` 字段；前端「模拟测试」页（路由 `/dry-run`）承载目标级变更预览，正式同步与 Dry Run 共用同一纯规划器；至少表达 `desired`、`satisfied_by_owned`、`satisfied_by_external`、`to_add`、`cleanup_candidates`、`cleanup_deferred`、`dns_errors`、`unsupported`、`conflicts`、`coverage_ready`；连接测试保留在目标添加/编辑弹窗（`POST /api/test-connection`）
 - 模拟测试页面请求阶段固定为 `idle/running/completed/failed`；`completed` 仅表示收到可展示响应，不表示全部目标正常。每次执行清空旧 results/warnings/error；等待与失败不渲染结果统计或目标卡片，失败原因持久显示且可重试；最近请求结束时间在完成/失败均更新，不能用于推导阶段。空结果使用中性“本次未返回目标预览”并保留后端 warnings，不推导无变更或零配置；无适用规则与目标级错误/DNS/unsupported/conflicts/清理延后分区保持；完成通知用中性提示，不增加全局绿色无变更结论。
 - 地域自动补全：数据源为 `PlatformAPIDocs/PlatformZoneGuide/`（后端 `webui/api/zones.go` 提供 `GET /api/zones`，文档更新时需同步数据）；后端仅提供预填数据、不校验地域合法性（允许输入列表外值，由云 API 自行报错，符合「不过度防御」）

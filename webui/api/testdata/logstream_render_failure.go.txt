@@ -1,0 +1,170 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"log/slog"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+// 所有故障模式均为单次调用私有值，不使用可变全局开关。
+type i8r17FailWriter struct {
+	dst     *bytes.Buffer
+	partial bool
+}
+
+func (w i8r17FailWriter) Write(p []byte) (int, error) {
+	if w.partial {
+		n, err := w.dst.Write(p[:7])
+		if err != nil {
+			return n, err
+		}
+		return n, io.ErrClosedPipe
+	}
+	return 0, io.ErrClosedPipe
+}
+func i8r17WriterFor(dst *bytes.Buffer, r slog.Record) io.Writer {
+	switch r.Message {
+	case "i8r17-fail":
+		return i8r17FailWriter{dst: dst}
+	case "i8r17-partial":
+		return i8r17FailWriter{dst: dst, partial: true}
+	default:
+		return dst
+	}
+}
+func i8r17Record(msg string) slog.Record {
+	return slog.NewRecord(time.Unix(1, 0), slog.LevelInfo, msg, 0)
+}
+
+func TestI8R17InjectedRenderLine(t *testing.T) {
+	for _, msg := range []string{"i8r17-fail", "i8r17-partial"} {
+		t.Run(msg, func(t *testing.T) {
+			line, err := renderLine(slog.LevelInfo, i8r17Record(msg))
+			if err != io.ErrClosedPipe {
+				t.Errorf("renderLine未原样返回writer错误: %T", err)
+			}
+			if line != "" {
+				t.Error("renderLine返回失败的部分文本")
+			}
+		})
+	}
+}
+
+type i8r17Snapshot struct {
+	epoch            string
+	seq              uint64
+	ring             [logRingSize]logEntry
+	pos, count, next int
+	subs             map[int]chan logEntry
+}
+
+func i8r17State(b *LogBroadcaster) i8r17Snapshot {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	subs := make(map[int]chan logEntry, len(b.subs))
+	for id, ch := range b.subs {
+		subs[id] = ch
+	}
+	return i8r17Snapshot{b.epoch, b.seq, b.ring, b.ringPos, b.ringCnt, b.next, subs}
+}
+func i8r17Drain(t *testing.T, ch <-chan logEntry, want int) []logEntry {
+	t.Helper()
+	if len(ch) != want {
+		t.Fatalf("队列条数=%d want=%d", len(ch), want)
+	}
+	var entries []logEntry
+	for i := 0; i < want; i++ {
+		entries = append(entries, <-ch)
+	}
+	return entries
+}
+
+// 所有调用均同步完成，零投递断言不使用sleep或超时猜测。
+func TestI8R17InjectedNoPublish(t *testing.T) {
+	for _, seed := range []int{0, 3, logRingSize + 5} {
+		for _, msg := range []string{"i8r17-fail", "i8r17-partial"} {
+			t.Run(strings.Join([]string{"seed_" + strconv.Itoa(seed), msg}, "/"), func(t *testing.T) {
+				b := NewLogBroadcaster("info")
+				for i := 0; i < seed; i++ {
+					if err := b.Handle(t.Context(), i8r17Record("seed")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				ch1, _, _, cancel1 := b.Subscribe(b.epoch + ":" + strconv.FormatUint(b.seq, 10))
+				defer cancel1()
+				ch2, _, _, cancel2 := b.Subscribe(b.epoch + ":" + strconv.FormatUint(b.seq, 10))
+				defer cancel2()
+				before := i8r17State(b)
+				previousLogger := slog.Default()
+				var diagnostics bytes.Buffer
+				slog.SetDefault(slog.New(slog.NewTextHandler(&diagnostics, nil)))
+				defer slog.SetDefault(previousLogger)
+				if err := b.Handle(context.Background(), i8r17Record(msg)); err != io.ErrClosedPipe {
+					t.Errorf("Handle未原样返回渲染错误: %T", err)
+				}
+				if after := i8r17State(b); !reflect.DeepEqual(before, after) {
+					t.Error("失败改变序号/ring/订阅状态")
+				}
+				i8r17Drain(t, ch1, 0)
+				i8r17Drain(t, ch2, 0)
+				if diagnostics.Len() != 0 {
+					t.Error("失败递归记录日志")
+				}
+				replay, _, _, cancelReplay := b.Subscribe("")
+				defer cancelReplay()
+				count := seed
+				if count > logRingSize {
+					count = logRingSize
+				}
+				entries := i8r17Drain(t, replay, count)
+				for _, e := range entries {
+					if !strings.Contains(e.Line, "msg=seed") {
+						t.Error("失败污染历史回放")
+					}
+				}
+				// 失败后的成功仍占用下一个连续序号，并投递给原订阅者及新订阅者。
+				if err := b.Handle(t.Context(), i8r17Record("recovered")); err != nil {
+					t.Fatal(err)
+				}
+				for _, ch := range []<-chan logEntry{ch1, ch2, replay} {
+					got := i8r17Drain(t, ch, 1)[0]
+					if got.Seq != before.seq+1 || !strings.Contains(got.Line, "msg=recovered") {
+						t.Errorf("失败后成功日志未连续投递: %+v", got)
+					}
+				}
+				replay2, _, _, cancelReplay2 := b.Subscribe(b.epoch + ":" + strconv.FormatUint(before.seq, 10))
+				defer cancelReplay2()
+				if got := i8r17Drain(t, replay2, 1)[0]; got.Seq != before.seq+1 {
+					t.Error("增量回放游标不连续")
+				}
+			})
+		}
+	}
+}
+
+type i8r17MarshalError struct{}
+
+func (i8r17MarshalError) MarshalText() ([]byte, error) { return nil, io.ErrUnexpectedEOF }
+
+type i8r17MarshalPanic struct{}
+
+func (i8r17MarshalPanic) MarshalText() ([]byte, error) { panic("i8r17-format-panic") }
+func TestI8R17InjectedAttributeFailureIsText(t *testing.T) {
+	for _, tc := range []struct {
+		value  any
+		marker string
+	}{{i8r17MarshalError{}, "!ERROR"}, {i8r17MarshalPanic{}, "!PANIC"}} {
+		r := i8r17Record("attribute-marker")
+		r.AddAttrs(slog.Any("value", tc.value))
+		line, err := renderLine(slog.LevelInfo, r)
+		if err != nil || !strings.Contains(line, tc.marker) {
+			t.Fatalf("属性格式化边界与预期不同: line=%q err=%v", line, err)
+		}
+	}
+}

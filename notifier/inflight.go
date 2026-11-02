@@ -19,11 +19,13 @@ const InFlightLimit = 4
 // （旧实例的在途发送不取消、不等待），而**在途计数仍然连续**——这是「每渠道 ≤4」
 // 在热重载后依旧成立的关键。满载丢弃日志的计数与窗口也由同一实例连续持有。
 type InFlightLimiter struct {
-	capacity  int
-	slots     chan struct{}
-	dropMu    sync.Mutex
-	dropTimer *time.Timer
-	drops     dropCounts
+	capacity          int
+	slots             chan struct{}
+	dropMu            sync.Mutex
+	dropTimer         *time.Timer
+	drops             dropCounts
+	diagnosticsClosed bool
+	diagnosticsWG     sync.WaitGroup
 }
 
 // NewInFlightLimiter 创建容量为 capacity 的限流器；capacity <= 0 时按 1 处理。
@@ -95,6 +97,10 @@ func (l *InFlightLimiter) logDropped(channel string, event EventType) {
 		return
 	}
 	l.dropMu.Lock()
+	if l.diagnosticsClosed {
+		l.dropMu.Unlock()
+		return
+	}
 	l.drops.channels[ci]++
 	l.drops.events[ei]++
 	if l.dropTimer != nil {
@@ -103,7 +109,7 @@ func (l *InFlightLimiter) logDropped(channel string, event EventType) {
 	}
 	snapshot := l.drops
 	l.drops = dropCounts{}
-	l.dropTimer = time.AfterFunc(dropLogWindow, l.flushDrops)
+	l.scheduleDropTimerLocked()
 	l.dropMu.Unlock()
 	l.writeDropLog(snapshot, "first")
 }
@@ -112,6 +118,10 @@ func (l *InFlightLimiter) logDropped(channel string, event EventType) {
 // 空窗口结束活动周期；汇总只表示发生过丢弃，不表示渠道已恢复。
 func (l *InFlightLimiter) flushDrops() {
 	l.dropMu.Lock()
+	if l.diagnosticsClosed {
+		l.dropMu.Unlock()
+		return
+	}
 	snapshot := l.drops
 	if snapshot.events == [3]uint64{} {
 		l.dropTimer = nil
@@ -122,7 +132,9 @@ func (l *InFlightLimiter) flushDrops() {
 	l.dropMu.Unlock()
 	l.writeDropLog(snapshot, "summary")
 	l.dropMu.Lock()
-	l.dropTimer = time.AfterFunc(dropLogWindow, l.flushDrops)
+	if !l.diagnosticsClosed {
+		l.scheduleDropTimerLocked()
+	}
 	l.dropMu.Unlock()
 }
 
@@ -145,4 +157,28 @@ func (l *InFlightLimiter) writeDropLog(c dropCounts, phase string) {
 		"window_seconds", int(dropLogWindow/time.Second), "dropped", total,
 		"dns_failed", c.events[0], "sync_error", c.events[1], "operational_unhealthy", c.events[2],
 		"email", c.channels[0], "dingtalk", c.channels[1], "feishu", c.channels[2], "slack", c.channels[3], "unknown", c.channels[4])
+}
+
+// scheduleDropTimerLocked 登记定时回调所有权，调用方持有 dropMu。
+func (l *InFlightLimiter) scheduleDropTimerLocked() {
+	l.diagnosticsWG.Add(1)
+	l.dropTimer = time.AfterFunc(dropLogWindow, func() {
+		defer l.diagnosticsWG.Done()
+		l.flushDrops()
+	})
+}
+
+// StopDiagnostics 停止续约并等待已开始回调；不强制汇总，未输出计数丢弃。
+// 仅在最终退出且普通告警回调已完成后调用，不用于配置热重载或渠道关闭。
+// 取消尚未启动的 timer 时由停止方释放登记，已启动的回调自行释放，避免重复 Done。
+func (l *InFlightLimiter) StopDiagnostics() {
+	l.dropMu.Lock()
+	l.diagnosticsClosed = true
+	if l.dropTimer != nil && l.dropTimer.Stop() {
+		l.diagnosticsWG.Done()
+	}
+	l.dropTimer = nil
+	l.drops = dropCounts{}
+	l.dropMu.Unlock()
+	l.diagnosticsWG.Wait()
 }

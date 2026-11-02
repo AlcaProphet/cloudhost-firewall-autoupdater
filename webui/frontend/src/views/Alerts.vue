@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { NCard, NForm, NFormItem, NInput, NRadioGroup, NRadio, NSwitch, NButton, NText, NAlert, useMessage } from 'naive-ui'
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { request } from '../api'
 import type { AlertEmailConfig, AlertPolicyConfig, AlertUptimeKumaPushConfig, AlertWebhookConfig, TestEmailPayload } from '../types'
 
@@ -48,6 +48,8 @@ const push = ref<AlertUptimeKumaPushConfig>({
   interval: '60s',
 })
 
+let pageActive = true
+onUnmounted(() => { pageActive = false })
 const saving = ref(false)
 // 只有完整配置成功加载后才能覆盖保存；默认表单仍可用于独立测试邮件。
 const loadState = ref<'loading' | 'ready' | 'error'>('loading')
@@ -82,6 +84,7 @@ const testResult = ref<{ ok: boolean; text: string } | null>(null)
 // 请求体必须显式只取 9 个发送字段（Build7 §5.1）：不得直接序列化整个 email 表单对象，
 // 它多一个 enabled，而后端 testEmailRequest 使用严格解码，多带字段会被 HTTP 400 拒绝。
 async function testSend() {
+  if (!pageActive) return
   testing.value = true
   testResult.value = null
   try {
@@ -105,12 +108,14 @@ async function testSend() {
       },
       35000,
     )
+    if (!pageActive) return
     if (data?.success) {
       testResult.value = { ok: true, text: data.message || 'SMTP 服务器已接受测试邮件' }
     } else {
       testResult.value = { ok: false, text: data?.error || '测试邮件发送失败' }
     }
   } catch (e: any) {
+    if (!pageActive) return
     testResult.value = { ok: false, text: `测试邮件发送失败: ${e.message}` }
   } finally {
     testing.value = false
@@ -118,9 +123,11 @@ async function testSend() {
 }
 
 async function load() {
+  if (!pageActive) return
   loadState.value = 'loading'
   try {
     const data = await request<unknown>('/api/alerts')
+    if (!pageActive) return
     if (!isAlertsData(data)) throw new Error('告警配置响应不完整或字段类型错误')
     policy.value = data.policy
     email.value = data.email
@@ -128,6 +135,7 @@ async function load() {
     push.value = data.uptime_kuma_push
     loadState.value = 'ready'
   } catch (e: any) {
+    if (!pageActive) return
     loadState.value = 'error'
     message.error(`加载告警配置失败: ${e.message}`)
   }
@@ -136,6 +144,7 @@ async function load() {
 onMounted(load)
 
 async function save() {
+  if (!pageActive) return
   if (loadState.value !== 'ready') {
     message.error('告警配置尚未成功加载，无法保存')
     return
@@ -157,8 +166,10 @@ async function save() {
         uptime_kuma_push: push.value,
       }),
     })
+    if (!pageActive) return
     message.success('保存成功')
   } catch (e: any) {
+    if (!pageActive) return
     message.error(`保存失败: ${e.message}`)
   } finally {
     saving.value = false

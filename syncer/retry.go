@@ -7,26 +7,16 @@ import (
 	"strings"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
+	"github.com/alibabacloud-go/tea/tea"
 )
 
 const maxRetries = 3
 
-// isRetryable 判断是否可重试（Issue6 A12，2026-09-27 用户裁决：结构化与兜底两者都做）。
-//
-// 依序三段判断：
-//  1. 结构化：context.DeadlineExceeded 及其包装（阿里云 tea/dara 原样返回 *url.Error，
-//     可用 errors.Is/errors.As 正确识别）；
-//  2. 结构化：net.Error.Timeout()（覆盖 i/o timeout、真实 http.Client.Timeout）；
-//  3. 字符串兜底（大小写不敏感）：保留腾讯云业务错误码与无 cause 网络错误的兼容判断。
-//     当前 common v1.3.192 的 TencentCloudSDKError 已有 Unwrap；网络请求失败通过
-//     NewTencentCloudSDKErrorWithCause 保留原始 cause，可由上述结构化判断识别超时。
-//     普通云业务错误及部分解码/读取错误仍不携带 cause，不将 SDK 全部路径视为可解包。
-//
-// 语义：腾讯 SDK 的网络类错误（含超时）进入重试；判定顺序与幂等优先级不变
-// （幂等「已存在/已不存在」先于本函数判定，且不计数不重试）。
-// 放宽带宽后仍不得让有意不可重试的错误变成可重试——CVM 规则上限
-// （tc_cvm.go checkRuleLimit 的「安全组入站规则数将达 N（上限 100），停止新增」）
-// 不含任何下列关键字，因此保持不可重试。
+// isRetryable 判断目标是否应重新读取快照并规划。
+// 先保留结构化 deadline/net.Error 超时语义，再对阿里云 SDK 业务错误按精确 Code 分类。
+// 即使 Code 缺失或未知，也不读取该业务错误的 Message、Detail、Data 或外层文本。
+// 其他错误沿用原有字符串兼容判断；腾讯无 cause 的错误不受本项影响。
+// 幂等处理由调用方先执行，不能用重试分类替代 S1/S2 覆盖核验。
 func isRetryable(err error) bool {
 	if err == nil {
 		return false
@@ -43,7 +33,16 @@ func isRetryable(err error) bool {
 		return true
 	}
 
-	// 3. 字符串兜底（大小写不敏感）
+	// 3. 阿里云业务错误：只接受已定型的五个码，精确匹配且不作文本兜底。
+	if code, ok := aliSDKErrorCode(err); ok {
+		switch code {
+		case "Throttling", "Throttling.User", "Throttling.Api", "ServiceUnavailable", "InternalError":
+			return true
+		default:
+			return false
+		}
+	}
+	// 4. 其他错误保留原有字符串兜底（大小写不敏感）。
 	msg := strings.ToLower(err.Error())
 	retryable := []string{
 		// 腾讯云版本竞争：Lighthouse UnsupportedOperation.FirewallVersionMismatch /
@@ -65,6 +64,16 @@ func isRetryable(err error) bool {
 	return false
 }
 
+// aliSDKErrorCode 区分“阿里云业务错误没有 Code”与“不是阿里云业务错误”。
+// 当前固定 SDK 默认经 TeaSDKError 转换，使用 errors.As 穿透 Provider/目标层包装。
+func aliSDKErrorCode(err error) (string, bool) {
+	var sdkErr *tea.SDKError
+	if !errors.As(err, &sdkErr) {
+		return "", false
+	}
+	return tea.StringValue(sdkErr.Code), true
+}
+
 // isPartialDelete 判断删除是否部分成功（云端已确认部分批次）。
 func isPartialDelete(err error) bool {
 	var partial *provider.PartialDeleteError
@@ -76,6 +85,10 @@ func isPartialDelete(err error) bool {
 // Lighthouse = UnsupportedOperation.FirewallVersionMismatch；CVM = UnsupportedOperation.VersionMismatch。
 // 必须显式识别为可重试条件，绝不允许去掉版本重发。
 func isVersionMismatch(err error) bool {
+	// 阿里云业务消息不得进入腾讯版本竞争分支。
+	if _, ok := aliSDKErrorCode(err); ok {
+		return false
+	}
 	if err == nil {
 		return false
 	}
@@ -85,6 +98,15 @@ func isVersionMismatch(err error) bool {
 
 // isIdempotentCreate 判断"规则已存在"
 func isIdempotentCreate(err error) bool {
+	// 保留既有幂等码集合，阿里云仅精确匹配 Code。
+	if code, ok := aliSDKErrorCode(err); ok {
+		switch code {
+		case "FirewallRulesExist", "FirewallRuleAlreadyExist", "DuplicatePolicy", "FirewallRulesDuplicated":
+			return true
+		default:
+			return false
+		}
+	}
 	msg := err.Error()
 	return strings.Contains(msg, "FirewallRulesExist") ||
 		strings.Contains(msg, "FirewallRuleAlreadyExist") ||
@@ -94,6 +116,15 @@ func isIdempotentCreate(err error) bool {
 
 // isIdempotentDelete 判断"规则已不存在"
 func isIdempotentDelete(err error) bool {
+	// 保留既有幂等码集合，阿里云仅精确匹配 Code。
+	if code, ok := aliSDKErrorCode(err); ok {
+		switch code {
+		case "FirewallRulesNotFound", "InvalidParam.SecurityGroupRuleId", "InvalidSecurityGroupRuleId.NotFound", "InvalidSecurityGroupRule.RuleNotExist", "InvalidInstanceId.NotFound":
+			return true
+		default:
+			return false
+		}
+	}
 	msg := err.Error()
 	return strings.Contains(msg, "FirewallRulesNotFound") ||
 		strings.Contains(msg, "InvalidParam.SecurityGroupRuleId") ||

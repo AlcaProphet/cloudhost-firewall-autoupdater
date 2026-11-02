@@ -53,7 +53,7 @@ func (d *Deps) handleScanResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 持久化（覆盖式）
+	// 持久化阶段使用请求 context；取消时保留旧缓存，云扫描仍沿独立预算完成。
 	scanned := make([]config.ScannedResource, 0, len(resources))
 	for _, res := range resources {
 		scanned = append(scanned, config.ScannedResource{
@@ -63,7 +63,7 @@ func (d *Deps) handleScanResources(w http.ResponseWriter, r *http.Request) {
 			ResourceName: res.Name,
 		})
 	}
-	if err := d.Store.ReplaceScannedResources(string(ct), region, scanned); err != nil {
+	if err := d.Store.ReplaceScannedResourcesContext(r.Context(), string(ct), region, scanned); err != nil {
 		writeInternalError(w, "保存扫描结果失败", err)
 		return
 	}

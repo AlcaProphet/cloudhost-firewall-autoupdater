@@ -27,7 +27,7 @@ func TestI8R09SnapshotReferenceIntegrity(t *testing.T) {
 				addTargetTxForTest(t, s, TargetConfig{CloudType: CloudTCCVM, Region: "ap-guangzhou", ResourceID: fmt.Sprintf("resource-sentinel-%d", i)})
 			}
 			id := insertRawRule(t, s, "host-sentinel.example", "'"+tc.raw+"'")
-			for _, load := range []string{"snapshot", "config", "transaction"} {
+			for _, load := range []string{"snapshot", "transaction"} {
 				t.Run(load, func(t *testing.T) {
 					var err error
 					var nilResult bool
@@ -36,10 +36,6 @@ func TestI8R09SnapshotReferenceIntegrity(t *testing.T) {
 						snap, e := s.LoadBusinessSnapshot()
 						err = e
 						nilResult = snap == nil
-					case "config":
-						cfg, e := s.LoadConfig()
-						err = e
-						nilResult = cfg == nil
 					case "transaction":
 						tx, e := s.BeginReadOnlyTx(context.Background())
 						if e != nil {

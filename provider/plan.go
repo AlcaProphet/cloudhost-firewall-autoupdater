@@ -77,8 +77,6 @@ const (
 	IssueDesiredEmpty = "desired_empty"
 	// IssueCoverageNotReady 新快照未能证明覆盖全部可实施期望
 	IssueCoverageNotReady = "coverage_not_ready"
-	// IssueCleanupDisabled 本 attempt 未启用自动删除（Step 2 使用；Step 3 起按平台放开）
-	IssueCleanupDisabled = "cleanup_disabled"
 )
 
 // RuleSnapshot 一次云端读取的不可拆分结果：规则 + 版本。

@@ -992,3 +992,11 @@ I8-113 本地修复、验证与文档收口完成。PT-AUDIT-02 真实浏览器�
 旧数据库显式补 security 列，默认auto_starttls，仅补此列不关闭邮件/Webhook；缺subject/body的更古老数据库仍按历史合同归零。新库/reset/无行GET及导出默认一致，重复重启不覆盖已选模式。保存、测试与v3导入全部要求合法security；版本保持3，缺字段旧备份拒绝，新包可能被旧程序拒绝。此前测试8字段和隐式EHLO错误阶段的描述属于历史；当前测试请求为显式9字段、不含enabled，Hello错误单独返回。前端三项单选在渠道关闭时仍可编辑，切换保留端口和输入，非法响应整体拒绝加载。腾讯云目标为smtp.qcloudmail.com、465、SSL/TLS。
 
 正式验证与负向控制结果见 [Issue8.md](Issue8.md) I8-R01。真实SMTP接受/收件箱及三类邮件仍未验收；本地CA、假SMTP与产品进程回归不替代真实投递，也不推定Linux/Docker、真实浏览器或当前revision远端CI/GHCR通过。本轮未修改依赖或发布配置，未提交/推送。
+
+## I8-R19 组件退出与告警资源收尾（2026-10-19，方案 B）
+
+用户明确选择等待在途自然完成。最终退出先冻结 HTTP 业务请求、停止 Push/监督器并 Stop Syncer，保留 HTTP 内部10秒窗口但等待收尾任务实际返回；随后等待当前轮和 handler、冻结并等待普通告警回调、停止诊断回调、关闭私有 Webhook 空闲池，最后按原日志 writer 合同收尾并关库。Push 私有池在 Run done 前关闭。SMTP、Webhook/Push、云读取原时限及现有取消保持；不向 SMTP/云/DNS/Dry Run 新增退出取消预算，不承诺统一硬退出上限。
+
+Push 与告警管理器分别持有私有 HTTP Transport；Webhook 通知器跨热重载借用管理器池并保留原 client timeout。候选构造失败、事务回滚与 Apply 不关池、不等旧发送。普通回调在 EventBus 捕获快照时登记，避免漏掉尚未进入 OnEvent 的任务；SSE channel 与日志 ingress 独立。诊断最终停止不新增强制汇总，未输出丢弃计数仍允许丢失，配置关闭后的既有汇总行为保持。
+
+正式工作树回归、判别性错误变体、完整门禁与证据边界统一见 [Issue8 I8-R19](Issue8.md#i8-r19)。本地 socket、假 SMTP 与任务完成信号不代表真实外部投递，也不证明全仓 goroutine/FD/ticker 零泄漏。当前 revision 的远端发布证据仍归 I8-R22；本轮未提交或推送。

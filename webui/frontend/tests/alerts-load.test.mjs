@@ -23,7 +23,7 @@ function mount(request) {
   new Script(code).runInNewContext({
     module, exports: module.exports,
     require(name) {
-      if (name === 'vue') return { ...vue, onMounted: (fn) => { mounted = fn } }
+      if (name === 'vue') return { ...vue, onMounted: (fn) => { mounted = fn }, onUnmounted() {} }
       if (name === 'naive-ui') return {
         useMessage: () => ({
           error: (text) => messages.push({ type: 'error', text }),

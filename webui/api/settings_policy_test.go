@@ -164,8 +164,8 @@ func TestPutSettings_EmptyStringOnlyForCredentials(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_IgnoresWebuiPortResidue SQLite 残留 webui_port 不改变业务配置
-func TestLoadConfig_IgnoresWebuiPortResidue(t *testing.T) {
+// TestLoadBusinessSnapshot_IgnoresWebuiPortResidue SQLite 残留 webui_port 不改变业务配置
+func TestLoadBusinessSnapshot_IgnoresWebuiPortResidue(t *testing.T) {
 	_, store := newSettingsTestDeps(t)
 	if err := store.SetSetting("webui_port", "61234"); err != nil {
 		t.Fatalf("预置残留键失败: %v", err)
@@ -174,14 +174,15 @@ func TestLoadConfig_IgnoresWebuiPortResidue(t *testing.T) {
 		t.Fatalf("预置 tag 失败: %v", err)
 	}
 
-	cfg, err := store.LoadConfig()
+	snapshot, err := store.LoadBusinessSnapshot()
 	if err != nil {
-		t.Fatalf("LoadConfig 失败: %v", err)
+		t.Fatalf("LoadBusinessSnapshot 失败: %v", err)
 	}
+	cfg := snapshot.ToRuntimeConfig()
 	if cfg.Tag != "kept" {
 		t.Errorf("业务设置应正常加载: tag = %q, want kept", cfg.Tag)
 	}
-	// 业务 Config 不应再包含监听配置
+	// 历史监听键不参与业务快照到运行时配置的转换。
 	if cfg.Interval == 0 {
 		t.Error("业务默认值应补齐（Interval 不应为 0）")
 	}

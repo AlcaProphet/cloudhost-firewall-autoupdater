@@ -13,7 +13,7 @@ import (
 // ValidationError 领域校验错误。
 //
 // 只携带字段名与原因，不携带用户提交的原值，可以直接作为 HTTP 400 的文案；
-// handler、LoadConfig 与（Step 5 的）配置导入共用同一组校验函数。
+// handler、完整业务快照读取与配置导入共用同一组校验函数。
 type ValidationError struct {
 	Field  string
 	Reason string

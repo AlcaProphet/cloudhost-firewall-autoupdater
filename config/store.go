@@ -574,7 +574,13 @@ func (s *Store) ResetAllTx(ctx context.Context, tx *sql.Tx) error {
 // 现在用 committed 标志 + defer 回滚：正常提交后不再回滚；已结束事务的
 // sql.ErrTxDone 属预期，忽略；其他回滚失败记安全错误日志（不回显业务数据）。
 func (s *Store) WithTransaction(fn func(tx *sql.Tx) error) error {
-	tx, err := s.db.Begin()
+	return s.WithTransactionContext(context.Background(), fn)
+}
+
+// WithTransactionContext 在调用方 context 内执行写事务，失败或 panic 时回滚。
+// 取消在提交前被观察到时不提交；驱动写锁等待不承诺立即响应取消。
+func (s *Store) WithTransactionContext(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	tx, err := s.BeginTx(ctx)
 	if err != nil {
 		return fmt.Errorf("开始事务失败: %w", err)
 	}
@@ -601,12 +607,18 @@ func (s *Store) WithTransaction(fn func(tx *sql.Tx) error) error {
 
 // ReplaceScannedResources 覆盖式保存某云厂商+地域的扫描结果（先删后插）
 func (s *Store) ReplaceScannedResources(cloudType, region string, resources []ScannedResource) error {
-	return s.WithTransaction(func(tx *sql.Tx) error {
-		if _, err := tx.Exec("DELETE FROM scanned_resources WHERE cloud_type = ? AND region = ?", cloudType, region); err != nil {
+	return s.ReplaceScannedResourcesContext(context.Background(), cloudType, region, resources)
+}
+
+// ReplaceScannedResourcesContext 原子替换对应产品地域的缓存，取消时沿事务回滚。
+// 合法空结果仍可清空该地域，不改变云扫描阶段独立的读取预算。
+func (s *Store) ReplaceScannedResourcesContext(ctx context.Context, cloudType, region string, resources []ScannedResource) error {
+	return s.WithTransactionContext(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM scanned_resources WHERE cloud_type = ? AND region = ?", cloudType, region); err != nil {
 			return fmt.Errorf("清理旧扫描结果失败: %w", err)
 		}
 		for _, r := range resources {
-			if _, err := tx.Exec(
+			if _, err := tx.ExecContext(ctx,
 				"INSERT INTO scanned_resources (cloud_type, region, resource_id, resource_name) VALUES (?, ?, ?, ?)",
 				cloudType, region, r.ResourceID, r.ResourceName,
 			); err != nil {
@@ -1091,7 +1103,8 @@ func (s *Store) AddSyncLogContext(ctx context.Context, log SyncLog) error {
 	if err != nil {
 		return err
 	}
-	// 仅当超过保留上限（1000 条）时执行清理，避免每次写入全表扫描（O(n)）
+	// 每次写入后统计条数，仅超过 1000 条时按第 1000 大主键裁剪旧记录。
+	// COUNT 仍有计数成本；裁剪不假设自增主键连续，也不使用日志时间排序。
 	//
 	// Issue6 A14：COUNT 查询失败也必须处理。此处保留「查询失败就不裁剪」的保守
 	// 语义（不改变裁剪阈值与行为），但记录安全错误日志，不再静默吞掉。
@@ -1101,7 +1114,7 @@ func (s *Store) AddSyncLogContext(ctx context.Context, log SyncLog) error {
 		return nil
 	}
 	if count > 1000 {
-		if _, err := s.db.ExecContext(ctx, "DELETE FROM sync_logs WHERE id NOT IN (SELECT id FROM sync_logs ORDER BY id DESC LIMIT 1000)"); err != nil {
+		if _, err := s.db.ExecContext(ctx, "DELETE FROM sync_logs WHERE id < (SELECT id FROM sync_logs ORDER BY id DESC LIMIT 1 OFFSET 999)"); err != nil {
 			return err
 		}
 	}
@@ -1134,33 +1147,6 @@ func (s *Store) GetSyncLogs(limit int) ([]SyncLog, error) {
 func (s *Store) ClearSyncLogs() error {
 	_, err := s.db.Exec("DELETE FROM sync_logs")
 	return err
-}
-
-// LoadConfig 从 SQLite 构建启动期 Config。
-//
-// 走与导出、导入、协调器完全相同的「事务内完整业务快照」路径（Build6 §12.10）：
-// 同一个 LoadBusinessSnapshotTx 负责读出 targets/rules/settings/alerts 并复用
-// validate.go 的归一化与校验，避免出现「API 能写入但重启加载失败」的双口径。
-func (s *Store) LoadConfig() (*Config, error) {
-	ctx := context.Background()
-	tx, err := s.BeginReadOnlyTx(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("开始只读事务失败: %w", err)
-	}
-	defer func() {
-		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
-			slog.Error("回滚只读事务失败", "error", rbErr)
-		}
-	}()
-
-	snapshot, err := s.LoadBusinessSnapshotTx(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("提交只读事务失败: %w", err)
-	}
-	return snapshot.ToConfig(), nil
 }
 
 // LoadBusinessSnapshot 读取一次完整业务配置快照（启动路径使用；内部走只读事务）。

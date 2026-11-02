@@ -1,4 +1,4 @@
-.PHONY: build test vet clean docker-build all frontend
+.PHONY: build test vet clean docker-build all frontend frontend-test
 
 frontend:
 	cd webui/frontend && npm ci && npm run build
@@ -6,7 +6,10 @@ frontend:
 build: frontend
 	go build -o fwalizer .
 
-test: frontend
+frontend-test: frontend
+	cd webui/frontend && npm test
+
+test: frontend-test
 	go test ./... -race -v
 
 vet: frontend

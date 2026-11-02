@@ -24,6 +24,11 @@ const showGuide = ref(false) // 首次使用引导条
 const router = useRouter()
 const message = useMessage()
 const { refresh, tcReady, aliReady } = useSettings()
+let pageActive = true
+// 状态与统计各自只接受最新发起请求的响应。
+let statusSequence = 0
+let statsSequence = 0
+let triggerTimer: ReturnType<typeof setTimeout> | null = null
 let timer: ReturnType<typeof setInterval> | null = null
 
 // 三态标签：同步引擎状态（唯一展示：28px 大字 + 状态色；Build4 Step 9 去重）
@@ -35,9 +40,11 @@ const engineTag = computed(() => {
 })
 
 async function fetchStatus() {
+  if (!pageActive) return
+  const sequence = ++statusSequence
   try {
     const s = await request<SyncStatus>('/api/sync/status')
-    status.value = s
+    if (pageActive && sequence === statusSequence) status.value = s
   } catch { /* 轮询失败忽略 */ }
 }
 
@@ -79,11 +86,14 @@ const healthHint = computed(() => {
 
 // 统计概览：目标数 / 规则数（最近一轮增删直接使用同步状态快照）
 async function fetchStats() {
+  if (!pageActive) return
+  const sequence = ++statsSequence
   try {
     const [targets, rules] = await Promise.all([
       request<any[]>('/api/targets'),
       request<any[]>('/api/rules'),
     ])
+    if (!pageActive || sequence !== statsSequence) return
     stats.value = {
       targets: targets.length,
       rules: rules.length,
@@ -95,28 +105,40 @@ async function fetchStats() {
 // 用 refresh() 强制拉取：用户在设置页配置凭据后返回本页，引导条应立即消失（避免模块级缓存导致旧状态）
 async function checkGuide() {
   await refresh()
+  if (!pageActive) return
   showGuide.value = !(tcReady.value || aliReady.value)
 }
 
 function closeGuide() { showGuide.value = false }
 
 async function triggerSync() {
+  if (!pageActive) return
   try {
     await request('/api/sync/trigger', { method: 'POST' })
+    if (!pageActive) return
     message.success('同步已触发')
   } catch (e: any) {
+    if (!pageActive) return
     message.error(`触发失败: ${e.message}`) // 暂停时后端返回 409
   }
-  setTimeout(fetchStatus, 1000)
+  if (!pageActive) return
+  if (triggerTimer) clearTimeout(triggerTimer)
+  triggerTimer = setTimeout(() => {
+    triggerTimer = null
+    fetchStatus()
+  }, 1000)
 }
 
 async function toggleSync() {
+  if (!pageActive) return
   switching.value = true
   try {
     await request(`/api/sync/${status.value.enabled ? 'pause' : 'resume'}`, { method: 'POST' })
+    if (!pageActive) return
     status.value.enabled = !status.value.enabled
     message.success(status.value.enabled ? '同步已开启' : '同步已暂停')
   } catch (e: any) {
+    if (!pageActive) return
     message.error(`操作失败: ${e.message}`)
   } finally {
     switching.value = false
@@ -132,6 +154,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  pageActive = false
+  if (triggerTimer) clearTimeout(triggerTimer)
   if (timer) clearInterval(timer)
 })
 </script>
@@ -163,9 +187,9 @@ onUnmounted(() => {
       <NGi>
         <NCard title="上次同步" style="min-height: 200px">
           <div style="font-size: 24px; font-weight: 600; margin-top: 20px">
-            {{ status.last_sync ? new Date(status.last_sync).toLocaleString() : '暂无' }}
+            {{ status.last_sync ? new Date(status.last_sync).toLocaleString() : '暂无记录' }}
           </div>
-          <div style="font-size: 14px; color: #888; margin-top: 8px">最近一轮同步完成时间</div>
+          <div style="font-size: 14px; color: #888; margin-top: 8px">本次启动后的最近一轮完成时间，重启后重新记录</div>
         </NCard>
       </NGi>
       <NGi>
@@ -173,7 +197,11 @@ onUnmounted(() => {
           <NSpace vertical size="large" style="margin-top: 20px">
             <div style="font-size: 20px">云资源目标 <b style="font-size: 28px">{{ stats.targets }}</b> 个</div>
             <div style="font-size: 20px">域名规则 <b style="font-size: 28px">{{ stats.rules }}</b> 条</div>
-            <div style="font-size: 20px">最近同步 新增 <b style="font-size: 28px">{{ status.last_round?.added ?? 0 }}</b> / 删除 <b style="font-size: 28px">{{ status.last_round?.deleted ?? 0 }}</b></div>
+            <div style="font-size: 14px; color: #888">以下为本次启动后的最近一轮同步统计</div>
+            <div style="font-size: 20px">
+              <template v-if="status.last_round">最近同步 新增 <b style="font-size: 28px">{{ status.last_round.added }}</b> / 删除 <b style="font-size: 28px">{{ status.last_round.deleted }}</b></template>
+              <template v-else>最近同步增删 暂无记录</template>
+            </div>
             <div style="font-size: 20px" data-testid="cleanup-operations">本轮累计确认清理 {{ status.last_round ? `${status.last_round.cleanup_deleted} 条` : '暂无记录' }}</div>
             <div style="font-size: 16px" data-testid="cleanup-observation">{{ cleanupHint }}</div>
           </NSpace>

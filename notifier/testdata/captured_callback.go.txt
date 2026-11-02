@@ -1,0 +1,42 @@
+package notifier
+
+import (
+	"testing"
+	"testing/synctest"
+)
+
+func TestI8R19InjectedCapturedCallback(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		bus := NewEventBus()
+		sub := &mockSubscriber{}
+		bus.Subscribe(EventSyncError, sub)
+		captured, release := make(chan struct{}), make(chan struct{})
+		i8r19BeforeLaunch = func() { close(captured); <-release }
+		defer func() { i8r19BeforeLaunch = nil }()
+		published := make(chan struct{})
+		go func() { bus.Publish(Event{Type: EventSyncError}); close(published) }()
+		<-captured
+		stopped := make(chan struct{}, 4)
+		for range 4 {
+			go func() { bus.DrainSubscribers(); stopped <- struct{}{} }()
+		}
+		synctest.Wait()
+		if len(stopped) != 0 {
+			t.Error("I8R19_BEHAVIOR: drain missed captured callback before launch")
+		}
+		close(release)
+		<-published
+		for range 4 {
+			<-stopped
+		}
+		if sub.count() != 1 {
+			t.Error("I8R19_BEHAVIOR: admitted callback lost")
+		}
+		bus.Publish(Event{Type: EventSyncError})
+		bus.DrainSubscribers()
+		synctest.Wait()
+		if sub.count() != 1 {
+			t.Error("I8R19_BEHAVIOR: callback admitted after freeze")
+		}
+	})
+}

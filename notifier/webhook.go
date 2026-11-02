@@ -195,3 +195,8 @@ func validateWebhookResponse(channel string, status int, body []byte) error {
 	}
 	return nil
 }
+
+// SetHTTPTransport 仅在候选发布前注入生命周期所有者持有的连接池。
+func (n *WebhookNotifier) SetHTTPTransport(transport http.RoundTripper) {
+	n.client.Transport = transport
+}

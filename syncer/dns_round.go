@@ -34,6 +34,8 @@ func newDNSRound(state *RuntimeState) *dnsRound {
 	return round
 }
 
+// resolve 只接收创建本轮时同一 RuntimeState 配置中的域名。
+// runRound 从该快照筛选目标规则；热更新后的新域名由后续轮次处理。
 func (r *dnsRound) resolve(host string, resolve func() ([]dns.ResolvedIP, error)) ([]dns.ResolvedIP, error) {
 	r.mu.Lock()
 	h := r.hosts[dns.DomainKey(host)] // 来源为本轮配置中的适用规则

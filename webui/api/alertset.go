@@ -2,6 +2,7 @@ package api
 
 import (
 	"log/slog"
+	"net/http"
 	"sync"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
@@ -47,6 +48,10 @@ type alertSet struct {
 // 构造阶段零副作用：NewEmailNotifier / NewWebhookNotifier 只保存配置字段，
 // 不建立连接、不发消息。
 func BuildAlertSet(rc config.RuntimeConfig) alertSet {
+	return buildAlertSet(rc, nil)
+}
+
+func buildAlertSet(rc config.RuntimeConfig, transport http.RoundTripper) alertSet {
 	// 只有「渠道开启 + 对应触发开启」才产生订阅（Build7 §2.1、§6.3）：
 	// 开启触发条件但没有启用任何渠道不发送；启用渠道但没有开启任何触发条件也不发送。
 	events := policySubscriptions(rc.Policy)
@@ -67,7 +72,11 @@ func BuildAlertSet(rc config.RuntimeConfig) alertSet {
 		set.emailToAddr = rc.Email.ToAddr
 	}
 	if rc.Webhook.Enabled {
-		set.webhook = notifier.NewWebhookNotifier(rc.Webhook.URL, rc.Webhook.Channel)
+		n := notifier.NewWebhookNotifier(rc.Webhook.URL, rc.Webhook.Channel)
+		if transport != nil {
+			n.SetHTTPTransport(transport)
+		}
+		set.webhook = n
 		set.webhookChannel = rc.Webhook.Channel
 	}
 	return set
@@ -78,9 +87,11 @@ func BuildAlertSet(rc config.RuntimeConfig) alertSet {
 // Apply 先把旧订阅从事件总线移除、再安装新订阅；旧的已在途异步通知由
 // EventBus 的异步回调自然完成，不在这里等待或取消。
 type AlertManager struct {
-	mu      sync.Mutex
-	bus     *notifier.EventBus
-	current alertSet
+	mu             sync.Mutex
+	bus            *notifier.EventBus
+	current        alertSet
+	ownedTransport *http.Transport
+	resourcesOnce  sync.Once
 
 	// 按渠道持有的在途限流器（构造后不替换）：Issue6 A2 / §六.4 F5 要求
 	// 「每渠道在途 ≤4」在配置热重载后仍然成立，因此限流器必须比 notifier 实例活得久。
@@ -92,7 +103,9 @@ type AlertManager struct {
 //
 // 同时创建邮件与 Webhook 各自的在途限流器（容量 notifier.InFlightLimit = 4）。
 func NewAlertManager(bus *notifier.EventBus) *AlertManager {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
 	return &AlertManager{
+		ownedTransport: transport,
 		bus:            bus,
 		emailLimiter:   notifier.NewInFlightLimiter(notifier.InFlightLimit),
 		webhookLimiter: notifier.NewInFlightLimiter(notifier.InFlightLimit),
@@ -173,4 +186,19 @@ func (m *AlertManager) LogStatus(verb string) {
 	if webhookOn {
 		slog.Info("Webhook 告警"+verb, "channel", channel)
 	}
+}
+
+// Build 构造候选时复用管理器私有池；候选自身不持有池生命周期。
+func (m *AlertManager) Build(rc config.RuntimeConfig) alertSet {
+	return buildAlertSet(rc, m.ownedTransport)
+}
+
+// CloseResources 在所有请求与普通回调 join 后调用，重复及并发调用安全。
+// 配置候选与旧在途通知都借用管理器的池，不在 Apply 或事务回滚时关闭。
+func (m *AlertManager) CloseResources() {
+	m.resourcesOnce.Do(func() {
+		m.emailLimiter.StopDiagnostics()
+		m.webhookLimiter.StopDiagnostics()
+		m.ownedTransport.CloseIdleConnections()
+	})
 }

@@ -59,11 +59,12 @@ type PusherDeps struct {
 
 // Pusher 是 Uptime Kuma Push 心跳循环。
 type Pusher struct {
-	checker *Checker
-	config  func() PushConfig
-	bus     Publisher
-	timeout time.Duration
-	client  *http.Client
+	checker        *Checker
+	config         func() PushConfig
+	bus            Publisher
+	timeout        time.Duration
+	client         *http.Client
+	ownedTransport *http.Transport
 
 	wake chan struct{}
 	stop chan struct{}
@@ -87,6 +88,7 @@ func NewPusher(deps PusherDeps) *Pusher {
 		timeout = DefaultPushTimeout
 	}
 	baseCtx, cancel := context.WithCancel(context.Background())
+	transport := http.DefaultTransport.(*http.Transport).Clone()
 	return &Pusher{
 		baseCtx: baseCtx,
 		cancel:  cancel,
@@ -94,11 +96,12 @@ func NewPusher(deps PusherDeps) *Pusher {
 		config:  deps.Config,
 		bus:     deps.Bus,
 		timeout: timeout,
-		// 独立 client：只设置整体超时，不使用重试
-		client: &http.Client{Timeout: timeout},
-		wake:   make(chan struct{}, 1),
-		stop:   make(chan struct{}),
-		done:   make(chan struct{}),
+		// 私有池沿用标准默认网络配置；只设置原整体超时，不使用重试。
+		client:         &http.Client{Timeout: timeout, Transport: transport},
+		ownedTransport: transport,
+		wake:           make(chan struct{}, 1),
+		stop:           make(chan struct{}),
+		done:           make(chan struct{}),
 	}
 }
 
@@ -108,6 +111,8 @@ func NewPusher(deps PusherDeps) *Pusher {
 // 关闭或 URL 为空时只等待唤醒；非空非法 URL 按有下限的间隔重新校验，不发网络请求。
 func (p *Pusher) Run() {
 	defer close(p.done)
+	// 先收尾本实例的空闲连接，再广播完成；不关闭进程共享默认池。
+	defer p.ownedTransport.CloseIdleConnections()
 	// 调度状态包含非法 URL 的校验尝试，不等同于已成功发送。
 	scheduled := false
 	lastURL := ""

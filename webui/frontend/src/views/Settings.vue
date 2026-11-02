@@ -64,10 +64,14 @@ function shortProductLabel(ct: string): string {
 
 onMounted(async () => {
   try {
-    settings.value = await request<Record<string, string>>('/api/settings')
+    const data = await request<Record<string, string>>('/api/settings')
+    if (!pageActive) return
+    settings.value = data
   } catch (e: any) {
+    if (!pageActive) return
     message.error(`加载设置失败: ${e.message}`)
   }
+  if (!pageActive) return
   loadZones()
   // 预加载四类扫描结果（含重启后 DB 持久化数据）
   await Promise.all(['tc_lighthouse', 'tc_cvm', 'ali_swas', 'ali_ecs'].map((ct) => loadScanned(ct)))

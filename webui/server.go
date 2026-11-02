@@ -61,14 +61,16 @@ type Server struct {
 	shutdownCh   chan struct{} // 服务器级 SSE shutdown 信号（只关闭一次，永不写入）
 	shutdownOnce sync.Once
 
-	serveStarted chan struct{} // Serve goroutine 已启动（测试用确定性同步）
+	serveStarted chan struct{} // listener 已发布、即将启动 Serve（测试用确定性同步）
 
 	// 生命周期状态（由 mu 保护）
-	mu         sync.Mutex
-	httpServer *http.Server
-	listener   net.Listener
-	shutdown   bool // 是否已进入关闭流程（用于归一化 ErrServerClosed/net.ErrClosed）
-	started    bool // Start 是否已被调用过（重复调用门控，Issue6 A16）
+	mu             sync.Mutex
+	httpServer     *http.Server
+	listener       net.Listener
+	requestWG      sync.WaitGroup
+	requestsClosed bool
+	shutdown       bool // 是否已进入关闭流程（用于归一化 ErrServerClosed/net.ErrClosed）
+	started        bool // Start 是否已被调用过（重复调用门控，Issue6 A16）
 
 	// Wait 的唯一结果广播（Issue6 A16）：Serve 结果只投递一次并被缓存，
 	// 使多次/并发 Wait 返回同一结果，而不是从容量 1 的 channel 各读一次而永久阻塞。
@@ -77,7 +79,10 @@ type Server struct {
 	serveResult error
 }
 
-// NewServer 创建 WebUI 服务器
+// NewServer 创建 WebUI 服务器。
+//
+// 静态 health 与 SPA 路由本身不读取 Store；调用读写数据库的业务入口必须提供
+// 非 nil Store。生产启动在成功打开数据库并加载业务快照后才创建服务器。
 func NewServer(store *config.Store, host string, port int) *Server {
 	s := &Server{
 		host:         host,
@@ -130,13 +135,16 @@ func (s *Server) ShutdownCh() <-chan struct{} {
 	return s.shutdownCh
 }
 
-// ServeStarted 返回 Serve goroutine 启动信号（关闭表示已启动）。
-// 仅用于测试确定性同步：得到该信号后端口必然仍被同一个 listener 占用。
+// ServeStarted 返回监听对象已发布、即将启动 Serve goroutine 的信号。
+// 仅用于测试确定性同步；收到信号不保证监听仍然开放，也不表示 HTTP 健康。
 func (s *Server) ServeStarted() <-chan struct{} {
 	return s.serveStarted
 }
 
-// Addr 返回实际监听地址；Start 成功前返回空字符串。
+// Addr 返回本实例成功发布的实际绑定地址；尚未发布 listener 时返回空字符串。
+// 发布发生在 Start 返回之前；并发调用可能在 Start 返回前读到地址。
+// 发布后即使进入 Shutdown、完成关闭或 Serve 异常退出，也保留该地址。
+// 地址仅用于标识绑定位置，不表示仍在监听、占用端口或 HTTP 健康。
 func (s *Server) Addr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -192,7 +200,7 @@ func (s *Server) Start() (int, error) {
 	actualPort := tcpAddr.Port
 
 	hs := &http.Server{
-		Handler:           s.mux,
+		Handler:           http.HandlerFunc(s.serveRequest),
 		ReadHeaderTimeout: ReadHeaderTimeout,
 		IdleTimeout:       IdleTimeout,
 		// ReadTimeout/WriteTimeout 保持零值：不设置会周期性切断
@@ -267,6 +275,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// 关闭流程标记必须在最早时机置位，使 Serve 收尾按正常退出归一化
 	s.mu.Lock()
 	s.shutdown = true
+	s.requestsClosed = true
 	hs := s.httpServer
 	s.mu.Unlock()
 
@@ -302,8 +311,35 @@ func (s *Server) registerRoutes() {
 	// 所有业务 API 端点
 	s.deps.Register(s.mux)
 	// 静态文件（Vue SPA）
+	// 固定合法路径下的 fs.Sub 只建立 embed.FS 子目录视图，不验证目录或 index.html
+	// 是否存在；内容完整性由前端构建与静态资源回归检查。
 	distFS, err := fs.Sub(frontendFS, "frontend/dist")
 	if err == nil {
 		s.mux.Handle("/", http.FileServer(http.FS(distFS)))
 	}
+}
+
+// serveRequest 在业务 handler 前登记，拒绝冻结后的迟到请求。
+func (s *Server) serveRequest(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	if s.requestsClosed {
+		s.mu.Unlock()
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "服务正在关闭", http.StatusServiceUnavailable)
+		return
+	}
+	s.requestWG.Add(1)
+	s.mu.Unlock()
+	defer s.requestWG.Done()
+	s.mux.ServeHTTP(w, r)
+}
+
+// WaitRequests 冻结准入后等待实际 handler 返回，可重复或并发等待。
+// 由 main 在 Shutdown 后调用；不代替 Shutdown，也不得在本 Server 的 handler 内调用。
+// 强制关闭连接与 Serve 返回不代表 handler 已完成，此处不新增取消或硬时限。
+func (s *Server) WaitRequests() {
+	s.mu.Lock()
+	s.requestsClosed = true
+	s.mu.Unlock()
+	s.requestWG.Wait()
 }

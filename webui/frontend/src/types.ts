@@ -209,12 +209,6 @@ export interface SyncLogEntry {
   error?: string // 失败原因，或 skipped/partial 的同步详情（复用既有持久化列）
 }
 
-export interface SyncEvent {
-  type: string
-  timestamp: string
-  data: Record<string, unknown>
-}
-
 // AlertPolicyConfig 告警触发策略（Build7 §4.6）：三个触发开关共用，health_timeout 为时长文本
 export interface AlertPolicyConfig {
   dns_failed_enabled: boolean

@@ -309,8 +309,8 @@ func TestResetAllTxTransaction(t *testing.T) {
 	}
 }
 
-// TestLoadConfigSettingValidation 既有数据库非法设置值必须报错，不再静默回退默认值（Build6 §12.10）
-func TestLoadConfigSettingValidation(t *testing.T) {
+// TestLoadBusinessSnapshotSettingValidation 既有数据库非法设置值必须报错，不再静默回退默认值（Build6 §12.10）
+func TestLoadBusinessSnapshotSettingValidation(t *testing.T) {
 	t.Run("空白按缺失处理并使用默认值", func(t *testing.T) {
 		s := openTestStore(t)
 		for k, v := range map[string]string{"tag": "  ", "interval": "", "dns": " ", "dns_timeout": "", "dns_fail_threshold": "", "log_level": "", "theme": ""} {
@@ -318,10 +318,11 @@ func TestLoadConfigSettingValidation(t *testing.T) {
 				t.Fatalf("预置设置失败: %v", err)
 			}
 		}
-		cfg, err := s.LoadConfig()
+		snapshot, err := s.LoadBusinessSnapshot()
 		if err != nil {
 			t.Fatalf("空白值应按缺失处理: %v", err)
 		}
+		cfg := snapshot.ToRuntimeConfig()
 		if cfg.Tag != "auto-dns" || cfg.Interval != 5*time.Minute || cfg.DNS != "223.5.5.5" ||
 			cfg.DNSTimeout != 10*time.Second || cfg.DNSFailThreshold != 5 || cfg.LogLevel != "info" {
 			t.Errorf("默认值不正确: %+v", cfg)
@@ -342,10 +343,11 @@ func TestLoadConfigSettingValidation(t *testing.T) {
 				t.Fatalf("预置设置失败: %v", err)
 			}
 		}
-		cfg, err := s.LoadConfig()
+		snapshot, err := s.LoadBusinessSnapshot()
 		if err != nil {
 			t.Fatalf("合法值应通过: %v", err)
 		}
+		cfg := snapshot.ToRuntimeConfig()
 		if cfg.Tag != "my-tag" || cfg.Interval != 7*time.Minute || cfg.DNS != "1.1.1.1:5353" ||
 			cfg.DNSTimeout != 3*time.Second || cfg.DNSFailThreshold != 9 || cfg.LogLevel != "debug" {
 			t.Errorf("归一化结果不正确: %+v", cfg)
@@ -378,9 +380,9 @@ func TestLoadConfigSettingValidation(t *testing.T) {
 			if err := s.SetSetting(tc.key, tc.value); err != nil {
 				t.Fatalf("预置设置失败: %v", err)
 			}
-			_, err := s.LoadConfig()
+			_, err := s.LoadBusinessSnapshot()
 			if err == nil {
-				t.Errorf("键 %s 的非法值 %q 应导致 LoadConfig 失败", tc.key, tc.value)
+				t.Errorf("键 %s 的非法值 %q 应导致 LoadBusinessSnapshot 失败", tc.key, tc.value)
 				continue
 			}
 			var ve *ValidationError
@@ -398,7 +400,7 @@ func TestLoadConfigSettingValidation(t *testing.T) {
 		if err := s.SetSetting("webui_port", "61234"); err != nil {
 			t.Fatalf("预置失败: %v", err)
 		}
-		if _, err := s.LoadConfig(); err != nil {
+		if _, err := s.LoadBusinessSnapshot(); err != nil {
 			t.Errorf("webui_port 残留不应导致加载失败: %v", err)
 		}
 	})
