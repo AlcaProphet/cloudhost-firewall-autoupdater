@@ -179,10 +179,10 @@ func TestPlan_AliyunPortRoundTripConverges(t *testing.T) {
 	}{
 		{"SWAS 单端口", config.CloudAliSWAS, "443", "443"},
 		{"SWAS 范围端口", config.CloudAliSWAS, "8000-8010", "8000-8010"},
-		{"SWAS ALL", config.CloudAliSWAS, "ALL", "ALL"},
+		{"SWAS ALL", config.CloudAliSWAS, "ALL", "1-65535"},
 		{"ECS 单端口", config.CloudAliECS, "443", "443"},
 		{"ECS 范围端口", config.CloudAliECS, "8000-8010", "8000-8010"},
-		{"ECS ALL", config.CloudAliECS, "ALL", "ALL"},
+		{"ECS ALL", config.CloudAliECS, "ALL", "1-65535"},
 		{"SWAS 斜杠原样回读", config.CloudAliSWAS, "443", "443/443"},
 		{"SWAS 斜杠范围原样回读", config.CloudAliSWAS, "8000-8010", "8000/8010"},
 		{"ECS 斜杠原样回读", config.CloudAliECS, "8000-8010", "8000/8010"},
@@ -810,7 +810,7 @@ func TestI814PlanIPv4ICMPPortEquivalence(t *testing.T) {
 func TestI814PlanAliPortRoundTrip(t *testing.T) {
 	for _, ct := range []config.CloudType{config.CloudAliSWAS, config.CloudAliECS} {
 		for _, proto := range []string{"TCP", "UDP"} {
-			for _, tt := range []struct{ input, wire, normalized string }{{"443", "443/443", "443"}, {"8000-8010", "8000/8010", "8000-8010"}, {"ALL", "-1/-1", "ALL"}} {
+			for _, tt := range []struct{ input, wire, normalized string }{{"443", "443/443", "443"}, {"8000-8010", "8000/8010", "8000-8010"}, {"ALL", "1/65535", "1-65535"}} {
 				t.Run(string(ct)+"/"+proto+"/"+tt.input, func(t *testing.T) {
 					rr := []config.DomainRule{rule(1, "api.test", proto, tt.input, "ACCEPT", "")}
 					ips := map[int][]dns.ResolvedIP{1: {v4("1.2.3.4")}}

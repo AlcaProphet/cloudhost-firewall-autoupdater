@@ -192,6 +192,7 @@ func Capabilities(ct config.CloudType) Capability {
 // 注意粒度：Lighthouse 的「多端口合并成一条逗号规则」只属于**旧逐规则写入路径**。
 // 目标级规划器不使用本函数的合并结果，而是用 expandPlannedPorts 对每个端口项单独取
 // 线格式，保证 Desired/ToAdd 的最小单元恒为单个端口项（Issue7 §2.5 用户裁决）。
+// 本接口不接收协议；阿里云 ALL 的协议区分由 expandPlannedPorts 在正式规划时处理。
 func ExpandPorts(ct config.CloudType, port string) []string {
 	ports := portconv.Parse(port)
 	switch ct {
@@ -232,18 +233,25 @@ func ExpandPorts(ct config.CloudType, port string) []string {
 
 // expandPlannedPorts 把统一端口表达式展开为「每个端口项一条」的线格式列表（规划器专用）。
 //
-// 与 ExpandPorts 的唯一区别是粒度：ExpandPorts 是旧逐规则写入路径的线格式（Lighthouse 会把
+// 结合协议生成线格式；阿里云 TCP/UDP/TCP+UDP 的 ALL 使用 1/65535，ICMP 使用 -1/-1。
+// 粒度也与 ExpandPorts 不同：ExpandPorts 是旧逐规则写入路径的线格式（Lighthouse 会把
 // 多个端口合并成一个逗号串以减少规则条数），而本函数先按 portconv.Parse 的业务语义拆分，
 // 再对每个端口项各自取线格式，因此 Lighthouse 的 80,443 会落成 80 与 443 两个独立功能，
 // 新建时下发两条单端口规则；已存在的合并规则因展开后多个 key 均被覆盖而不会被重建或删除
 // （Issue7 §2.5 的 2026-09-29 用户裁决）。
-func expandPlannedPorts(ct config.CloudType, port string) []string {
+func expandPlannedPorts(ct config.CloudType, protocol, port string) []string {
 	items := portconv.Parse(port)
 	if len(items) == 0 {
 		return []string{port}
 	}
 	out := make([]string, 0, len(items))
 	for _, item := range items {
+		// 在构造功能 key 前完成转换，使合法全范围回读与本地 ALL 精确等价。
+		if (ct == config.CloudAliECS || ct == config.CloudAliSWAS) &&
+			(strings.EqualFold(protocol, "TCP") || strings.EqualFold(protocol, "UDP") || strings.EqualFold(protocol, "TCP+UDP")) &&
+			strings.EqualFold(item, "ALL") {
+			item = "1-65535"
+		}
 		wire := ExpandPorts(ct, item)
 		if len(wire) == 0 {
 			out = append(out, item)
@@ -473,7 +481,6 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 		if strings.EqualFold(r.Protocol, "TCP+UDP") && !caps.TCPUDP {
 			protocols = []string{"TCP", "UDP"}
 		}
-		wirePorts := expandPlannedPorts(in.CloudType, r.Ports)
 		action := strings.ToUpper(strings.TrimSpace(r.Action))
 		comment := strings.TrimSpace(r.Comment)
 
@@ -490,6 +497,7 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 				family = AddressIPv6
 			}
 			for _, proto := range protocols {
+				wirePorts := expandPlannedPorts(in.CloudType, proto, r.Ports)
 				keyProto := canonicalProtocol(proto)
 				for _, wirePort := range wirePorts {
 					key := FunctionalKey{

@@ -2,7 +2,7 @@
 
 > **2026-10-10 用户授权整合。** 本文件是唯一活跃问题台账，汇总 Issue5～7、审计报告和旧 TODO/Issue8 的剩余事项。整理仅修改文档，不授权实施下列生产、测试、依赖或发布改动。
 > **当前验收：** 用户确认已完成测试并真机核验，除 SMTP 外暂无问题。Webhook 与 Uptime Kuma HTTP/Push 继续豁免且不阻断项目，豁免不等于真实链路通过；SMTP 详见 [ProdTestList](./ProdTestList.md)。已收口的普通云/浏览器人工项目不再登记待执行。
-> **编号：** 当前采用连续 `I8-R01`～`I8-R25`，R 表示本次整合的剩余事项。旧 `I8-xx`、Q、TODO、A/P/R7 编号保留在来源字段与归档中，不能把新 R 编号与旧编号混用。未来追加从 I8-R26 开始，关闭后保留编号及结果，不重复使用。
+> **编号：** 当前采用连续 `I8-R01`～`I8-R26`，R 表示本次整合的剩余事项。旧 `I8-xx`、Q、TODO、A/P/R7 编号保留在来源字段与归档中，不能把新 R 编号与旧编号混用。未来追加从 I8-R27 开始，关闭后保留编号及结果，不重复使用。
 > **整合时证据：** 2026-10-10 整合仅做文档/关键源码静态对账，未重跑测试、npm audit、外部探针或 CI；后续实施的实际证据以各条目补记为准。历史结果仍为历史证据；“候选/待研究”不等于确认产品缺陷，真机暂无问题也不关闭独立代码或测试候选。
 
 ## 1. 基线与顺序
@@ -38,6 +38,7 @@
 | I8-R23 | 特定平台与长期运行证据 | 证据范围待核对 | 历史audit/Issue8外部边界 |
 | I8-R24 | 合理前置条件与防御接口 | 非缺陷维护候选 | 旧 I8-17e/I8-47/I8-44-1/2/3 |
 | I8-R25 | 历史统计与测试命名精度 | 文档/测试注释候选 | TODO-004/007；旧 Issue8附录B |
+| I8-R26 | 阿里云 TCP/UDP 全端口转换与收敛 | 本地已修复，正式门禁通过 | 2026-11-01 真实 ECS 报错；本聊天研究与授权 |
 
 ## 2. 剩余事项详情
 
@@ -303,6 +304,18 @@
 - **状态与来源：** 文档/测试注释候选；TODO-004/007；旧 Issue8附录B。
 - **证据与边界：** 基础28项与附加标签口径、顶层测试/子用例、tracked/ignored数量、旧行号需按采集基线理解；cleanup_test.go的CandidatesHandedOver注释与DeletesInBatchesOf100函数名不一致仍保留。本次仅文档整理，未改Go注释。
 - **后续与完成条件：** 活跃台账不沿用旧数量作当前规模；未来引用归档证据按符号/固定SHA复核。测试命名/注释修订独立处理，不能修改过去真实次数或重算未运行探针。
+
+<a id="i8-r26"></a>
+
+### I8-R26 阿里云全端口转换与回读收敛
+
+- **问题、授权与基线：** 用户现场 ECS 3.0.0 报 `InvalidIpProtocol.Malformed / PortRange is not valid`；本聊天核对正式 planner 和官方接口要求后，2026-11-02 用户授权执行推荐方案并同步文档。正式实施前 `main == 本地 origin/main == 0f7fe9fbc6fb48830f9b5b3e0c14e2a677848187`，工作树与暂存区干净，未 fetch。此前线上版本/错误来自引用聊天，本轮未重新连接主机或云控制台。
+- **根因与关联：** `expandPlannedPorts → ExpandPorts → ToSlash` 不接收协议，把所有阿里云 ALL 转为 -1/-1；ECS 的 TCP/UDP/TCP+UDP 拆分与 SWAS 的 TCP/UDP/原生 TCP+UDP 都受影响。仅修改最终请求会留下本地 ALL 与云端 1/65535 的功能 key 不同、S1 覆盖失败与全范围规则不能去重。旧 `TestI814PlanAliPortRoundTrip` 固化错误线格式，现已更正；历史绿色不作此次有效性证据。依据为仓内 AuthorizeSecurityGroup/CreateFirewallRules 要求及 [ECS 官方接口](https://help.aliyun.com/zh/ecs/developer-reference/api-ecs-2014-05-26-authorizesecuritygroup)、[SWAS 官方接口](https://help.aliyun.com/zh/simple-application-server/developer-reference/api-swas-open-2020-06-01-createfirewallrules)。
+- **实施合同与范围：** 唯一可执行生产文件 `provider/plan.go`：私有展开函数接收协议，在拆分后的协议循环生成线格式，阿里云 TCP/UDP/TCP+UDP 的 ALL 使用 1/65535，ICMP仍为-1/-1；同一线格式构造 Desired/ToAdd/key，复用原回读归一化与 canonical 逻辑。腾讯 ALL、ECS IPv6 ICMP unsupported、SWAS IPv6/DROP 限制、协议身份、TAG/RuleID 授权与 Add→S1→Delete 安全门保持。未修改 Provider 接口、数据库/API/schema、前端源码、SDK/依赖或重试策略。非 ICMP 端口仅非空的领域校验仍为独立边界，不在此次收紧。
+- **正式回归：** `provider/plan_test.go` 更正两处 ALL 回读预期与往返线格式；新增 `provider/ali_all_ports_test.go`，从 planner 到真实 ECS/SWAS SDK 检查请求端口/协议/确认计数，保护原始/归一化全范围、Owned/External 只读匹配、ALL与显式全范围去重、ICMP、腾讯对照和 IPv6 能力边界。新增 `syncer/ecs_all_ports_test.go` 走真实 ECS SDK→NewProvider→正式syncAll→S1/S2→下一轮，TCP/UDP/TCP+UDP各覆盖新增、已有Owned、已有External、换IP、新增失败、S1失败、S1缺覆盖、外部ALL协议八种场景；动态服务返回1/65535，删除必须取S1定位，失败保留旧权限，第二轮零新增/零删除。所有请求仅本地httptest，DNS使用已有确定性夹具，不称真实云验收。
+- **正式专项与判别力：** 使用本轮仓内正式测试，仅把生产plan.go替换为HEAD旧源码的overlay，`go test -overlay=.../before.json ./provider ./syncer -race -run '^TestI8R26' -count=1 -timeout=2m`退出1，五个根测试按错误请求/回读/去重/目标结论断言变红；无编译失败、panic、race或整体超时混入。修复后 `go test ./provider ./syncer -race -run '^TestI8R26' -count=20 -timeout=3m`两包通过。四类仓外生产overlay（误改ICMP端口、误改腾讯ALL、发送协议改成ALL、只修CreateRules发送参数但保留旧planner）各20次，分别由线格式、腾讯对照、协议身份、回读与整轮断言检出，均退出1；前三类各20个根失败，末类两包共40个根失败，无编译/panic/race/超时混入。未复用准备阶段成绩。复现命令/overlay/旧源码/日志见 `/Users/kyle/.codex/outputs/i8-r26-implementation-20261102/`，负向命令见negative-results.json。
+- **完整门禁与完成状态：** 原样 `make all` 通过（仅设置任务独立npm_config_cache，真实npm ci/vue-tsc/Vite、Go vet、12包完整race及产品构建，Go输出无cached项）；追加 `go test ./... -race -count=1 -timeout=5m`，禁缓存全仓12包均通过。`go build ./...`、四份受影响Go文件gofmt检查和最终diff-check通过。npm ci报告0漏洞，不记为另行独立npm audit。本机Go1.27.1 darwin/arm64、Node26.7.0/npm11.19.0。正式范围为一份生产、三份测试、AGENTS/README/本文件三份文档，共七文件；I8-R26本地修复与文档收口，单轮全仓不外推长期稳定。
+- **外部与状态边界：** 本轮未执行真实云/通知链路、产品浏览器、Linux/Docker或当前revision远端CI/GHCR，未部署、提交或推送；既有用户真机收口/豁免与SMTP清单保持。本地门禁不外推真实云、发布或长期稳定通过。
 
 ## 3. Issue6 历史14项去向对账
 

@@ -1,6 +1,6 @@
 # AGENTS.md — FWAlizer AI 编码指令
 
-> **文档整合与归档（2026-10-10，用户授权）：** 当前剩余事项统一见 [Issue8.md](./Issue8.md)，连续编号 I8-R01～I8-R25；旧 I8/Q/TODO 编号仅为历史来源。Issue5～7 已按阶段完成移入 HistoryDocs，audit 按“报告完成、剩余事项转交”归档；Issue7 已实施合同仍可查阅。下文历史实施补记中“见 Issue8 文末/审计补记”的详细记录分别位于 [Issue8历史快照](./HistoryDocs/Issue8-history.md) 与 [归档audit](./HistoryDocs/fwalizer-audit-final1.md)，不指新活跃台账。历史人工未执行状态以本次用户确认优先，SMTP见ProdTestList，Webhook/Kuma豁免且不阻断。
+> **文档整合与归档（2026-10-10，用户授权）：** 当前剩余事项统一见 [Issue8.md](./Issue8.md)，连续编号 I8-R01～I8-R26；旧 I8/Q/TODO 编号仅为历史来源。Issue5～7 已按阶段完成移入 HistoryDocs，audit 按“报告完成、剩余事项转交”归档；Issue7 已实施合同仍可查阅。下文历史实施补记中“见 Issue8 文末/审计补记”的详细记录分别位于 [Issue8历史快照](./HistoryDocs/Issue8-history.md) 与 [归档audit](./HistoryDocs/fwalizer-audit-final1.md)，不指新活跃台账。历史人工未执行状态以本次用户确认优先，SMTP见ProdTestList，Webhook/Kuma豁免且不阻断。
 
 > **当前人工验收结论（2026-10-10，用户确认，优先于下文历史人工验收状态）：** 用户确认当前测试已完成、已真机核验，除 SMTP 外暂无问题。原 ProdTestList 的浏览器、真实云及其他非 SMTP、非豁免人工项目按本次确认收口，不再作为待执行或项目阻断项；已完成记录已从清单删除。Webhook 与 Uptime Kuma（HTTP Monitor / Push Monitor）继续人工验收豁免，不阻断项目，豁免不记为真实链路通过。SMTP 测试发送、自动告警邮件与运行健康异常邮件仍待完成，统一见 [ProdTestList.md](ProdTestList.md)。本次证据为用户真机确认，未附逐场景原始记录，不据此新增云响应字段、故障注入或配额边界的实测细节；未重新执行测试，也不推定当前 revision 远端 CI/GHCR、依赖审计或长期稳定性通过。下文各实施批次的“未执行/免除”保留为当时事实；与本次人工收口冲突时以本段为准，独立代码候选及待裁决事项保持原状态。
 
@@ -132,6 +132,8 @@
 
 **I8-R02 项目依赖升级（2026-10-11）**：用户授权前端与 Go 后端依赖更新到最新版，并在原生 TypeScript 7.0.2 的构建/API 不兼容被隔离副本确认后，裁决采用 Microsoft 官方 TypeScript 6 兼容包最新版。当前 `typescript` 使用 `npm:@typescript/typescript6@^6.0.2`（内部 API 包 @typescript/old 6.0.3）；现有 vue-tsc/build/行为回归入口保持，不将其写成原生 TypeScript 7 已通过。前端直接依赖更新到当时稳定版，source-map-js 为 1.2.2；Go 当前 module path 的显式依赖均已联网复核，15 个模块更新，具体版本见 go.mod/锁文件。仅四份依赖文件与 AGENTS/README/Issue8 共七文件，生产源码、测试、schema/API、工具链与现有七条 SDK 自动更新策略零改动，不加 overrides/--force/审计豁免。原样 make all、禁缓存全仓 12 包 race 一轮、macOS 前端 98 项、两条 npm 审计（均 0 漏洞）、tidy-diff 与构建入口替身回归通过；固定 Node 24.21.0 的 Linux arm64 前端构建/98 项/两条审计、Linux arm64 Go 1.27.1 全仓 race/vet/build 与 linux/amd64 完整 Dockerfile 构建通过，浏览器空库页面与弹窗冒烟无观察到的控制台 warning/error。容器运行收尾与完整证据见 [Issue8 I8-R02](./Issue8.md#i8-r02)。本地重复与 amd64 兼容执行不等于原生 amd64、真实云/通知或当前 revision 远端发布/长期稳定通过；旧人工收口与豁免保持，SMTP 独立待验收。本轮尚未提交/推送。
 
+**I8-R26 阿里云全端口修复（2026-11-02）**：用户确认本聊天研究方案后授权正式实施及文档同步；基线 main 与本地 origin/main 同为 `0f7fe9fbc6fb48830f9b5b3e0c14e2a677848187`，实施前工作树/暂存区干净。唯一可执行生产文件为 provider/plan.go；协议感知的全端口转换同时修复 ECS/SWAS 参数、回读覆盖与去重，纠正原 TCP/UDP `ALL → -1/-1` 测试预期。正式回归、门禁与外部边界见 [Issue8 I8-R26](./Issue8.md#i8-r26)。正式专项race20次、四类生产overlay负向控制各20次、原样make all（使用任务独立npm缓存）、额外禁缓存全仓12包race一轮、go build/格式/diff-check均通过；新增真实SDK目标链覆盖三协议各八种场景。范围为一份生产、三份测试、AGENTS/README/Issue8三份文档，共七文件。本机Go1.27.1 darwin/arm64、Node26.7.0；未执行真实云、浏览器、Linux/Docker或当前revision远端CI/GHCR，不外推外部或长期稳定通过。尚未部署、提交或推送。
+
 ## 二、核心编码原则
 
 ### 简单轻量化
@@ -193,6 +195,7 @@
 - **TCP+UDP 协议拆分：** 仅阿里云 SWAS 原生支持 TCP+UDP，Lighthouse/CVM/ECS 均不支持，由目标级 `provider.PlanTarget` 自动拆分为 TCP + UDP 两条期望功能；I8-14 已按用户方案 A 删除旧 `Diff/buildDesired/OwnedRules` 身份链及专属类型，有效回归直接保护正式 planner，不提供兼容包装或历史可执行副本
 - **IPv6+ICMP 处理：** Lighthouse 使用 ICMPv6 协议，CVM 使用 ICMPV6 协议，ECS 不支持（AuthorizeSecurityGroup 无 ICMPv6，直接跳过并 WARN）
 - 端口格式：单端口、逗号分隔、范围（`8000-8010`）、`ALL`
+- 阿里云全端口（I8-R26，2026-11-02）：正式 planner 按拆分后的协议生成线格式；ECS/SWAS 的 TCP/UDP 与 SWAS 原生 TCP+UDP 的 `ALL` 使用 `1/65535`，ICMP 继续 `-1/-1`。转换必须早于 Desired/ToAdd 与功能 key 构造，使阿里云本地 `ALL`、显式 `1-65535` 与云端 `1/65535` 精确等价；协议仍参与 key，不把云端 ALL 协议当作 TCP/UDP 满足，不全局改变腾讯 ALL。`ExpandPorts/ConvertPorts` 为无协议的旧转换接口，不能独立推导 TCP/UDP 全端口；正式写入消费 planner 的 RuleAction。既有 S1 覆盖确认、TAG 所有权、RuleID 定位和失败零删除合同保持。
 - 腾讯云 CVM 安全组默认额度为**入站、出站各 100 条**（[官方配额说明](https://cloud.tencent.com/document/product/213/43699)、[使用限制总览](https://cloud.tencent.com/document/product/213/15379)）；本工具只新增入站，使用 **100 条入站本地保护上限**，出站不占用该额度。预计新增后 90 条不告警、91～100 条 WARN 且允许、超过 100 条停止整批新增。计数包含所有入站条目，不按 TAG 过滤，不扣除待清理条目；取完整两个入站统计合计与明确返回的 Ingress 条目数的较大值，统计不完整时回退明确数组（`[]` 有效），两种依据均不可用或响应/规则集合缺失则返回 `ErrSnapshotIncomplete`、停止新增。配额重读仅作数量保护，不替代 S0 Version 或 S1 删除定位；暂不动态适配提额账号。
 
 ---
@@ -425,7 +428,7 @@
 | [Build6.md](Build6.md) | 开发者 | 已完成的历史构建记录：Step 0-7（version 2 配置包边界已被 Build7 的 version 3 取代，仅用于核查） | 已完成 |
 | [Issue5.md](./HistoryDocs/Issue5.md) | 开发者 | Build6阶段完成记录 | 已归档 |
 | [Issue6.md](./HistoryDocs/Issue6.md) | 开发者 | A1～A20及后续修复完成记录；14项候选去向见Issue8 §3 | 已归档，剩余已转交 |
-| [Issue8.md](./Issue8.md) | 开发者 | 唯一活跃剩余事项、研究裁决、测试与发布证据台账，I8-R01～R25 | 活跃 |
+| [Issue8.md](./Issue8.md) | 开发者 | 唯一活跃剩余事项、研究裁决、测试与发布证据台账，I8-R01～R26 | 活跃 |
 | [TODOLIST.md](./TODOLIST.md) | 开发者 | 待办入口，只指向Issue8，不重复维护状态 | 导航 |
 | [Issue7.md](./HistoryDocs/Issue7.md) | 开发者 | P1-01阶段完成记录及已实施合同，R7复核与人工真机已收口 | 已归档，合同保留查询 |
 | [ProdTestList.md](ProdTestList.md) | 人类（用户） | 仅保留 SMTP 待验收；Webhook/Kuma 豁免且不阻断 | 活跃 |
