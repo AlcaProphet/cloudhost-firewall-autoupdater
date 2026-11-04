@@ -6,6 +6,7 @@
 > **后续实施（2026-11-02）：** 用户选择 A 并授权修复 I9-R01，现已落地独立 SDK/HTTP 读取实例与正式回归；本地验证及未发布边界见该项。其他事项未随本次修复实施。
 > **I9-R03 后续实施（2026-11-02）：** 同日研究后用户选择 A，已实施历史空串读取出口修复与对应回归；范围及验证记录见 I9-R03。此记录不改写上轮建账和 I9-R01 实施时的事实。
 > **I9-R04 后续实施（2026-11-04）：** 用户确认保留显式空正文并授权推荐 A，已修复 GET/导出误补默认正文的问题；正式范围、验证及未发布边界见 I9-R04。
+> **I9-R05 后续实施（2026-11-04）：** 用户选择 A，已修复独立专项入口的路径与执行证据判定，并新增入口回归；生产代码与 Make/CI 保持，范围及验证见该项。
 
 ## 1. 当前基线与证据
 
@@ -26,7 +27,7 @@ I9-R01 已本地修复，后续可安排工具链维护。兼容小缺陷和测�
 | [I9-R02](#i9-r02) | Go 标准库安全补丁与构建工具链一致升级 | 待维护；常规安全更新 | 第三方 P0-2，撤销 P0 定级 |
 | [I9-R03](#i9-r03) | 历史空串 targets 返回 null，前端删除报错 | 2026-11-02 已按 A 本地修复；未发布 | 第三方 P1-3 / C-01 |
 | [I9-R04](#i9-r04) | 空邮件正文保存与 GET/导出不一致 | 2026-11-04 已按 A 本地修复；未发布 | 第三方 P2-1 / C-02 |
-| [I9-R05](#i9-r05) | R06 专项脚本在符号链接路径下空跑成功 | 确认未修复；测试工具维护 | 第三方 P2-2；原 I8-R06 |
+| [I9-R05](#i9-r05) | R06 专项脚本在符号链接路径下空跑成功 | 2026-11-04 已按 A 本地修复；独立测试工具 | 第三方 P2-2；原 I8-R06 |
 | [I9-R06](#i9-r06) | 读取预算测试的短墙钟时序敏感性 | 维护候选；本轮未复现失败 | 第三方 P2-6 |
 | [I9-R07](#i9-r07) | Alpine 运行基础镜像维护 | 待维护；低优先级 | 第三方 P0-2 附带项 |
 | [I9-R08](#i9-r08) | 真实 SMTP 测试、自动告警及健康异常邮件 | 人工待验收；原事项迁移 | I8-R01；PT-B7-01/02/06 |
@@ -88,9 +89,14 @@ I9-R01 已本地修复，后续可安排工具链维护。兼容小缺陷和测�
 
 ### I9-R05 R06 专项入口不能以空跑判绿
 
-- **现状与证据：** [run_integration.py](testdata/i8-r06/run_integration.py) 使用 resolve 后的 overlay 路径，但子进程可能沿继承的逻辑 PWD 定位 Go 包；符号链接路径使新测试未被注入，Go 返回 `[no tests to run]`、退出 0。同日正常路径专项通过，`/tmp` 符号链接路径空跑成功，两种结果分别记录。
-- **建议范围：** 统一子进程实际目录、逻辑 PWD 与 overlay 路径；验证预期 `TestReadBudgetTargetSafety`、`TestReadBudgetScanCache` 实际运行并通过，零匹配/Skip/缺场景明确失败。避免只改一个 realpath 就宣称问题解决。
-- **完成条件：** 正常路径与符号链接路径均真正执行专项；故意不匹配测试名或缺失夹具时明确非零。保留生产 120 秒和现有临时短预算，不为测试缺陷修改产品超时。
+- **原问题与复现：** [run_integration.py](testdata/i8-r06/run_integration.py) 已对脚本和 overlay 路径使用 resolve，但 subprocess 只设 cwd、仍继承逻辑 PWD。2026-11-04 在 `main / ba07a906dbc1b4182dfc3d440448ffaec710f32d`、干净工作树复核，原脚本真实路径 `--count 1` 通过；符号链接目录与同值 PWD 下两个包均为 `[no tests to run]`、退出 0。两种结果保留，不否定历史上实际执行过的专项。
+- **根因与取舍：** Go 1.27.3 的 `os.Getwd` 对仍指向当前目录的绝对 PWD 优先返回该别名；本机 `go list` 证明包 Dir 随 PWD 改为别名路径，而 overlay 键仍为真实路径，导致夹具未注入。单独 `go -C <真实路径>` 仍保留同一别名，不能修复。第二层问题是入口只信任退出码：零匹配、Skip，甚至移除 `normal` 子场景后顶层测试继续 PASS，Go 都可退出 0。仅补 realpath、匹配 PASS 文本或只检查两个顶层测试不满足完成条件；预先 `-list` 也不能证明场景实际执行。依据见 [Go Getwd 文档](https://pkg.go.dev/os#Getwd) 与 [Go JSON 测试事件协议](https://pkg.go.dev/cmd/test2json#hdr-Output_Format)。
+- **用户裁决与正式实施（2026-11-04，A）：** 保留现有独立入口和 testdata 夹具，不迁入默认 Go/Make/CI，不改生产预算或引入预算注入接口。脚本统一真实 repo、cwd、子进程 PWD 与临时 overlay 路径；启动 Go 前检查两份夹具及预算唯一锚点。使用 `go test -json`，实时转发 Output，按完整包名和测试名核对两包各一次 package pass、两个顶层测试与 15 个子场景各恰好 `--count` 次 run/pass。任意 fail/skip、零匹配、缺场景、次数不足、非 JSON 事件或子进程非零均失败，诊断指出具体缺项；必需场景清单独立于夹具，避免删场景后自动缩减验收范围。保留继承的其他环境与既有 `-race`、`-count`、每包 `-timeout=2m`。
+- **正式入口回归：** 新增 [test_run_integration.py](testdata/i8-r06/test_run_integration.py)，命令为 `python3 -B -m unittest discover -s testdata/i8-r06 -p 'test_run_integration.py' -v`。13 项测试使用隔离目录和 Go 命令替身，验证真实/符号链接/无关启动目录下 cwd/PWD/overlay 的一致、120 秒原源文件及 150ms 临时副本、命令参数、按包及重复次数验收，以及空跑、缺子场景、Skip、非零/fail、非法 JSON、缺夹具、预算锚点不唯一和非法 count 的失败传播。它们仅验证入口，不冒充真实 SDK 专项；继续独立运行。
+- **本地实际验证：** 上述 13 项回归通过；正式 `python3 testdata/i8-r06/run_integration.py --count 3` 在真实路径和符号链接目录分别通过，两次均实际核验两个顶层测试及 15 个子场景各三次 run/pass，包含真实 SDK→正式目标链与 handler→临时 SQLite。另从 macOS `/tmp` 下的 repo 符号链接、保留该逻辑 PWD 运行同一正式入口 `--count 3` 通过。`git diff --check` 通过。环境为 macOS darwin/arm64、Go 1.27.3、Python 3.13.3；不从本机专项推定 Linux 或长期稳定性通过。
+- **反向判别：** 仓外临时 overlay 配合正式 `run_tests` 与真实 Go，分别故意改为不匹配的测试名、移除 `normal` 场景、顶层显式 Skip，Go 均返回 0，但正式入口结果核验均返回 1，并准确报告缺项/Skip。仓外脚本变异分别恢复继承 PWD、从必需清单删掉 normal，新增路径回归与缺场景回归均明确变红；无产品代码 hook。研究原型还确认继承 `GOFLAGS=-skip=TestReadBudgetTargetSafety/normal` 的场景缺失会被核验拒绝。
+- **完整专项复核（2026-11-04）：** 用户明确要求执行修复并同步文档后，确认 HEAD 仍为 `ba07a906dbc1b4182dfc3d440448ffaec710f32d`、工作树保留上述四文件修改，无需重复改写实现。13 项入口回归再次通过；正式 `python3 -B testdata/i8-r06/run_integration.py --count 20` 在真实仓库目录和 `/tmp` 下的 repo 符号链接目录各通过一次，后者显式保留符号链接逻辑 PWD。两次均带 race，两个顶层测试及 15 个子场景各实际 run/pass 20 次，未以 Go 缓存或零匹配判绿。另用正式 CLI 分别继承 `GOFLAGS=-skip=^TestReadBudget` 与 `GOFLAGS=-skip=TestReadBudgetTargetSafety/normal`，在 Go 包仍成功时均退出 1，分别报告全部测试缺失和仅 normal 场景缺失。Python 两文件语法检查与 `git diff --check` 通过；本次仅补充文档验证记录，未增加实现范围。
+- **范围与发布边界：** 共四文件（专项脚本、新增 Python 回归及 AGENTS/Issue9）；生产 Go、两份 Go 夹具、SDK/依赖、120 秒产品预算和 150ms 临时预算、Make/CI/Docker 均未修改。未执行 `make all`、全量 Go/provider 测试、前端构建、产品浏览器、真实云/SMTP、Linux/Docker 或远端 CI/GHCR；既有 I9-R06 时序候选独立保留，不为本项扩大测试预算。本轮未提交、推送、部署或发布。
 
 <a id="i9-r06"></a>
 
