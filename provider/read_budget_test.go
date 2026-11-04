@@ -73,14 +73,15 @@ func readBudgetPage(t *testing.T, path string, n int, more bool) string {
 
 func readBudgetReader(t *testing.T, path, host string) func(context.Context) (int, bool, error) {
 	t.Helper()
+	// 阿里云单请求自然超时为 20s，必须晚于下面的 3s 测试保护。
 	pool := NewClientPool(Credentials{})
 	var c any
 	ct := config.CloudType(path)
 	switch path {
 	case "ecs_snapshot", "ali_ecs":
 		p := mockECS(t, host)
-		p.client.ConnectTimeout = tea.Int(1000)
-		p.client.ReadTimeout = tea.Int(1000)
+		p.client.ConnectTimeout = tea.Int(10000)
+		p.client.ReadTimeout = tea.Int(10000)
 		c = p.client
 		if path == "ecs_snapshot" {
 			return func(ctx context.Context) (int, bool, error) {
@@ -90,8 +91,8 @@ func readBudgetReader(t *testing.T, path, host string) func(context.Context) (in
 		}
 	case "ali_swas":
 		p := mockSWAS(t, host)
-		p.client.ConnectTimeout = tea.Int(1000)
-		p.client.ReadTimeout = tea.Int(1000)
+		p.client.ConnectTimeout = tea.Int(10000)
+		p.client.ReadTimeout = tea.Int(10000)
 		c = p.client
 	case "tc_lighthouse":
 		c = mockLighthouse(t, host).client
@@ -108,11 +109,49 @@ func readBudgetReader(t *testing.T, path, host string) func(context.Context) (in
 	}
 }
 
+// 异步读取使用缓冲结果和独立完成信号，失败清理后也必须等待读取退出。
+type readBudgetResult struct {
+	count int
+	empty bool
+	err   error
+}
+
+func startReadBudget(t *testing.T, ctx context.Context, read func(context.Context) (int, bool, error)) <-chan readBudgetResult {
+	t.Helper()
+	result := make(chan readBudgetResult, 1)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		n, empty, err := read(ctx)
+		result <- readBudgetResult{n, empty, err}
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-finished:
+		case <-time.After(3 * time.Second):
+			t.Error("读取协程未在夹具清理后退出")
+		}
+	})
+	return result
+}
+
+func waitReadBudget(t *testing.T, result <-chan readBudgetResult) readBudgetResult {
+	t.Helper()
+	select {
+	case r := <-result:
+		return r
+	case <-time.After(3 * time.Second):
+		t.Fatal("读取未响应取消或预算到期")
+		return readBudgetResult{}
+	}
+}
+
 func TestReadBudgetCancellation(t *testing.T) {
 	for _, path := range []string{"ecs_snapshot", "ali_ecs", "ali_swas", "tc_lighthouse", "tc_cvm"} {
 		for _, phase := range []string{"headers", "body", "later_headers", "later_body"} {
 			t.Run(path+"/"+phase, func(t *testing.T) {
 				var calls atomic.Int32
+				reached := make(chan struct{}, 1)
 				release := make(chan struct{})
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					if !readBudgetDrainRequest(t, r) {
@@ -127,24 +166,30 @@ func TestReadBudgetCancellation(t *testing.T) {
 						readBudgetWriteFixture(t, w, r, `{`)
 						w.(http.Flusher).Flush()
 					}
+					reached <- struct{}{}
+					// 不定时补回响应，读取只能通过取消或测试清理退出。
 					select {
 					case <-release:
 					case <-r.Context().Done():
-					case <-time.After(200 * time.Millisecond):
-						readBudgetWriteFixture(t, w, r, readBudgetPage(t, path, n, false))
 					}
 				}))
 				defer func() { close(release); srv.CloseClientConnections(); srv.Close() }()
 				read := readBudgetReader(t, path, strings.TrimPrefix(srv.URL, "http://"))
-				ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
-				start := time.Now()
-				n, empty, e := read(ctx)
-				if n != 0 || !empty || !errors.Is(e, ErrSnapshotIncomplete) || !errors.Is(e, context.DeadlineExceeded) {
-					t.Fatalf("partial-result guard: count=%d empty=%v error=%v", n, empty, e)
+				result := startReadBudget(t, ctx, read)
+				// 先证明请求到达所需页/响应阶段，再触发标准 context 取消。
+				select {
+				case <-reached:
+				case r := <-result:
+					t.Fatalf("读取在到达指定阶段前返回: %+v", r)
+				case <-time.After(3 * time.Second):
+					t.Fatal("请求未到达指定阶段")
 				}
-				if time.Since(start) > 160*time.Millisecond {
-					t.Fatal("in-flight cancellation absent")
+				cancel()
+				r := waitReadBudget(t, result)
+				if r.count != 0 || !r.empty || !errors.Is(r.err, ErrSnapshotIncomplete) || !errors.Is(r.err, context.Canceled) || errors.Is(r.err, context.DeadlineExceeded) {
+					t.Fatalf("partial-result/cancellation guard: count=%d empty=%v error=%v", r.count, r.empty, r.err)
 				}
 				want := int32(1)
 				if strings.HasPrefix(phase, "later_") {
@@ -158,26 +203,60 @@ func TestReadBudgetCancellation(t *testing.T) {
 	}
 }
 
+// 自动到期的错误身份单独验证，不要求在短预算内到达特定请求阶段。
+// 在途取消和后页丢弃部分结果由上面的阶段同步矩阵证明。
+func TestReadBudgetDeadline(t *testing.T) {
+	for _, path := range []string{"ecs_snapshot", "ali_ecs", "ali_swas", "tc_lighthouse", "tc_cvm"} {
+		t.Run(path, func(t *testing.T) {
+			release := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !readBudgetDrainRequest(t, r) {
+					return
+				}
+				select {
+				case <-release:
+				case <-r.Context().Done():
+				}
+			}))
+			defer func() { close(release); srv.CloseClientConnections(); srv.Close() }()
+			read := readBudgetReader(t, path, strings.TrimPrefix(srv.URL, "http://"))
+			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			defer cancel()
+			r := waitReadBudget(t, startReadBudget(t, ctx, read))
+			if r.count != 0 || !r.empty || !errors.Is(r.err, ErrSnapshotIncomplete) || !errors.Is(r.err, context.DeadlineExceeded) || errors.Is(r.err, context.Canceled) {
+				t.Fatalf("real deadline guard: count=%d empty=%v error=%v", r.count, r.empty, r.err)
+			}
+		})
+	}
+}
+
 func TestReadBudgetSharedAcrossPages(t *testing.T) {
 	for _, path := range []string{"ecs_snapshot", "ali_ecs"} {
 		t.Run(path, func(t *testing.T) {
 			var calls atomic.Int32
+			release := make(chan struct{})
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !readBudgetDrainRequest(t, r) {
+					return
+				}
 				n := calls.Add(1)
 				select {
 				case <-time.After(12 * time.Millisecond):
 				case <-r.Context().Done():
 					return
+				case <-release:
+					return
 				}
 				readBudgetWriteFixture(t, w, r, readBudgetPage(t, path, int(n), true))
 			}))
-			defer srv.Close()
-			ctx, cancel := context.WithTimeout(context.Background(), 65*time.Millisecond)
+			defer func() { close(release); srv.CloseClientConnections(); srv.Close() }()
+			// 全部分页仍共用真实 deadline；裕量不再要求两页在 65ms 内到达。
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 			read := readBudgetReader(t, path, strings.TrimPrefix(srv.URL, "http://"))
-			n, empty, e := read(ctx)
-			if n != 0 || !empty || !errors.Is(e, context.DeadlineExceeded) || !errors.Is(e, ErrSnapshotIncomplete) || calls.Load() < 2 {
-				t.Fatalf("shared budget guard: count=%d empty=%v calls=%d error=%v", n, empty, calls.Load(), e)
+			r := waitReadBudget(t, startReadBudget(t, ctx, read))
+			if r.count != 0 || !r.empty || !errors.Is(r.err, context.DeadlineExceeded) || !errors.Is(r.err, ErrSnapshotIncomplete) || calls.Load() < 2 {
+				t.Fatalf("shared budget guard: count=%d empty=%v calls=%d error=%v", r.count, r.empty, calls.Load(), r.err)
 			}
 		})
 	}
@@ -327,11 +406,28 @@ func TestReadBudgetSDKBodyOwnership(t *testing.T) {
 
 func TestReadBudgetOperationIsolation(t *testing.T) {
 	var created, closed atomic.Int32
+	shortStarted, longStarted := make(chan struct{}), make(chan struct{})
+	allowLong, release := make(chan struct{}), make(chan struct{})
+	allClosed := make(chan struct{})
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("NextToken") == "slow" {
+		if !readBudgetDrainRequest(t, r) {
+			return
+		}
+		switch r.URL.Query().Get("NextToken") {
+		case "short":
+			close(shortStarted)
 			select {
-			case <-time.After(85 * time.Millisecond):
 			case <-r.Context().Done():
+			case <-release:
+			}
+			return
+		case "long":
+			close(longStarted)
+			select {
+			case <-allowLong:
+			case <-r.Context().Done():
+				return
+			case <-release:
 				return
 			}
 		}
@@ -341,44 +437,63 @@ func TestReadBudgetOperationIsolation(t *testing.T) {
 		if state == http.StateNew {
 			created.Add(1)
 		}
-		if state == http.StateClosed {
-			closed.Add(1)
+		if state == http.StateClosed && closed.Add(1) == 2 {
+			close(allClosed)
 		}
 	}
 	srv.Start()
-	defer srv.Close()
+	defer func() { close(release); srv.CloseClientConnections(); srv.Close() }()
 	p := mockECS(t, strings.TrimPrefix(srv.URL, "http://"))
-	p.client.ConnectTimeout = tea.Int(1000)
-	p.client.ReadTimeout = tea.Int(1000)
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Millisecond)
+	p.client.ConnectTimeout = tea.Int(10000)
+	p.client.ReadTimeout = tea.Int(10000)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	a := newAliReadHTTP(ctx, 1000, 1000)
+	a := newAliReadHTTP(ctx, 10000, 10000)
 	defer a.close()
 	short, e := ecs.NewClient(aliReadConfig(&p.client.Client, a))
 	if e != nil {
 		t.Fatal(e)
 	}
-	done := make(chan error, 1)
-	go func() {
-		_, e := short.DescribeSecurityGroupAttribute(&ecs.DescribeSecurityGroupAttributeRequest{NextToken: tea.String("slow")})
-		done <- e
-	}()
-	longCtx, longCancel := context.WithTimeout(context.Background(), time.Second)
+	longCtx, longCancel := context.WithCancel(context.Background())
 	defer longCancel()
-	b := newAliReadHTTP(longCtx, 1000, 1000)
+	b := newAliReadHTTP(longCtx, 10000, 10000)
 	defer b.close()
 	long, e := ecs.NewClient(aliReadConfig(&p.client.Client, b))
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = long.DescribeSecurityGroupAttribute(&ecs.DescribeSecurityGroupAttributeRequest{NextToken: tea.String("slow")})
-	if e != nil {
-		t.Fatal(e)
+	shortResult := startReadBudget(t, ctx, func(context.Context) (int, bool, error) {
+		_, err := short.DescribeSecurityGroupAttribute(&ecs.DescribeSecurityGroupAttributeRequest{NextToken: tea.String("short")})
+		return 0, true, err
+	})
+	longResult := startReadBudget(t, longCtx, func(context.Context) (int, bool, error) {
+		_, err := long.DescribeSecurityGroupAttribute(&ecs.DescribeSecurityGroupAttributeRequest{NextToken: tea.String("long")})
+		return 0, true, err
+	})
+	for _, started := range []<-chan struct{}{shortStarted, longStarted} {
+		select {
+		case <-started:
+		case <-time.After(3 * time.Second):
+			t.Fatal("两个隔离操作未同时进入在途阶段")
+		}
 	}
-	if e = <-done; !errors.Is(e, context.DeadlineExceeded) {
-		t.Fatal(e)
+	cancel()
+	if r := waitReadBudget(t, shortResult); !errors.Is(r.err, context.Canceled) {
+		t.Fatalf("short operation error=%v", r.err)
+	}
+	// 先关闭已取消操作的池，另一个在途操作仍应能完成并复用自己的连接。
+	a.close()
+	if longCtx.Err() != nil || b.ctx.Err() != nil {
+		t.Fatal("other operation context canceled")
+	}
+	close(allowLong)
+	if r := waitReadBudget(t, longResult); r.err != nil {
+		t.Fatalf("other operation affected: %v", r.err)
 	}
 	before := created.Load()
+	if before != 2 {
+		t.Fatalf("independent operation connections=%d want=2", before)
+	}
 	for i := 0; i < 3; i++ {
 		_, e = long.DescribeSecurityGroups(&ecs.DescribeSecurityGroupsRequest{})
 		if e != nil {
@@ -388,16 +503,13 @@ func TestReadBudgetOperationIsolation(t *testing.T) {
 	if created.Load() != before {
 		t.Fatal("operation transport not reused")
 	}
-	a.close()
 	b.close()
-	end := time.Now().Add(time.Second)
-	for closed.Load() < 2 && time.Now().Before(end) {
-		time.Sleep(time.Millisecond)
-	}
-	if closed.Load() < 2 {
+	select {
+	case <-allClosed:
+	case <-time.After(3 * time.Second):
 		t.Fatal("operation connections not closed")
 	}
-	if p.client.HttpClient != nil || tea.IntValue(p.client.ReadTimeout) != 1000 {
+	if p.client.HttpClient != nil || tea.IntValue(p.client.ReadTimeout) != 10000 {
 		t.Fatal("pool client changed")
 	}
 }
