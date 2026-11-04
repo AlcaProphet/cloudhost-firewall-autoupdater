@@ -65,6 +65,11 @@ func (d *Deps) handleGetAlerts(w http.ResponseWriter, r *http.Request) {
 	if policy.HealthTimeoutText == "" {
 		*policy = config.DefaultAlertPolicy()
 	}
+	// Store 无行时返回整份零值；合法保存的配置不会是零值（主题等字段必填）。
+	// 必须在补其他默认字段前识别，显式空正文仍按原值返回。
+	if *emailCfg == (config.AlertEmailConfig{}) {
+		emailCfg.Body = config.DefaultEmailBody
+	}
 	if emailCfg.Security == "" {
 		emailCfg.Security = config.DefaultSMTPSecurity
 	}
@@ -73,9 +78,6 @@ func (d *Deps) handleGetAlerts(w http.ResponseWriter, r *http.Request) {
 	}
 	if emailCfg.Subject == "" {
 		emailCfg.Subject = config.DefaultEmailSubject
-	}
-	if emailCfg.Body == "" {
-		emailCfg.Body = config.DefaultEmailBody
 	}
 	if pushCfg.IntervalText == "" {
 		*pushCfg = config.DefaultUptimeKumaPush()

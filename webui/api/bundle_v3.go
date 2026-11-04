@@ -346,6 +346,11 @@ func toBundleV3(snapshot *config.BusinessSnapshot, exportedAt time.Time) bundleV
 		policy = config.DefaultAlertPolicy()
 	}
 	email := snapshot.Email
+	// 与 GET 一样，在补其他默认字段前识别 Store 的无行零值。
+	// 已保存的空正文是有效用户选择，导出不得替换它。
+	if email == (config.AlertEmailConfig{}) {
+		email.Body = config.DefaultEmailBody
+	}
 	if email.Security == "" {
 		email.Security = config.DefaultSMTPSecurity
 	}
@@ -354,9 +359,6 @@ func toBundleV3(snapshot *config.BusinessSnapshot, exportedAt time.Time) bundleV
 	}
 	if email.Subject == "" {
 		email.Subject = config.DefaultEmailSubject
-	}
-	if email.Body == "" {
-		email.Body = config.DefaultEmailBody
 	}
 	webhook := snapshot.Webhook
 	push := snapshot.UptimeKumaPush

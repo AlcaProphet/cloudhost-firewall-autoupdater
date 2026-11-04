@@ -60,6 +60,27 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+test('I9-R04 显式空正文在加载、保存和测试发送中保持为空', async () => {
+  const data = fixture()
+  data.email.body = ''
+  const calls = []
+  const { state, mounted } = mount(async (url, options) => {
+    calls.push({ url, options })
+    return options ? { success: true } : data
+  })
+  await mounted()
+  assert.equal(state.loadState.value, 'ready')
+  assert.equal(state.email.value.body, '')
+  await state.save()
+  await state.testSend()
+  assert.equal(calls.length, 3)
+  assert.equal(calls[1].url, '/api/alerts')
+  assert.equal(calls[1].options.method, 'PUT')
+  assert.equal(JSON.parse(calls[1].options.body).email.body, '')
+  assert.equal(calls[2].url, '/api/alerts/test-email')
+  assert.equal(JSON.parse(calls[2].options.body).body, '')
+})
+
 test('加载中与请求失败均拒绝直接保存，表单不变且无成功提示', async (t) => {
   const pending = deferred()
   const calls = []
