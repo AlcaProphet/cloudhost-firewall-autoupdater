@@ -1,18 +1,18 @@
 services:
   fwalizer:
-    image: ${FWALIZER_IMAGE:-ghcr.io/alcaprophet/fwalizer:3.0.2}
+    image: ghcr.io/alcaprophet/fwalizer:3.0.2
     platform: linux/amd64
     container_name: fwalizer
     restart: unless-stopped
-    stop_grace_period: ${FWALIZER_STOP_GRACE_PERIOD:-5m}
+    stop_grace_period: 5m
     environment:
       FWALIZER_DATA_DIR: /app/data
       WEBUI_HOST: 0.0.0.0
-      WEBUI_PORT: "${FWALIZER_CONTAINER_PORT:-60200}"
+      WEBUI_PORT: "60200"
     ports:
-      - target: ${FWALIZER_CONTAINER_PORT:-60200}
-        published: "${FWALIZER_HOST_PORT:-60200}"
-        host_ip: "${FWALIZER_BIND_IP:-127.0.0.1}"
+      - target: 60200
+        published: "60200"
+        host_ip: 127.0.0.1
     volumes:
       - fwalizer_data:/app/data
     logging:
@@ -25,9 +25,8 @@ volumes:
   fwalizer_data:
     driver: local
 
-# 可选 .env 变量（不设置即使用下列默认值）
-# FWALIZER_IMAGE=ghcr.io/alcaprophet/fwalizer:3.0.2
-# FWALIZER_BIND_IP=127.0.0.1           # 宿主机绑定地址。WebUI 无内置鉴权，仅绑定受信任接口。
-# FWALIZER_HOST_PORT=60200             # 浏览器访问的宿主机端口
-# FWALIZER_CONTAINER_PORT=60200        # 容器监听端口，镜像自带健康检查会跟随
-# FWALIZER_STOP_GRACE_PERIOD=5m        # Docker 强制终止前的等待时间
+# 可选调整（直接编辑本文件）
+# image：选择其他镜像标签或本地镜像。
+# ports.published / ports.host_ip：设置宿主机端口和绑定地址，仅绑定受信任接口。
+# ports.target / environment.WEBUI_PORT：修改容器端口时同步调整这两个字段。
+# stop_grace_period：设置 Docker 强制终止前的等待时间。

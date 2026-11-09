@@ -345,18 +345,18 @@ docker run -d --name fwalizer --restart=always \
 
 ```bash
 cp docker-compose.yml.example docker-compose.yml
-# 如需覆盖默认值，在同目录的 .env 中设置示例末尾列出的变量
+# 如需调整默认值，直接编辑 docker-compose.yml
 docker compose config --quiet
 docker compose pull
 docker compose up -d
 docker compose logs -f fwalizer
 ```
 
-示例默认使用已发布的 `ghcr.io/alcaprophet/fwalizer:3.0.2` 和 `linux/amd64` 平台。ARM 主机需要 amd64 仿真能力。升级时可在 `.env` 中设置 `FWALIZER_IMAGE` 为目标镜像，再执行 `docker compose pull` 和 `docker compose up -d`。使用本地镜像时，先按下文构建 `linux/amd64` 的 `fwalizer:local`，再设 `FWALIZER_IMAGE=fwalizer:local` 并执行 `docker compose up -d --pull never`。
+示例默认使用已发布的 `ghcr.io/alcaprophet/fwalizer:3.0.2` 和 `linux/amd64` 平台。ARM 主机需要 amd64 仿真能力。升级时直接修改 Compose 文件的 `image`，再执行 `docker compose pull` 和 `docker compose up -d`。使用本地镜像时，先按下文构建 `linux/amd64` 的 `fwalizer:local`，再将 `image` 改为 `fwalizer:local` 并执行 `docker compose up -d --pull never`。
 
-Compose 默认映射 `127.0.0.1:60200:60200`，浏览器访问 `http://127.0.0.1:60200`。远程服务器可使用 SSH 隧道或受控反向代理；局域网 / VPN 直连时，将 `FWALIZER_BIND_IP` 设为受信任网卡地址并限制访问来源。改宿主机端口用 `FWALIZER_HOST_PORT`，改容器监听端口用 `FWALIZER_CONTAINER_PORT`。容器内继续监听 `0.0.0.0`；若反向代理也在容器中，应接入同一 Docker 网络并通过 `fwalizer:60200` 访问。WebUI 没有内置登录鉴权。
+Compose 默认映射 `127.0.0.1:60200:60200`，浏览器访问 `http://127.0.0.1:60200`。远程服务器可使用 SSH 隧道或受控反向代理；局域网 / VPN 直连时，将 `ports` 中的 `host_ip` 设为受信任网卡地址并限制访问来源。改宿主机端口时修改 `published`，改容器监听端口时同步修改 `target` 和 `environment.WEBUI_PORT`。容器内继续监听 `0.0.0.0`；若反向代理也在容器中，应接入同一 Docker 网络并通过 `fwalizer:60200` 访问。WebUI 没有内置登录鉴权。
 
-示例默认设置 `stop_grace_period: 5m`，可用 `FWALIZER_STOP_GRACE_PERIOD` 按在途任务规模调整；到期仍会被 Docker 强制终止，不保证任意长的同步轮都能完成。容器 stdout/stderr 使用 `json-file` 轮转（每文件 `10m`，最多 `3` 个），与 SQLite 中的同步历史独立。`restart: unless-stopped` 在进程退出后生效，`unhealthy` 状态本身不会触发自动重启。
+示例的 `stop_grace_period` 为 `5m`，可按在途任务规模调整；到期仍会被 Docker 强制终止，不保证任意长的同步轮都能完成。容器 stdout/stderr 使用 `json-file` 轮转（每文件 `10m`，最多 `3` 个），与 SQLite 中的同步历史独立。`restart: unless-stopped` 在进程退出后生效，`unhealthy` 状态本身不会触发自动重启。
 
 镜像会预先创建 `/app/data` 并将其授权给非 root 用户 `appuser`。首次创建的命名卷会继承该目录权限，容器无需以 root 用户运行。
 
