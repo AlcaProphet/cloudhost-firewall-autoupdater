@@ -1,7 +1,7 @@
 # FWAlizer — 防火墙 DNS 自动同步工具
 
-> **当前文档入口（2026-11-02）：** 当前问题与维护统一见 [Issue9.md](Issue9.md)（I9-R01～I9-R11）；已达标的 Design5、Build6/7 和旧 Issue8 已归档，索引见 [HistoryDocs](HistoryDocs/README.md)。历史批次的未执行/尚未提交按当时事实阅读；普通真机验收按用户确认收口，SMTP 仍见 [ProdTestList](ProdTestList.md)，Webhook/Kuma 继续豁免且不阻断。
-> **已核对发布：** `v3.0.1` 对应源码 `26e5c8f`，包含 I8-R26/R27，测试与镜像构建推送见 [Actions 41374458503](https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/41374458503)。下方部署示例仍固定已发布的 `3.0.0`；需要这两项修复时选择 `3.0.1`，不要把旧标签视为包含所有最新改动。推荐版本的文档/示例同步见 Issue9 I9-R11。
+> **文档入口。** Design5、Build6/7、Issue8、Issue9 和原待办导航均已归档。普通真机项目与 SMTP 验收已按用户确认收口，Webhook/Kuma 继续豁免。 [历史文档索引](HistoryDocs/README.md) · [验收记录](ProdTestList.md)
+> **已核对发布：** `v3.0.1` 对应源码 `26e5c8f`，包含 I8-R26/R27，测试与镜像构建推送见 [Actions 41374458503](https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/41374458503)。下方部署示例仍固定已发布的 `3.0.0`；需要这两项修复时选择 `3.0.1`，不要把旧标签视为包含所有最新改动。部署示例随验证通过的发布更新。 [I9-R11](HistoryDocs/Issue9.md#i9-r11)
 
 **FWAlizer**（Firewall DNS Synchronizer）是一个轻量级自动化工具：定时解析指定域名的 IP 地址，自动同步到云防火墙/安全组白名单中。专为域名 IP 频繁变动的场景设计（如动态 DNS、API 网关、VPN 入口）。
 
@@ -239,7 +239,7 @@ DNS 服务器可填写主机名或 IPv4（可选 `:端口`）；IPv6 使用 `[�
 | 强制 STARTTLS | `starttls` | 必须成功升级，否则停止发送 |
 | SSL/TLS | `implicit_tls` | 先验证 TLS 握手，再读取 SMTP 欢迎消息 |
 
-腾讯云本次接入配置使用主机 `smtp.qcloudmail.com`、端口 `465`、安全模式 **SSL/TLS**。保存后测试邮件及自动告警共用所选模式。已有数据库升级保留原设置及开关，模式默认设为兼容模式；已有腾讯云配置需要在页面上明确改为 465 + SSL/TLS。TLS 验证服务端证书与主机名，失败不自动切换协议。真实接受及投递仍见 [ProdTestList.md](ProdTestList.md)。
+腾讯云本次接入配置使用主机 `smtp.qcloudmail.com`、端口 `465`、安全模式 **SSL/TLS**。保存后测试邮件及自动告警共用所选模式。已有数据库升级保留原设置及开关，模式默认设为兼容模式；已有腾讯云配置需要在页面上明确改为 465 + SSL/TLS。TLS 验证服务端证书与主机名，失败不自动切换协议。SMTP 已由用户确认测试通过。 [人工验收记录](ProdTestList.md)
 
 ### Webhook 响应与失败排查
 
@@ -277,7 +277,7 @@ DNS 服务器可填写主机名或 IPv4（可选 `:端口`）；IPv6 使用 `[�
 3. 把 Uptime Kuma 的 Heartbeat Interval 设置为**大于**该发送间隔并留出余量（默认发送 60 秒时建议 120 秒）；
 4. 保存后 FWAlizer 立即发送第一条心跳，之后按间隔上报 `up`/`down`；进程死亡或完全卡死时不再有心跳，由 Uptime Kuma 依据缺失心跳判定 DOWN。
 
-> ⚠️ 真实 Uptime Kuma 的 HTTP 拉取与 Push DOWN/恢复通知属于人工验收项（见 [ProdTestList.md](ProdTestList.md)），本地 mock 测试不等于真实外部验收。
+> Uptime Kuma 的 HTTP 拉取与 Push DOWN/恢复通知继续豁免人工验收。 [人工验收记录](ProdTestList.md)
 
 ---
 
@@ -414,11 +414,9 @@ cloudhost-firewall-autoupdater/
 ├── internal/                # 内部工具（端口转换、标签解析、运行健康 internal/health）
 ├── ReadmeAsset/             # README 截图资源
 ├── PlatformAPIDocs/         # 各云平台 API 使用要求 + 地域可用区指南文档
-├── HistoryDocs/             # 已归档 Design1～5、Build1～7、Issue1～8、audit 与历史快照
+├── HistoryDocs/             # 已归档 Design1～5、Build1～7、Issue1～9、旧待办导航、audit 与历史快照
 │   └── README.md            # 归档索引与剩余事项迁移说明
-├── Issue9.md                # 唯一活跃问题与维护台账（I9-R01～R11）
-├── TODOLIST.md              # 待办导航，统一指向Issue9
-├── ProdTestList.md          # 仅保留SMTP人工验收
+├── ProdTestList.md          # 人工验收结果
 └── build/                   # Dockerfile
 ```
 

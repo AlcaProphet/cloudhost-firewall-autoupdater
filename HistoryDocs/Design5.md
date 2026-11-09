@@ -1,6 +1,6 @@
 # Design5.md — FWAlizer 阶段设计记录（已达标，已归档）
 
-> **归档更新（2026-11-02，用户授权）：** 本文件已归档，不再作为活跃待办或新一轮实施授权。当前问题统一见 [Issue9.md](../Issue9.md)，全部旧编号去向见该文第 4 节；[归档索引](README.md) 汇总设计、构建、问题与历史快照。下文历史未执行、未提交与当时版本按原日期阅读，不改写原始次数或验收范围。
+> **归档更新（2026-11-02，用户授权）：** 本文件已归档，不再作为活跃待办或新一轮实施授权。当时转交的问题见 [Issue9.md](Issue9.md)，全部旧编号去向见该文第 4 节；[归档索引](README.md) 汇总设计、构建、问题与历史快照。下文历史未执行、未提交与当时版本按原日期阅读，不改写原始次数或验收范围。
 > **当前基线：** `26e5c8f` / `v3.0.1` 的 [Actions 41374458503](https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/41374458503) 已完成测试与镜像构建推送，包含 R26/R27；不推定用户容器已升级、真实云复验或 SMTP 通过。SMTP 三项转 I9-R08，Webhook/Kuma 继续豁免。
 
 > **历史入口说明：** 旧 I8 实施和门禁保留于本归档及更早的 [Issue8 历史快照](Issue8-history.md)；当前台账已切换至 Issue9，不以旧编号范围描述当前待办。
@@ -162,7 +162,7 @@ EventBus 取消 channel 订阅时只从订阅表删除记录，不关闭 channel
 
 [Design4.md](Design4.md) 记录的已实现 UI、同步、扫描、告警和产品标识决策仍保持有效，除非本文档、Build6/Build7 已实施合同或 Issue7 当前定案明确替代。产品显示名、二进制名、数据目录兼容标识和 GHCR 镜像名继续使用 `FWAlizer` / `fwalizer`。
 
-Build6/Build7 的 Step 均已完成，不再作为当前实施顺序。P1-01 已按 [Issue7.md](Issue7.md) Step 1～5 完成主体实施（2026-09-29，本地）：Step 1 纯规划器与快照模型、Step 2 目标级先增后验、Step 3 四平台条件清理、Step 4 Dry Run/事件/日志/仪表盘口径、Step 5 本地门禁 + 真实二进制/Docker 验收 + 文档闭环；F1/F5 补强已提交为 `38bdc19`，R7-01/R7-02 分别已提交为 `b80b1b0`/`eab4bea`，R7-03 已按用户裁决 A 提交为 `297ccfe`；R7-04/R7-06/R7-07 已提交为 `b19d271`，R7-05 已提交为 `d6d208e`。R7-01～R7-07 本地复核项已收口，证据见 Issue7 §12.5；这只说明该组复核项完成，后续独立审计候选仍见 [审计报告](fwalizer-audit-final1.md) 与 [TODOLIST.md](../TODOLIST.md)，不解释为全部业务问题或外部验收无保留闭环。**真实四云、浏览器回归与当前 revision 远端 CI/GHCR 仍未执行**，属用户单独执行范围（见 ProdTestList.md PT-I7-01～07）。文档、自动测试、本地进程、Docker、浏览器与真实云 API/SMTP/Webhook 证据必须分层记录，不得互相替代。
+Build6/Build7 的 Step 均已完成，不再作为当前实施顺序。P1-01 已按 [Issue7.md](Issue7.md) Step 1～5 完成主体实施（2026-09-29，本地）：Step 1 纯规划器与快照模型、Step 2 目标级先增后验、Step 3 四平台条件清理、Step 4 Dry Run/事件/日志/仪表盘口径、Step 5 本地门禁 + 真实二进制/Docker 验收 + 文档闭环；F1/F5 补强已提交为 `38bdc19`，R7-01/R7-02 分别已提交为 `b80b1b0`/`eab4bea`，R7-03 已按用户裁决 A 提交为 `297ccfe`；R7-04/R7-06/R7-07 已提交为 `b19d271`，R7-05 已提交为 `d6d208e`。R7-01～R7-07 本地复核项已收口，证据见 Issue7 §12.5；这只说明该组复核项完成，后续独立审计候选仍见 [审计报告](fwalizer-audit-final1.md) 与 [TODOLIST.md](TODOLIST.md)，不解释为全部业务问题或外部验收无保留闭环。**真实四云、浏览器回归与当前 revision 远端 CI/GHCR 仍未执行**，属用户单独执行范围（见 ProdTestList.md PT-I7-01～07）。文档、自动测试、本地进程、Docker、浏览器与真实云 API/SMTP/Webhook 证据必须分层记录，不得互相替代。
 
 ---
 
