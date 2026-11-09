@@ -1,93 +1,33 @@
-# FWAlizer Docker Compose 示例
-# 使用 Docker Compose v2+，复制此文件为 docker-compose.yml 后按需修改：
-#   docker compose config --quiet
-#   docker compose pull
-#   docker compose up -d
-#
-# FWAlizer 只有一种运行形态：WebUI 单二进制 + SQLite。
-# 容器内不需要图形桌面，通过浏览器访问 WebUI 完成全部业务配置。
-
 services:
   fwalizer:
-    # 使用仓库当前已发布的版本；升级时显式修改标签，再 pull / up -d。
-    # 如需跟随滚动发布，可自行改为 :latest（镜像标签不带 v 前缀）。
-    image: ghcr.io/alcaprophet/fwalizer:3.0.0
-    # 官方镜像仅发布 linux/amd64；ARM 主机需具备 amd64 仿真能力。
+    image: ${FWALIZER_IMAGE:-ghcr.io/alcaprophet/fwalizer:3.0.2}
     platform: linux/amd64
-
-    # 本地构建：将 image 改为 fwalizer:local，取消下方 build 注释，再执行：
-    #   docker compose build fwalizer
-    #   docker compose up -d --no-build --pull never
-    # build:
-    #   context: .
-    #   dockerfile: build/Dockerfile
-
     container_name: fwalizer
     restart: unless-stopped
-
-    # SIGTERM 后程序等待当前同步轮、已准入请求和告警，再排空日志并关库。
-    # 5 分钟是可调整的部署宽限，不是程序总退出上限；目标多或请求慢时需加长。
-    # 到期 Docker 仍会 SIGKILL；HTTP / 日志各自的 10 秒不代表整个进程 10 秒退出。
-    stop_grace_period: 5m
-
-    # ---- 部署环境变量（全部仅三个） ----
-    # 业务配置（凭据、目标、规则、TAG、间隔、DNS、日志级别、告警）全部由
-    # WebUI 写入 SQLite，不存在环境变量 override。
+    stop_grace_period: ${FWALIZER_STOP_GRACE_PERIOD:-5m}
     environment:
-      # 专用数据目录（SQLite、WAL/SHM 与 pidfile；必须可写）
       FWALIZER_DATA_DIR: /app/data
-
-      # 容器内需监听所有接口，才能接收 Docker 端口映射的请求
       WEBUI_HOST: 0.0.0.0
-
-      # 容器内端口；通常只需改下方宿主机端口，保留此值即可。
-      WEBUI_PORT: "60200"
-
-    # ---- 端口映射 ----
-    # 默认仅允许宿主机本地或同机反向代理访问，WebUI 没有内置登录鉴权。
-    # 局域网 / VPN 直连时改为 <宿主机受信任网卡IP>:60200:60200，并限制访问来源。
-    # 若反向代理也在容器中，应接入同一 Docker 网络，通过 fwalizer:60200 访问。
+      WEBUI_PORT: "${FWALIZER_CONTAINER_PORT:-60200}"
     ports:
-      - "127.0.0.1:60200:60200"
-
-    # ---- 卷挂载 ----
+      - target: ${FWALIZER_CONTAINER_PORT:-60200}
+        published: "${FWALIZER_HOST_PORT:-60200}"
+        host_ip: "${FWALIZER_BIND_IP:-127.0.0.1}"
     volumes:
-      # 保持卷名与 Compose 项目名稳定，升级可继续使用原库；一个数据目录只供一个实例。
-      # 新命名卷继承镜像中 appuser（UID 1000）的目录属主，无需覆盖 user 或以 root 启动。
-      # 启动会收紧目录为 0700、数据库及辅助文件为 0600；旧卷属主修复见 README。
       - fwalizer_data:/app/data
-
-    # ---- 健康检查 ----
-    # /api/health 只检查 HTTP 存活；同步或云 API 失败不应触发容器不健康。
-    # 运行健康使用 /api/health/operational，由内部监督器 / Uptime Kuma 监控。
-    # $$ 避免 Compose 读取宿主机同名变量，端口在容器内按 WEBUI_PORT 展开。
-    # 如修改容器端口，只需同步调整 ports 的容器端口，健康检查自动跟随。
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "wget -q -O /dev/null \"http://127.0.0.1:$${WEBUI_PORT:-60200}/api/health\" || exit 1",
-        ]
-      interval: 30s
-      timeout: 3s
-      start_period: 10s
-      retries: 3
-
-    # unhealthy 仅标记健康状态；restart 策略在进程退出后生效，不会因此自动重启。
-
-    # ---- 容器日志轮转 ----
-    # stdout/stderr 用 docker compose logs -f fwalizer 查看，与 SQLite 同步历史独立。
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
 
-    # ---- 访问 ----
-    # 浏览器访问 http://127.0.0.1:60200 完成全部配置。
-    # 远程服务器可通过 SSH 隧道或受控反向代理访问，宿主机暴露范围由 ports 决定。
-
 volumes:
   fwalizer_data:
-    # 完整数据库备份与旧卷权限修复见 README；down -v 会删除此卷中的数据。
     driver: local
+
+# 可选 .env 变量（不设置即使用下列默认值）
+# FWALIZER_IMAGE=ghcr.io/alcaprophet/fwalizer:3.0.2
+# FWALIZER_BIND_IP=127.0.0.1           # 宿主机绑定地址。WebUI 无内置鉴权，仅绑定受信任接口。
+# FWALIZER_HOST_PORT=60200             # 浏览器访问的宿主机端口
+# FWALIZER_CONTAINER_PORT=60200        # 容器监听端口，镜像自带健康检查会跟随
+# FWALIZER_STOP_GRACE_PERIOD=5m        # Docker 强制终止前的等待时间

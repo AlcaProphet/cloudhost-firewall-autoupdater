@@ -1,7 +1,7 @@
 # FWAlizer — 防火墙 DNS 自动同步工具
 
 > **文档入口。** Design5、Build6/7、Issue8、Issue9 和原待办导航均已归档。普通真机项目与 SMTP 验收已按用户确认收口，Webhook/Kuma 继续豁免。 [历史文档索引](HistoryDocs/README.md) · [验收记录](ProdTestList.md)
-> **已核对发布：** `v3.0.1` 对应源码 `26e5c8f`，包含 I8-R26/R27，测试与镜像构建推送见 [Actions 41374458503](https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/41374458503)。下方部署示例仍固定已发布的 `3.0.0`；需要这两项修复时选择 `3.0.1`，不要把旧标签视为包含所有最新改动。部署示例随验证通过的发布更新。 [I9-R11](HistoryDocs/Issue9.md#i9-r11)
+> **已验证发布。** `v3.0.2` 对应源码 `879b6d0`，包含 I9 阶段修复和 Alpine 3.24 运行层更新。下方部署示例固定使用已发布的 `3.0.2` 镜像。 [Actions 42563079742](https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/42563079742) · [GHCR](https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/pkgs/container/fwalizer)
 
 **FWAlizer**（Firewall DNS Synchronizer）是一个轻量级自动化工具：定时解析指定域名的 IP 地址，自动同步到云防火墙/安全组白名单中。专为域名 IP 频繁变动的场景设计（如动态 DNS、API 网关、VPN 入口）。
 
@@ -318,20 +318,20 @@ DNS 服务器可填写主机名或 IPv4（可选 `:端口`）；IPv6 使用 `[�
 ## Docker 部署
 
 ```bash
-docker pull ghcr.io/alcaprophet/fwalizer:latest
+docker pull ghcr.io/alcaprophet/fwalizer:3.0.2
 
 docker run -d --name fwalizer --restart=always \
   -p 60200:60200 \
   -e WEBUI_HOST=0.0.0.0 \
   -e FWALIZER_DATA_DIR=/app/data \
   -v fwalizer-data:/app/data \
-  ghcr.io/alcaprophet/fwalizer:latest
+  ghcr.io/alcaprophet/fwalizer:3.0.2
 ```
 
 然后可在宿主机访问 `http://127.0.0.1:60200`，或在防火墙允许的前提下通过 `http://<宿主机IP>:60200` 访问。
 如果只允许同机反向代理访问，将端口映射改为 `-p 127.0.0.1:60200:60200`。
 
-容器只需要三个部署变量（镜像已默认 `WEBUI_HOST=0.0.0.0`、`WEBUI_PORT=60200`、`FWALIZER_DATA_DIR=/app/data`）。通常只需修改端口映射中的宿主机端口，容器内继续使用 `60200`。如需修改容器内监听端口，设置 `WEBUI_PORT` 并同步修改端口映射中的容器端口；镜像和下方 Compose 示例的健康检查会自动跟随容器内的 `WEBUI_PORT`。
+容器只需要三个部署变量（镜像已默认 `WEBUI_HOST=0.0.0.0`、`WEBUI_PORT=60200`、`FWALIZER_DATA_DIR=/app/data`）。通常只需修改端口映射中的宿主机端口，容器内继续使用 `60200`。如需修改容器内监听端口，设置 `WEBUI_PORT` 并同步修改端口映射中的容器端口；镜像自带的健康检查会自动跟随容器内的 `WEBUI_PORT`。
 
 收到 SIGTERM/SIGINT 后，程序先关闭 HTTP 入口并通知 SSE 退出，停止 Push 与运行健康监督器，再阻止新的同步轮次。Push 退出时释放其私有空闲连接。HTTP 最多等待 10 秒后强制关闭剩余连接，但连接关闭不代表请求处理已完成：进程继续等待当前同步轮、已准入的请求和自动告警按原有超时/错误路径结束，再停止告警诊断回调、释放 Webhook 私有空闲连接。热重载前已在途的告警同样会等待完成，不重试或补发；SMTP 接受不代表收件箱投递。
 
@@ -345,18 +345,18 @@ docker run -d --name fwalizer --restart=always \
 
 ```bash
 cp docker-compose.yml.example docker-compose.yml
-# 按部署需求编辑 docker-compose.yml
+# 如需覆盖默认值，在同目录的 .env 中设置示例末尾列出的变量
 docker compose config --quiet
 docker compose pull
 docker compose up -d
 docker compose logs -f fwalizer
 ```
 
-示例固定使用已发布的 `ghcr.io/alcaprophet/fwalizer:3.0.0` 和 `linux/amd64` 平台；ARM 主机需要 amd64 仿真能力。升级时显式修改镜像标签，再执行 `pull` / `up -d`；如需滚动更新可自行选择 `latest`。本地构建方式见示例内注释。
+示例默认使用已发布的 `ghcr.io/alcaprophet/fwalizer:3.0.2` 和 `linux/amd64` 平台。ARM 主机需要 amd64 仿真能力。升级时可在 `.env` 中设置 `FWALIZER_IMAGE` 为目标镜像，再执行 `docker compose pull` 和 `docker compose up -d`。使用本地镜像时，先按下文构建 `linux/amd64` 的 `fwalizer:local`，再设 `FWALIZER_IMAGE=fwalizer:local` 并执行 `docker compose up -d --pull never`。
 
-Compose 默认映射 `127.0.0.1:60200:60200`，浏览器访问 `http://127.0.0.1:60200`。远程服务器可使用 SSH 隧道或受控反向代理；局域网 / VPN 直连时将映射中的宿主机 IP 改为受信任网卡地址并限制访问来源。容器内继续监听 `0.0.0.0`；若反向代理也在容器中，应接入同一 Docker 网络并通过 `fwalizer:60200` 访问。WebUI 没有内置登录鉴权。
+Compose 默认映射 `127.0.0.1:60200:60200`，浏览器访问 `http://127.0.0.1:60200`。远程服务器可使用 SSH 隧道或受控反向代理；局域网 / VPN 直连时，将 `FWALIZER_BIND_IP` 设为受信任网卡地址并限制访问来源。改宿主机端口用 `FWALIZER_HOST_PORT`，改容器监听端口用 `FWALIZER_CONTAINER_PORT`。容器内继续监听 `0.0.0.0`；若反向代理也在容器中，应接入同一 Docker 网络并通过 `fwalizer:60200` 访问。WebUI 没有内置登录鉴权。
 
-示例设置 `stop_grace_period: 5m`，按在途任务规模调整；到期仍会被 Docker 强制终止，不保证任意长的同步轮都能完成。容器 stdout/stderr 使用 `json-file` 轮转（每文件 `10m`，最多 `3` 个），与 SQLite 中的同步历史独立。`restart: unless-stopped` 在进程退出后生效，`unhealthy` 状态本身不会触发自动重启。
+示例默认设置 `stop_grace_period: 5m`，可用 `FWALIZER_STOP_GRACE_PERIOD` 按在途任务规模调整；到期仍会被 Docker 强制终止，不保证任意长的同步轮都能完成。容器 stdout/stderr 使用 `json-file` 轮转（每文件 `10m`，最多 `3` 个），与 SQLite 中的同步历史独立。`restart: unless-stopped` 在进程退出后生效，`unhealthy` 状态本身不会触发自动重启。
 
 镜像会预先创建 `/app/data` 并将其授权给非 root 用户 `appuser`。首次创建的命名卷会继承该目录权限，容器无需以 root 用户运行。
 
@@ -380,7 +380,7 @@ sudo docker stop fwalizer
 sudo docker run --rm --user root \
   -v fwalizer-data:/app/data \
   --entrypoint chown \
-  ghcr.io/alcaprophet/fwalizer:latest \
+  ghcr.io/alcaprophet/fwalizer:3.0.2 \
   -R appuser:appuser /app/data
 sudo docker start fwalizer
 ```
@@ -391,6 +391,12 @@ sudo docker start fwalizer
 
 ```bash
 make docker-build
+```
+
+使用上面的 Compose 示例时，按其平台构建本地镜像。
+
+```bash
+docker build --platform linux/amd64 -f build/Dockerfile -t fwalizer:local .
 ```
 
 ---
@@ -610,7 +616,7 @@ Docker 需在容器内设置 `WEBUI_HOST=0.0.0.0`。宿主机的暴露范围由�
 
 ### 16. Docker 健康检查为什么是 unhealthy？
 
-镜像与 Compose 的健康检查只请求 HTTP `/api/health`，不做进程存活检查。容器显示 `unhealthy` 说明 WebUI 没有正确提供服务（例如端口被占用、启动失败或 `WEBUI_PORT` 与 `healthcheck` 端口不一致），请查看 `docker logs` 排查。
+Compose 继承镜像的 HTTP `/api/health` 健康检查。容器显示 `unhealthy` 时，可用 `docker compose logs fwalizer` 排查 WebUI 的监听端口或启动错误。
 
 补充：`/api/health` 是**静态存活**端点，因此一次同步失败或运行健康异常**不会**让容器变成 `unhealthy`（避免编排误重启）。应用工作状态请改用 `GET /api/health/operational`（异常返回 503）配合 Uptime Kuma 等外部监控观察。
 

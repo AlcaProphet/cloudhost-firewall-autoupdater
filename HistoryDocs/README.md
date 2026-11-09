@@ -13,6 +13,8 @@
 | [Build7.md](Build7.md) | 告警与运行健康 Step 0～7 已完成，后续补记按各自批次保存。 | SMTP 验收已收口；Webhook/Kuma 继续豁免。 |
 | [Issue8.md](Issue8.md) | I8-R01～R27 阶段台账按“完成部分归档、剩余完整转交”收口。 | 原 R01→I9-R08，R14 容量→I9-R09，R23→I9-R10，R25→I9-R11；全部 27 项对照见 [Issue9 §4](Issue9.md#4-issue8-全部编号迁移对照)。R06 专项工具缺陷独立为 I9-R05/R06。 |
 
+当前发布为 `v3.0.2`（`879b6d0`），含 I9 阶段修复。 [Actions 42563079742](https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/42563079742) · [I9 发布记录](Issue9.md#1-归档基线与证据)
+
 上阶段核对的发布为源码 `26e5c8f` / `v3.0.1`，[Actions 41374458503](https://github.com/AlcaProphet/cloudhost-firewall-autoupdater/actions/runs/41374458503) 测试及镜像构建推送成功，包含 R26/R27。归档正文的“尚未提交/远端未执行”是原批次事实，不能据此判断当前实现未合并；发布结果也不代表用户运行容器已升级、全部平台长期稳定。
 
 ## 更早阶段
