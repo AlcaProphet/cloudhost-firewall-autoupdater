@@ -18,7 +18,7 @@ COPY --from=frontend-builder /src/webui/frontend/dist ./webui/frontend/dist
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /fwalizer .
 
 # 运行阶段
-FROM alpine:3.20
+FROM alpine:3.24
 RUN adduser -D appuser \
     && mkdir -p /app/data /home/appuser/.config/fwalizer \
     && chown -R appuser:appuser /app/data /home/appuser/.config

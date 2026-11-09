@@ -498,7 +498,7 @@ func TestCleanup_SWASUsesRuleIDPath(t *testing.T) {
 // TestCleanup_ECSCandidatesHandedOverForBatching ECS 的 150 个候选必须整体交给 Provider
 // （分批 100 + 50 由 Provider 内部完成，见 provider/request_mock_test.go
 // TestRequest_ECSDeleteBatches100），并完成 S2 与残留计数。
-func TestCleanup_ECSDeletesInBatchesOf100(t *testing.T) {
+func TestCleanup_ECSCandidatesHandedOverForBatching(t *testing.T) {
 	stale := make([]config.RuleInfo, 0, 150)
 	for i := 0; i < 150; i++ {
 		stale = append(stale, staleRule("TCP", fmt.Sprintf("%d", 20000+i), fmt.Sprintf("10.%d.%d.%d/32", i/65536, (i/256)%256, i%256), fmt.Sprintf("r-%03d", i), ""))
