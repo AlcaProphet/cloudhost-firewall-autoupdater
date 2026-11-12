@@ -9,6 +9,7 @@ require (
 	github.com/alibabacloud-go/tea v1.5.3
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.192
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/lighthouse v1.3.182
+	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/teo v1.3.186
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/vpc v1.3.188
 	golang.org/x/net v0.61.0
 	modernc.org/sqlite v1.60.1

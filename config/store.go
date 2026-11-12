@@ -269,6 +269,15 @@ CREATE TABLE IF NOT EXISTS edgeone_site_targets (
 );
 CREATE INDEX IF NOT EXISTS idx_edgeone_site_targets_target_id
 	ON edgeone_site_targets (target_id);
+CREATE TABLE IF NOT EXISTS sync_address_conflict (
+	id               INTEGER PRIMARY KEY CHECK (id = 1),
+	dns_name         TEXT NOT NULL,
+	dns_address      TEXT NOT NULL,
+	edgeone_prefix   TEXT NOT NULL,
+	zone_id          TEXT NOT NULL,
+	first_seen_at    TEXT NOT NULL,
+	last_seen_at     TEXT NOT NULL
+);
 `
 
 // defaultWebhookRowSQL 显式指定未配置渠道，避免旧表默认值影响初始化与重置。
@@ -703,11 +712,12 @@ func ruleColumns(r DomainRule) (targetsJSON string, enableIPv6 int, err error) {
 }
 
 // resetAllSQL 清空全部业务表的语句（ResetAllTx 使用）
-// resetAllSQL 清空全部业务表，并重新写入四张单行表的默认行：
+// resetAllSQL 清空全部业务表与运行态冲突记录，并重新写入四张单行表的默认行：
 // 邮件、Webhook、三个触发开关与 Push 全部回到关闭，health_timeout 回 10m、
-// Push interval 回 60s（Build7 §2.1、§4.2）。
+// Push interval 回 60s（Build7 §2.1、§4.2；Build8 Step 7 增加 sync_address_conflict）。
 const resetAllSQL = "DELETE FROM edgeone_site_targets; DELETE FROM edgeone_sites;" +
 	"DELETE FROM targets; DELETE FROM rules; DELETE FROM settings; DELETE FROM sync_logs;" +
+	"DELETE FROM sync_address_conflict;" +
 	"DELETE FROM alert_email; DELETE FROM alert_webhook; DELETE FROM alert_policy; DELETE FROM uptime_kuma_push;" +
 	"DELETE FROM scanned_resources;" +
 	"INSERT OR IGNORE INTO alert_email (id) VALUES (1);" +

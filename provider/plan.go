@@ -77,6 +77,10 @@ const (
 	IssueDesiredEmpty = "desired_empty"
 	// IssueCoverageNotReady 新快照未能证明覆盖全部可实施期望
 	IssueCoverageNotReady = "coverage_not_ready"
+	// IssueCrossTagEquivalent 另一功能 TAG 下存在完全等价的云端规则
+	IssueCrossTagEquivalent = "cross_tag_equivalent"
+	// IssueEdgeOneUnavailable EdgeOne 站点查询失败或结果不完整
+	IssueEdgeOneUnavailable = "edgeone_unavailable"
 )
 
 // RuleSnapshot 一次云端读取的不可拆分结果：规则 + 版本。
@@ -95,6 +99,7 @@ type PlannedRule struct {
 	Comment     string        `json:"comment"`
 	Description string        `json:"description"`
 	RuleIDs     []int         `json:"rule_ids"`
+	SiteIDs     []string      `json:"site_ids"`
 	Domains     []string      `json:"domains"`
 	// Implementable 表示当前平台能否表达该项；false 时同时出现在 Unsupported
 	Implementable bool `json:"implementable"`
@@ -130,6 +135,7 @@ type TargetPlan struct {
 	CleanupDeletable []config.RuleInfo `json:"cleanup_deletable"`
 	CleanupDeferred  []PlanIssue       `json:"cleanup_deferred"`
 	DNSErrors        []PlanIssue       `json:"dns_errors"`
+	EdgeOneErrors    []PlanIssue       `json:"edgeone_errors"`
 	Unsupported      []PlanIssue       `json:"unsupported"`
 	Conflicts        []PlanIssue       `json:"conflicts"`
 	// CoverageReady 表示该快照（S0 或 S1）是否已精确覆盖全部 Implementable 期望；
@@ -137,10 +143,73 @@ type TargetPlan struct {
 	CoverageReady bool `json:"coverage_ready"`
 }
 
+// EdgeOneSitePlanInput 是一个绑定到本目标的适用 EdgeOne 站点。
+//
+// 调用方必须先按实际目标（cloud_type + region + resource_id）归并全部适用站点，
+// 再把同一份输入交给一次 PlanTarget；规划器负责合并当前/待更新前缀并去重。
+type EdgeOneSitePlanInput struct {
+	Site config.EdgeOneSite
+	// Snapshot 是 Step 5 的只读结果；Site.AddressFamily 决定选取哪些地址族。
+	Snapshot OriginACLSnapshot
+	// UnavailableReason 非空表示本轮回源网段查询失败或不完整。
+	// 该站点不得被当作空集：规划器记录 EdgeOneErrors、禁止覆盖声明并冻结本目标清理。
+	UnavailableReason string
+}
+
+// SelectEdgeOneSitesForIdentity 挑选绑定到指定物理目标的全部站点。
+//
+// 本地目标 ID 通过 targets 映射为 config.TargetIdentity；同一物理目标的多个本地
+// 记录（别名）会归并，使分别绑定到不同本地 ID 的站点进入同一次目标规划。
+// 结果按 ZoneID 稳定排序并深拷贝 TargetIDs；identity 为空时返回 nil。
+func SelectEdgeOneSitesForIdentity(
+	sites []config.EdgeOneSite,
+	targets []config.TargetConfig,
+	identity string,
+) []config.EdgeOneSite {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return nil
+	}
+	byID := make(map[int]string, len(targets))
+	for _, t := range targets {
+		byID[t.ID] = config.TargetIdentity(t)
+	}
+	selected := make([]config.EdgeOneSite, 0, len(sites))
+	seen := make(map[string]bool, len(sites))
+	for _, site := range sites {
+		zoneID := strings.TrimSpace(site.ZoneID)
+		if zoneID == "" || seen[zoneID] {
+			continue
+		}
+		for _, targetID := range site.TargetIDs {
+			if byID[targetID] != identity {
+				continue
+			}
+			cp := site
+			cp.ZoneID = zoneID
+			cp.TargetIDs = append([]int(nil), site.TargetIDs...)
+			selected = append(selected, cp)
+			seen[zoneID] = true
+			break
+		}
+	}
+	sort.SliceStable(selected, func(i, j int) bool { return selected[i].ZoneID < selected[j].ZoneID })
+	return selected
+}
+
 // TargetPlanInput 纯规划器输入。
 type TargetPlanInput struct {
 	CloudType config.CloudType
 	Tag       string
+	// OtherTag 是另一功能来源的 TAG（DNS 计划填 EdgeOne TAG，EdgeOne 计划反之）。
+	// 非空时，另一 TAG 下的精确等价云端规则进入目标级冲突：不计覆盖、不新增、不改标。
+	// 为空时保持原有单 TAG 语义。
+	OtherTag string
+	// TargetID 非零时只使用 TargetIDs 包含它的 EdgeOne 站点；调用方仍负责按
+	// 实际目标（cloud_type + region + resource_id）归并别名，再传入一次规划。
+	TargetID int
+	// EdgeOneSites 是绑定到本目标的全部适用站点；为空时保持纯 DNS 规划。
+	EdgeOneSites []EdgeOneSitePlanInput
 	// Rules 必须已按本地 rule ID 升序排列（规划器内部再排一次以自证）
 	Rules []config.DomainRule
 	// Resolved 以本地 rule ID 为键；同一 host 的结果由调度层复用
@@ -454,6 +523,118 @@ func unsupportedMessage(code string) string {
 	}
 }
 
+// appendEdgeOnePlannedRules 把适用 EdgeOne 站点展开为期望功能并合入 Desired。
+//
+// 站点先按 ZoneID 稳定排序；同一 key 的多个站点只保留一条期望，全部 ZoneID 进入
+// PlannedRule.SiteIDs。站点查询不可用时只记录 EdgeOneErrors，绝不当作空集。
+func appendEdgeOnePlannedRules(
+	plan *TargetPlan,
+	in TargetPlanInput,
+	caps Capability,
+	desiredIndex map[FunctionalKey]int,
+	unsupportedSeen map[string]bool,
+) {
+	sites := append([]EdgeOneSitePlanInput(nil), in.EdgeOneSites...)
+	sort.SliceStable(sites, func(i, j int) bool {
+		return sites[i].Site.ZoneID < sites[j].Site.ZoneID
+	})
+
+	for _, source := range sites {
+		site := source.Site
+		if in.TargetID > 0 && !containsInt(site.TargetIDs, in.TargetID) {
+			continue
+		}
+		zoneID := strings.TrimSpace(site.ZoneID)
+		reason := strings.TrimSpace(source.UnavailableReason)
+		if zoneID == "" {
+			reason = "站点配置缺少 ZoneId"
+		} else if source.Snapshot.ZoneID == "" || strings.TrimSpace(source.Snapshot.Current.Version) == "" {
+			// 零值/半截快照不是“合法空地址族”；必须按不可用处理。
+			reason = "未取得有效的站点快照"
+		} else if source.Snapshot.ZoneID != zoneID {
+			reason = "快照 ZoneId 与站点配置不一致"
+		}
+		if reason != "" {
+			plan.EdgeOneErrors = append(plan.EdgeOneErrors, PlanIssue{
+				Code:    IssueEdgeOneUnavailable,
+				Message: "EdgeOne 站点 " + zoneID + " 输入不可用：" + reason,
+			})
+			continue
+		}
+
+		prefixes := source.Snapshot.PrefixesForFamily(site.AddressFamily)
+		if len(prefixes) == 0 {
+			// 单个地址族合法为空时不制造查询失败；站点级覆盖证明由 Step 10 负责。
+			continue
+		}
+
+		protocols := []string{site.Protocol}
+		if strings.EqualFold(site.Protocol, "TCP+UDP") && !caps.TCPUDP {
+			protocols = []string{"TCP", "UDP"}
+		}
+		action := "ACCEPT" // EdgeOne 回源防火墙动作由后端固定为 ACCEPT
+		for _, prefix := range prefixes {
+			prefix = prefix.Masked()
+			family := AddressIPv4
+			if prefix.Addr().Is6() && !prefix.Addr().Is4() {
+				family = AddressIPv6
+			}
+			cidr := prefix.String()
+			for _, proto := range protocols {
+				keyProto := canonicalProtocol(proto)
+				for _, wirePort := range expandPlannedPorts(in.CloudType, proto, site.Ports) {
+					key := FunctionalKey{
+						Family:   family,
+						CIDR:     cidr,
+						Protocol: keyProto,
+						Port:     canonicalPortExpression(keyProto, wirePort),
+						Action:   action,
+					}
+					reasonCode := unsupportedKeyReason(caps, family, keyProto, action)
+					planned := PlannedRule{
+						Key:           key,
+						RuleIDs:       []int{},
+						SiteIDs:       []string{zoneID},
+						Domains:       []string{},
+						Implementable: reasonCode == "",
+						Action: config.RuleAction{
+							Protocol: proto,
+							Port:     wirePort,
+							Action:   action,
+						},
+					}
+					if family == AddressIPv6 {
+						planned.Action.Ipv6CidrBlock = cidr
+					} else {
+						planned.Action.CidrBlock = cidr
+					}
+
+					if idx, exists := desiredIndex[key]; exists {
+						cur := &plan.Desired[idx]
+						cur.SiteIDs = appendUniqueString(cur.SiteIDs, zoneID)
+					} else {
+						desiredIndex[key] = len(plan.Desired)
+						plan.Desired = append(plan.Desired, planned)
+					}
+
+					if reasonCode != "" {
+						seenKey := reasonCode + "|" + key.String()
+						if !unsupportedSeen[seenKey] {
+							unsupportedSeen[seenKey] = true
+							k := key
+							plan.Unsupported = append(plan.Unsupported, PlanIssue{
+								Code:    reasonCode,
+								Message: unsupportedMessage(reasonCode) + "（EdgeOne 站点 " + zoneID + "）",
+								Key:     &k,
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 // PlanTarget 目标级纯规划：输入完整期望与一次云端快照，输出完整计划。
 //
 // 本函数不访问网络、数据库、时钟、日志或事件总线，可被 Dry Run 与正式同步共用。
@@ -468,6 +649,7 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 		CleanupDeletable:    []config.RuleInfo{},
 		CleanupDeferred:     []PlanIssue{},
 		DNSErrors:           []PlanIssue{},
+		EdgeOneErrors:       []PlanIssue{},
 		Unsupported:         []PlanIssue{},
 		Conflicts:           []PlanIssue{},
 	}
@@ -529,6 +711,7 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 						Key:           key,
 						Comment:       comment,
 						RuleIDs:       []int{r.ID},
+						SiteIDs:       []string{},
 						Domains:       []string{r.Host},
 						Implementable: reasonCode == "",
 						Action: config.RuleAction{
@@ -575,6 +758,9 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 		}
 	}
 
+	// ── 1b) EdgeOne 站点来源：当前版 + 待更新版并集，按功能 key 去重 ──
+	appendEdgeOnePlannedRules(&plan, in, caps, desiredIndex, unsupportedSeen)
+
 	// 渲染 description（唯一渲染/截断层），再按 key 稳定排序，保证输出可复现。
 	for i := range plan.Desired {
 		plan.Desired[i].Description = RenderDescription(in.CloudType, in.Tag, plan.Desired[i].Comment)
@@ -589,6 +775,7 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 	// ── 2) 云端快照索引：Owned / External 多值结构，禁止静默覆盖重复项 ──
 	ownedIndex := make(map[FunctionalKey][]config.RuleInfo)
 	externalIndex := make(map[FunctionalKey][]config.RuleInfo)
+	otherTagIndex := make(map[FunctionalKey][]config.RuleInfo)
 	type snapshotEntry struct {
 		keys  []FunctionalKey
 		owned bool
@@ -608,11 +795,16 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 			continue
 		}
 		owned := tag.IsOwned(r.Description, in.Tag)
+		otherOwned := !owned && in.OtherTag != "" && tag.IsOwned(r.Description, in.OtherTag)
 		entries[i] = snapshotEntry{keys: keys, owned: owned}
 		for _, k := range keys {
-			if owned {
+			switch {
+			case owned:
 				ownedIndex[k] = append(ownedIndex[k], r)
-			} else {
+			case otherOwned:
+				// 另一功能 TAG 的规则只用于目标级冲突检测；永不作为覆盖或删除候选。
+				otherTagIndex[k] = append(otherTagIndex[k], r)
+			default:
 				externalIndex[k] = append(externalIndex[k], r)
 			}
 			tuple := fmt.Sprintf("%s|%s|%s|%s", k.Family, k.CIDR, k.Protocol, k.Port)
@@ -649,6 +841,22 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 		})
 	}
 
+	// ── 2b) 另一功能 TAG 的精确等价规则：目标级冲突 ──
+	for i := range plan.Desired {
+		key := plan.Desired[i].Key
+		rules, ok := otherTagIndex[key]
+		if !ok || len(rules) == 0 {
+			continue
+		}
+		k := key
+		plan.Conflicts = append(plan.Conflicts, PlanIssue{
+			Code: IssueCrossTagEquivalent,
+			Message: "另一功能 TAG 下存在完全等价的云端规则，不能计入覆盖、不能新增重复规则或改标：" +
+				describeCloudRule(rules[0]),
+			Key: &k,
+		})
+	}
+
 	// ── 3) 覆盖计算：Owned 优先，External 只按精确 key 满足 ──
 	implementable, covered := 0, 0
 	for i := range plan.Desired {
@@ -674,11 +882,16 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 			}
 			continue
 		}
+		if len(otherTagIndex[d.Key]) > 0 {
+			// 已有另一功能 TAG 的等价规则：不新增重复规则，等待目标级冲突处置。
+			continue
+		}
 		if d.Implementable {
 			plan.ToAdd = append(plan.ToAdd, d.Action)
 		}
 	}
-	plan.CoverageReady = implementable > 0 && covered == implementable && !in.AddStateUnknown
+	plan.CoverageReady = implementable > 0 && covered == implementable &&
+		!in.AddStateUnknown && len(plan.EdgeOneErrors) == 0
 
 	// ── 4) 清理候选：S0 Owned 中**全部** key 都不在完整 Desired 的规则 ──
 	desiredKeys := make(map[FunctionalKey]bool, len(plan.Desired))
@@ -722,6 +935,12 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 			Message: fmt.Sprintf("%d 个适用域名解析失败或为空，保留全部清理候选", len(plan.DNSErrors)),
 		})
 	}
+	if len(plan.EdgeOneErrors) > 0 {
+		gateIssues = append(gateIssues, PlanIssue{
+			Code:    IssueEdgeOneUnavailable,
+			Message: fmt.Sprintf("%d 个 EdgeOne 站点输入不完整，保留全部清理候选", len(plan.EdgeOneErrors)),
+		})
+	}
 	for _, code := range distinctIssueCodes(plan.Unsupported) {
 		gateIssues = append(gateIssues, PlanIssue{
 			Code: code, Message: "存在平台无法实施的期望规则，保留全部清理候选",
@@ -755,6 +974,7 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 
 	// 稳定输出顺序
 	sortIssues(plan.DNSErrors)
+	sortIssues(plan.EdgeOneErrors)
 	sortIssues(plan.Unsupported)
 	sortIssues(plan.Conflicts)
 	sortIssues(plan.CleanupDeferred)
@@ -878,6 +1098,15 @@ func splitPortField(port string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func containsInt(list []int, v int) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func appendUniqueInt(list []int, v int) []int {

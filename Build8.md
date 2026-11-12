@@ -43,9 +43,9 @@
 - [x] [Step 2 双功能开关与间隔设置](#step-2)
 - [x] [Step 3 站点与目标绑定 API](#step-3)
 - [x] [Step 4 配置包往返与兼容](#step-4)
-- [ ] [Step 5 TEO 只读查询](#step-5)
-- [ ] [Step 6 CIDR 规划与 TAG 隔离](#step-6)
-- [ ] [Step 7 全局重叠判定和自动恢复状态](#step-7)
+- [x] [Step 5 TEO 只读查询](#step-5)
+- [x] [Step 6 CIDR 规划与 TAG 隔离](#step-6)
+- [x] [Step 7 全局重叠判定和自动恢复状态](#step-7)
 - [ ] [Step 8 独立调度与正式入口](#step-8)
 - [ ] [Step 9 目标写入与回读](#step-9)
 - [ ] [Step 10 站点自动确认](#step-10)
@@ -249,12 +249,24 @@
 
 **Checklist**
 
-- [ ] 核对 SDK 模块与现有腾讯云 `common` 依赖，配置 endpoint、请求超时、频率限制和安全日志。
-- [ ] 解析源站防护状态、当前及待更新版本、计划生效时间和两类 CIDR，规范地址族、掩码及去重。
-- [ ] 验证一个站点的结果可供多个目标复用，区分明确无下一版、空或畸形数据、权限错误、限流和超时。
-- [ ] 用模拟服务核对 POST、Action、版本、`ZoneId`、请求签名接线和 `RequestId`，记录真实响应仍待 Step 17 核验。
+- [x] 核对 SDK 模块与现有腾讯云 `common` 依赖，配置 endpoint、请求超时、频率限制和安全日志。
+- [x] 解析源站防护状态、当前及待更新版本、计划生效时间和两类 CIDR，规范地址族、掩码及去重。
+- [x] 验证一个站点的结果可供多个目标复用，区分明确无下一版、空或畸形数据、权限错误、限流和超时。
+- [x] 用模拟服务核对 POST、Action、版本、`ZoneId`、请求签名接线和 `RequestId`，记录真实响应仍待 Step 17 核验。
 
-**证据**　待执行。
+**证据**　2026-11-12，`beta`，实施前 HEAD `1bcfbaa`，工作树改动（本步未提交）。实际改动：`go.mod` 增加直接依赖 `github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/teo v1.3.186`，`go.sum` 增加该模块与 `common v1.3.186/go.mod` 三行校验和；`provider/teo.go` 新增 TEO 只读适配（`TEOClient`、`OriginACLVersion`、`OriginACLSnapshot`、安全错误分类），`provider/teo_test.go` 新增本地 SDK 回归；本文件回填证据。
+
+依赖核对：`teo v1.3.186` 的 `go.mod` 要求 `common v1.3.186`，项目现有 `common` 仍为 `v1.3.192`，MVS 取较高版本，`lighthouse v1.3.182`、`vpc v1.3.188` 与 `common v1.3.192` 未变化；`go list -m all | grep tencentcloud` 实际输出四种模块版本。`go mod tidy`（`GOPROXY=https://goproxy.cn`，随环境网络可达镜像）把 `teo` 从临时 indirect 归位到直接 require，未改动任何既有依赖版本。适配层复用 `ClientPool` 的不可变腾讯云凭据与缓存：生产 endpoint `https://teo.tencentcloudapi.com`（`profile.HttpProfile.Scheme=HTTPS`），单次 `DescribeOriginACLWithContext` 使用调用方 context 叠加 30s 本地预算，查询/确认共用 50ms 最小间隔（20 次/秒），显式关闭 SDK 内部网络与限流重试；构造只调用 `teo.NewClient`，零网络请求。当前只接 `DescribeOriginACL`，`ConfirmOriginACLUpdate` 留给 Step 10。客户端包装对象按 `pool + endpoint + scheme + account` 缓存，使同一实例的限速状态跨调用保留。
+
+转换与安全边界：只接受 `Status=online/updating`；`offline`/空状态返回 `disabled` 或 `incomplete`。当前版必须存在且带版本号；待更新版必须带版本号、可解析的计划生效时间与 `EntireAddresses`。IPv4/IPv6 字段分别校验实际地址族，任何非法 CIDR、空地址项或字段错配整份返回 `malformed`，不保留部分结果；单个地址族显式为空且另一族有效视为合法；两个地址族都没有网段返回 `empty`，字段整体缺失返回 `incomplete`。前缀统一 `Masked`、去重并按 IPv4 → IPv6 字符串稳定排序，`AllPrefixes` 合并当前版与待更新版，`PrefixesForFamily` 支持 `ipv4/ipv6/dual`。`TEOError` 只保留分类、云错误码、`RequestId` 与固定中文文案，`Error()` 不回显 SDK 原始 Message、请求体、签名或凭据；底层错误仅经 `Unwrap` 保留。
+
+执行命令与结果：`go test ./provider -run 'TestTEO|TestOriginACL|TestParseTEO' -race -count=1 -timeout 60s` → ok（1.829s，`TestTEO*`、`TestOriginACL*`、`TestParseTEO*` 全部通过）；`go test ./provider -race -count=1 -timeout 10m` → ok（9.227s）；`go vet ./provider` → 无输出；`gofmt -l provider/teo.go provider/teo_test.go` 与 `git diff --check` → 无输出。
+
+httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真实 `teo` SDK 发往本地模拟服务，断言 POST `/`、`X-TC-Action=DescribeOriginACL`、`X-TC-Version=2022-09-01`、`Content-Type=application/json`、JSON 仅含 `ZoneId=zone-test`、无 `X-TC-Region`，并用虚构密钥重算 `TC3-HMAC-SHA256` 的 canonical request/string-to-sign/signature 与 `Credential` scope 完全匹配，同时捕获 `RequestId=req-success`、当前版 `2026-01`、待更新版 `2026-02`、计划时间 `2026-11-30T16:00:00Z` 与规范化前缀。`TestTEOClientConstructionMakesNoRequest` 证明构造（含同 pool 第二次构造）请求数为 0，实际查询后为 1。`TestTEOOneSnapshotSharedByMultipleTargets` 用一次查询结果服务两个目标，请求数保持 1。`TestTEORateLimitAndContextCancel` 验证 3 次查询至少跨两个 25ms 槽位、预留远期槽位时 30ms context 超时且零新增请求。
+
+反向与分类证据：`TestTEOResponseConversionMatrix` 覆盖 21 个子场景：无下一版、IPv4/IPv6 单族合法为空、两族整体为空（`empty`）、地址族字段缺失/`null`（`incomplete`）、非法 CIDR/空项/两向地址族错配（`malformed`）、`OriginACLInfo` 缺失、空响应、`offline`、状态/版本号/计划时间缺失、待更新版整体为空、主机位掩码化与去重、`updating` 并集；所有错误路径均断言绝不返回部分快照。`TestTEOErrorClassificationAndNoSDKRetry` 用模拟权限错误与限流响应断言 `permission`/`throttled`、`RequestId`/Code 保留、原始 Message 与虚构密钥不回显、请求数各为 1（无 SDK 内部重试）；请求预算超时用延迟 200ms 的本地服务与 50ms 预算断言 `timeout` 且请求已到达。`TestTEOInvalidZoneNeverBecomesEmptySnapshot` 对空/空白 `ZoneId` 断言 `malformed`、零请求、空快照，证明无效输入不会变成可用于清理的空集合。`TestOriginACLSnapshotPrefixesForFamily` 与 `TestParseTEOPlanTime` 覆盖并集/地址族筛选与四种时间文本。
+
+外部验收状态：本步只使用 `httptest` 与虚构凭据，未调用真实腾讯云，未验证真实账号权限、真实待更新窗口、真实响应形状、计划时间时区与实际限流配额；上述留 Step 17。真实 `ConfirmOriginACLUpdate` 未接线，留 Step 10；定期查询与调度合并留 Step 8；正式状态 API 留 Step 15。待补项：真实腾讯云 `DescribeOriginACL` 的 `CurrentOriginACL`/`NextOriginACL` 字段组合、`Status=updating` 时的地址完整性及 20 次/秒限流实测。
 
 <a name="step-6"></a>
 
@@ -279,12 +291,22 @@
 
 **Checklist**
 
-- [ ] 规划输入保留 EdgeOne CIDR 掩码，同时保持 DNS 单地址转换与现有端口展开、功能 key、能力矩阵。
-- [ ] 在实际目标上合并所有适用站点，按功能去重，按 TAG 渲染新增规则与确定删除归属。
-- [ ] 另一功能 TAG 的等价规则只作为目标级冲突，手工规则继续按现有精确等价判定。覆盖声明需区分冲突、平台不支持和可实施子集。
-- [ ] 定向测试跨站点同目标、双栈、另一 TAG 残留、相反动作、模板导致保守清理、规则容量与 DNS 既有结果。
+- [x] 规划输入保留 EdgeOne CIDR 掩码，同时保持 DNS 单地址转换与现有端口展开、功能 key、能力矩阵。
+- [x] 在实际目标上合并所有适用站点，按功能去重，按 TAG 渲染新增规则与确定删除归属。
+- [x] 另一功能 TAG 的等价规则只作为目标级冲突，手工规则继续按现有精确等价判定。覆盖声明需区分冲突、平台不支持和可实施子集。
+- [x] 定向测试跨站点同目标、双栈、另一 TAG 残留、相反动作、模板导致保守清理、规则容量与 DNS 既有结果。
 
-**证据**　待执行。
+**证据**　2026-11-12，`beta`，实施前 HEAD `1bcfbaa`，工作树改动（本步未提交）。实际改动：`provider/plan.go` 扩展纯规划输入/来源/覆盖分类；新增 `provider/plan_edgeone_test.go`；本文件回填证据。规划器仍不访问网络、数据库、时钟、日志或事件总线，不执行 RPC 或配置写入。
+
+输入与来源：`TargetPlanInput` 新增 `TargetID`、`OtherTag`、`EdgeOneSites`（`EdgeOneSitePlanInput`：`Site`、`Snapshot`、`UnavailableReason`）；`PlannedRule` 新增 `SiteIDs`，`TargetPlan` 新增 `EdgeOneErrors`。`TargetID` 非零时只纳入 `Site.TargetIDs` 包含它的站点；新增 `SelectEdgeOneSitesForIdentity` 复用既有 `config.TargetIdentity`，把 `targets` 的本地 ID 映射到 `cloud_type + region + resource_id`，归并指向同一物理目标的别名记录后一次性传入；`EdgeOneSites` 为空时完全保持既有 DNS 规划。EdgeOne 期望由站点 `Current` 与 `Next` 的并集生成，经 `PrefixesForFamily` 按 `ipv4/ipv6/dual` 选择，前缀保留网段掩码；DNS 仍经 `CanonicalCIDR` 生成 `/32` 或 `/128`。端口展开复用 `expandPlannedPorts`/`ExpandPorts`，协议复用 `canonicalProtocol`，能力复用 `Capabilities`，TAG 渲染复用 `RenderDescription`/`TruncateDescription`；EdgeOne 动作固定 `ACCEPT`。同一 `FunctionalKey` 只保留一条 `Desired`，多站点来源合并进 `SiteIDs`，DNS 来源保留 `RuleIDs`；同 key 的 DNS 与 EdgeOne 来源合并为一条新增。`SiteIDs`/`RuleIDs` 始终为非 null 数组，按稳定顺序输出。
+
+覆盖与冲突分类：云端规则索引拆为当前 TAG（`ownedIndex`）、另一功能 TAG（`otherTagIndex`）和普通手工规则（`externalIndex`）。当前 TAG 的精确 key 计入 `SatisfiedByOwned`；普通手工规则继续按精确等价计入 `SatisfiedByExternal`；另一功能 TAG 的精确等价规则只生成 `IssueCrossTagEquivalent` 目标级冲突，不计覆盖、不进入 `ToAdd`、不进入清理候选、不产生改标动作。同一 desired key 即使已有当前 TAG 覆盖，只要另一功能 TAG 存在等价规则也会同时报告冲突并冻结清理。`CoverageReady` 继续要求非空可实施子集全部被精确覆盖，并在 `EdgeOneErrors` 非空时强制为 false；`CleanupDeferred` 增加 `edgeone_unavailable` 门，平台不支持、相反动作、模板/畸形规则、快照版本与删除定位合同保持原样。
+
+执行命令与结果：`go test ./provider -run 'TestEdgeOnePlan|TestDNSPlanArrays|TestSelectEdgeOneSitesForIdentity|TestPlan_ExternalExactMatchOnly|TestPlan_CoverageReadyImplementableSubset' -race -count=1 -v -timeout 120s` → 新增 12 个顶层用例与 10 个既有覆盖子场景全部 PASS；`go test ./provider -race -count=1 -timeout 15m` → ok（9.206s）。`gofmt -l provider/plan.go provider/plan_edgeone_test.go` 与 `git diff --check` → 无输出。
+
+判别性证据：`TestSelectEdgeOneSitesForIdentityMergesAliases` 用两个本地 ID 指向同一 `lh-1` 实际目标（含首尾空白历史值）证明别名站点被归并、另一个 `lh-2` 站点被排除；`TestEdgeOnePlanTwoSitesSharePrefixProduceOneAdd` 让同目标两个站点共享 `203.0.113.0/24 TCP 443`，断言只产生一条 `Desired`/一条 `ToAdd` 且 `SiteIDs=[zone-a zone-b]`，同时排除只绑定其他目标的 `zone-other`；`TestEdgeOnePlanCurrentAndNextSamePrefixOneAdd` 验证同站点两版本共同 CIDR 去重、并集新增；`TestEdgeOnePlanPreservesMaskWhileDNSHostPrefix` 验证 DNS `203.0.113.7/32` 与 EdgeOne `203.0.113.0/24` 各自粒度；`TestEdgeOnePlanSharedKeyMergesDNSAndSite` 验证同一 key 只新增一条并保留 `RuleIDs=[11]` 与 `SiteIDs=[zone-a]`。`TestEdgeOnePlanCrossTagEquivalentIsConflictOnly` 用只有 `[auto-dns]` 等价规则的反例断言无覆盖、无新增、无清理、无改标且存在 `cross_tag_equivalent` 冲突；`TestEdgeOnePlanManualExactMatchStillCovers` 对照手工精确规则可覆盖、不同端口不覆盖；`TestEdgeOnePlanIPv6OnSWASUnsupported` 覆盖 IPv6/SWAS 能力矩阵与清理冻结；`TestEdgeOnePlanOppositeActionAndTemplateFreezeCleanup` 覆盖相反动作、模板/畸形规则与可删除集合为空；`TestEdgeOnePlanUnavailableSiteNeverBecomesEmpty` 覆盖查询失败与零值/半截快照不被当作合法空集；`TestEdgeOnePlanTCPUDPSplitAndPortExpansion` 覆盖 Lighthouse TCP+UDP 拆分、SWAS 原生化与 CVM 多端口展开；`TestDNSPlanArraysRemainNonNull` 保护 DNS 既有数组语义。既有 `TestPlan_ExternalExactMatchOnly`、`TestPlan_CoverageReadyImplementableSubset` 作为基线对照通过，未修改其断言。
+
+外部验收状态：本步只运行纯函数与本地夹具，未读取真实云快照、未执行任何 RPC、未写入配置或云规则；真实 EdgeOne 站点前缀、目标归并、容量与回读覆盖证明留 Step 8/10/17。待补项：Step 8 按物理目标别名归并后调用本规划器并把站点查询失败映射为 `UnavailableReason`；Step 10 用本步 `SiteIDs` 从目标回读提取每站覆盖证明。
 
 <a name="step-7"></a>
 
@@ -309,12 +331,26 @@
 
 **Checklist**
 
-- [ ] 同一份配置中汇总有效 DNS 地址与所有启用站点当前、待更新 CIDR，跨目标和端口执行包含判断。
-- [ ] 验证已证明重叠优先于数据不足。无已知冲突时只停止失败侧；已知冲突在数据不足或仍重叠时继续停止两侧。
-- [ ] 记录已查实的冲突，验证首次写库失败后进程内保持阻断，后续复查重试持久化。完整有效输入证明无重叠并提交后自动清除。覆盖已提交冲突的重启恢复、读写失败、关闭一项、重新同时启用和清空配置。
-- [ ] 区分无任务、冲突、数据不足、无重叠和恢复。确认 DNS 熔断只记真实解析结果，模拟判定本身无运行状态副作用。
+- [x] 同一份配置中汇总有效 DNS 地址与所有启用站点当前、待更新 CIDR，跨目标和端口执行包含判断。
+- [x] 验证已证明重叠优先于数据不足。无已知冲突时只停止失败侧；已知冲突在数据不足或仍重叠时继续停止两侧。
+- [x] 记录已查实的冲突，验证首次写库失败后进程内保持阻断，后续复查重试持久化。完整有效输入证明无重叠并提交后自动清除。覆盖已提交冲突的重启恢复、读写失败、关闭一项、重新同时启用和清空配置。
+- [x] 区分无任务、冲突、数据不足、无重叠和恢复。确认 DNS 熔断只记真实解析结果，模拟判定本身无运行状态副作用。
 
-**证据**　待执行。
+**证据**　2026-11-12，`beta`，实施前 HEAD `1bcfbaa`，工作树改动（本步未提交）。实际改动：`config/store.go` 增加 `sync_address_conflict` DDL 与 reset 清理；新增 `config/store_address_conflict.go`（唯一冲突行读写与坏记录拒绝）；新增 `syncer/preflight.go`（纯 CIDR 包含与准入决策）；新增 `syncer/conflict_state.go`（进程内 + SQLite 运行态、启动加载、保存重试与解除顺序）；新增 `config/store_address_conflict_test.go`、`syncer/preflight_test.go`、`syncer/conflict_state_test.go`、`webui/api/address_conflict_export_test.go`；本文件回填证据。`syncer.runRound` 与正式调度未接线，留 Step 8；过渡表读取留 Step 11；模拟/状态 API 留 Step 12/15。
+
+纯预检：`DNSAddress`/`EdgeOnePrefix` 只保留地址与网段，没有目标、端口、动作维度，因此不同目标/端口不能削弱全局包含判断。`FirstOverlap` 先按域名/IP、站点/CIDR 稳定排序，DNS 地址执行 `Unmap`（IPv4-mapped 返回 IPv4 身份），EdgeOne 前缀执行 `Masked`；IPv4 与 IPv6 不互相匹配，网段边界与网段外分别覆盖。`DecideAdmission` 按 Design6 §8.3 固定优先级：单开/双关只放行已启用且完整的来源；双开时 `Overlap` 立即返回 `KeepConflict` 且两侧零准入；已知冲突在数据不足时继续两侧阻断；无已知冲突时只停止输入不完整的一侧；只有两侧完整且无重叠才放行。`PreflightOutcome` 使用 `single_source`、`overlap`、`data_unavailable`、`clear` 区分无任务/冲突/数据不足/无重叠/恢复，并保留 `DNSComplete`、`EdgeOneComplete`、`KnownConflict`、`Overlap` 两个独立结果；正向命中优先于任何查询失败。
+
+运行态记录：`sync_address_conflict` 固定 `id=1`，字段为 `dns_name`、`dns_address`、`edgeone_prefix`、`zone_id`、`first_seen_at`、`last_seen_at`。`GetAddressConflict` 缺行返回 `(nil,nil)`，读取失败或 DNS 地址/网段/时间/ZoneId 损坏返回错误而不是无冲突；`SaveAddressConflict` 在短事务内 upsert，规范化 `Unmap`/`Masked` 并保留已有 `first_seen_at`、刷新证据与 `last_seen_at`，时间统一 UTC RFC3339；`ClearAddressConflict` 删除唯一行。`ResetAllTx` 清理冲突记录；`DeleteImportOwnedTablesTx` 不触碰该表（完整导入继续由有效预检解除），v4 导出只读业务配置，不含运行态记录。上述边界均有回归。
+
+自动恢复状态：`AddressConflictState` 在发现重叠时先 `observe` 进程内证据，再 `persist`；首次写库失败仍保留内存证据并返回存储错误，后续双开轮次即使 DNS 数据不足也会重试保存并继续阻断。双开读取状态失败直接返回错误并让两侧零准入；单侧启用不读取/不清理冲突表，只保留进程内证据并允许正常侧。已持久化冲突在启动时由 `Load` 恢复；两侧完整且无重叠时先提交 `ClearAddressConflict`，成功后才清除内存并放行；解除提交失败保留内存与 SQLite 证据。冲突判定不接触 `dns.CircuitBreaker`，真实解析失败仍由既有 DNS 轮次单独计数。
+
+执行命令与结果：`go test ./syncer ./config -race -count=1 -timeout 15m` → 两包 ok（syncer 31.705s、config 36.894s）；`go test ./webui/api -race -count=1 -timeout 15m` → ok（48.680s）。定向：`go test ./syncer -run 'TestAddressConflict|TestFirstOverlap|TestDecideAdmission|TestPreflightConflict' -race -count=1 -v -timeout 240s` → 全部 PASS；`go test ./config -run 'TestAddressConflict' -race -count=1 -v` → 3 个顶层用例及 7 个坏记录子场景全部 PASS；`go test ./webui/api -run 'TestExportV4ExcludesAddressConflictRuntimeState|TestExportV4ShapeAndNoRuntimeState' -race -count=1 -v` → 两项 PASS。`gofmt -l` 覆盖本步 Go 文件无输出，`git diff --check` 无输出。
+
+连续故障实证（真实临时 SQLite 写锁 + 计数替身）：`TestAddressConflictStateSQLiteAutoRecoverySequence` 用 `BEGIN IMMEDIATE` 在独立连接持有真实写锁。第 1 轮 `203.0.113.7` 对 `203.0.113.0/24` 查实重叠，`SaveAddressConflict` 等待 busy_timeout 后失败，进程内证据保留，`Admission.DNS/EdgeOne=false` 且 `KeepConflict=true`，DNS 写入、EdgeOne 写入、站点确认计数均为 0，数据库无行。第 2 轮 DNS 数据不足、EdgeOne 完整，已知冲突继续阻断并在本轮重试保存成功，三项计数仍为 0，`first_seen_at` 保持第 1 轮时间。第 3 轮新建状态并 `Load` 模拟重启，输入两侧不足仍阻断且零写入，`first_seen_at` 不变。第 4 轮完整无重叠但写锁使解除提交失败，内存与数据库记录保留、两侧零准入、计数仍为 0。第 5 轮完整无重叠且解除成功，先删行再清内存，状态变为 `clear`，DNS/EdgeOne/站点确认各计 1。第 6 轮再次完整复查保持 `clear`。`TestAddressConflictStateOverlapPriorityAndSaveRetry` 用受控替身单独验证「部分成功仍命中 → 首次保存失败 → 数据不足重试成功 → 完整解除」；`TestAddressConflictStateReadFailureBlocksBoth` 验证双开读失败两侧阻断、单开不读表；`TestAddressConflictStateClearFailureKeepsMemory` 验证解除失败保留内存并可重试；`TestAddressConflictStateSingleSideAndReopen` 验证关闭一项继续 DNS、重新双开立即恢复阻断；`TestAddressConflictStateNoKnownDataStates` 覆盖双关、完整无重叠、单侧不足与两侧不足；`TestPreflightConflictBlocksEveryTargetAndConfirmation` 对两个目标同时断言零写入；`TestFirstOverlapIncludesNextVersionPrefix` 证明只存在于待更新版的被跟踪网段经 `AllPrefixes` 注入后仍参与判定；`TestAddressConflictDoesNotTouchDNSCircuitBreaker` 证明冲突判定不增加熔断计数，真实 `RecordFailure` 仍单独打开熔断器。`TestAddressConflictGetRejectsCorruptRows` 覆盖 DNS 名称/地址/网段/ZoneId/时间损坏；`TestAddressConflictStoreRoundTripAndNormalization` 覆盖规范化、更新保留首次时间与非法保存不覆盖旧记录；`TestAddressConflictResetAndImportBoundary` 覆盖 reset 清理与完整导入保留。
+
+外部验收状态：本步只用本地临时 SQLite 与纯输入，未调用真实 DNS/腾讯云、未执行云写入或站点确认，未接线 `runRound`；阻断期间的零写入由 `Admission` 落点计数证明，Step 8 必须在该准入点之前不调用任何目标/确认入口。真实双开预检、真实过渡保护前缀与真实站点确认留 Step 8/11/17；模拟测试留 Step 12；运行状态 API 留 Step 15。待补项：Step 8 启动时调用 `Load`、每轮在目标派发前调用 `Evaluate`，并把站点当前/待更新/过渡前缀合并后传入；配置代际与旧轮次迟到结果的丢弃由 Step 8 通过单轮串行执行和配置快照比较接线（本步 `evalMu` 已串行化运行态写入，`loadLocked` 不覆盖较新的进程内证据）；Step 11 读取 `edgeone_origin_transitions` 注入 `EdgeOnePrefix`；Step 15 展示 `address_preflight` 状态与恢复一次记录。
+
+**本批收口门禁（Step 5～7）**　2026-11-12，`beta`，HEAD 仍为 `1bcfbaa`，工作树改动未提交、未暂存（`git status` 仅列出本批 5 个修改文件与 10 个新增文件）。`go test ./provider ./syncer ./config -race -count=1 -timeout=20m` → provider 9.368s、syncer 30.818s、config 36.808s；`go test ./webui/api -race -count=1 -timeout=20m` → ok（全量运行中同包 49.965s）；`go test ./... -race -count=1 -timeout=20m` → 12 包全部 ok（root 26.180s、app 1.214s、config 37.054s、dns 1.449s、internal/health 43.293s、internal/portconv 1.149s、internal/tag 1.145s、notifier 15.848s、provider 9.297s、syncer 34.502s、webui 3.412s、webui/api 49.965s）。`go vet ./...`、`go build ./...` 无输出；本批全部改动 Go 文件 `gofmt -l` 无输出；`git diff --check` 与十个新增文件的 `git diff --no-index --check /dev/null` 均无空白错误。未执行真实腾讯云/真实 DNS、产品浏览器、Linux/Docker、依赖审计、远端 CI/GHCR 或发布；Step 8～17 保持待执行，真实证据边界见各步。当前工作树未提交、未推送，`beta` 相对 `origin/beta` 的 ahead 5 为实施前既有提交，不包含本批改动。
 
 <a name="step-8"></a>
 
