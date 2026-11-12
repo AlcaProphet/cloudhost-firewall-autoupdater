@@ -175,3 +175,25 @@ func TestAddressConflictResetAndImportBoundary(t *testing.T) {
 		t.Fatalf("导入保留证据不正确: %+v", got)
 	}
 }
+
+// TestAddressConflictSaveRejectsInvalidFilledTimeOrder 零值时间由 Save 补齐后，
+// 不得留下 last_seen_at 早于 first_seen_at 的坏行。
+func TestAddressConflictSaveRejectsInvalidFilledTimeOrder(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	err := s.SaveAddressConflict(ctx, AddressConflict{
+		DNSName:       "home.example",
+		DNSAddress:    "203.0.113.7",
+		EdgeOnePrefix: "203.0.113.0/24",
+		ZoneID:        "zone-a",
+		// FirstSeenAt 为零，将由 Save 补为当前时间；LastSeenAt 远早于它。
+		LastSeenAt: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err == nil {
+		t.Fatal("补齐后时间顺序非法应拒绝保存")
+	}
+	row, gerr := s.GetAddressConflict(ctx)
+	if gerr != nil || row != nil {
+		t.Fatalf("非法保存不得留下记录: %+v err=%v", row, gerr)
+	}
+}

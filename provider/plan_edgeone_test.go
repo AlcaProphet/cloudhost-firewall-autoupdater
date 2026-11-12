@@ -320,6 +320,35 @@ func TestEdgeOnePlanUnavailableSiteNeverBecomesEmpty(t *testing.T) {
 	if !hasIssue(zero.EdgeOneErrors, IssueEdgeOneUnavailable) || zero.CoverageReady {
 		t.Fatalf("零值快照必须按不可用处理: %+v", zero)
 	}
+
+	// 非法 netip.Prefix 也不能生成 "invalid Prefix" 期望。
+	invalid := planEdgeOne(t, config.CloudAliECS, "edgeone", "auto-dns", []EdgeOneSitePlanInput{{
+		Site: edgeSite("zone-a", []int{1}, "TCP", "443", "ipv4"),
+		Snapshot: OriginACLSnapshot{
+			ZoneID:  "zone-a",
+			Current: OriginACLVersion{Version: "v1", Prefixes: []netip.Prefix{{}}},
+		},
+	}}, nil)
+	if !hasIssue(invalid.EdgeOneErrors, IssueEdgeOneUnavailable) {
+		t.Fatalf("非法网段必须按不可用处理: %+v", invalid.EdgeOneErrors)
+	}
+	if len(invalid.Desired) != 0 || len(invalid.ToAdd) != 0 || invalid.CoverageReady {
+		t.Fatalf("非法网段不得产生期望/新增/覆盖: %+v", invalid)
+	}
+
+	// 待更新版存在却没有网段也不是“明确无下一版”，按不完整处理。
+	emptyNext := OriginACLVersion{Version: "v2", Prefixes: nil}
+	emptyNextPlan := planEdgeOne(t, config.CloudAliECS, "edgeone", "auto-dns", []EdgeOneSitePlanInput{{
+		Site: edgeSite("zone-a", []int{1}, "TCP", "443", "ipv4"),
+		Snapshot: OriginACLSnapshot{
+			ZoneID:  "zone-a",
+			Current: edgeVersion("v1", "203.0.113.0/24"),
+			Next:    &emptyNext,
+		},
+	}}, nil)
+	if !hasIssue(emptyNextPlan.EdgeOneErrors, IssueEdgeOneUnavailable) || len(emptyNextPlan.Desired) != 0 {
+		t.Fatalf("空 Next 网段必须按不完整处理: %+v", emptyNextPlan)
+	}
 }
 
 // TestEdgeOnePlanTCPUDPSplitAndPortExpansion 复用既有端口展开与平台能力矩阵。

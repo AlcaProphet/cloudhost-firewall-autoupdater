@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/netip"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -93,6 +94,15 @@ func (l *sqliteWriteLock) release() {
 	l.conn = nil
 }
 
+// assertSQLiteBusyError 确认失败确实来自真实写锁，而不是其他存储错误。
+func assertSQLiteBusyError(t *testing.T, err error) {
+	t.Helper()
+	text := strings.ToLower(err.Error())
+	if !strings.Contains(text, "locked") && !strings.Contains(text, "busy") {
+		t.Fatalf("期望 SQLite 写锁错误，实际: %v", err)
+	}
+}
+
 func assertBlockedByConflict(t *testing.T, outcome PreflightOutcome) {
 	t.Helper()
 	if outcome.State != PreflightStateOverlap {
@@ -129,10 +139,16 @@ func TestAddressConflictStateSQLiteAutoRecoverySequence(t *testing.T) {
 
 	// 第 1 轮：真实写锁使首次 Save 失败；进程内证据先保留，两侧零准入。
 	lock := acquireSQLiteWriteLock(t, path)
+	lockStarted := time.Now()
 	outcome, err := state.Evaluate(ctx, overlapInput)
+	lockElapsed := time.Since(lockStarted)
 	lock.release()
 	if err == nil {
 		t.Fatal("首次保存被写锁阻塞时必须返回错误")
+	}
+	assertSQLiteBusyError(t, err)
+	if lockElapsed < 2*time.Second {
+		t.Fatalf("首次保存未等待 busy_timeout，耗时 %v", lockElapsed)
 	}
 	assertBlockedByConflict(t, outcome)
 	writes.apply(outcome.Admission)
@@ -213,10 +229,16 @@ func TestAddressConflictStateSQLiteAutoRecoverySequence(t *testing.T) {
 
 	// 第 4 轮：完整输入证明无重叠，但解除提交被写锁拒绝；保留内存阻断。
 	lock = acquireSQLiteWriteLock(t, path)
+	lockStarted = time.Now()
 	outcome, err = restarted.Evaluate(ctx, noOverlap)
+	lockElapsed = time.Since(lockStarted)
 	lock.release()
 	if err == nil {
 		t.Fatal("解除提交失败必须返回错误")
+	}
+	assertSQLiteBusyError(t, err)
+	if lockElapsed < 2*time.Second {
+		t.Fatalf("解除提交未等待 busy_timeout，耗时 %v", lockElapsed)
 	}
 	assertBlockedByConflict(t, outcome)
 	writes.apply(outcome.Admission)
@@ -589,5 +611,221 @@ func TestPreflightConflictBlocksEveryTargetAndConfirmation(t *testing.T) {
 		if w.total() != 0 {
 			t.Fatalf("目标 %d 阻断期间写入 = %+v", i+1, w)
 		}
+	}
+}
+
+// TestAddressConflictStateInvalidSamplesForceIncomplete 非法样本不得因调用方传入
+// Complete=true 而被视为完整输入；无效侧必须停止准入。
+func TestAddressConflictStateInvalidSamplesForceIncomplete(t *testing.T) {
+	validDNS := []DNSAddress{{Host: "home.example", Addr: netip.MustParseAddr("192.0.2.9")}}
+	validEdge := []EdgeOnePrefix{{ZoneID: "zone-a", Prefix: netip.MustParsePrefix("203.0.113.0/24")}}
+	cases := []struct {
+		name     string
+		dns      []DNSAddress
+		edge     []EdgeOnePrefix
+		wantDNS  bool
+		wantEdge bool
+	}{
+		{
+			name:     "非法 DNS 地址",
+			dns:      []DNSAddress{{Host: "bad.example", Addr: netip.Addr{}}},
+			edge:     validEdge,
+			wantDNS:  false,
+			wantEdge: true,
+		},
+		{
+			name:     "非法 EdgeOne 网段",
+			dns:      validDNS,
+			edge:     []EdgeOnePrefix{{ZoneID: "zone-bad", Prefix: netip.Prefix{}}},
+			wantDNS:  true,
+			wantEdge: false,
+		},
+		{
+			name:     "两侧均非法",
+			dns:      []DNSAddress{{Host: "bad.example", Addr: netip.Addr{}}},
+			edge:     []EdgeOnePrefix{{ZoneID: "zone-bad", Prefix: netip.Prefix{}}},
+			wantDNS:  false,
+			wantEdge: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state := NewAddressConflictState(&fakeConflictStore{})
+			outcome, err := state.Evaluate(context.Background(), Preflight{
+				DNSEnabled:      true,
+				EdgeOneEnabled:  true,
+				DNSComplete:     true,
+				EdgeOneComplete: true,
+				DNS:             tc.dns,
+				EdgeOne:         tc.edge,
+			})
+			if err != nil {
+				t.Fatalf("评估失败: %v", err)
+			}
+			if outcome.Admission.DNS != tc.wantDNS || outcome.Admission.EdgeOne != tc.wantEdge {
+				t.Fatalf("Admission = %+v, want DNS=%v EdgeOne=%v", outcome.Admission, tc.wantDNS, tc.wantEdge)
+			}
+			if outcome.State != PreflightStateDataUnavailable {
+				t.Fatalf("state = %q, want data_unavailable", outcome.State)
+			}
+			if tc.wantDNS == false && outcome.DNSComplete {
+				t.Fatal("非法 DNS 样本不得保持完整")
+			}
+			if tc.wantEdge == false && outcome.EdgeOneComplete {
+				t.Fatal("非法 EdgeOne 样本不得保持完整")
+			}
+		})
+	}
+}
+
+// TestAddressConflictStateLoadWithoutRowRetriesPersist 外部清空 SQLite 行后，
+// 进程内证据不能被误认为已持久化；后续数据不足轮次仍须重试保存。
+func TestAddressConflictStateLoadWithoutRowRetriesPersist(t *testing.T) {
+	store := &fakeConflictStore{}
+	state := NewAddressConflictState(store)
+	overlap := Preflight{
+		DNSEnabled:      true,
+		EdgeOneEnabled:  true,
+		DNSComplete:     true,
+		EdgeOneComplete: true,
+		DNS:             []DNSAddress{{Host: "home.example", Addr: netip.MustParseAddr("203.0.113.7")}},
+		EdgeOne:         []EdgeOnePrefix{{ZoneID: "zone-a", Prefix: netip.MustParsePrefix("203.0.113.0/24")}},
+	}
+	outcome, err := state.Evaluate(context.Background(), overlap)
+	if err != nil {
+		t.Fatalf("首次保存失败: %v", err)
+	}
+	assertBlockedByConflict(t, outcome)
+	if _, saves, _ := store.counts(); saves != 1 {
+		t.Fatalf("首次保存次数 = %d", saves)
+	}
+
+	// 模拟外部 reset/清理：行消失，但进程内证据仍在。
+	store.mu.Lock()
+	store.row = nil
+	store.mu.Unlock()
+	if err := state.Load(context.Background()); err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+
+	outcome, err = state.Evaluate(context.Background(), Preflight{
+		DNSEnabled:     true,
+		EdgeOneEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("数据不足轮次重试保存失败: %v", err)
+	}
+	assertBlockedByConflict(t, outcome)
+	if _, saves, _ := store.counts(); saves != 2 {
+		t.Fatalf("外部清行后应重试保存，saves=%d", saves)
+	}
+	if store.row == nil {
+		t.Fatal("重试保存后应重新写入 SQLite")
+	}
+}
+
+// TestAddressConflictStateForgetAfterReset reset 成功清空 SQLite 后，必须显式清除
+// 进程内证据；否则后续数据不足轮次仍会用已失效的冲突继续阻断。
+func TestAddressConflictStateForgetAfterReset(t *testing.T) {
+	store, _ := newConflictStateStore(t)
+	ctx := context.Background()
+	state := NewAddressConflictState(store)
+
+	overlap := Preflight{
+		DNSEnabled:      true,
+		EdgeOneEnabled:  true,
+		DNSComplete:     true,
+		EdgeOneComplete: true,
+		DNS:             []DNSAddress{{Host: "home.example", Addr: netip.MustParseAddr("203.0.113.7")}},
+		EdgeOne:         []EdgeOnePrefix{{ZoneID: "zone-a", Prefix: netip.MustParsePrefix("203.0.113.0/24")}},
+	}
+	outcome, err := state.Evaluate(ctx, overlap)
+	if err != nil {
+		t.Fatalf("保存冲突失败: %v", err)
+	}
+	assertBlockedByConflict(t, outcome)
+	if row, gerr := store.GetAddressConflict(ctx); gerr != nil || row == nil {
+		t.Fatalf("冲突未持久化: %+v err=%v", row, gerr)
+	}
+
+	if err := store.WithTransactionContext(ctx, func(tx *sql.Tx) error {
+		return store.ResetAllTx(ctx, tx)
+	}); err != nil {
+		t.Fatalf("reset 失败: %v", err)
+	}
+	if row, gerr := store.GetAddressConflict(ctx); gerr != nil || row != nil {
+		t.Fatalf("reset 后 SQLite 行应为空: %+v err=%v", row, gerr)
+	}
+	if state.memoryConflict() == nil {
+		t.Fatal("reset 本身不应自动改写进程内状态")
+	}
+	state.Forget()
+	if state.memoryConflict() != nil {
+		t.Fatal("Forget 后进程内证据必须清空")
+	}
+
+	// 无已知冲突且双开输入不足：只标记数据不足并停止两侧，不再报 overlap。
+	outcome, err = state.Evaluate(ctx, Preflight{
+		DNSEnabled:     true,
+		EdgeOneEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("Forget 后数据不足轮次不应报错: %v", err)
+	}
+	if outcome.KnownConflict || outcome.State != PreflightStateDataUnavailable ||
+		outcome.Admission.DNS || outcome.Admission.EdgeOne {
+		t.Fatalf("reset 后残留证据仍在阻断: %+v", outcome)
+	}
+
+	// 完整无重叠输入正常放行；证明 Forget 后恢复的是无已知冲突状态。
+	outcome, err = state.Evaluate(ctx, Preflight{
+		DNSEnabled:      true,
+		EdgeOneEnabled:  true,
+		DNSComplete:     true,
+		EdgeOneComplete: true,
+		DNS:             []DNSAddress{{Host: "other.example", Addr: netip.MustParseAddr("192.0.2.9")}},
+		EdgeOne:         []EdgeOnePrefix{{ZoneID: "zone-b", Prefix: netip.MustParsePrefix("198.51.100.0/24")}},
+	})
+	if err != nil || outcome.State != PreflightStateClear || !outcome.Admission.DNS || !outcome.Admission.EdgeOne {
+		t.Fatalf("Forget 后完整输入未放行: %+v err=%v", outcome, err)
+	}
+}
+
+// TestAddressConflictStateForgetReReadsPersistedRow Forget 后下一次双开评估必须
+// 重新读取 SQLite；若 reset 实际未提交成功，已持久化冲突仍须恢复阻断。
+func TestAddressConflictStateForgetReReadsPersistedRow(t *testing.T) {
+	first := time.Now().UTC().Add(-time.Hour)
+	store := &fakeConflictStore{
+		row: &config.AddressConflict{
+			DNSName:       "home.example",
+			DNSAddress:    "203.0.113.7",
+			EdgeOnePrefix: "203.0.113.0/24",
+			ZoneID:        "zone-a",
+			FirstSeenAt:   first,
+			LastSeenAt:    first.Add(time.Minute),
+		},
+	}
+	state := NewAddressConflictState(store)
+	if err := state.Load(context.Background()); err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	state.Forget()
+	if state.memoryConflict() != nil {
+		t.Fatal("Forget 后内存证据应清空")
+	}
+
+	outcome, err := state.Evaluate(context.Background(), Preflight{
+		DNSEnabled:     true,
+		EdgeOneEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("重新读取失败: %v", err)
+	}
+	assertBlockedByConflict(t, outcome)
+	if state.memoryConflict() == nil {
+		t.Fatal("SQLite 仍有的冲突必须重新进入内存阻断")
+	}
+	if gets, _, _ := store.counts(); gets < 2 {
+		t.Fatalf("Forget 后应重新读取 SQLite，gets=%d", gets)
 	}
 }

@@ -119,6 +119,9 @@ func (s *Store) SaveAddressConflict(ctx context.Context, c AddressConflict) erro
 	if normalized.LastSeenAt.IsZero() {
 		normalized.LastSeenAt = now
 	}
+	if normalized.LastSeenAt.Before(normalized.FirstSeenAt) {
+		return fmt.Errorf("地址冲突记录时间顺序无效：最后观察时间早于首次观察时间")
+	}
 	firstSeen := formatConflictTime(normalized.FirstSeenAt)
 	lastSeen := formatConflictTime(normalized.LastSeenAt)
 

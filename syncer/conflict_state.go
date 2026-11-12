@@ -65,10 +65,9 @@ func (s *AddressConflictState) loadLocked(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if conflict == nil {
-		// 已提交记录不存在：只在进程内没有更新证据时清空。
-		if s.known == nil {
-			s.persisted = false
-		}
+		// 已提交记录不存在：即使进程内还有证据，也不能认为它已持久化。
+		// 后续数据不足轮次会重新保存，避免外部 reset/清理后证据只留在内存。
+		s.persisted = false
 		s.loaded = true
 		return nil
 	}
@@ -112,6 +111,14 @@ func (s *AddressConflictState) Evaluate(ctx context.Context, in Preflight) (Pref
 
 	s.evalMu.Lock()
 	defer s.evalMu.Unlock()
+
+	// 非法样本不能因为调用方传了 Complete=true 就被当作完整输入。
+	if !allDNSAddressesValid(in.DNS) {
+		in.DNSComplete = false
+	}
+	if !allEdgeOnePrefixesValid(in.EdgeOne) {
+		in.EdgeOneComplete = false
+	}
 
 	outcome := PreflightOutcome{
 		DNSComplete:     in.DNSComplete,
@@ -261,6 +268,21 @@ func (s *AddressConflictState) persist(ctx context.Context, conflict config.Addr
 	s.persisted = true
 	s.mu.Unlock()
 	return nil
+}
+
+// Forget 清除进程内冲突证据，供配置 reset 已成功提交后调用。
+//
+// reset 事务负责删除 SQLite 行；本方法只清内存并把状态标为未加载，下一次双开
+// 评估会重新读取 SQLite。这样即使 reset 未真正提交，记录仍会重新进入阻断。
+func (s *AddressConflictState) Forget() {
+	s.evalMu.Lock()
+	defer s.evalMu.Unlock()
+	s.mu.Lock()
+	s.known = nil
+	s.persisted = false
+	// 下一次双开评估重新读取 SQLite；若 reset 实际未提交，记录会重新进入阻断。
+	s.loaded = false
+	s.mu.Unlock()
 }
 
 // clearMemory 只在 SQLite 解除提交成功之后调用。

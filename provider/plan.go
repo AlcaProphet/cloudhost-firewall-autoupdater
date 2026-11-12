@@ -205,8 +205,9 @@ type TargetPlanInput struct {
 	// 非空时，另一 TAG 下的精确等价云端规则进入目标级冲突：不计覆盖、不新增、不改标。
 	// 为空时保持原有单 TAG 语义。
 	OtherTag string
-	// TargetID 非零时只使用 TargetIDs 包含它的 EdgeOne 站点；调用方仍负责按
-	// 实际目标（cloud_type + region + resource_id）归并别名，再传入一次规划。
+	// TargetID 非零时只使用 TargetIDs 包含它的 EdgeOne 站点。
+	// 已用 SelectEdgeOneSitesForIdentity 归并物理目标别名时应保持 0，
+	// 避免再次按单个本地 ID 过滤掉绑定在其他别名上的站点。
 	TargetID int
 	// EdgeOneSites 是绑定到本目标的全部适用站点；为空时保持纯 DNS 规划。
 	EdgeOneSites []EdgeOneSitePlanInput
@@ -523,6 +524,32 @@ func unsupportedMessage(code string) string {
 	}
 }
 
+// originACLSnapshotPrefixesValid 校验 Step 5 快照的前缀集合。
+//
+// 当前版必须有至少一个合法前缀；当前/待更新版不得包含零值 Prefix。单个地址族
+// 为空仍合法，由 PrefixesForFamily 按站点地址族筛选。
+func originACLSnapshotPrefixesValid(snapshot OriginACLSnapshot) bool {
+	if len(snapshot.Current.Prefixes) == 0 {
+		return false
+	}
+	for _, prefix := range snapshot.Current.Prefixes {
+		if !prefix.IsValid() {
+			return false
+		}
+	}
+	if snapshot.Next != nil {
+		if len(snapshot.Next.Prefixes) == 0 {
+			return false
+		}
+		for _, prefix := range snapshot.Next.Prefixes {
+			if !prefix.IsValid() {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // appendEdgeOnePlannedRules 把适用 EdgeOne 站点展开为期望功能并合入 Desired。
 //
 // 站点先按 ZoneID 稳定排序；同一 key 的多个站点只保留一条期望，全部 ZoneID 进入
@@ -562,6 +589,14 @@ func appendEdgeOnePlannedRules(
 			continue
 		}
 
+		if !originACLSnapshotPrefixesValid(source.Snapshot) {
+			// 零值/非法前缀不是“合法空地址族”，不得生成 invalid Prefix 期望。
+			plan.EdgeOneErrors = append(plan.EdgeOneErrors, PlanIssue{
+				Code:    IssueEdgeOneUnavailable,
+				Message: "EdgeOne 站点 " + zoneID + " 输入不可用：包含非法或缺失网段",
+			})
+			continue
+		}
 		prefixes := source.Snapshot.PrefixesForFamily(site.AddressFamily)
 		if len(prefixes) == 0 {
 			// 单个地址族合法为空时不制造查询失败；站点级覆盖证明由 Step 10 负责。

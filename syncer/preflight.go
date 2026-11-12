@@ -94,6 +94,28 @@ func FirstOverlap(dns []DNSAddress, edge []EdgeOnePrefix) (DNSAddress, EdgeOnePr
 	return DNSAddress{}, EdgeOnePrefix{}, false
 }
 
+// allDNSAddressesValid 判断本轮 DNS 样本是否都是有效地址。
+//
+// 不完整轮次可以携带部分样本；但只要样本中存在非法地址，就不能把该来源标为完整。
+func allDNSAddressesValid(addresses []DNSAddress) bool {
+	for _, address := range addresses {
+		if !address.Addr.IsValid() {
+			return false
+		}
+	}
+	return true
+}
+
+// allEdgeOnePrefixesValid 判断本轮 EdgeOne 样本是否都是有效网段。
+func allEdgeOnePrefixesValid(prefixes []EdgeOnePrefix) bool {
+	for _, prefix := range prefixes {
+		if !prefix.Prefix.IsValid() {
+			return false
+		}
+	}
+	return true
+}
+
 // DecideAdmission 按 Design6 §7.4/§8.3 的决策优先级计算数据层准入。
 //
 // 单开/双关不做全局判定；双开时任何正向重叠立即阻断两侧并保留冲突，
