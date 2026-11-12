@@ -628,7 +628,7 @@ func (s *Store) GetRules() ([]DomainRule, error) {
 //   - "null"        → **内部错误**（json 解出 nil 切片，与 "[]" 可区分）；
 //     历史（c289744 之前）写路径用 json.Marshal(nil slice) 会写出字面量 null，
 //     因此存量库可能包含该值：升级后 fail-closed 是**预期行为**，
-//     发布说明给出修复方式（SQL 或重新导入 version 3 配置包）。
+//     发布说明给出修复方式（SQL 或重新导入 v3/v4 配置包）。
 //   - 对象/标量/非整数数组/解析失败/物理 NULL → 内部错误
 //
 // 错误文本只带规则 `#id`，绝不回显原始损坏值。
@@ -1454,7 +1454,7 @@ func loadSettingsByKeys(ctx context.Context, q DBTX, keys []string) (map[string]
 //   - 缺失或空白的非凭据默认键按「缺失」处理并使用固定默认值；
 //   - 已有非空但非法的值不静默回退，而是返回带键名（不含值）的错误；
 //   - webui_port 等已不是业务设置的残留键一律忽略，不做迁移或清理；
-//   - 返回的 map 只包含 version 3 的完整设置键集合，未知键被丢弃。
+//   - 返回的 map 只包含当前完整设置键集合，未知键被丢弃。
 func normalizeSettings(raw map[string]string) (map[string]string, error) {
 	out := make(map[string]string, len(settingsKeysCurrent))
 	// 默认值（Build6 §3.1；DNS TAG 见 Build8 Step 1；双功能设置见 Step 2）

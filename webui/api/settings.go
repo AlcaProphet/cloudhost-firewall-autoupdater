@@ -43,7 +43,7 @@ func (d *Deps) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, "读取设置失败", err)
 		return
 	}
-	// 只返回 11 个可编辑键并补齐默认值：数据库中的 webui_port 残留、
+	// 只返回 15 个可编辑键并补齐默认值：数据库中的 webui_port 残留、
 	// sync_enabled 与其他未知键都不返回（Build6 §12.9）
 	out := make(map[string]string, len(settingsEditableKeys))
 	for k := range settingsEditableKeys {

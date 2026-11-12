@@ -131,7 +131,7 @@ type AlertEmailConfig struct {
 // AlertPolicyConfig 告警触发策略：三个触发开关是邮件与 Webhook 共用的全局策略
 // （Build7 §4.1），HealthTimeout 是唯一的运行健康超时。
 //
-// HealthTimeoutText 是已校验的时长文本，用于 SQLite 与 version 3 配置包
+// HealthTimeoutText 是已校验的时长文本，用于 SQLite 与配置包（v3/v4）
 // （保留 "10m" 这类可读形态）；HealthTimeout 是它解析后的运行时值，
 // 两者始终由 NormalizeAlertPolicy 一并写入，不得单独修改。
 type AlertPolicyConfig struct {

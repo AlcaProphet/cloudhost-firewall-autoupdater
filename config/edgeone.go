@@ -167,7 +167,8 @@ func parseEdgeOnePortNumber(v string) (int, error) {
 //
 // 仅用于同一站点内的别名检测；不同站点可以共享同一实际目标。
 func TargetIdentity(t TargetConfig) string {
-	return string(t.CloudType) + "\x00" + t.Region + "\x00" + t.ResourceID
+	return strings.TrimSpace(string(t.CloudType)) + "\x00" +
+		strings.TrimSpace(t.Region) + "\x00" + strings.TrimSpace(t.ResourceID)
 }
 
 // DeepCopyEdgeOneSites 深拷贝站点切片及每个 TargetIDs 数组。

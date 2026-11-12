@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 )
 
@@ -170,8 +171,19 @@ func (s *Store) ValidateEdgeOneSiteTargetsTx(ctx context.Context, tx *sql.Tx, si
 func normalizeAndValidateEdgeOneSites(sites []EdgeOneSite, targets []TargetConfig) ([]EdgeOneSite, error) {
 	normalized := make([]EdgeOneSite, 0, len(sites))
 	for _, site := range sites {
+		// 空绑定是持久化完整性错误，必须在归一化前判定：NormalizeEdgeOneSite
+		// 会返回 ValidationError，若继续用 %w 包装会被 HTTP 层误分类为 400。
+		if len(site.TargetIDs) == 0 {
+			return nil, fmt.Errorf("站点 %s 没有绑定目标，数据已损坏", site.ZoneID)
+		}
 		siteValue, err := NormalizeEdgeOneSite(site)
 		if err != nil {
+			// 持久化站点的字段/引用错误属于内部完整性错误，不能包装成请求侧
+			// ValidationError；站内实际资源别名在下方单独保留 400 语义。
+			var ve *ValidationError
+			if errors.As(err, &ve) {
+				return nil, fmt.Errorf("站点 %s 配置无效: %s", site.ZoneID, ve.Error())
+			}
 			return nil, fmt.Errorf("站点 %s 配置无效: %w", site.ZoneID, err)
 		}
 		normalized = append(normalized, siteValue)
@@ -182,9 +194,6 @@ func normalizeAndValidateEdgeOneSites(sites []EdgeOneSite, targets []TargetConfi
 		byID[target.ID] = target
 	}
 	for _, site := range normalized {
-		if len(site.TargetIDs) == 0 {
-			return nil, fmt.Errorf("站点 %s 没有绑定目标，数据已损坏", site.ZoneID)
-		}
 		seen := make(map[string]int, len(site.TargetIDs))
 		for _, id := range site.TargetIDs {
 			target, ok := byID[id]

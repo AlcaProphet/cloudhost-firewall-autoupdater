@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -804,6 +805,15 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 		_ = srcStore.Close()
 		t.Fatalf("预置策略/Push 失败: %v", err)
 	}
+	if err := srcStore.WithTransaction(func(tx *sql.Tx) error {
+		return srcStore.AddEdgeOneSiteTx(context.Background(), tx, config.EdgeOneSite{
+			ZoneID: "zone-process", TargetIDs: []int{srcTargets[0].ID, srcTargets[1].ID},
+			Protocol: "TCP", Ports: "80,443", AddressFamily: "dual",
+		})
+	}); err != nil {
+		_ = srcStore.Close()
+		t.Fatalf("预置 EdgeOne 站点失败: %v", err)
+	}
 	if err := srcStore.Close(); err != nil {
 		t.Fatalf("关闭预置数据库失败: %v", err)
 	}
@@ -845,7 +855,7 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 		}
 	}
 	// Build8 Step 4：version 4 固定结构必须包含 edgeone_sites、policy 与 monitoring
-	for _, fragment := range []string{`"version": 4`, `"edgeone_sites": []`, `"policy"`, `"uptime_kuma_push"`, `"health_timeout": "25m"`, `"interval": "45s"`} {
+	for _, fragment := range []string{`"version": 4`, `"edgeone_sites"`, `"zone-process"`, `"policy"`, `"uptime_kuma_push"`, `"health_timeout": "25m"`, `"interval": "45s"`} {
 		if !strings.Contains(exportBody, fragment) {
 			t.Errorf("v4 导出缺少 %s；body=%s", fragment, exportBody)
 		}
@@ -905,6 +915,37 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 		if !strings.Contains(alertCfgBody, fragment) {
 			t.Errorf("导入后四对象告警缺少 %s: %s", fragment, alertCfgBody)
 		}
+	}
+	sitesBody := getBody(t, dstBase+"/api/edgeone/sites")
+	var siteEnvelope struct {
+		Sites []config.EdgeOneSite `json:"sites"`
+	}
+	if err := json.Unmarshal([]byte(sitesBody), &siteEnvelope); err != nil {
+		t.Fatalf("解析导入后站点失败: %v; body=%s", err, sitesBody)
+	}
+	if len(siteEnvelope.Sites) != 1 || siteEnvelope.Sites[0].ZoneID != "zone-process" ||
+		siteEnvelope.Sites[0].Protocol != "TCP" || siteEnvelope.Sites[0].Ports != "80,443" ||
+		siteEnvelope.Sites[0].AddressFamily != "dual" || len(siteEnvelope.Sites[0].TargetIDs) != 2 {
+		t.Fatalf("导入后站点绑定不正确: %+v", siteEnvelope.Sites)
+	}
+	var importedTargets []config.TargetConfig
+	if err := json.Unmarshal([]byte(targetsBody), &importedTargets); err != nil {
+		t.Fatalf("解析导入后目标失败: %v; body=%s", err, targetsBody)
+	}
+	byID := make(map[int]config.TargetConfig, len(importedTargets))
+	for _, target := range importedTargets {
+		byID[target.ID] = target
+	}
+	resources := map[string]bool{}
+	for _, id := range siteEnvelope.Sites[0].TargetIDs {
+		target, ok := byID[id]
+		if !ok {
+			t.Fatalf("站点引用了不存在的导入目标 #%d", id)
+		}
+		resources[target.ResourceID] = true
+	}
+	if !resources["lhins-src-1"] || !resources["sg-src-2"] || len(resources) != 2 {
+		t.Errorf("站点目标未重映射到来源资源: %v", resources)
 	}
 
 	// 4) 版本策略：v3/v4 被接受（上方往返已覆盖）；v1、v2 与未知版本必须 400

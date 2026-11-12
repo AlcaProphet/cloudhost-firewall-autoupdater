@@ -36,14 +36,14 @@ type bundleV4WireSettings struct {
 }
 
 type bundleV4Wire struct {
-	Version      *int                                `json:"version"`
-	Metadata     *bundleV3WireMetadata               `json:"metadata"`
-	Targets      presenceSlice[*bundleV3WireTarget]  `json:"targets"`
-	Rules        presenceSlice[*bundleV3WireRule]    `json:"rules"`
-	EdgeOneSites presenceSlice[*bundleV4WireSite]    `json:"edgeone_sites"`
-	Settings     *bundleV4WireSettings               `json:"settings"`
-	Alerts       *bundleV3WireAlerts                 `json:"alerts"`
-	Monitoring   *bundleV3WireMonitoring             `json:"monitoring"`
+	Version      *int                               `json:"version"`
+	Metadata     *bundleV3WireMetadata              `json:"metadata"`
+	Targets      presenceSlice[*bundleV3WireTarget] `json:"targets"`
+	Rules        presenceSlice[*bundleV3WireRule]   `json:"rules"`
+	EdgeOneSites presenceSlice[*bundleV4WireSite]   `json:"edgeone_sites"`
+	Settings     *bundleV4WireSettings              `json:"settings"`
+	Alerts       *bundleV3WireAlerts                `json:"alerts"`
+	Monitoring   *bundleV3WireMonitoring            `json:"monitoring"`
 }
 
 // checkBundleV4Presence 按 v4 DTO 声明顺序检查必填结构。

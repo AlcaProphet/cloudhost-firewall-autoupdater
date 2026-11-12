@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
@@ -144,6 +147,13 @@ func TestImportV4RoundTripWithSitesAndSettings(t *testing.T) {
 	dest := newTestEnv(t)
 	dest.seedTargetCount(t, config.CloudTCLighthouse, "ap-shanghai", "lhins-dest", 3)
 	destTargetsBefore, _ := dest.store.GetTargets()
+	// 目标库预置旧站点：导入必须整体替换，而不是保留旧 ZoneId。
+	withTxForTest(t, dest.store, func(ctx context.Context, tx *sql.Tx) error {
+		return dest.store.AddEdgeOneSiteTx(ctx, tx, config.EdgeOneSite{
+			ZoneID: "zone-old", TargetIDs: []int{destTargetsBefore[0].ID},
+			Protocol: "TCP", Ports: "80", AddressFamily: "ipv4",
+		})
+	})
 
 	w = dest.do(t, http.MethodPost, "/api/config/import", exported)
 	if w.Code != http.StatusOK {
@@ -174,6 +184,11 @@ func TestImportV4RoundTripWithSitesAndSettings(t *testing.T) {
 	if sites[0].ZoneID != "zone-roundtrip" || sites[0].Protocol != "TCP" ||
 		sites[0].Ports != "8443" || sites[0].AddressFamily != "dual" {
 		t.Errorf("v4 站点参数未恢复: %+v", sites[0])
+	}
+	for _, site := range sites {
+		if site.ZoneID == "zone-old" {
+			t.Errorf("v4 导入未清除目标库旧站点: %+v", sites)
+		}
 	}
 	if len(sites[0].TargetIDs) != 2 {
 		t.Fatalf("站点目标数量 = %d, want 2", len(sites[0].TargetIDs))
@@ -359,5 +374,134 @@ func TestImportV3PreservesLegacySettingsAndAddsNewDefaults(t *testing.T) {
 	}
 	if got := e.applyCount(); got != 1 {
 		t.Errorf("v3 拒绝请求不得发布，实际 %d", got)
+	}
+}
+
+func TestImportV3ClearsExistingSites(t *testing.T) {
+	e := newTestEnv(t)
+	a := e.seedTarget(t, config.CloudTCCVM, "ap-guangzhou", "sg-a")
+	w := e.do(t, http.MethodPost, "/api/edgeone/sites",
+		edgeOneSiteBody("zone-old", []int{a}, "TCP", "443", "ipv4"))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("预置站点状态码 = %d, want 201; body=%s", w.Code, w.Body.String())
+	}
+	w = e.do(t, http.MethodPost, "/api/config/import", validBundle())
+	if w.Code != http.StatusOK {
+		t.Fatalf("v3 导入状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got := e.applyCount(); got != 2 {
+		t.Errorf("预置站点 + v3 导入应发布两次，实际 %d", got)
+	}
+	w = e.do(t, http.MethodGet, "/api/edgeone/sites", "")
+	if sites := decodeEdgeOneSites(t, w.Body.Bytes()); len(sites) != 0 {
+		t.Errorf("v3 导入必须清除目标库旧站点: %+v", sites)
+	}
+}
+
+func TestImportV4PreservesSyncLogsAndReplacesAlerts(t *testing.T) {
+	e := newTestEnv(t)
+	e.seedTarget(t, config.CloudTCCVM, "ap-guangzhou", "sg-a")
+	if err := e.store.AddSyncLog(config.SyncLog{
+		Timestamp: time.Now(), Target: "keep", Domain: "keep.example", Result: "success", Added: 1,
+	}); err != nil {
+		t.Fatalf("预置同步日志失败: %v", err)
+	}
+	if err := e.store.ReplaceScannedResources("tc_cvm", "ap-guangzhou", []config.ScannedResource{
+		{CloudType: "tc_cvm", Region: "ap-guangzhou", ResourceID: "scan"},
+	}); err != nil {
+		t.Fatalf("预置扫描缓存失败: %v", err)
+	}
+	body := v4Bundle(
+		`[{"export_id":1,"cloud_type":"tc_cvm","region":"ap-guangzhou","resource_id":"sg-a"}]`,
+		`[]`,
+		`[{"zone_id":"zone-audit","target_export_ids":[1],"protocol":"TCP","ports":"443","address_family":"ipv4"}]`,
+		defaultV4Settings(),
+	)
+	body = strings.Replace(body, `"health_timeout":"10m"`, `"health_timeout":"25m"`, 1)
+	w := e.do(t, http.MethodPost, "/api/config/import", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("v4 导入状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got := e.applyCount(); got != 1 {
+		t.Errorf("v4 导入应只发布一次，实际 %d", got)
+	}
+	logs, err := e.store.GetSyncLogs(10)
+	if err != nil || len(logs) != 1 || logs[0].Domain != "keep.example" {
+		t.Errorf("v4 导入未保留 sync_logs: %+v err=%v", logs, err)
+	}
+	scanned, err := e.store.GetScannedResources("tc_cvm")
+	if err != nil || len(scanned) != 0 {
+		t.Errorf("v4 导入未清空扫描缓存: %+v err=%v", scanned, err)
+	}
+	policy, err := e.store.GetAlertPolicy()
+	if err != nil || policy.HealthTimeoutText != "25m" {
+		t.Errorf("v4 导入未覆盖告警策略: %+v err=%v", policy, err)
+	}
+	sites, err := e.store.LoadEdgeOneSites()
+	if err != nil || len(sites) != 1 || sites[0].ZoneID != "zone-audit" {
+		t.Errorf("v4 导入站点不正确: %+v err=%v", sites, err)
+	}
+}
+
+func v4Envelope(t *testing.T, body string) map[string]json.RawMessage {
+	t.Helper()
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		t.Fatalf("解析 v4 配置包失败: %v", err)
+	}
+	return raw
+}
+
+func v4Marshal(t *testing.T, raw map[string]json.RawMessage) string {
+	t.Helper()
+	data, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("序列化 v4 配置包失败: %v", err)
+	}
+	return string(data)
+}
+
+func TestImportV4PresenceMatrix(t *testing.T) {
+	cases := make(map[string]string)
+
+	for _, field := range []string{"metadata", "targets", "rules", "edgeone_sites", "settings", "alerts", "monitoring"} {
+		raw := v4Envelope(t, validV4Bundle())
+		delete(raw, field)
+		cases["缺顶层字段/"+field] = v4Marshal(t, raw)
+	}
+	for _, field := range []string{"dns_enabled", "edgeone_enabled", "edgeone_tag", "edgeone_interval"} {
+		raw := v4Envelope(t, validV4Bundle())
+		var settings map[string]json.RawMessage
+		if err := json.Unmarshal(raw["settings"], &settings); err != nil {
+			t.Fatalf("解析 settings 失败: %v", err)
+		}
+		delete(settings, field)
+		raw["settings"], _ = json.Marshal(settings)
+		cases["缺 settings."+field] = v4Marshal(t, raw)
+	}
+	cases["站点 target_export_ids 为 null"] = v4Bundle(
+		`[{"export_id":1,"cloud_type":"tc_cvm","region":"ap-guangzhou","resource_id":"sg-a"}]`,
+		`[]`,
+		`[{"zone_id":"zone-null","target_export_ids":null,"protocol":"TCP","ports":"80","address_family":"ipv4"}]`,
+		defaultV4Settings(),
+	)
+	cases["站点元素为 null"] = v4Bundle(
+		`[]`, `[]`, `[null]`, defaultV4Settings(),
+	)
+
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := newTestEnv(t)
+			w := e.do(t, http.MethodPost, "/api/config/import", body)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("状态码 = %d, want 400; body=%s", w.Code, w.Body.String())
+			}
+			if got := e.applyCount(); got != 0 {
+				t.Errorf("presence 失败不得发布，实际 %d", got)
+			}
+			if sites, err := e.store.LoadEdgeOneSites(); err != nil || len(sites) != 0 {
+				t.Errorf("presence 失败不得写入站点: %+v err=%v", sites, err)
+			}
+		})
 	}
 }

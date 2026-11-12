@@ -17,7 +17,7 @@ func i8113JSON(t *testing.T, value any) string {
 	return string(body)
 }
 
-// TestI8113EmptyChannelRoundTrip 未选择状态走真实 GET/PUT/导出/导入/reset，并保持 version 3。
+// TestI8113EmptyChannelRoundTrip 未选择状态走真实 GET/PUT/导出/导入/reset，并保持 v4 往返。
 func TestI8113EmptyChannelRoundTrip(t *testing.T) {
 	for _, absent := range []bool{false, true} {
 		t.Run(map[bool]string{false: "默认行", true: "缺行"}[absent], func(t *testing.T) {

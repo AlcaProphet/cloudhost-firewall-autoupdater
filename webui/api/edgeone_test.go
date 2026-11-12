@@ -317,3 +317,64 @@ func TestEdgeOneSitesResetAndSharedTarget(t *testing.T) {
 		t.Errorf("reset 后运行时站点应为空: %+v", st)
 	}
 }
+
+func TestEdgeOneSiteUpdateRollbackOnBindingFailure(t *testing.T) {
+	e := newTestEnv(t)
+	a := e.seedTarget(t, config.CloudTCCVM, "ap-guangzhou", "sg-a")
+	b := e.seedTarget(t, config.CloudTCCVM, "ap-guangzhou", "sg-b")
+	w := e.do(t, http.MethodPost, "/api/edgeone/sites",
+		edgeOneSiteBody("zone-update", []int{a}, "TCP", "443", "ipv4"))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("创建站点状态码 = %d, want 201; body=%s", w.Code, w.Body.String())
+	}
+	if got := e.applyCount(); got != 1 {
+		t.Fatalf("创建后发布次数 = %d, want 1", got)
+	}
+
+	// 站点主行已更新、旧绑定已删除后，在插入新绑定时失败。
+	e.execRaw(t, fmt.Sprintf(`CREATE TRIGGER fail_edgeone_update BEFORE INSERT ON edgeone_site_targets
+		WHEN NEW.target_id = %d BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;`, b))
+	w = e.do(t, http.MethodPut, "/api/edgeone/sites/zone-update",
+		edgeOneSiteBody("zone-update", []int{b}, "TCP", "8443", "ipv6"))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("更新失败状态码 = %d, want 500; body=%s", w.Code, w.Body.String())
+	}
+	if got := e.applyCount(); got != 1 {
+		t.Errorf("更新失败不得发布，实际 %d", got)
+	}
+	w = e.do(t, http.MethodGet, "/api/edgeone/sites", "")
+	sites := decodeEdgeOneSites(t, w.Body.Bytes())
+	if len(sites) != 1 || sites[0].ZoneID != "zone-update" || len(sites[0].TargetIDs) != 1 ||
+		sites[0].TargetIDs[0] != a || sites[0].Protocol != "TCP" || sites[0].Ports != "443" ||
+		sites[0].AddressFamily != "ipv4" {
+		t.Fatalf("更新失败后旧站点主行/绑定未完整保留: %+v", sites)
+	}
+
+	e.execRaw(t, "DROP TRIGGER fail_edgeone_update;")
+	w = e.do(t, http.MethodPut, "/api/edgeone/sites/zone-update",
+		edgeOneSiteBody("zone-update", []int{b}, "TCP", "8443", "ipv6"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("恢复后更新状态码 = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if got := e.applyCount(); got != 2 {
+		t.Errorf("恢复后更新应发布一次，实际 %d", got)
+	}
+}
+
+func TestEdgeOneSitePersistedEmptyBindingReturnsInternalError(t *testing.T) {
+	e := newTestEnv(t)
+	a := e.seedTarget(t, config.CloudTCCVM, "ap-guangzhou", "sg-a")
+	e.execRaw(t, `INSERT INTO edgeone_sites (zone_id, protocol, ports, address_family) VALUES ('zone-empty', 'TCP', '443', 'ipv4')`)
+
+	w := e.do(t, http.MethodPut, pathWithID("/api/targets/", a),
+		`{"cloud_type":"tc_cvm","region":"ap-guangzhou","resource_id":"sg-b"}`)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("持久化空绑定站点应返回 500，实际 %d; body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "target_ids") {
+		t.Errorf("500 不得把持久化完整性错误暴露成请求字段错误: %s", w.Body.String())
+	}
+	if got := e.applyCount(); got != 0 {
+		t.Errorf("完整性错误不得发布，实际 %d", got)
+	}
+}

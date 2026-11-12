@@ -102,7 +102,7 @@ func TestDocumentedGetContractsStillReturnSecrets(t *testing.T) {
 
 	settingsBody := e.do(t, http.MethodGet, "/api/settings", "").Body.String()
 	if !strings.Contains(settingsBody, sentinelTCAccessKey) || !strings.Contains(settingsBody, sentinelAliAccessKey) {
-		t.Errorf("GET /api/settings 按 §12.9 应返回 11 个可编辑键（含凭据）供表单回显: %s", settingsBody)
+		t.Errorf("GET /api/settings 按 §12.9 应返回 15 个可编辑键（含凭据）供表单回显: %s", settingsBody)
 	}
 	alertsBodyText := e.do(t, http.MethodGet, "/api/alerts", "").Body.String()
 	if !strings.Contains(alertsBodyText, sentinelSMTPPassword) || !strings.Contains(alertsBodyText, sentinelWebhookURL) {

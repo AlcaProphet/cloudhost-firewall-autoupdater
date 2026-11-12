@@ -32,7 +32,7 @@ type Candidate struct {
 
 // ConfigCoordinator 进程内配置变更协调器（Build6 §12.4）。
 //
-// 职责：把目标、规则、settings、alerts、pause/resume、reset 与 version 3 配置
+// 职责：把目标、规则、settings、alerts、pause/resume、reset 与 v3/v4 配置
 // 导入的写入口串行化，并在**同一个 SQLite 事务内**完成变更、读取完整业务快照、
 // 构造候选运行时状态与候选告警集合；commit 之后只做无失败的内存发布。
 //

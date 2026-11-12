@@ -205,8 +205,25 @@ func TestEdgeOneSiteEmptyBindingRejected(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("注入空绑定站点失败: %v", err)
 	}
-	if _, err := store.LoadBusinessSnapshot(); err == nil {
+	_, err := store.LoadBusinessSnapshot()
+	if err == nil {
 		t.Fatal("没有绑定目标的站点必须被完整快照拒绝")
+	}
+	var ve *ValidationError
+	if errors.As(err, &ve) {
+		t.Errorf("空绑定属于持久化完整性错误，不得包装为请求侧校验: %v", err)
+	}
+}
+
+func TestTargetIdentityTrimsStoredFields(t *testing.T) {
+	normalized := TargetConfig{CloudType: CloudTCCVM, Region: "ap-guangzhou", ResourceID: "sg-a"}
+	padded := TargetConfig{CloudType: " tc_cvm ", Region: " ap-guangzhou ", ResourceID: " sg-a "}
+	if TargetIdentity(normalized) != TargetIdentity(padded) {
+		t.Errorf("TargetIdentity 未归一化首尾空白: %q vs %q", TargetIdentity(normalized), TargetIdentity(padded))
+	}
+	other := TargetConfig{CloudType: CloudTCCVM, Region: "ap-guangzhou", ResourceID: "sg-b"}
+	if TargetIdentity(normalized) == TargetIdentity(other) {
+		t.Errorf("不同资源不应得到相同身份")
 	}
 }
 

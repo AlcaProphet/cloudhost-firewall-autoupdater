@@ -11,7 +11,7 @@ import (
 // ─── GET /api/alerts：四个完整对象（Build7 §4.6） ───
 //
 // health_timeout 与 interval 在 HTTP 层以时长文本表达（"10m" / "60s"），
-// 与 SQLite 和 version 3 配置包保持一致；领域层同时持有解析后的 Duration。
+// 与 SQLite 和配置包（v3/v4）保持一致；领域层同时持有解析后的 Duration。
 
 // alertPolicyResponse 触发策略响应
 type alertPolicyResponse struct {

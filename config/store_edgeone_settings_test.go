@@ -197,3 +197,49 @@ func TestDefaultEdgeOneTagForDNS(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyV1DBBootstrapsEdgeOneTag(t *testing.T) {
+	cases := map[string]struct {
+		values   map[string]string
+		wantTag  string
+		wantEdge string
+	}{
+		"DNS TAG 为 edgeone 且缺 EdgeOne TAG": {
+			values: map[string]string{"tag": "edgeone"}, wantTag: "edgeone", wantEdge: LegacyEdgeOneTag,
+		},
+		"DNS TAG 为 edgeone 且显式 EdgeOne TAG": {
+			values: map[string]string{"tag": "edgeone", "edgeone_tag": "custom"}, wantTag: "edgeone", wantEdge: "custom",
+		},
+		"DNS TAG 非 edgeone": {
+			values: map[string]string{"tag": "my-dns"}, wantTag: "my-dns", wantEdge: DefaultEdgeOneTag,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := newLegacySettingsDB(t, tc.values)
+			db := rawDB(t, path)
+			if _, err := db.Exec("PRAGMA user_version = 1"); err != nil {
+				t.Fatalf("设置 user_version=1 失败: %v", err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatalf("关闭检查连接失败: %v", err)
+			}
+
+			store := openStoreAt(t, path)
+			defer closeStore(t, store)
+			snapshot, err := store.LoadBusinessSnapshot()
+			if err != nil {
+				t.Fatalf("v1 库升级失败: %v", err)
+			}
+			if got := snapshot.Settings["tag"]; got != tc.wantTag {
+				t.Errorf("DNS TAG = %q, want %q", got, tc.wantTag)
+			}
+			if got := snapshot.Settings["edgeone_tag"]; got != tc.wantEdge {
+				t.Errorf("EdgeOne TAG = %q, want %q", got, tc.wantEdge)
+			}
+			if got := rawUserVersion(t, path); got != schemaMigrationVersion {
+				t.Errorf("升级后 user_version = %d, want %d", got, schemaMigrationVersion)
+			}
+		})
+	}
+}

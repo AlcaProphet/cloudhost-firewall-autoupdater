@@ -76,7 +76,7 @@ const v3DefaultPolicyJSON = `{"dns_failed_enabled":false,"sync_error_enabled":fa
 const v3DefaultEmailJSON = `{"enabled":false,"host":"","port":"587","security":"auto_starttls","username":"","password":"","from_addr":"","to_addr":"","subject":"[FWAlizer] 告警通知","body":"FWAlizer 检测到运行异常，请检查同步日志。"}`
 
 // TestExportVersion4StructureAndFilename 空库导出必须是完整 version 4 结构：
-// policy/email/webhook + monitoring、默认全部关闭、默认主题正文与时长、v3 附件名。
+// policy/email/webhook + monitoring、默认全部关闭、默认主题正文与时长、v4 附件名。
 func TestExportVersion4StructureAndFilename(t *testing.T) {
 	e := newTestEnv(t)
 
