@@ -201,10 +201,14 @@ func SelectEdgeOneSitesForIdentity(
 type TargetPlanInput struct {
 	CloudType config.CloudType
 	Tag       string
-	// OtherTag 是另一功能来源的 TAG（DNS 计划填 EdgeOne TAG，EdgeOne 计划反之）。
-	// 非空时，另一 TAG 下的精确等价云端规则进入目标级冲突：不计覆盖、不新增、不改标。
-	// 为空时保持原有单 TAG 语义。
+	// OtherTag 是另一功能来源的 TAG（单源规划时用于发现跨 TAG 等价冲突）。
+	// 双源联合规划请使用 EdgeOneTag；此时 OtherTag 不承担所有权语义。
 	OtherTag string
+	// EdgeOneTag 非空时启用双源联合规划：Tag 是 DNS 功能 TAG，EdgeOneTag 是
+	// EdgeOne 功能 TAG，二者都是当前工具拥有的命名空间。共享功能 key 可由任一
+	// owned TAG 的精确等价规则满足，缺失时只新增一条（DNS TAG 优先）。
+	// 为空时保持既有单源规划语义（Tag 为当前来源 TAG，OtherTag 为另一 TAG）。
+	EdgeOneTag string
 	// TargetID 非零时只使用 TargetIDs 包含它的 EdgeOne 站点。
 	// 已用 SelectEdgeOneSitesForIdentity 归并物理目标别名时应保持 0，
 	// 避免再次按单个本地 ID 过滤掉绑定在其他别名上的站点。
@@ -524,6 +528,12 @@ func unsupportedMessage(code string) string {
 	}
 }
 
+// OriginACLSnapshotPrefixesValid 是对外暴露的只读校验，供调度层在把快照
+// 送入预检前确认它不是零值/半截快照；不改变规划器的内部判定。
+func OriginACLSnapshotPrefixesValid(snapshot OriginACLSnapshot) bool {
+	return originACLSnapshotPrefixesValid(snapshot)
+}
+
 // originACLSnapshotPrefixesValid 校验 Step 5 快照的前缀集合。
 //
 // 当前版必须有至少一个合法前缀；当前/待更新版不得包含零值 Prefix。单个地址族
@@ -797,8 +807,14 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 	appendEdgeOnePlannedRules(&plan, in, caps, desiredIndex, unsupportedSeen)
 
 	// 渲染 description（唯一渲染/截断层），再按 key 稳定排序，保证输出可复现。
+	// 双源联合规划中，仅 EdgeOne 需要的 key 使用 EdgeOneTag；共享 key 与 DNS key
+	// 使用 DNS TAG。执行层若只启用 EdgeOne，可在写入前按同一规则重渲染描述。
 	for i := range plan.Desired {
-		plan.Desired[i].Description = RenderDescription(in.CloudType, in.Tag, plan.Desired[i].Comment)
+		writeTag := in.Tag
+		if in.EdgeOneTag != "" && len(plan.Desired[i].RuleIDs) == 0 && len(plan.Desired[i].SiteIDs) > 0 {
+			writeTag = in.EdgeOneTag
+		}
+		plan.Desired[i].Description = RenderDescription(in.CloudType, writeTag, plan.Desired[i].Comment)
 		plan.Desired[i].Action.Description = plan.Desired[i].Description
 		sort.Ints(plan.Desired[i].RuleIDs)
 		sort.Strings(plan.Desired[i].Domains)
@@ -807,13 +823,27 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 		return plan.Desired[i].Key.String() < plan.Desired[j].Key.String()
 	})
 
-	// ── 2) 云端快照索引：Owned / External 多值结构，禁止静默覆盖重复项 ──
-	ownedIndex := make(map[FunctionalKey][]config.RuleInfo)
+	// 双源联合规划：Tag 与 EdgeOneTag 都是 owned 命名空间。为空时保持既有
+	// 单源语义：Tag 是当前来源 TAG，OtherTag 只用于发现跨 TAG 等价冲突。
+	dualTag := strings.TrimSpace(in.EdgeOneTag) != ""
+	edgeTag := in.OtherTag
+	if dualTag {
+		edgeTag = in.EdgeOneTag
+	}
+
+	// ── 2) 云端快照索引：DNS / EdgeOne / External 多值结构，禁止静默覆盖重复项 ──
+	dnsIndex := make(map[FunctionalKey][]config.RuleInfo)
+	edgeIndex := make(map[FunctionalKey][]config.RuleInfo)
 	externalIndex := make(map[FunctionalKey][]config.RuleInfo)
-	otherTagIndex := make(map[FunctionalKey][]config.RuleInfo)
+	type ruleOwner uint8
+	const (
+		ownerNone ruleOwner = iota
+		ownerDNS
+		ownerEdge
+	)
 	type snapshotEntry struct {
 		keys  []FunctionalKey
-		owned bool
+		owner ruleOwner
 	}
 	entries := make([]snapshotEntry, len(in.Snapshot.Rules))
 	// tuple（family|CIDR|协议|端口，不含 action）→ 出现过的 action 集合
@@ -829,16 +859,22 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 			})
 			continue
 		}
-		owned := tag.IsOwned(r.Description, in.Tag)
-		otherOwned := !owned && in.OtherTag != "" && tag.IsOwned(r.Description, in.OtherTag)
-		entries[i] = snapshotEntry{keys: keys, owned: owned}
+		owner := ownerNone
+		switch {
+		case tag.IsOwned(r.Description, in.Tag):
+			owner = ownerDNS
+		case edgeTag != "" && tag.IsOwned(r.Description, edgeTag):
+			owner = ownerEdge
+		}
+		entries[i] = snapshotEntry{keys: keys, owner: owner}
 		for _, k := range keys {
-			switch {
-			case owned:
-				ownedIndex[k] = append(ownedIndex[k], r)
-			case otherOwned:
-				// 另一功能 TAG 参与冲突和删除定位检查，不作为覆盖或删除候选。
-				otherTagIndex[k] = append(otherTagIndex[k], r)
+			switch owner {
+			case ownerDNS:
+				dnsIndex[k] = append(dnsIndex[k], r)
+			case ownerEdge:
+				// 单源模式下这是“另一功能 TAG”，只参与冲突/定位检查；
+				// 双源模式下它与 DNS TAG 一样是 owned 命名空间。
+				edgeIndex[k] = append(edgeIndex[k], r)
 			default:
 				externalIndex[k] = append(externalIndex[k], r)
 			}
@@ -876,20 +912,24 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 		})
 	}
 
-	// ── 2b) 另一功能 TAG 的精确等价规则：目标级冲突 ──
-	for i := range plan.Desired {
-		key := plan.Desired[i].Key
-		rules, ok := otherTagIndex[key]
-		if !ok || len(rules) == 0 {
-			continue
+	// 单源规划保留既有跨 TAG 冲突语义：desired key 若只属于当前来源，另一 TAG
+	// 的精确等价规则不计覆盖、不新增、不删除。双源联合规划在覆盖计算中区分
+	// “共享 key”和“单源 key”，共享 key 允许由任一 owned TAG 满足。
+	if !dualTag {
+		for i := range plan.Desired {
+			key := plan.Desired[i].Key
+			rules, ok := edgeIndex[key]
+			if !ok || len(rules) == 0 {
+				continue
+			}
+			k := key
+			plan.Conflicts = append(plan.Conflicts, PlanIssue{
+				Code: IssueCrossTagEquivalent,
+				Message: "另一功能 TAG 下存在完全等价的云端规则，不能计入覆盖、不能新增重复规则或改标：" +
+					describeCloudRule(rules[0]),
+				Key: &k,
+			})
 		}
-		k := key
-		plan.Conflicts = append(plan.Conflicts, PlanIssue{
-			Code: IssueCrossTagEquivalent,
-			Message: "另一功能 TAG 下存在完全等价的云端规则，不能计入覆盖、不能新增重复规则或改标：" +
-				describeCloudRule(rules[0]),
-			Key: &k,
-		})
 	}
 
 	// ── 3) 覆盖计算：Owned 优先，External 只按精确 key 满足 ──
@@ -899,26 +939,89 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 		if d.Implementable {
 			implementable++
 		}
-		if rules, ok := ownedIndex[d.Key]; ok && len(rules) > 0 {
+		needDNS := len(d.RuleIDs) > 0
+		needEdge := len(d.SiteIDs) > 0
+		dnsRules := dnsIndex[d.Key]
+		edgeRules := edgeIndex[d.Key]
+		externalRules := externalIndex[d.Key]
+
+		addOwned := func(rules []config.RuleInfo) {
 			plan.SatisfiedByOwned = append(plan.SatisfiedByOwned, PlanMatch{
 				Key: d.Key, Description: rules[0].Description, Rules: rules,
 			})
 			if d.Implementable {
 				covered++
 			}
-			continue
 		}
-		if rules, ok := externalIndex[d.Key]; ok && len(rules) > 0 {
+		addExternal := func() {
 			plan.SatisfiedByExternal = append(plan.SatisfiedByExternal, PlanMatch{
-				Key: d.Key, Description: rules[0].Description, Rules: rules,
+				Key: d.Key, Description: externalRules[0].Description, Rules: externalRules,
 			})
 			if d.Implementable {
 				covered++
 			}
+		}
+		addCrossTagConflict := func(rules []config.RuleInfo) {
+			k := d.Key
+			plan.Conflicts = append(plan.Conflicts, PlanIssue{
+				Code: IssueCrossTagEquivalent,
+				Message: "另一功能 TAG 下存在完全等价的云端规则，不能计入覆盖、不能新增重复规则或改标：" +
+					describeCloudRule(rules[0]),
+				Key: &k,
+			})
+		}
+
+		if dualTag {
+			// 双源联合模式：共享 key 允许由任一 owned TAG 满足；只有单源 key
+			// 的“另一 TAG 等价规则”才是冲突。
+			switch {
+			case needDNS && needEdge:
+				switch {
+				case len(externalRules) > 0:
+					addExternal()
+				case len(dnsRules) > 0:
+					addOwned(dnsRules)
+				case len(edgeRules) > 0:
+					addOwned(edgeRules)
+				case d.Implementable:
+					plan.ToAdd = append(plan.ToAdd, d.Action)
+				}
+			case needDNS:
+				switch {
+				case len(externalRules) > 0:
+					addExternal()
+				case len(dnsRules) > 0:
+					addOwned(dnsRules)
+				case len(edgeRules) > 0:
+					addCrossTagConflict(edgeRules)
+				case d.Implementable:
+					plan.ToAdd = append(plan.ToAdd, d.Action)
+				}
+			case needEdge:
+				switch {
+				case len(externalRules) > 0:
+					addExternal()
+				case len(edgeRules) > 0:
+					addOwned(edgeRules)
+				case len(dnsRules) > 0:
+					addCrossTagConflict(dnsRules)
+				case d.Implementable:
+					plan.ToAdd = append(plan.ToAdd, d.Action)
+				}
+			}
 			continue
 		}
-		if len(otherTagIndex[d.Key]) > 0 {
-			// 已有另一功能 TAG 的等价规则：不新增重复规则，等待目标级冲突处置。
+
+		// 单源模式：只有 Tag 是 owned；edgeIndex 是另一功能 TAG，仅用于冲突。
+		if len(dnsRules) > 0 {
+			addOwned(dnsRules)
+			continue
+		}
+		if len(externalRules) > 0 {
+			addExternal()
+			continue
+		}
+		if len(edgeRules) > 0 {
 			continue
 		}
 		if d.Implementable {
@@ -928,19 +1031,24 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 	plan.CoverageReady = implementable > 0 && covered == implementable &&
 		!in.AddStateUnknown && len(plan.EdgeOneErrors) == 0
 
-	// ── 4) 清理候选：S0 Owned 中**全部** key 都不在完整 Desired 的规则 ──
+	// ── 4) 清理候选：owned TAG 中**全部** key 都不在完整 Desired 的规则 ──
 	desiredKeys := make(map[FunctionalKey]bool, len(plan.Desired))
 	for _, d := range plan.Desired {
 		desiredKeys[d.Key] = true
 	}
 	type candidate struct {
-		rule config.RuleInfo
-		keys []FunctionalKey
+		rule  config.RuleInfo
+		keys  []FunctionalKey
+		owner ruleOwner
 	}
 	var candidates []candidate
 	for i, r := range in.Snapshot.Rules {
 		entry := entries[i]
-		if !entry.owned || len(entry.keys) == 0 {
+		if entry.owner == ownerNone || len(entry.keys) == 0 {
+			continue
+		}
+		if entry.owner == ownerEdge && !dualTag {
+			// 单源模式下这是另一功能 TAG：绝不进入删除候选。
 			continue
 		}
 		allAbsent := true
@@ -953,7 +1061,7 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 		if !allAbsent {
 			continue
 		}
-		candidates = append(candidates, candidate{rule: r, keys: entry.keys})
+		candidates = append(candidates, candidate{rule: r, keys: entry.keys, owner: entry.owner})
 		plan.CleanupCandidates = append(plan.CleanupCandidates, r)
 	}
 
@@ -998,7 +1106,11 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 	for _, c := range candidates {
 		// 定位问题始终登记（Dry Run 需要展示每个候选为何不能删除）；
 		// 但只有清理门全部满足时才可能进入可删除集合。
-		if issue, bad := cleanupLocatorIssue(in.CloudType, c.rule, c.keys, ownedIndex, externalIndex, otherTagIndex); bad {
+		ownedIndex, otherIndex := dnsIndex, edgeIndex
+		if c.owner == ownerEdge {
+			ownedIndex, otherIndex = edgeIndex, dnsIndex
+		}
+		if issue, bad := cleanupLocatorIssue(in.CloudType, c.rule, c.keys, ownedIndex, externalIndex, otherIndex); bad {
 			plan.CleanupDeferred = append(plan.CleanupDeferred, issue)
 			continue
 		}

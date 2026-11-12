@@ -113,6 +113,11 @@ func (s *Server) SetRuntimeWiring(runtime *syncer.RuntimeManager, alerts *api.Al
 	s.deps.SetRuntimeWiring(runtime, alerts)
 }
 
+// ConfigCoordinator 返回服务器的配置变更协调器（run.go 注入稳定区用）。
+func (s *Server) ConfigCoordinator() *api.ConfigCoordinator {
+	return s.deps.ConfigCoordinator()
+}
+
 // SetHealth 注入运行健康来源（唯一 OperationalHealth 计算源 + 唤醒入口）。
 //
 // `/api/health` 的静态存活语义不受影响：它继续只表示 HTTP 服务可达。

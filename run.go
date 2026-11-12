@@ -168,6 +168,14 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 	// （status/trigger/dryrun/SSE + 连接测试/资源扫描的只读快照来源）
 	srv.SetSyncer(s, s.EventBus())
 	srv.SetRuntimeWiring(runtimeManager, alertManager)
+	// 配置提交与同步轮次的冲突/确认状态写入共用稳定区；必须在 Run 启动前注入。
+	s.SetStableConfig(srv.ConfigCoordinator().WithStableConfig)
+	conflictState := syncer.NewAddressConflictState(store)
+	s.SetConflictState(conflictState)
+	s.SetEdgeOneTransitionStore(store)
+	if err := conflictState.Load(context.Background()); err != nil {
+		slog.Warn("加载地址冲突状态失败，正式双开轮将保守阻断直到可读", "error", err)
+	}
 	srv.SetHealth(supervisor)
 	srv.SetPush(pusher)
 

@@ -72,13 +72,32 @@ func NewConfigCoordinator(
 // Mutate 普通配置变更（目标/规则/settings/alerts/pause/resume/reset）：
 // 候选状态沿用 BreakerPreserve，保留既有 DNS 熔断失败计数。
 func (c *ConfigCoordinator) Mutate(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error) error {
-	return c.mutate(ctx, syncer.BreakerPreserve, fn)
+	return c.mutate(ctx, syncer.BreakerPreserve, nil, fn)
+}
+
+// MutateWithAfterCommit 与 Mutate 相同，但在 commit + 无失败发布完成后、仍持有
+// 协调器锁时执行 after。仅用于 reset 成功后清除进程内冲突证据，使新轮次无法
+// 在 reset 与 Forget 之间读到旧状态。after 必须是无失败、无网络、无重入协调器的
+// 内存操作。
+func (c *ConfigCoordinator) MutateWithAfterCommit(ctx context.Context, after func(), fn func(ctx context.Context, tx *sql.Tx) error) error {
+	return c.mutate(ctx, syncer.BreakerPreserve, after, fn)
+}
+
+// WithStableConfig 在配置提交/发布稳定区内执行状态写入回调。
+//
+// 协调器写事务、候选发布和该回调共用同一把锁；回调内必须再次校验轮次捕获的
+// RuntimeState 指针，旧轮次据此丢弃冲突/确认/缓存状态写入。不得从 Mutate 的
+// mutation/apply/after 内调用本方法。
+func (c *ConfigCoordinator) WithStableConfig(fn func() bool) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return fn()
 }
 
 // MutateImport 完整配置导入：候选状态使用 BreakerReset，新建 breaker 并清空原失败计数
 // （Build6 §12.3 第 7 条、Issue6 A8）。导入是「整库替换」语义，熔断状态随之重置。
 func (c *ConfigCoordinator) MutateImport(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error) error {
-	return c.mutate(ctx, syncer.BreakerReset, fn)
+	return c.mutate(ctx, syncer.BreakerReset, nil, fn)
 }
 
 // mutate 在锁内执行一次配置变更（Build6 §12.4 固定顺序）：
@@ -89,7 +108,7 @@ func (c *ConfigCoordinator) MutateImport(ctx context.Context, fn func(ctx contex
 //
 // mutation 或候选构造任一失败都完整回滚：数据库、旧 RuntimeState、旧日志级别、
 // 旧告警订阅与扫描缓存全部保持原样，且不产生部分 ID 映射。
-func (c *ConfigCoordinator) mutate(ctx context.Context, policy syncer.BreakerPolicy, fn func(ctx context.Context, tx *sql.Tx) error) error {
+func (c *ConfigCoordinator) mutate(ctx context.Context, policy syncer.BreakerPolicy, after func(), fn func(ctx context.Context, tx *sql.Tx) error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -138,6 +157,9 @@ func (c *ConfigCoordinator) mutate(ctx context.Context, policy syncer.BreakerPol
 	// 使响应之后开始的新操作必然取得新状态。
 	if c.apply != nil {
 		c.apply(candidate)
+	}
+	if after != nil {
+		after()
 	}
 	return nil
 }

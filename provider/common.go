@@ -1,6 +1,8 @@
 package provider
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"sync"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
@@ -78,6 +80,22 @@ type Credentials struct {
 // 空凭据返回空串，仍可与已配置账户的缓存条目区分开。
 func (c Credentials) AccountKey() string {
 	return c.TencentSecretID + "|" + c.AliyunAccessKeyID
+}
+
+// Fingerprint 返回完整凭据值的稳定指纹，用于让运行态缓存识别“凭据已变化”。
+//
+// 只保存/比较 SHA-256 十六进制值，不保存或输出原始凭据；不能把 AccountKey
+// 当作完整凭据身份（同 AccessKey ID 更换密钥时仍可能变化）。
+func (c Credentials) Fingerprint() string {
+	h := sha256.New()
+	for _, part := range []string{
+		c.TencentSecretID, c.TencentSecretKey,
+		c.AliyunAccessKeyID, c.AliyunAccessKeySecret,
+	} {
+		_, _ = h.Write([]byte(part))
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // ClientPool SDK Client 复用池。

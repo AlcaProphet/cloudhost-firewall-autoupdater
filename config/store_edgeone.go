@@ -110,6 +110,9 @@ func (s *Store) DeleteEdgeOneSiteTx(ctx context.Context, tx *sql.Tx, zoneID stri
 	if _, err := tx.ExecContext(ctx, "DELETE FROM edgeone_site_targets WHERE zone_id = ?", zoneID); err != nil {
 		return 0, err
 	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM edgeone_origin_transitions WHERE zone_id = ?", zoneID); err != nil {
+		return 0, err
+	}
 	res, err := tx.ExecContext(ctx, "DELETE FROM edgeone_sites WHERE zone_id = ?", zoneID)
 	if err != nil {
 		return 0, err

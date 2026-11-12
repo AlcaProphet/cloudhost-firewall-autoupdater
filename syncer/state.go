@@ -37,6 +37,9 @@ type RuntimeState struct {
 	Providers []provider.Provider
 	Resolver  *dns.Resolver
 	Breaker   *dns.CircuitBreaker
+	// TEO 复用本状态 Pool 的腾讯云凭据，供 EdgeOne 查询与确认使用。
+	// 构造只做本地初始化；正式请求由调度轮在限速与预算内发起。
+	TEO provider.OriginACLClient
 }
 
 // BuildRuntimeState 由已校验的业务快照构造候选运行时状态。
@@ -70,6 +73,10 @@ func BuildRuntimeState(
 		}
 		providers = append(providers, p)
 	}
+	teoClient, err := provider.NewTEOClient(pool)
+	if err != nil {
+		return nil, fmt.Errorf("构造 TEO 客户端失败: %w", err)
+	}
 
 	var breaker *dns.CircuitBreaker
 	switch {
@@ -92,6 +99,7 @@ func BuildRuntimeState(
 		Providers: providers,
 		Resolver:  dns.NewResolver(published.DNS, published.DNSTimeout),
 		Breaker:   breaker,
+		TEO:       teoClient,
 	}, nil
 }
 

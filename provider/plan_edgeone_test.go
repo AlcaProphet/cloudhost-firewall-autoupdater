@@ -482,3 +482,61 @@ func TestSelectEdgeOneSitesForIdentityMergesAliases(t *testing.T) {
 		t.Fatalf("空 identity 应返回 nil: %+v", got)
 	}
 }
+
+func TestEdgeOnePlanDualTagSharedKeyCoveredByEitherTag(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		owner string
+	}{
+		{"DNS TAG", "auto-dns"},
+		{"EdgeOne TAG", "edgeone"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			existing := config.RuleInfo{
+				Protocol: "TCP", Port: "443", CidrBlock: "203.0.113.0/32",
+				Action: "ACCEPT", Description: "[" + tc.owner + "] shared", RuleID: "shared-rule",
+			}
+			plan := PlanTarget(TargetPlanInput{
+				CloudType:  config.CloudTCLighthouse,
+				Tag:        "auto-dns",
+				OtherTag:   "edgeone",
+				EdgeOneTag: "edgeone",
+				Rules:      []config.DomainRule{rule(11, "shared.example", "TCP", "443", "ACCEPT", "共享")},
+				Resolved:   map[int][]dns.ResolvedIP{11: {v4("203.0.113.0")}},
+				Snapshot:   RuleSnapshot{Revision: "1", Rules: []config.RuleInfo{existing}},
+				EdgeOneSites: []EdgeOneSitePlanInput{{
+					Site:     edgeSite("zone-a", []int{2}, "TCP", "443", "ipv4"),
+					Snapshot: OriginACLSnapshot{ZoneID: "zone-a", Current: edgeVersion("1", "203.0.113.0/32")},
+				}},
+			})
+			if len(plan.Desired) != 1 || len(plan.ToAdd) != 0 || !plan.CoverageReady {
+				t.Fatalf("共享 key 应由任一 TAG 覆盖: %+v", plan)
+			}
+			if len(plan.SatisfiedByOwned) != 1 || len(plan.Conflicts) != 0 {
+				t.Fatalf("共享 key 不应报跨 TAG 冲突: owned=%+v conflicts=%+v", plan.SatisfiedByOwned, plan.Conflicts)
+			}
+		})
+	}
+}
+
+func TestEdgeOnePlanDualTagSingleSourceStillConflicts(t *testing.T) {
+	plan := PlanTarget(TargetPlanInput{
+		CloudType:  config.CloudTCLighthouse,
+		Tag:        "auto-dns",
+		OtherTag:   "edgeone",
+		EdgeOneTag: "edgeone",
+		Rules:      []config.DomainRule{rule(11, "dns-only.example", "TCP", "443", "ACCEPT", "DNS")},
+		Resolved:   map[int][]dns.ResolvedIP{11: {v4("198.51.100.1")}},
+		Snapshot: RuleSnapshot{Revision: "1", Rules: []config.RuleInfo{{
+			Protocol: "TCP", Port: "443", CidrBlock: "198.51.100.1/32",
+			Action: "ACCEPT", Description: "[edgeone] wrong owner", RuleID: "other",
+		}}},
+		EdgeOneSites: []EdgeOneSitePlanInput{{
+			Site:     edgeSite("zone-a", []int{2}, "TCP", "443", "ipv4"),
+			Snapshot: OriginACLSnapshot{ZoneID: "zone-a", Current: edgeVersion("1", "203.0.113.0/24")},
+		}},
+	})
+	if !hasIssue(plan.Conflicts, IssueCrossTagEquivalent) || len(plan.ToAdd) != 1 {
+		t.Fatalf("单源 DNS key 的另一 TAG 规则仍须冲突，且 EdgeOne key 可新增: %+v", plan)
+	}
+}

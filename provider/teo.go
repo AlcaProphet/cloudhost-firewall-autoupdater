@@ -64,6 +64,10 @@ const (
 	TEOErrorEmpty TEOErrorKind = "empty"
 	// TEOErrorDisabled 源站防护未启用或状态不可用
 	TEOErrorDisabled TEOErrorKind = "disabled"
+	// TEOErrorAlreadyLatest 确认接口明确返回已是最新回源版本。
+	TEOErrorAlreadyLatest TEOErrorKind = "already_latest"
+	// TEOErrorDenied 确认接口明确拒绝操作（非“已是最新”）。
+	TEOErrorDenied TEOErrorKind = "denied"
 )
 
 // TEOError 是 TEO 查询的安全错误：只保留分类、云错误码、RequestId 与固定文案。
@@ -76,7 +80,11 @@ type TEOError struct {
 	Code      string
 	RequestID string
 	Message   string
-	cause     error
+	// NotSent 表示错误发生在本客户端发请求之前（参数校验、限速等待或预算在
+	// wait 阶段耗尽）。请求一旦交给 SDK，即使没有 RequestId 也不能据此断言
+	// 未执行，调用方必须按“结果未知”处理。
+	NotSent bool
+	cause   error
 }
 
 func (e *TEOError) Error() string {
@@ -130,6 +138,10 @@ func TEOErrorRequestID(err error) string {
 type OriginACLVersion struct {
 	Version  string         `json:"version"`
 	Prefixes []netip.Prefix `json:"prefixes"`
+	// ActiveTime / IsPlaned 仅当前版可能返回，用于“实际生效状态”展示；
+	// 缺失或无法解析时保持 nil，不因此让整份查询失败。
+	ActiveTime *time.Time `json:"active_time,omitempty"`
+	IsPlaned   *bool      `json:"is_planed,omitempty"`
 }
 
 // OriginACLSnapshot 是一次 DescribeOriginACL 的只读结果。
@@ -179,7 +191,15 @@ func (s OriginACLSnapshot) PrefixesForFamily(family string) []netip.Prefix {
 	return normalizePrefixes(out)
 }
 
-// TEOClient 是 EdgeOne 只读查询客户端。
+// OriginACLClient 是 TEO 查询与确认的最小客户端接口。
+//
+// 生产由 *TEOClient 实现；同步器运行态持有该接口，测试可注入本地替身。
+type OriginACLClient interface {
+	DescribeOriginACL(ctx context.Context, zoneID string) (OriginACLSnapshot, error)
+	ConfirmOriginACLUpdate(ctx context.Context, zoneID string) (string, error)
+}
+
+// TEOClient 是 EdgeOne 只读查询与确认客户端。
 //
 // 构造时只创建本地 SDK client；查询与确认前共用 rate limiter。当前阶段只暴露
 // DescribeOriginACL；确认入口由 Step 10 接入。
@@ -307,6 +327,7 @@ func (c *TEOClient) DescribeOriginACL(ctx context.Context, zoneID string) (Origi
 		return OriginACLSnapshot{}, &TEOError{
 			Kind:    TEOErrorMalformed,
 			Message: "ZoneId 为空",
+			NotSent: true,
 		}
 	}
 
@@ -344,15 +365,70 @@ func (c *TEOClient) DescribeOriginACL(ctx context.Context, zoneID string) (Origi
 	return snapshot, nil
 }
 
+// ConfirmOriginACLUpdate 确认一个站点已更新到最新回源网段。
+//
+// 接口只接收 ZoneId，成功只返回 RequestId；不提供版本条件参数。调用方必须在
+// 调用前完成覆盖、版本重查和配置准入，并在调用后把空 RequestId、超时、网络错误
+// 一律视为“结果未知”，不能当作成功或未执行。限速与查询共用同一 TEOClient。
+func (c *TEOClient) ConfirmOriginACLUpdate(ctx context.Context, zoneID string) (string, error) {
+	zoneID = strings.TrimSpace(zoneID)
+	if zoneID == "" {
+		return "", &TEOError{
+			Kind:    TEOErrorMalformed,
+			Message: "ZoneId 为空",
+			NotSent: true,
+		}
+	}
+
+	confirmCtx := ctx
+	if c.budget > 0 {
+		var cancel context.CancelFunc
+		confirmCtx, cancel = context.WithTimeout(ctx, c.budget)
+		defer cancel()
+	}
+
+	if err := c.wait(confirmCtx); err != nil {
+		// wait 失败发生在请求交给 SDK 之前，可明确视为未发送。
+		return "", classifyTEOContextError(zoneID, err)
+	}
+
+	req := teo.NewConfirmOriginACLUpdateRequest()
+	req.ZoneId = common.StringPtr(zoneID)
+	resp, err := c.client.ConfirmOriginACLUpdateWithContext(confirmCtx, req)
+	if err != nil {
+		classified := classifyTEOError(zoneID, err)
+		slog.Warn("TEO 确认失败", "error", classified)
+		return "", classified
+	}
+	if resp == nil || resp.Response == nil {
+		return "", &TEOError{
+			Kind:    TEOErrorIncomplete,
+			ZoneID:  zoneID,
+			Message: "确认响应为空",
+		}
+	}
+	requestID := strings.TrimSpace(strVal(resp.Response.RequestId))
+	if requestID == "" {
+		// 请求已经交给 SDK，但没有可持久化的成功证据；按未知处理，不记 accepted。
+		return "", &TEOError{
+			Kind:    TEOErrorIncomplete,
+			ZoneID:  zoneID,
+			Message: "确认响应缺少 RequestId",
+		}
+	}
+	slog.Debug("TEO 确认完成", "zone", zoneID, "request_id", requestID)
+	return requestID, nil
+}
+
 // classifyTEOContextError 把等待/预算错误转换为安全分类。
 func classifyTEOContextError(zoneID string, err error) error {
 	switch {
 	case errors.Is(err, context.Canceled):
-		return &TEOError{Kind: TEOErrorCanceled, ZoneID: zoneID, Message: "查询被取消", cause: err}
+		return &TEOError{Kind: TEOErrorCanceled, ZoneID: zoneID, Message: "查询被取消", NotSent: true, cause: err}
 	case errors.Is(err, context.DeadlineExceeded):
-		return &TEOError{Kind: TEOErrorTimeout, ZoneID: zoneID, Message: "查询预算耗尽", cause: err}
+		return &TEOError{Kind: TEOErrorTimeout, ZoneID: zoneID, Message: "查询预算耗尽", NotSent: true, cause: err}
 	default:
-		return &TEOError{Kind: TEOErrorNetwork, ZoneID: zoneID, Message: "请求未发出", cause: err}
+		return &TEOError{Kind: TEOErrorNetwork, ZoneID: zoneID, Message: "请求未发出", NotSent: true, cause: err}
 	}
 }
 
@@ -379,6 +455,12 @@ func classifyTEOError(zoneID string, err error) error {
 		case isTEOPermissionCode(code):
 			kind = TEOErrorPermission
 			message = "CAM 权限不足或凭据不可用"
+		case code == "OperationDenied.LatestVersionNow":
+			kind = TEOErrorAlreadyLatest
+			message = "回源白名单已经是最新版本，无需更新"
+		case strings.HasPrefix(code, "OperationDenied"):
+			kind = TEOErrorDenied
+			message = "腾讯云拒绝确认操作"
 		case isTEOThrottleCode(code):
 			kind = TEOErrorThrottled
 			message = "腾讯云接口限流"
@@ -489,7 +571,23 @@ func convertOriginACLVersion(zoneID, requestID, label string, version *teo.Curre
 	if err != nil {
 		return OriginACLVersion{}, err
 	}
-	return OriginACLVersion{Version: versionText, Prefixes: prefixes}, nil
+	out := OriginACLVersion{Version: versionText, Prefixes: prefixes}
+	// ActiveTime/IsPlaned 是可选诊断字段，缺失或格式异常不改变查询完整性。
+	if active, ok := parseTEOPlanTime(strVal(version.ActiveTime)); ok {
+		active = active.UTC()
+		out.ActiveTime = &active
+	}
+	if raw := strings.TrimSpace(strVal(version.IsPlaned)); raw != "" {
+		switch {
+		case strings.EqualFold(raw, "true"):
+			v := true
+			out.IsPlaned = &v
+		case strings.EqualFold(raw, "false"):
+			v := false
+			out.IsPlaned = &v
+		}
+	}
+	return out, nil
 }
 
 // convertNextOriginACL 校验待更新版与计划生效时间。

@@ -252,7 +252,11 @@ func (d *Deps) handleConfigReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := d.coordinator().Mutate(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
+	err := d.coordinator().MutateWithAfterCommit(r.Context(), func() {
+		if forgetter, ok := d.Syncer.(interface{ ForgetAddressConflict() }); ok {
+			forgetter.ForgetAddressConflict()
+		}
+	}, func(ctx context.Context, tx *sql.Tx) error {
 		return d.Store.ResetAllTx(ctx, tx)
 	})
 	if err != nil {

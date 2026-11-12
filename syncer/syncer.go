@@ -100,6 +100,36 @@ type Syncer struct {
 	// onStateApplied 在状态发布完成后调用（run.go 注入告警订阅的无失败替换与安全日志）。
 	// 必须是零 error、不访问网络的内存操作。
 	onStateApplied func(*RuntimeState)
+
+	// conflict 是正式预检的进程内/SQLite 状态；由 run.go 注入。
+	conflict *AddressConflictState
+	// stableConfig 由配置协调器注入：状态写入与配置提交共用稳定区。
+	stableConfig func(func() bool) bool
+
+	// generation 是运行时状态代次，用于站点覆盖证明与旧结果隔离。
+	generation uint64
+
+	// 双源调度状态（mu 保护）。nextDue 只在 Run 内推进，Status 只读。
+	dnsNextDue        time.Time
+	edgeNextDue       time.Time
+	dnsScheduled      bool
+	edgeScheduled     bool
+	pendingDNSDue     bool
+	pendingEdgeOneDue bool
+	manualPending     bool
+	edgeSiteSig       string
+	edgeRetryDelay    time.Duration
+
+	// EdgeOne 进程内缓存与站点状态（mu 保护）。
+	edgeCache     map[string]edgeOneCacheEntry
+	edgeStatus    map[string]EdgeOneSiteStatus
+	roundCoverage map[string]SiteCoverage
+	transitions   EdgeOneTransitionStore
+	confirmedMem  map[string][32]byte
+	confirmErrors map[string]string
+	preflight     PreflightOutcome
+	preflightAt   time.Time
+	preflightSet  bool
 }
 
 // New 创建同步引擎。
@@ -120,6 +150,8 @@ func New(runtime *RuntimeManager) *Syncer {
 	if st := runtime.Snapshot(); st != nil {
 		s.enabled = st.Config.SyncEnabled
 		s.applied = st
+		s.generation = 1
+		s.edgeSiteSig = edgeOneSitesSignature(st.Config.EdgeOneSites)
 	}
 	return s
 }
@@ -162,6 +194,20 @@ func (s *Syncer) applyStateLocked(next *RuntimeState) {
 	previous := s.runtime.Snapshot()
 	if previous != nil && !previous.Config.SyncEnabled && next.Config.SyncEnabled {
 		s.pendingResume = true
+	}
+	if previous != nil && previous != next {
+		s.generation++
+		if !previous.Config.DNSFeatureEnabled() && next.Config.DNSFeatureEnabled() {
+			s.pendingDNSDue = true
+		}
+		if !previous.Config.EdgeOneEnabled && next.Config.EdgeOneEnabled {
+			s.pendingEdgeOneDue = true
+		}
+		nextSig := edgeOneSitesSignature(next.Config.EdgeOneSites)
+		if next.Config.EdgeOneEnabled && nextSig != s.edgeSiteSig {
+			s.pendingEdgeOneDue = true
+		}
+		s.edgeSiteSig = nextSig
 	}
 	s.runtime.Apply(next)
 	s.enabled = next.Config.SyncEnabled
@@ -206,6 +252,37 @@ func (s *Syncer) SetStateAppliedHook(fn func(*RuntimeState)) {
 	s.mu.Unlock()
 }
 
+// SetConflictState 注入正式预检的冲突运行态。必须在 Run 开始前调用。
+func (s *Syncer) SetConflictState(state *AddressConflictState) {
+	s.mu.Lock()
+	s.conflict = state
+	s.mu.Unlock()
+}
+
+// SetStableConfig 注入配置协调器稳定区；状态写入在区内校验轮次状态。
+func (s *Syncer) SetStableConfig(guard func(func() bool) bool) {
+	s.mu.Lock()
+	s.stableConfig = guard
+	s.mu.Unlock()
+}
+
+// Generation 返回当前运行时状态代次（进程内单调递增）。
+func (s *Syncer) Generation() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.generation
+}
+
+// ForgetAddressConflict 在 reset 成功提交后清除进程内冲突证据。
+func (s *Syncer) ForgetAddressConflict() {
+	s.mu.RLock()
+	state := s.conflict
+	s.mu.RUnlock()
+	if state != nil {
+		state.Forget()
+	}
+}
+
 // Run 启动同步主循环（阻塞，直到收到停止信号）。
 //
 // 重复调用契约（Issue6 A16，2026-09-27 用户裁决）：用锁保护的 runGuard 拒绝**一切**
@@ -245,38 +322,47 @@ func (s *Syncer) Run() {
 
 	// 启动轮代表此时的最终配置，同时消费启动前标记，避免随后重复补轮。
 	state, _ := s.consumeControlState()
+	if state == nil {
+		return
+	}
 	// 记录 ticker 实际使用的间隔，不以初始配置或最新发布指针代替。
 	tickerInterval := state.Config.Interval
+	edgeInterval := edgeOneIntervalOf(state)
 	ticker := time.NewTicker(tickerInterval)
 	defer ticker.Stop()
+	edgeTicker := time.NewTicker(edgeInterval)
+	defer edgeTicker.Stop()
+
+	now := s.now()
+	s.mu.Lock()
+	s.dnsScheduled = state.Config.SyncEnabled && state.Config.DNSFeatureEnabled()
+	s.edgeScheduled = state.Config.SyncEnabled && state.Config.EdgeOneEnabled
+	s.dnsNextDue = now.Add(tickerInterval)
+	s.edgeNextDue = now.Add(edgeInterval)
+	s.edgeRetryDelay = 0
+	s.edgeSiteSig = edgeOneSitesSignature(state.Config.EdgeOneSites)
+	s.mu.Unlock()
 
 	s.setEnabledMirror(state.Config.SyncEnabled)
 	enabled := state.Config.SyncEnabled
-	if enabled {
-		// Run 入口的启动轮也是「新轮次」，必须走同一 stop 门控（Issue6 A20）：
-		// s.Stop() 先于 go s.Run()（生产对应“启动即收到 SIGTERM”）在修复前会 100%
-		// 确定性跑完整一轮云写入。
+	if enabled && (state.Config.DNSFeatureEnabled() || state.Config.EdgeOneEnabled) {
+		// Run 入口的启动轮也是「新轮次」，必须走同一 stop 门控（Issue6 A20）。
 		if !s.beginRound() {
 			slog.Info("同步引擎已停止，跳过启动轮")
 			return
 		}
-		s.syncAll()
+		s.runScheduledRound(state, state.Config.DNSFeatureEnabled(), state.Config.EdgeOneEnabled)
 	} else {
 		slog.Info("同步已暂停（SyncEnabled=false），等待开启")
 	}
 
 	for {
-		// 定时/手动轮返回即算完成（包括失败或 idle），保留原有轮后间隔。
-		// 启动/恢复轮保持轮前计时，不能由普通配置通知补做轮后 Reset。
-		roundCompleted := false
-		// 过渡前值取「本循环已经处理过的相位」，而不是已发布镜像（Issue6 A7）：
-		// ApplyState 在发布时就会同步推进镜像，若镜像先于本循环推进，
-		// 用镜像判定会把 false→true 误判为 true→true，从而漏掉恢复后的立即一轮。
 		wasEnabled := enabled
+		var dispatch roundDispatch
+		dispatched := false
 
 		if !enabled {
 			// 暂停子循环：不接收 ticker/trigger，只在状态通知或停止时退出。
-			// 暂停期间排队的 trigger 不会在这里被消费，由恢复时的清空统一处理。
 			select {
 			case <-s.controlCh:
 			case <-s.stopCh:
@@ -289,39 +375,68 @@ func (s *Syncer) Run() {
 				if s.hasPendingResume() {
 					break
 				}
-				// 暂停可能已在当前轮次进行中提交、但控制通知尚未被消费；
-				// 定时触发必须与手动触发使用同一门控（AGENTS §五「暂停时 ticker
-				// 与手动 trigger 均不触发同步」）。此处不直接 syncAll，而是跳出
-				// select 进入下方统一的状态重读与过渡判定，避免启动一轮已暂停的同步。
 				if !s.IsEnabled() {
 					slog.Debug("丢弃已暂停状态下的定时同步")
+					break
+				}
+				if !s.sourceDue(s.now(), true) {
+					break
+				}
+				latest := s.runtime.Snapshot()
+				if latest == nil {
 					break
 				}
 				if !s.beginRound() {
 					slog.Debug("丢弃已停止状态下的定时同步")
 					break
 				}
-				s.syncAll()
-				roundCompleted = true
+				dnsDue := true
+				edgeDue := s.sourceDue(s.now(), false)
+				dispatch = s.runScheduledRound(latest, dnsDue, edgeDue)
+				dispatched = true
+			case <-edgeTicker.C:
+				if s.hasPendingResume() {
+					break
+				}
+				if !s.IsEnabled() {
+					slog.Debug("丢弃已暂停状态下的 EdgeOne 定时同步")
+					break
+				}
+				if !s.sourceDue(s.now(), false) {
+					break
+				}
+				// 复用统一触发门控，保持“启动/ticker/trigger/恢复”四个
+				// beginRound 入口合同；由触发分支按来源到期状态决定实际来源。
+				s.requestScheduleWake()
 			case <-s.triggerCh:
 				if s.hasPendingResume() {
 					break
 				}
-				// 排队中的 trigger 在消费前重新检查开关（Build6 §12.5）：
-				// 以**已提交状态**为准（而不是本循环的相位镜像），因为暂停可能在
-				// 当前同步轮次进行中就已生效；此时排队中的触发属过期触发，必须丢弃，
-				// 否则当前轮结束后会再启动一轮已暂停的同步。
 				if !s.IsEnabled() {
 					slog.Debug("丢弃已暂停状态下的同步触发")
 					continue
+				}
+				latest := s.runtime.Snapshot()
+				if latest == nil {
+					break
+				}
+				manual := s.consumeManualPending()
+				pendingDNS, pendingEdge := s.consumePendingFeatureDue()
+				nowTick := s.now()
+				dnsDue := manual || pendingDNS || s.sourceDue(nowTick, true)
+				edgeDue := manual || pendingEdge || s.sourceDue(nowTick, false)
+				if !dnsDue && !edgeDue {
+					break
 				}
 				if !s.beginRound() {
 					slog.Debug("丢弃已停止状态下的同步触发")
 					continue
 				}
-				slog.Info("手动触发同步")
-				s.syncAll()
-				roundCompleted = true
+				if manual {
+					slog.Info("手动触发同步")
+				}
+				dispatch = s.runScheduledRound(latest, dnsDue, edgeDue)
+				dispatched = true
 			case <-s.controlCh:
 			case <-s.stopCh:
 				slog.Info("同步引擎停止")
@@ -334,43 +449,87 @@ func (s *Syncer) Run() {
 		if latest == nil {
 			continue
 		}
-		// 控制消息消费之后，循环标志推进到已发布真值
-		// （调度镜像已由 ApplyState 在发布时同步推进，此处不重复写）
 		enabled = latest.Config.SyncEnabled
+		state = latest
+		now = s.now()
+
+		intervalChangedDNS := latest.Config.Interval != tickerInterval
+		intervalChangedEdge := edgeOneIntervalOf(latest) != edgeInterval
+		if intervalChangedDNS {
+			tickerInterval = latest.Config.Interval
+			ticker.Reset(tickerInterval)
+			s.setNextDue(now, true, tickerInterval)
+		}
+		if intervalChangedEdge {
+			edgeInterval = edgeOneIntervalOf(latest)
+			edgeTicker.Reset(edgeInterval)
+			s.setNextDue(now, false, edgeInterval)
+		}
+		if !latest.Config.DNSFeatureEnabled() {
+			s.clearNextDue(true)
+		}
+		if !latest.Config.EdgeOneEnabled {
+			s.clearNextDue(false)
+		}
+		pendingDNS, pendingEdge := s.peekPendingFeatureDue()
 
 		switch {
 		case enabled && (!wasEnabled || pendingResume):
 			// 已观察的恢复或被合并的恢复边沿：更新 interval 并立即触发一轮，
-			// 且先清空暂停期间排队的过期 trigger —— 本轮的立即同步已代表最新配置，
-			// 陈旧 trigger 再补一轮会造成「恢复多跑一轮」（Build6 §12.5）。
+			// 且先清空暂停期间排队的过期 trigger。
 			slog.Info("同步已开启")
+			_, _ = s.consumePendingFeatureDue()
 			ticker.Reset(latest.Config.Interval)
 			tickerInterval = latest.Config.Interval
+			edgeTicker.Reset(edgeOneIntervalOf(latest))
+			edgeInterval = edgeOneIntervalOf(latest)
+			s.setNextDue(now, true, tickerInterval)
+			s.setNextDue(now, false, edgeInterval)
+			if !latest.Config.DNSFeatureEnabled() {
+				s.clearNextDue(true)
+			}
+			if !latest.Config.EdgeOneEnabled {
+				s.clearNextDue(false)
+			}
 			s.drainTrigger()
-			// false→true 的恢复轮同样是「新轮次」，必须走同一 stop 门控（Issue6 A20）：
-			// pause/resume 与 SIGTERM 并发时，暂停子循环的 select 可能选中 control
-			// 通知，修复前会在这里再启动一整轮云写入。
 			if !s.beginRound() {
 				slog.Info("同步引擎已停止，跳过恢复轮")
 				return
 			}
-			s.syncAll()
+			dispatch = s.runScheduledRound(latest, latest.Config.DNSFeatureEnabled(), latest.Config.EdgeOneEnabled)
+			dispatched = true
 		case wasEnabled && enabled:
-			// 定时/手动轮完成后保留原有轮后等待；纯配置通知只在间隔变化时重新计时。
-			if roundCompleted || latest.Config.Interval != tickerInterval {
-				ticker.Reset(latest.Config.Interval)
-				tickerInterval = latest.Config.Interval
+			if pendingDNS || pendingEdge {
+				// 新站点/首次启用通过统一触发入口执行，保留四个 beginRound 门控；
+				// 标记保留到触发分支消费，避免此刻直接起轮绕过 Stop 夹具。
+				s.requestScheduleWake()
+			}
+			if dispatched {
+				if dispatch.DNSDue && !intervalChangedDNS {
+					s.setNextDue(s.now(), true, latest.Config.Interval)
+					ticker.Reset(latest.Config.Interval)
+					tickerInterval = latest.Config.Interval
+				}
+				if dispatch.EdgeDue && !intervalChangedEdge {
+					retry := edgeOneIntervalOf(latest)
+					if dispatch.EdgeRetry {
+						retry = s.nextEdgeRetry(edgeOneIntervalOf(latest))
+					} else {
+						s.resetEdgeRetry()
+					}
+					s.setNextDue(s.now(), false, retry)
+					edgeTicker.Reset(retry)
+					edgeInterval = edgeOneIntervalOf(latest)
+				}
 			}
 		case wasEnabled && !enabled:
-			// true → false：当前轮已完成，停止 ticker 并进入暂停等待
 			slog.Info("同步已暂停")
-			ticker.Stop()
+			s.clearNextDue(true)
+			s.clearNextDue(false)
 		default:
 			// false → false：保持暂停，最新间隔在恢复时使用。
 		}
-
 		// 调度决策完成后通知观察者：此时新状态的开关/interval 已真正生效。
-		// 只在 Run **真正消费了一份新状态**（指针变化）时触发（Issue6 A13）。
 		s.notifyStateApplied(latest)
 	}
 }
@@ -466,6 +625,7 @@ func (s *Syncer) drainTrigger() {
 		select {
 		case <-s.triggerCh:
 		default:
+			s.clearManualPending()
 			return
 		}
 	}
@@ -549,10 +709,32 @@ func (s *Syncer) Wait() { <-s.doneCh }
 
 // TriggerSync 手动触发一次同步（非阻塞；暂停期间的排队触发在消费前会被丢弃）
 func (s *Syncer) TriggerSync() {
+	s.mu.Lock()
+	s.manualPending = true
+	s.mu.Unlock()
+	s.requestScheduleWake()
+}
+
+// requestScheduleWake 以可合并方式唤醒 Run 的统一触发入口；不表示手动触发。
+func (s *Syncer) requestScheduleWake() {
 	select {
 	case s.triggerCh <- struct{}{}:
-	default: // 已有待处理的触发，跳过
+	default:
 	}
+}
+
+func (s *Syncer) consumeManualPending() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	manual := s.manualPending
+	s.manualPending = false
+	return manual
+}
+
+func (s *Syncer) clearManualPending() {
+	s.mu.Lock()
+	s.manualPending = false
+	s.mu.Unlock()
 }
 
 // SyncStatus 同步状态
@@ -577,11 +759,18 @@ type SyncStatus struct {
 	// 运行健康判定据此区分「进程启动宽限内尚未进入运行」（不算异常）与
 	// 「进入运行后又停止」（立即异常，不受宽限影响）。
 	StartedAt *time.Time `json:"started_at"`
+	// ConfigEpoch 是当前运行时状态代次；旧轮次结果不得写回更高代次。
+	ConfigEpoch uint64 `json:"config_epoch"`
+	// DNS / EdgeOne 是两个来源的独立调度摘要；Effective = 总开关 && 来源开关。
+	DNS       SourceStatus           `json:"dns"`
+	EdgeOne   SourceStatus           `json:"edgeone"`
+	Preflight AddressPreflightStatus `json:"address_preflight"`
 }
 
 // Status 返回当前同步状态
 func (s *Syncer) Status() SyncStatus {
 	enabled := s.IsEnabled()
+	state := s.runtime.Snapshot()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	status := SyncStatus{Running: s.running, Enabled: enabled}
@@ -606,7 +795,62 @@ func (s *Syncer) Status() SyncStatus {
 		status.StartedAt = &t
 	}
 	status.ProcessStartedAt = s.processStarted
+	status.ConfigEpoch = s.generation
+	status.DNS = s.sourceStatusLocked(state, true)
+	status.EdgeOne = s.sourceStatusLocked(state, false)
+	status.Preflight = s.preflightStatusLocked(state)
 	return status
+}
+
+func (s *Syncer) sourceStatusLocked(state *RuntimeState, dnsSource bool) SourceStatus {
+	out := SourceStatus{}
+	if state == nil {
+		return out
+	}
+	enabled := state.Config.DNSFeatureEnabled()
+	interval := state.Config.Interval
+	next := s.dnsNextDue
+	scheduled := s.dnsScheduled
+	if !dnsSource {
+		enabled = state.Config.EdgeOneEnabled
+		interval = edgeOneIntervalOf(state)
+		next = s.edgeNextDue
+		scheduled = s.edgeScheduled
+	}
+	out.Enabled = enabled
+	out.Effective = enabled && state.Config.SyncEnabled
+	if out.Effective && scheduled && !next.IsZero() && interval > 0 {
+		t := next
+		out.NextDueAt = &t
+	}
+	return out
+}
+
+func (s *Syncer) preflightStatusLocked(state *RuntimeState) AddressPreflightStatus {
+	out := AddressPreflightStatus{State: PreflightStateSingleSource}
+	if state != nil && state.Config.DNSFeatureEnabled() && state.Config.EdgeOneEnabled {
+		out.State = PreflightStateDataUnavailable
+	}
+	if !s.preflightSet {
+		return out
+	}
+	out.State = s.preflight.State
+	out.DNSComplete = s.preflight.DNSComplete
+	out.EdgeOneComplete = s.preflight.EdgeOneComplete
+	out.KnownConflict = s.preflight.KnownConflict
+	if !s.preflightAt.IsZero() {
+		t := s.preflightAt
+		out.ObservedAt = &t
+	}
+	if s.preflight.Overlap != nil {
+		out.Conflict = &AddressConflictStatus{
+			DNSName:       s.preflight.Overlap.DNS.Host,
+			DNSAddress:    s.preflight.Overlap.DNS.Addr.Unmap().String(),
+			EdgeOnePrefix: s.preflight.Overlap.EdgeOne.Prefix.Masked().String(),
+			ZoneID:        s.preflight.Overlap.EdgeOne.ZoneID,
+		}
+	}
+	return out
 }
 
 func (s *Syncer) setRunning(v bool) {
@@ -847,6 +1091,16 @@ func (r RoundSummary) Data() map[string]any {
 // 本轮开始时只取一次运行时快照：TAG、规则、Provider、Resolver 与熔断器全部
 // 来自该快照，下游函数一律显式接收参数，不再回读运行时状态。
 func (s *Syncer) syncAll() {
+	s.syncAllState(s.runtime.Snapshot())
+}
+
+// syncAllState 保留单源/DNS-only 入口。
+func (s *Syncer) syncAllState(state *RuntimeState) {
+	s.syncAllStateWithInput(state, nil, nil, state != nil && state.Config.DNSFeatureEnabled(), false)
+}
+
+// syncAllStateWithInput 使用调用方捕获的不可变状态与轮次冻结输入执行目标链。
+func (s *Syncer) syncAllStateWithInput(state *RuntimeState, dnsData *roundDNSData, edgeData map[string]edgeOneSiteData, dnsActive, edgeActive bool) {
 	// 无论轮次如何结束（正常、空状态提前返回、panic 展开）都必须清空轮次开始时间，
 	// 否则会留下“陈旧在途轮次”并让健康判定长期误报同步轮次超时。
 	defer func() {
@@ -855,17 +1109,14 @@ func (s *Syncer) syncAll() {
 		s.mu.Unlock()
 	}()
 
-	state := s.runtime.Snapshot()
 	if state == nil {
 		return
 	}
 
-	// 先算清本轮统计单元总数（有至少一条适用规则的目标）
-	total := 0
-	for _, p := range state.Providers {
-		if len(filterRulesForTarget(state.Config.DomainRules, p.TargetIndex())) > 0 {
-			total++
-		}
+	groups := s.targetGroups(state)
+	total := targetUnitCount(groups)
+	if edgeActive {
+		s.clearRoundCoverage()
 	}
 
 	slog.Info("开始同步", "targets", len(state.Providers), "rules", len(state.Config.DomainRules), "units", total)
@@ -878,7 +1129,12 @@ func (s *Syncer) syncAll() {
 		Data:      map[string]any{"targets": len(state.Providers), "rules": len(state.Config.DomainRules)},
 	})
 
-	summary := s.runRound(state, total)
+	summary := s.runRoundInput(state, groups, total, roundInput{
+		dnsData:    dnsData,
+		dnsActive:  dnsActive,
+		edgeActive: edgeActive,
+		edgeData:   edgeData,
+	})
 	summary.FinishedAt = time.Now()
 	summary.DurationMS = time.Since(start).Milliseconds()
 	summary.Outcome = outcomeOf(summary)
@@ -932,6 +1188,19 @@ func outcomeOf(s RoundSummary) RoundOutcome {
 // 本轮开始时只取一次运行时快照：TAG、规则、Provider、Resolver 与熔断器全部
 // 来自该快照，下游函数一律显式接收参数，不再回读运行时状态。
 func (s *Syncer) runRound(state *RuntimeState, total int) RoundSummary {
+	groups := s.targetGroups(state)
+	return s.runRoundInput(state, groups, total, roundInput{dnsActive: state != nil && state.Config.DNSFeatureEnabled()})
+}
+
+// roundInput 是一轮目标执行的活动来源与冻结输入。
+type roundInput struct {
+	dnsData    *roundDNSData
+	edgeData   map[string]edgeOneSiteData
+	dnsActive  bool
+	edgeActive bool
+}
+
+func (s *Syncer) runRoundInput(state *RuntimeState, groups []targetGroup, total int, input roundInput) RoundSummary {
 	round := newDNSRound(state)
 	defer round.finish()
 	var (
@@ -939,19 +1208,18 @@ func (s *Syncer) runRound(state *RuntimeState, total int) RoundSummary {
 		added, deleted, cleanupCandidates, cleanupDeleted, cleanupDeferred atomic.Int32
 	)
 
-	// 按云厂商分组，跨云并行；同一云厂商内目标串行（共享配额）
-	groups := s.groupByCloud(state.Providers)
+	// 按云厂商分组，跨云并行；同一云厂商内目标串行（共享配额）。
+	byCloud := groupTargetsByCloud(groups)
 	var wg sync.WaitGroup
 	var observationMu sync.Mutex
 	observations := CleanupObservationSummary{Complete: true}
-	for ct, ps := range groups {
+	for ct, gs := range byCloud {
 		wg.Add(1)
-		go func(ct config.CloudType, ps []provider.Provider) {
+		go func(ct config.CloudType, gs []targetGroup) {
 			defer wg.Done()
-			for _, p := range ps {
-				rules := filterRulesForTarget(state.Config.DomainRules, p.TargetIndex())
-				if len(rules) == 0 {
-					// 无适用规则的目标不构成统计单元，也不访问云 API
+			for _, g := range gs {
+				if len(g.rules) == 0 && len(g.sites) == 0 {
+					// 无适用来源的目标不构成统计单元，也不访问云 API
 					continue
 				}
 				// 同平台串行、跨轮保留冷却；先等待再解析 DNS，末尾不为空闲目标等待。
@@ -959,7 +1227,21 @@ func (s *Syncer) runRound(state *RuntimeState, total int) RoundSummary {
 				next := s.targetNextStart[ct]
 				s.mu.RUnlock()
 				s.sleep(time.Until(next))
-				res := s.syncTarget(state, p, rules, round)
+				res := s.syncTargetExec(state, targetExecution{
+					identity:   g.identity,
+					epoch:      s.Generation(),
+					provider:   g.primary,
+					rules:      g.rules,
+					targetIDs:  g.targetIDs,
+					dnsActive:  input.dnsActive,
+					edgeActive: input.edgeActive,
+					dnsData:    input.dnsData,
+					edgeData:   input.edgeData,
+					edgeSites:  g.sites,
+				}, round)
+				if len(res.siteProofs) > 0 {
+					s.storeSiteProofs(res.siteProofs)
+				}
 				// 成功、部分实施与失败均从完整目标结束后计时，包含重试及退避。
 				s.mu.Lock()
 				if s.targetNextStart == nil {
@@ -989,7 +1271,7 @@ func (s *Syncer) runRound(state *RuntimeState, total int) RoundSummary {
 				observations.add(res)
 				observationMu.Unlock()
 			}
-		}(ct, ps)
+		}(ct, gs)
 	}
 	wg.Wait()
 
@@ -1006,15 +1288,6 @@ func (s *Syncer) runRound(state *RuntimeState, total int) RoundSummary {
 		CleanupDeleted:            int(cleanupDeleted.Load()),
 		CleanupDeferred:           int(cleanupDeferred.Load()),
 	}
-}
-
-func (s *Syncer) groupByCloud(providers []provider.Provider) map[config.CloudType][]provider.Provider {
-	groups := make(map[config.CloudType][]provider.Provider)
-	for _, p := range providers {
-		ct := p.CloudType()
-		groups[ct] = append(groups[ct], p)
-	}
-	return groups
 }
 
 // filterRulesForTarget 筛选适用于指定目标的规则

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -659,5 +660,101 @@ func TestTEOProductionDefaults(t *testing.T) {
 	}
 	if client.Endpoint() != "teo.tencentcloudapi.com" {
 		t.Fatalf("生产 endpoint = %q", client.Endpoint())
+	}
+}
+
+func TestTEOConfirmOriginACLUpdatePostsSignedRequest(t *testing.T) {
+	server := newTEOCaptureServer(t, 0, `{"Response":{"RequestId":"req-confirm"}}`)
+	client := teoTestClient(t, server.URL, time.Second, 0)
+	requestID, err := client.ConfirmOriginACLUpdate(context.Background(), "zone-test")
+	if err != nil {
+		t.Fatalf("确认失败: %v", err)
+	}
+	if requestID != "req-confirm" {
+		t.Fatalf("RequestId = %q", requestID)
+	}
+	requests, method, _, _, header, body := server.snapshot()
+	if requests != 1 || method != http.MethodPost {
+		t.Fatalf("请求 = %d %s", requests, method)
+	}
+	if header.Get("X-TC-Action") != "ConfirmOriginACLUpdate" || header.Get("X-TC-Version") != "2022-09-01" {
+		t.Fatalf("确认请求头 = %v", header)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("解析请求体失败: %v", err)
+	}
+	if payload["ZoneId"] != "zone-test" || len(payload) != 1 {
+		t.Fatalf("确认请求体 = %s", body)
+	}
+}
+
+func TestTEOConfirmErrorEvidence(t *testing.T) {
+	t.Run("LatestVersionNow", func(t *testing.T) {
+		server := newTEOCaptureServer(t, 0,
+			`{"Response":{"Error":{"Code":"OperationDenied.LatestVersionNow","Message":"already latest"},"RequestId":"req-latest"}}`)
+		client := teoTestClient(t, server.URL, time.Second, 0)
+		_, err := client.ConfirmOriginACLUpdate(context.Background(), "zone-test")
+		if err == nil {
+			t.Fatal("期望 LatestVersionNow 错误")
+		}
+		if got := TEOErrorKindOf(err); got != TEOErrorAlreadyLatest {
+			t.Fatalf("错误分类 = %q, want already_latest", got)
+		}
+		var teoErr *TEOError
+		if !errors.As(err, &teoErr) || teoErr.NotSent || teoErr.RequestID != "req-latest" {
+			t.Fatalf("确认错误证据 = %+v", teoErr)
+		}
+		if strings.Contains(err.Error(), "already latest") {
+			t.Fatalf("安全错误回显了 SDK Message: %v", err)
+		}
+	})
+
+	t.Run("PreSendTimeout", func(t *testing.T) {
+		server := newTEOCaptureServer(t, 0, `{"Response":{"RequestId":"unused"}}`)
+		client := teoTestClient(t, server.URL, time.Second, time.Hour)
+		client.mu.Lock()
+		client.next = time.Now().Add(time.Hour)
+		client.mu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+		defer cancel()
+		_, err := client.ConfirmOriginACLUpdate(ctx, "zone-test")
+		if err == nil {
+			t.Fatal("期望预发送超时")
+		}
+		var teoErr *TEOError
+		if !errors.As(err, &teoErr) || !teoErr.NotSent {
+			t.Fatalf("预发送错误应标记 NotSent: %+v", teoErr)
+		}
+		if requests, _, _, _, _, _ := server.snapshot(); requests != 0 {
+			t.Fatalf("预发送失败后请求数 = %d", requests)
+		}
+	})
+
+	t.Run("MissingRequestId", func(t *testing.T) {
+		server := newTEOCaptureServer(t, 0, `{"Response":{}}`)
+		client := teoTestClient(t, server.URL, time.Second, 0)
+		_, err := client.ConfirmOriginACLUpdate(context.Background(), "zone-test")
+		if err == nil || TEOErrorKindOf(err) != TEOErrorIncomplete {
+			t.Fatalf("缺少 RequestId 应返回 incomplete: %v", err)
+		}
+	})
+}
+
+func TestTEOOriginACLCurrentPlanFields(t *testing.T) {
+	response := `{"Response":{"RequestId":"req-plan","OriginACLInfo":{"Status":"online",` +
+		`"CurrentOriginACL":{"Version":"v1","ActiveTime":"2026-11-01T00:00:00Z","IsPlaned":"true",` +
+		`"EntireAddresses":{"IPv4":["203.0.113.1"],"IPv6":[]}}},"NextOriginACL":null}}`
+	server := newTEOCaptureServer(t, 0, response)
+	client := teoTestClient(t, server.URL, time.Second, 0)
+	snapshot, err := client.DescribeOriginACL(context.Background(), "zone-test")
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if snapshot.Current.IsPlaned == nil || !*snapshot.Current.IsPlaned {
+		t.Fatalf("IsPlaned 未保留: %+v", snapshot.Current)
+	}
+	if snapshot.Current.ActiveTime == nil || !snapshot.Current.ActiveTime.Equal(time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("ActiveTime 未保留: %+v", snapshot.Current.ActiveTime)
 	}
 }

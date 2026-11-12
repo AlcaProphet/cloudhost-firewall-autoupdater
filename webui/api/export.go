@@ -217,6 +217,11 @@ func (d *Deps) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// 4b) 运行记录：保留仍存在站点的确认/过渡记录，删除已移除站点。
+		if perr := d.Store.PruneEdgeOneTransitionsTx(ctx, tx); perr != nil {
+			return fmt.Errorf("清理 EdgeOne 过渡记录失败: %w", perr)
+		}
+
 		// 5) 显式写入完整设置键集合（不遍历任意 map）
 		if serr := d.Store.ReplaceBusinessSettingsTx(ctx, tx, storeSettings); serr != nil {
 			return fmt.Errorf("导入设置失败: %w", serr)

@@ -79,6 +79,13 @@ func (d *Deps) SetRuntimeWiring(runtime *syncer.RuntimeManager, alerts *AlertMan
 	d.createRuntime = runtime != nil
 }
 
+// ConfigCoordinator 返回（必要时创建）配置变更协调器。
+//
+// run.go 用它在同步主循环启动前注入 WithStableConfig 稳定区。
+func (d *Deps) ConfigCoordinator() *ConfigCoordinator {
+	return d.coordinator()
+}
+
 // coordinator 返回配置变更协调器；未注入时惰性创建（测试与最小接线场景）。
 func (d *Deps) coordinator() *ConfigCoordinator {
 	d.coordOnce.Do(func() {
@@ -205,6 +212,7 @@ func (d *Deps) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/edgeone/sites", d.handleAddEdgeOneSite)
 	mux.HandleFunc("PUT /api/edgeone/sites/{zone_id}", d.handleUpdateEdgeOneSite)
 	mux.HandleFunc("DELETE /api/edgeone/sites/{zone_id}", d.handleDeleteEdgeOneSite)
+	mux.HandleFunc("GET /api/edgeone/status", d.handleGetEdgeOneStatus)
 	// 规则管理
 	mux.HandleFunc("GET /api/rules", d.handleGetRules)
 	mux.HandleFunc("POST /api/rules", d.handleAddRule)

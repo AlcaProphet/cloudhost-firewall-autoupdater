@@ -15,7 +15,10 @@ import (
 
 func (d *Deps) handleSyncStatus(w http.ResponseWriter, r *http.Request) {
 	if d.Syncer == nil {
-		writeJSON(w, http.StatusOK, syncer.SyncStatus{Running: false})
+		writeJSON(w, http.StatusOK, syncer.SyncStatus{
+			Running:   false,
+			Preflight: syncer.AddressPreflightStatus{State: syncer.PreflightStateSingleSource},
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, d.Syncer.Status())

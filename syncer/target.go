@@ -42,6 +42,8 @@ type targetResult struct {
 	cleanupObservation     *CleanupObservation
 	unsupportedObservation *UnsupportedObservation
 	targetID               int
+	targetIDs              []int
+	siteProofs             map[string]SiteCoverage
 	provider               string
 	domains                []string
 	outcome                TargetOutcome
@@ -75,17 +77,45 @@ type cleanupResult struct {
 	deferredAt time.Time
 }
 
-// syncTarget 执行一个目标的完整同步：最多 maxRetries 次整目标 attempt。
-//
-// 每个 attempt 都重新解析正常域名、取 S0、规划；轮初已熔断域名的失败探测只在本轮复用。
-// 已确认的写入跨 attempt 保留，再次规划后不会重复计数（已生效规则不再出现在 ToAdd 中）。
+// targetExecution 是一个物理目标的单次写入执行输入。本地别名已合并；
+// dnsActive/edgeActive 决定本轮哪些来源可以新增/清理，但完整期望集始终由
+// dns rules 与 edge sites 共同构成，避免误删另一来源的规则。
+type targetExecution struct {
+	identity   string
+	epoch      uint64
+	provider   provider.Provider
+	rules      []config.DomainRule
+	targetIDs  []int
+	dnsActive  bool
+	edgeActive bool
+	dnsData    *roundDNSData
+	edgeData   map[string]edgeOneSiteData
+	edgeSites  []config.EdgeOneSite
+}
+
+// syncTarget 保留单目标 DNS-only 调用入口，供既有回归直接使用。
 func (s *Syncer) syncTarget(state *RuntimeState, p provider.Provider, rules []config.DomainRule, round *dnsRound) targetResult {
+	return s.syncTargetExec(state, targetExecution{
+		provider:  p,
+		rules:     rules,
+		targetIDs: []int{p.TargetIndex()},
+		dnsActive: true,
+	}, round)
+}
+
+// syncTargetExec 执行一个物理目标的完整同步：最多 maxRetries 次整目标 attempt。
+//
+// 每个 attempt 都重新解析正常域名、取 S0、规划；双开时使用本轮已冻结的 DNS
+// 地址集，不再重新解析。已确认的写入跨 attempt 保留，再次规划后不会重复计数。
+func (s *Syncer) syncTargetExec(state *RuntimeState, exec targetExecution, round *dnsRound) targetResult {
+	p := exec.provider
 	started := time.Now()
 	res := targetResult{
-		targetID: p.TargetIndex(),
-		provider: p.Name(),
-		domains:  ruleHosts(rules),
-		outcome:  TargetSuccess,
+		targetID:  p.TargetIndex(),
+		targetIDs: append([]int(nil), exec.targetIDs...),
+		provider:  p.Name(),
+		domains:   ruleHosts(exec.rules),
+		outcome:   TargetSuccess,
 	}
 	finish := func() targetResult {
 		// 目标耗时覆盖完整生命周期，包括整目标重试与退避；所有最终事件共用同一口径。
@@ -103,11 +133,14 @@ func (s *Syncer) syncTarget(state *RuntimeState, p provider.Provider, rules []co
 			s.sleep(backoff)
 		}
 
-		attemptRes, err := s.runTargetAttempt(state, p, rules, dnsFailedHosts, round)
+		attemptRes, err := s.runTargetAttemptExec(state, exec, dnsFailedHosts, round)
 		res.added += attemptRes.added
 		res.deleted += attemptRes.deleted
 		res.mergeObservations(attemptRes, attempt+1)
 		res.cleanupDeleted += attemptRes.cleanupDeleted
+		if len(attemptRes.siteProofs) > 0 {
+			res.siteProofs = attemptRes.siteProofs
+		}
 
 		if err == nil {
 			res.outcome = attemptRes.outcome
@@ -135,23 +168,32 @@ func (s *Syncer) syncTarget(state *RuntimeState, p provider.Provider, rules []co
 	return finish()
 }
 
-// runTargetAttempt 执行一次完整的「S0 → Plan → Add → S1 → 覆盖验证 → 条件清理」。
-func (s *Syncer) runTargetAttempt(
+// runTargetAttemptExec 执行一次完整的「S0 → Plan → Add → S1 → 覆盖验证 → 条件清理」。
+func (s *Syncer) runTargetAttemptExec(
 	state *RuntimeState,
-	p provider.Provider,
-	rules []config.DomainRule,
+	exec targetExecution,
 	dnsFailedHosts map[string]bool,
 	round *dnsRound,
 ) (targetResult, error) {
+	p := exec.provider
+	rules := exec.rules
 	res := targetResult{
-		targetID: p.TargetIndex(),
-		provider: p.Name(),
-		domains:  ruleHosts(rules),
-		outcome:  TargetSuccess,
+		targetID:  p.TargetIndex(),
+		targetIDs: append([]int(nil), exec.targetIDs...),
+		provider:  p.Name(),
+		domains:   ruleHosts(rules),
+		outcome:   TargetSuccess,
 	}
 
-	// 1) 按 host 去重解析；正常路径每个 attempt 重新解析，熔断探测由本轮协调。
-	resolved, dnsErrors, dnsErrValues := s.resolveTargetRules(state, rules, dnsFailedHosts, true, round)
+	// 1) 双开使用本轮冻结的地址集；DNS-only 保留逐 attempt 解析。
+	var resolved map[int][]dns.ResolvedIP
+	var dnsErrors map[int]string
+	var dnsErrValues map[int]error
+	if exec.dnsData != nil {
+		resolved, dnsErrors, dnsErrValues = exec.dnsData.resolved, exec.dnsData.errors, exec.dnsData.rawErrors
+	} else {
+		resolved, dnsErrors, dnsErrValues = s.resolveTargetRules(state, rules, dnsFailedHosts, true, round)
+	}
 
 	// 2) S0：本次 attempt 的完整快照（含腾讯版本号）
 	s0, err := p.GetSnapshot()
@@ -161,21 +203,25 @@ func (s *Syncer) runTargetAttempt(
 
 	// 3) Plan(S0)
 	plan0 := provider.PlanTarget(provider.TargetPlanInput{
-		CloudType: p.CloudType(),
-		Tag:       state.Config.Tag,
-		Rules:     rules,
-		Resolved:  resolved,
-		DNSErrors: dnsErrors,
-		Snapshot:  s0,
+		CloudType:    p.CloudType(),
+		Tag:          state.Config.Tag,
+		OtherTag:     state.Config.EdgeOneTag,
+		EdgeOneTag:   edgeOneTagForExec(state, exec),
+		Rules:        rules,
+		EdgeOneSites: edgeOneInputsForExec(exec),
+		Resolved:     resolved,
+		DNSErrors:    dnsErrors,
+		Snapshot:     s0,
 	})
 	// S0 已经确定的平台能力限制必须立即进入 attempt 结果；若后续 Add 失败，
 	// 最终 failed 事件仍需保留这些 unsupported 明细（Issue7 §5.3、§7.2）。
 	complete := desiredInputComplete(rules, resolved, dnsErrors)
 	res.observeUnsupported(plan0.Unsupported, "s0", complete)
 
-	// 4) Add：永远先于任何删除；携带 S0 快照做版本保护
-	if len(plan0.ToAdd) > 0 {
-		createRes, err := p.CreateRules(s0, plan0.ToAdd)
+	// 4) Add：永远先于任何删除；只写本轮活动来源，但完整期望集已包含另一来源。
+	addActions := activeAddActions(state, plan0, exec)
+	if len(addActions) > 0 {
+		createRes, err := p.CreateRules(s0, addActions)
 		// 即使返回错误，Written 仍表示此前已由云端确认的独立子批次
 		res.added += createRes.Written
 		if err != nil {
@@ -194,12 +240,15 @@ func (s *Syncer) runTargetAttempt(
 
 	// 6) 用同一 canonical key / 同一纯规划器复算覆盖
 	plan1 := provider.PlanTarget(provider.TargetPlanInput{
-		CloudType: p.CloudType(),
-		Tag:       state.Config.Tag,
-		Rules:     rules,
-		Resolved:  resolved,
-		DNSErrors: dnsErrors,
-		Snapshot:  s1,
+		CloudType:    p.CloudType(),
+		Tag:          state.Config.Tag,
+		OtherTag:     state.Config.EdgeOneTag,
+		EdgeOneTag:   edgeOneTagForExec(state, exec),
+		Rules:        rules,
+		EdgeOneSites: edgeOneInputsForExec(exec),
+		Resolved:     resolved,
+		DNSErrors:    dnsErrors,
+		Snapshot:     s1,
 	})
 	res.observeUnsupported(plan1.Unsupported, "s1", complete)
 	observedAt := time.Now()
@@ -209,10 +258,15 @@ func (s *Syncer) runTargetAttempt(
 	res.cleanupDeferred = len(plan1.CleanupCandidates)
 	res.cleanupDeleted = 0
 
-	if len(plan1.ToAdd) > 0 {
-		return res, fmt.Errorf("新增后覆盖验证失败：%d 个期望功能未在 S1 快照中得到确认", len(plan1.ToAdd))
+	// 先固化 EdgeOne 站点证明：DNS 侧失败时，只要 EdgeOne 全部目标在本轮
+	// 回读完整，站点仍可按单侧继续进入确认准入。
+	if exec.edgeActive && len(exec.edgeSites) > 0 {
+		res.siteProofs = siteCoverageForExec(state, exec, plan1)
 	}
-	if len(plan1.DNSErrors) > 0 {
+	if missing := missingActiveDesired(plan1, exec); len(missing) > 0 {
+		return res, fmt.Errorf("新增后覆盖验证失败：%d 个期望功能未在 S1 快照中得到确认", len(missing))
+	}
+	if exec.dnsActive && len(plan1.DNSErrors) > 0 {
 		return res, dnsFailureError(plan1.DNSErrors, dnsErrValues)
 	}
 	// S1 覆盖确认后即确定功能结论；后续清理失败只影响 cleanup_deferred。
@@ -221,10 +275,30 @@ func (s *Syncer) runTargetAttempt(
 	} else {
 		res.outcome = TargetSuccess
 	}
+	if exec.edgeActive && len(exec.edgeSites) > 0 {
+		incomplete := ""
+		for _, proof := range res.siteProofs {
+			if proof.Complete {
+				continue
+			}
+			if containsString(proof.Reasons, "s1_uncovered") {
+				return res, fmt.Errorf("EdgeOne 站点 %s 覆盖不完整", proof.ZoneID)
+			}
+			incomplete = proof.ZoneID
+		}
+		if incomplete != "" {
+			// 查询不可用/跨 TAG 冲突/平台限制不重试同一轮冻结输入；保留证明并
+			// 禁止清理与确认，由后续轮次重新准备数据。
+			res.outcome = TargetPartial
+			res.cleanupDeferred = len(plan1.CleanupCandidates)
+			return res, nil
+		}
+	}
 
 	// 7) 条件清理：只有安全门全部满足（CleanupDeletable 非空）且 S1 覆盖已确认时才删除；
 	//    Add 或覆盖验证失败时上面的 return 已保证本 attempt 零删除。
-	cleanup, err := s.runTargetCleanup(state, p, rules, s1, plan1, resolved, dnsErrors)
+	cleanup, err := s.runTargetCleanup(state, p, rules, s1, plan1, resolved, dnsErrors, exec.dnsActive,
+		edgeOneInputsForExec(exec), edgeOneTagForExec(state, exec))
 	res.cleanupDeleted = cleanup.deleted
 	res.deleted += cleanup.deleted
 	res.cleanupDeferred = cleanup.deferred
@@ -237,6 +311,95 @@ func (s *Syncer) runTargetAttempt(
 		return res, err
 	}
 	return res, nil
+}
+
+func edgeOneTagForExec(state *RuntimeState, exec targetExecution) string {
+	if len(exec.edgeSites) == 0 {
+		return ""
+	}
+	return state.Config.EdgeOneTag
+}
+
+func edgeOneInputsForExec(exec targetExecution) []provider.EdgeOneSitePlanInput {
+	if len(exec.edgeSites) == 0 {
+		return nil
+	}
+	out := make([]provider.EdgeOneSitePlanInput, 0, len(exec.edgeSites))
+	for _, site := range exec.edgeSites {
+		data := exec.edgeData[strings.TrimSpace(site.ZoneID)]
+		out = append(out, provider.EdgeOneSitePlanInput{
+			Site:              site,
+			Snapshot:          data.snapshot,
+			UnavailableReason: data.unavailable,
+		})
+	}
+	return out
+}
+
+// activeDesired 判断一个期望项是否属于本轮实际可写入的来源。
+func activeDesired(exec targetExecution, d provider.PlannedRule) bool {
+	if exec.dnsActive && len(d.RuleIDs) > 0 {
+		return true
+	}
+	return exec.edgeActive && len(d.SiteIDs) > 0
+}
+
+func coveredKeySet(plan provider.TargetPlan) map[provider.FunctionalKey]bool {
+	out := make(map[provider.FunctionalKey]bool, len(plan.SatisfiedByOwned)+len(plan.SatisfiedByExternal))
+	for _, m := range plan.SatisfiedByOwned {
+		out[m.Key] = true
+	}
+	for _, m := range plan.SatisfiedByExternal {
+		out[m.Key] = true
+	}
+	return out
+}
+
+func missingActiveDesired(plan provider.TargetPlan, exec targetExecution) []provider.PlannedRule {
+	covered := coveredKeySet(plan)
+	missing := make([]provider.PlannedRule, 0)
+	for _, d := range plan.Desired {
+		if !activeDesired(exec, d) || !d.Implementable {
+			continue
+		}
+		if !covered[d.Key] {
+			missing = append(missing, d)
+		}
+	}
+	return missing
+}
+
+func actionMatches(a, b config.RuleAction) bool {
+	return a.CidrBlock == b.CidrBlock && a.Ipv6CidrBlock == b.Ipv6CidrBlock &&
+		a.Protocol == b.Protocol && a.Port == b.Port && a.Action == b.Action
+}
+
+// activeAddActions 从 planner 的完整 ToAdd 中筛出本轮来源，并按活动 TAG 重渲染。
+func activeAddActions(state *RuntimeState, plan provider.TargetPlan, exec targetExecution) []config.RuleAction {
+	out := make([]config.RuleAction, 0)
+	for _, d := range plan.Desired {
+		if !activeDesired(exec, d) || !d.Implementable {
+			continue
+		}
+		found := false
+		for _, a := range plan.ToAdd {
+			if actionMatches(a, d.Action) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			continue
+		}
+		tag := state.Config.Tag
+		if len(d.RuleIDs) == 0 && len(d.SiteIDs) > 0 {
+			tag = state.Config.EdgeOneTag
+		}
+		a := d.Action
+		a.Description = provider.RenderDescription(exec.provider.CloudType(), tag, d.Comment)
+		out = append(out, a)
+	}
+	return out
 }
 
 // runTargetCleanup 在清理安全门满足时执行条件删除，并在发生删除后强制 S2 覆盖验证。
@@ -257,8 +420,16 @@ func (s *Syncer) runTargetCleanup(
 	plan1 provider.TargetPlan,
 	resolvedIPs map[int][]dns.ResolvedIP,
 	dnsErrors map[int]string,
+	allowDNS bool,
+	edgeOneSites []provider.EdgeOneSitePlanInput,
+	edgeOneTag string,
 ) (cleanupResult, error) {
 	fallback := cleanupResult{deferred: len(plan1.CleanupCandidates)}
+	if !allowDNS {
+		// 仅 EdgeOne 到期的轮次不得删除 DNS TAG 规则；EdgeOne TAG 清理在
+		// Step 9 按合同仍延后到 Step 11。
+		return fallback, nil
+	}
 	if len(plan1.CleanupDeletable) == 0 {
 		return fallback, nil
 	}
@@ -307,7 +478,7 @@ func (s *Syncer) runTargetCleanup(
 	switch {
 	case delErr == nil, isPartialDelete(delErr):
 		// 已确认删除或部分成功：必须取得 S2 并复算覆盖
-		finalDeferred, err := s.verifyCleanupResult(state, p, rules, s1.Revision, resolvedIPs, dnsErrors)
+		finalDeferred, err := s.verifyCleanupResult(state, p, rules, s1.Revision, resolvedIPs, dnsErrors, edgeOneSites, edgeOneTag)
 		if err != nil {
 			return result, err
 		}
@@ -317,7 +488,7 @@ func (s *Syncer) runTargetCleanup(
 	case isIdempotentDelete(delErr):
 		// 「已不存在」视为清理成功但不计 Deleted；仍需 S2 确认覆盖
 		slog.Warn("清理候选已不存在，按幂等处理", "provider", p.Name())
-		finalDeferred, err := s.verifyCleanupResult(state, p, rules, s1.Revision, resolvedIPs, dnsErrors)
+		finalDeferred, err := s.verifyCleanupResult(state, p, rules, s1.Revision, resolvedIPs, dnsErrors, edgeOneSites, edgeOneTag)
 		if err != nil {
 			return result, err
 		}
@@ -350,6 +521,8 @@ func (s *Syncer) verifyCleanupResult(
 	s1Revision string,
 	resolvedIPs map[int][]dns.ResolvedIP,
 	dnsErrors map[int]string,
+	edgeOneSites []provider.EdgeOneSitePlanInput,
+	edgeOneTag string,
 ) (int, error) {
 	s2, err := p.GetSnapshot()
 	if err != nil {
@@ -359,12 +532,15 @@ func (s *Syncer) verifyCleanupResult(
 		return 0, fmt.Errorf("%w: S2 缺少版本号，无法证明清理后状态", provider.ErrSnapshotIncomplete)
 	}
 	plan2 := provider.PlanTarget(provider.TargetPlanInput{
-		CloudType: p.CloudType(),
-		Tag:       state.Config.Tag,
-		Rules:     rules,
-		Resolved:  resolvedIPs, // 与本次 attempt 完全相同的解析结果
-		DNSErrors: dnsErrors,
-		Snapshot:  s2,
+		CloudType:    p.CloudType(),
+		Tag:          state.Config.Tag,
+		OtherTag:     state.Config.EdgeOneTag,
+		EdgeOneTag:   edgeOneTag,
+		Rules:        rules,
+		EdgeOneSites: edgeOneSites,
+		Resolved:     resolvedIPs, // 与本次 attempt 完全相同的解析结果
+		DNSErrors:    dnsErrors,
+		Snapshot:     s2,
 	})
 	if len(plan2.ToAdd) > 0 {
 		return 0, fmt.Errorf("S2 覆盖验证失败：清理后 %d 个期望功能不再被快照覆盖", len(plan2.ToAdd))
@@ -518,6 +694,7 @@ func (s *Syncer) publishTargetResult(res targetResult) {
 		"unsupported_observation": res.unsupportedObservation,
 		"provider":                res.provider,
 		"target_id":               res.targetID,
+		"target_ids":              append([]int(nil), res.targetIDs...),
 		"domains":                 res.domains,
 		"domain":                  strings.Join(res.domains, ", "),
 		"added":                   res.added,

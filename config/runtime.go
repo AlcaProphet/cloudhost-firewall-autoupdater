@@ -87,10 +87,13 @@ type RuntimeConfig struct {
 	EdgeOneTag       string
 	EdgeOneInterval  time.Duration
 	Theme            string
-	Policy           AlertPolicyConfig
-	Email            AlertEmailConfig
-	Webhook          AlertWebhookConfig
-	UptimeKumaPush   UptimeKumaPushConfig
+	// dnsEnabledSet 区分“生产快照显式写入 dns_enabled”与旧测试夹具/零值配置。
+	// 未显式设置时沿用 Build8 之前的唯一 DNS 路径默认开启，避免把零值误判为关闭。
+	dnsEnabledSet  bool
+	Policy         AlertPolicyConfig
+	Email          AlertEmailConfig
+	Webhook        AlertWebhookConfig
+	UptimeKumaPush UptimeKumaPushConfig
 }
 
 // DeepCopy 返回 RuntimeConfig 的深拷贝：全部 slice 元素独立可写。
@@ -123,6 +126,7 @@ func (s *BusinessSnapshot) ToRuntimeConfig() RuntimeConfig {
 		LogLevel:         s.Settings["log_level"],
 		SyncEnabled:      s.Settings["sync_enabled"] == "true",
 		DNSEnabled:       s.Settings["dns_enabled"] == "true",
+		dnsEnabledSet:    true,
 		EdgeOneEnabled:   s.Settings["edgeone_enabled"] == "true",
 		EdgeOneTag:       s.Settings["edgeone_tag"],
 		EdgeOneInterval:  mustDuration(s.Settings["edgeone_interval"]),
@@ -132,6 +136,21 @@ func (s *BusinessSnapshot) ToRuntimeConfig() RuntimeConfig {
 		Webhook:          s.Webhook,
 		UptimeKumaPush:   s.UptimeKumaPush,
 	}
+}
+
+// DNSFeatureEnabled 返回 DNS 来源是否启用。生产快照显式设置；未设置 marker
+// 的零值测试夹具按旧唯一 DNS 路径视为启用。
+func (rc RuntimeConfig) DNSFeatureEnabled() bool {
+	if rc.dnsEnabledSet {
+		return rc.DNSEnabled
+	}
+	return true
+}
+
+// SetDNSFeatureEnabled 供测试/构造路径显式覆盖 DNS 开关。
+func (rc *RuntimeConfig) SetDNSFeatureEnabled(enabled bool) {
+	rc.DNSEnabled = enabled
+	rc.dnsEnabledSet = true
 }
 
 // mustDuration 解析已完成校验的时长设置。

@@ -278,6 +278,18 @@ CREATE TABLE IF NOT EXISTS sync_address_conflict (
 	first_seen_at    TEXT NOT NULL,
 	last_seen_at     TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS edgeone_origin_transitions (
+	zone_id                 TEXT NOT NULL PRIMARY KEY,
+	base_version            TEXT NOT NULL,
+	pending_version         TEXT NOT NULL,
+	pending_cidrs_json      TEXT NOT NULL,
+	protected_cidrs_json    TEXT NOT NULL,
+	confirmation_state      TEXT NOT NULL CHECK (
+		confirmation_state IN ('not_attempted', 'unknown', 'accepted')
+	),
+	confirmation_request_id TEXT NOT NULL DEFAULT '',
+	updated_at              TEXT NOT NULL
+);
 `
 
 // defaultWebhookRowSQL 显式指定未配置渠道，避免旧表默认值影响初始化与重置。
@@ -718,6 +730,7 @@ func ruleColumns(r DomainRule) (targetsJSON string, enableIPv6 int, err error) {
 const resetAllSQL = "DELETE FROM edgeone_site_targets; DELETE FROM edgeone_sites;" +
 	"DELETE FROM targets; DELETE FROM rules; DELETE FROM settings; DELETE FROM sync_logs;" +
 	"DELETE FROM sync_address_conflict;" +
+	"DELETE FROM edgeone_origin_transitions;" +
 	"DELETE FROM alert_email; DELETE FROM alert_webhook; DELETE FROM alert_policy; DELETE FROM uptime_kuma_push;" +
 	"DELETE FROM scanned_resources;" +
 	"INSERT OR IGNORE INTO alert_email (id) VALUES (1);" +
