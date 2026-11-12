@@ -18,7 +18,7 @@ func (e *bundleV3PresenceError) Error() string {
 	if e.Total == 1 {
 		suffix := " 字段缺失"
 		p := e.Fields[0]
-		if p == "targets" || p == "rules" || strings.HasSuffix(p, ".target_export_ids") {
+		if p == "targets" || p == "rules" || p == "edgeone_sites" || strings.HasSuffix(p, ".target_export_ids") {
 			suffix = " 字段缺失或为 null"
 		}
 		return p + suffix

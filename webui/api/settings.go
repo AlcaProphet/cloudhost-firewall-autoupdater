@@ -8,26 +8,33 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
 
-// 设置键边界（Build6 Step 2 最小清理 + Step 4 固定 DTO）：
-// settingsEditableKeys 是 GET 返回并可经 PUT /api/settings 落库的 11 个键；
-// sync_enabled 只由 pause/resume 端点或 version 3 配置导入写入，
+// 设置键边界（Build6 Step 2 最小清理 + Step 4 固定 DTO；Build8 Step 2 扩展）：
+// settingsEditableKeys 是 GET 返回并可经 PUT /api/settings 落库的 15 个键；
+// sync_enabled 只由 pause/resume 端点或配置导入写入，
 // webui_port 已改为部署参数 WEBUI_PORT，二者都不属于本 DTO。
 var settingsEditableKeys = map[string]bool{
 	"tc_access_id": true, "tc_access_key": true,
 	"ali_access_id": true, "ali_access_key": true,
 	"tag": true, "interval": true, "dns": true, "dns_timeout": true,
 	"dns_fail_threshold": true, "log_level": true, "theme": true,
+	"dns_enabled": true, "edgeone_enabled": true,
+	"edgeone_tag": true, "edgeone_interval": true,
 }
 
-// settingsDefaults 缺失或空白时的默认值（Build6 §3.1、§12.9）
+// settingsDefaults 缺失或空白时的默认值（Build6 §3.1、§12.9；
+// DNS TAG 默认值统一使用 config.DefaultDNSTag，见 Build8 Step 1）
 var settingsDefaults = map[string]string{
-	"tag":                "auto-dns",
+	"tag":                config.DefaultDNSTag,
 	"interval":           "5m",
 	"dns":                "223.5.5.5",
 	"dns_timeout":        "10s",
 	"dns_fail_threshold": "5",
 	"log_level":          "info",
 	"theme":              "light",
+	"dns_enabled":        "true",
+	"edgeone_enabled":    "false",
+	"edgeone_tag":        config.DefaultEdgeOneTag,
+	"edgeone_interval":   config.DefaultEdgeOneIntervalText,
 }
 
 func (d *Deps) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -50,7 +57,8 @@ func (d *Deps) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// settingsPatch PUT /api/settings 的部分更新请求体（11 个 pointer 字段，Build6 §12.9）。
+// settingsPatch PUT /api/settings 的部分更新请求体（15 个 pointer 字段，Build6 §12.9；
+// Build8 Step 2 增加双功能开关、EdgeOne TAG 与间隔）。
 //
 // 省略字段保持不变；只有四个云凭据允许显式空字符串（用于清除旧值）。
 type settingsPatch struct {
@@ -65,6 +73,10 @@ type settingsPatch struct {
 	DNSFailThreshold *string `json:"dns_fail_threshold"`
 	LogLevel         *string `json:"log_level"`
 	Theme            *string `json:"theme"`
+	DNSEnabled       *string `json:"dns_enabled"`
+	EdgeOneEnabled   *string `json:"edgeone_enabled"`
+	EdgeOneTag       *string `json:"edgeone_tag"`
+	EdgeOneInterval  *string `json:"edgeone_interval"`
 }
 
 // values 归一化并校验本次提交的字段，返回“设置键 → 应落库的值”。
@@ -131,6 +143,34 @@ func (p settingsPatch) values() (map[string]string, error) {
 			return nil, err
 		}
 		updates["theme"] = v
+	}
+	if p.DNSEnabled != nil {
+		v, err := config.NormalizeFeatureEnabled("dns_enabled", *p.DNSEnabled)
+		if err != nil {
+			return nil, err
+		}
+		updates["dns_enabled"] = v
+	}
+	if p.EdgeOneEnabled != nil {
+		v, err := config.NormalizeFeatureEnabled("edgeone_enabled", *p.EdgeOneEnabled)
+		if err != nil {
+			return nil, err
+		}
+		updates["edgeone_enabled"] = v
+	}
+	if p.EdgeOneTag != nil {
+		v, err := config.NormalizeEdgeOneTag(*p.EdgeOneTag)
+		if err != nil {
+			return nil, err
+		}
+		updates["edgeone_tag"] = v
+	}
+	if p.EdgeOneInterval != nil {
+		v, _, err := config.ParsePositiveDuration("edgeone_interval", *p.EdgeOneInterval)
+		if err != nil {
+			return nil, err
+		}
+		updates["edgeone_interval"] = v
 	}
 	return updates, nil
 }

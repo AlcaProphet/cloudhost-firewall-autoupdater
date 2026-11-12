@@ -2,6 +2,26 @@ package config
 
 import "time"
 
+// DNS TAG 默认值与旧库迁移值（Build8 Step 1）。
+const (
+	// DefaultDNSTag 新建库、reset 后以及迁移标记已存在但缺少 TAG 时的有效默认值。
+	DefaultDNSTag = "auto-ddns"
+	// LegacyDefaultDNSTag 旧库缺键或空白时原先实际生效的 DNS TAG，仅用于一次性迁移。
+	LegacyDefaultDNSTag = "auto-dns"
+)
+
+// EdgeOne 默认值与旧配置兼容值（Build8 Step 2）。
+const (
+	// DefaultEdgeOneTag 新实例的 EdgeOne TAG 默认值。
+	DefaultEdgeOneTag = "edgeone"
+	// LegacyEdgeOneTag 旧配置 DNS TAG 恰为 edgeone 时，新模块使用的独立初始值。
+	LegacyEdgeOneTag = "edgeone-origin"
+	// DefaultEdgeOneIntervalText EdgeOne 同步间隔默认文本（与 DNS 间隔分开保存）。
+	DefaultEdgeOneIntervalText = "72h"
+	// DefaultEdgeOneInterval EdgeOne 同步间隔默认运行时值。
+	DefaultEdgeOneInterval = 72 * time.Hour
+)
+
 // Build7 告警与运行健康的固定默认值与边界（Build7 §4.1、§4.2、§4.5）。
 const (
 	// DefaultEmailSubject 默认邮件主题

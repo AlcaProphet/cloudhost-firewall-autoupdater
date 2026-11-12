@@ -6,9 +6,11 @@ import (
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -70,32 +72,85 @@ func decodeJSONStrict(w http.ResponseWriter, r *http.Request, limit int64, dst a
 	return nil
 }
 
-// decodeBundleV3Strict 在领域校验与写事务前解码完整配置包（I8-111）。
+// readImportBody 在领域校验与写事务前完整有界读取配置包。
 //
-// 先完整有界读取，确保超限总是 413，不被更早的语法或未知字段错误遮蔽。
-// JSON v2 默认拒绝重复字段、大小写变体和非法 Unicode；显式拒绝未知字段。
-// 合法转义按解码后的字段名处理，嵌套数组通过同一个 decoder 继承这些规则。
-func decodeBundleV3Strict(w http.ResponseWriter, r *http.Request, dst *bundleV3Wire) error {
+// 先完整读取，确保超限总是 413，不被更早的语法或未知字段错误遮蔽。
+func readImportBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxImportBodyBytes)
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
-		return decodeError(err)
+		return nil, decodeError(err)
 	}
 	data = bytes.TrimSpace(data)
 	if len(data) == 0 {
-		return badRequest("请求体不能为空")
+		return nil, badRequest("请求体不能为空")
 	}
 	if data[0] != '{' {
-		return badRequest("请求体必须是 JSON 对象")
+		return nil, badRequest("请求体必须是 JSON 对象")
 	}
+	return data, nil
+}
+
+// decodeBundleStrict 把已读取的配置包解码为所选版本的强类型 DTO。
+//
+// JSON v2 默认拒绝重复字段、大小写变体和非法 Unicode；显式拒绝未知字段。
+// 合法转义按解码后的字段名处理，嵌套数组通过同一个 decoder 继承这些规则。
+func decodeBundleStrict(data []byte, dst any) error {
 	if err := jsonv2.Unmarshal(data, dst, jsonv2.RejectUnknownMembers(true)); err != nil {
-		return decodeBundleV3Error(err)
+		return decodeBundleError(err)
 	}
 	return nil
 }
 
-// decodeBundleV3Error 只提取错误类别与 JSON Pointer，不回显 JSONValue 或 Error 原文。
-func decodeBundleV3Error(err error) error {
+// detectBundleVersion 先识别 version，再按版本选择 DTO；未知版本不进入结构校验。
+//
+// 这里只读取顶层对象，不要求所选版本的完整字段；重复字段、非法 Unicode 与
+// 语法错误仍由 JSON v2 统一拒绝。版本缺失/null/不支持保持原有安全 400 形状。
+func detectBundleVersion(data []byte) (int, error) {
+	var head struct {
+		Version *int `json:"version"`
+	}
+	if err := jsonv2.Unmarshal(data, &head); err != nil {
+		return 0, decodeBundleError(err)
+	}
+	if head.Version == nil {
+		// 保留严格字段名语义：仅大小写不同的 version 视为未知字段，而不是
+		// 笼统地报「version 字段缺失」；真正缺失/null 仍返回版本错误。
+		if unknown, ok := caseVariantVersionField(data); ok {
+			return 0, badRequest("请求体包含未知字段: " + unknown)
+		}
+		return 0, badRequest("version 字段缺失")
+	}
+	switch *head.Version {
+	case schemaVersionV3, schemaVersionV4:
+		return *head.Version, nil
+	default:
+		return 0, badRequest(fmt.Sprintf("不支持的配置版本: %d", *head.Version))
+	}
+}
+
+// caseVariantVersionField 返回仅大小写不同于 version 的顶层字段名。
+// 用于在版本探测阶段保留“未知字段”诊断，不改变精确 version 的解析。
+func caseVariantVersionField(data []byte) (string, bool) {
+	var raw map[string]json.RawMessage
+	if err := jsonv2.Unmarshal(data, &raw); err != nil {
+		return "", false
+	}
+	keys := make([]string, 0, len(raw))
+	for key := range raw {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if key != "version" && strings.EqualFold(key, "version") {
+			return key, true
+		}
+	}
+	return "", false
+}
+
+// decodeBundleError 只提取错误类别与 JSON Pointer，不回显 JSONValue 或 Error 原文。
+func decodeBundleError(err error) error {
 	if errors.Is(err, jsontext.ErrDuplicateName) {
 		return badRequest("请求体包含重复字段")
 	}

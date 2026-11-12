@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"net"
 	"net/url"
 	"strconv"
@@ -220,6 +221,44 @@ func NormalizeSyncEnabled(v string) (bool, error) {
 	default:
 		return false, invalidField("sync_enabled", "只允许 true / false")
 	}
+}
+
+// NormalizeFeatureEnabled 解析独立功能开关（dns_enabled / edgeone_enabled）：
+// 设置 API 保持字符串形态，只接受 true / false。
+func NormalizeFeatureEnabled(field, v string) (string, error) {
+	switch s := strings.TrimSpace(v); s {
+	case "true", "false":
+		return s, nil
+	default:
+		return "", invalidField(field, "只允许 true / false")
+	}
+}
+
+// NormalizeEdgeOneTag 归一化并校验 EdgeOne TAG，错误字段使用 edgeone_tag。
+//
+// TAG 语义与既有 NormalizeTag 完全一致（Trim、禁止方括号/控制字符、最多 48 字符）。
+func NormalizeEdgeOneTag(v string) (string, error) {
+	tagValue, err := NormalizeTag(v)
+	if err != nil {
+		var ve *ValidationError
+		if errors.As(err, &ve) {
+			return "", invalidField("edgeone_tag", ve.Reason)
+		}
+		return "", err
+	}
+	return tagValue, nil
+}
+
+// DefaultEdgeOneTagForDNS 根据旧配置的 DNS TAG 选择新模块的初始 TAG。
+//
+// 仅用于旧库迁移与 v3 导入的兼容转换：DNS TAG 恰为 edgeone 时改用
+// edgeone-origin，避免新模块与既有 DNS 规则共用同一命名空间；其他值使用默认
+// edgeone。用户显式提交的 v4 配置不做此替换，重名按校验失败处理。
+func DefaultEdgeOneTagForDNS(dnsTag string) string {
+	if strings.TrimSpace(dnsTag) == DefaultEdgeOneTag {
+		return LegacyEdgeOneTag
+	}
+	return DefaultEdgeOneTag
 }
 
 // NormalizeDNSAddress 归一化并校验 DNS 服务器地址（Build6 §4.4）：

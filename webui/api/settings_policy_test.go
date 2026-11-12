@@ -69,7 +69,9 @@ func TestGetSettings_NoWebuiPort(t *testing.T) {
 		t.Errorf("响应不应包含未知键；body=%s", w.Body.String())
 	}
 	// 业务默认值仍应补齐
-	if got["tag"] != "auto-dns" || got["interval"] != "5m" {
+	if got["tag"] != config.DefaultDNSTag || got["interval"] != "5m" ||
+		got["dns_enabled"] != "true" || got["edgeone_enabled"] != "false" ||
+		got["edgeone_tag"] != config.DefaultEdgeOneTag || got["edgeone_interval"] != config.DefaultEdgeOneIntervalText {
 		t.Errorf("业务默认值未补齐: %+v", got)
 	}
 }
@@ -200,7 +202,7 @@ func TestConfigImport_RejectsWebuiPort(t *testing.T) {
 		ResourceID: "lhins-old",
 	})
 
-	body := `{"version":1,"targets":[],"rules":[],"settings":{"webui_port":"61234","tag":"new-tag"}}`
+	body := `{"version":3,"targets":[],"rules":[],"settings":{"webui_port":"61234","tag":"new-tag"}}`
 	w := doJSON(t, d, http.MethodPost, "/api/config/import", body)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("状态码 = %d, want 400; body=%s", w.Code, w.Body.String())
@@ -268,14 +270,18 @@ func TestConfigExport_OmitsWebuiPort(t *testing.T) {
 			DNSFailThreshold int    `json:"dns_fail_threshold"`
 			LogLevel         string `json:"log_level"`
 			SyncEnabled      bool   `json:"sync_enabled"`
+			DNSEnabled       bool   `json:"dns_enabled"`
+			EdgeOneEnabled   bool   `json:"edgeone_enabled"`
+			EdgeOneTag       string `json:"edgeone_tag"`
+			EdgeOneInterval  string `json:"edgeone_interval"`
 			Theme            string `json:"theme"`
 		} `json:"settings"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("解析导出响应失败: %v; body=%s", err, w.Body.String())
 	}
-	if got.Version != 3 {
-		t.Errorf("version = %d, want 3", got.Version)
+	if got.Version != 4 {
+		t.Errorf("version = %d, want 4", got.Version)
 	}
 	if got.Settings.Tag != "exported" {
 		t.Errorf("导出应包含业务设置: %+v", got.Settings)
@@ -283,7 +289,9 @@ func TestConfigExport_OmitsWebuiPort(t *testing.T) {
 	// 导出必须补齐全部默认值
 	if got.Settings.Interval != "5m" || got.Settings.DNS != "223.5.5.5" || got.Settings.DNSTimeout != "10s" ||
 		got.Settings.DNSFailThreshold != 5 || got.Settings.LogLevel != "info" || !got.Settings.SyncEnabled ||
-		got.Settings.Theme != "light" {
+		got.Settings.Theme != "light" || !got.Settings.DNSEnabled || got.Settings.EdgeOneEnabled ||
+		got.Settings.EdgeOneTag != config.DefaultEdgeOneTag ||
+		got.Settings.EdgeOneInterval != config.DefaultEdgeOneIntervalText {
 		t.Errorf("导出未补齐默认值: %+v", got.Settings)
 	}
 	// webui_port 作为未知设置键不得出现在导出的 settings 之外

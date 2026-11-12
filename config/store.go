@@ -256,6 +256,19 @@ CREATE TABLE IF NOT EXISTS scanned_resources (
 	resource_name TEXT DEFAULT '',
 	scanned_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS edgeone_sites (
+	zone_id        TEXT NOT NULL PRIMARY KEY CHECK (length(trim(zone_id)) > 0),
+	protocol       TEXT NOT NULL CHECK (protocol IN ('TCP', 'UDP', 'TCP+UDP', 'ICMP')),
+	ports          TEXT NOT NULL CHECK (length(trim(ports)) > 0),
+	address_family TEXT NOT NULL CHECK (address_family IN ('ipv4', 'ipv6', 'dual'))
+);
+CREATE TABLE IF NOT EXISTS edgeone_site_targets (
+	zone_id   TEXT    NOT NULL,
+	target_id INTEGER NOT NULL CHECK (target_id > 0),
+	PRIMARY KEY (zone_id, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_edgeone_site_targets_target_id
+	ON edgeone_site_targets (target_id);
 `
 
 // defaultWebhookRowSQL 显式指定未配置渠道，避免旧表默认值影响初始化与重置。
@@ -263,6 +276,15 @@ const defaultWebhookRowSQL = "INSERT OR IGNORE INTO alert_webhook (id, channel) 
 
 // singleRowTables 是四张单行表：业务 ID 固定为 1，至多一行。
 var singleRowTables = []string{"alert_email", "alert_webhook", "alert_policy", "uptime_kuma_push"}
+
+// schemaMigrationVersion 记录数据迁移的完成标记（PRAGMA user_version）。
+//
+// 版本 1 对应 Step 1：旧库缺键/空白 DNS TAG 一次性写入原有效值 auto-dns。
+// 版本 2 对应 Step 2：旧库缺键/空白 EdgeOne TAG 时，仅当 DNS TAG 恰为 edgeone
+// 才写入 edgeone-origin，避免新模块与既有 DNS 规则共用命名空间。
+// 标记、实际数据写入与 Schema 变更在同一事务内提交，失败时一起回滚；
+// reset 只清业务表，保留该标记，因此 reset 后的空设置使用新默认值。
+const schemaMigrationVersion = 2
 
 // initTables 在**单个事务**内建立/迁移 Schema（Build7 §4.2）。
 //
@@ -284,10 +306,26 @@ func (s *Store) initTables() error {
 		}
 	}()
 
+	// 建表前先识别「已初始化旧库」与迁移标记，二者都必须与后续写入同事务。
+	settingsExisted, err := tableExistsTx(ctx, tx, "settings")
+	if err != nil {
+		return fmt.Errorf("检查已有 Schema 失败: %w", err)
+	}
+	migrationVersion, err := readUserVersionTx(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("读取 Schema 迁移版本失败: %w", err)
+	}
+	if migrationVersion > schemaMigrationVersion {
+		return fmt.Errorf("数据库 Schema 版本 %d 高于当前支持的 %d", migrationVersion, schemaMigrationVersion)
+	}
+
 	if _, err := tx.ExecContext(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("初始化表结构失败: %w", err)
 	}
 	if err := migrateSchemaTx(ctx, tx); err != nil {
+		return err
+	}
+	if err := migrateDataTx(ctx, tx, settingsExisted, migrationVersion); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -295,6 +333,121 @@ func (s *Store) initTables() error {
 	}
 	committed = true
 	return nil
+}
+
+// migrateDataTx 执行版本化的一次性数据迁移。
+//
+// settingsExisted 与 version 都是在**建表前**读取的值，因此：
+//   - 全新库（settings 表原本不存在）不会把空设置误判为旧库缺键；
+//   - 已初始化旧库（settings 表原本存在）按版本逐级迁移，每个版本只执行一次；
+//   - 已带迁移标记的库（包括 reset 后的库）不再重放旧值。
+func migrateDataTx(ctx context.Context, tx *sql.Tx, settingsExisted bool, version int) error {
+	if version < 1 {
+		if settingsExisted {
+			tag, found, err := loadSettingValueTx(ctx, tx, "tag")
+			if err != nil {
+				return fmt.Errorf("读取旧库 DNS TAG 失败: %w", err)
+			}
+			// 旧库缺键或空白时，原先实际使用的是 auto-dns；显式非空值原样保留。
+			if !found || strings.TrimSpace(tag) == "" {
+				if _, err := tx.ExecContext(ctx,
+					"INSERT OR REPLACE INTO settings (key, value) VALUES ('tag', ?)",
+					LegacyDefaultDNSTag,
+				); err != nil {
+					return fmt.Errorf("迁移旧库 DNS TAG 失败: %w", err)
+				}
+			}
+		}
+	}
+	if version < 2 {
+		if settingsExisted {
+			if err := bootstrapEdgeOneTagTx(ctx, tx); err != nil {
+				return err
+			}
+		}
+	}
+	if version < schemaMigrationVersion {
+		if _, err := tx.ExecContext(ctx,
+			fmt.Sprintf("PRAGMA user_version = %d", schemaMigrationVersion)); err != nil {
+			return fmt.Errorf("写入 Schema 迁移版本失败: %w", err)
+		}
+	}
+	return nil
+}
+
+// bootstrapEdgeOneTagTx 为已初始化旧库补 EdgeOne TAG。
+//
+// 只有旧库缺键或空白时才处理；显式值原样保留（现有大小写敏感语义）。
+// DNS TAG 恰为 edgeone 时使用 edgeone-origin，其他情况由默认值 edgeone 解析。
+func bootstrapEdgeOneTagTx(ctx context.Context, tx *sql.Tx) error {
+	existing, found, err := loadSettingValueTx(ctx, tx, "edgeone_tag")
+	if err != nil {
+		return fmt.Errorf("读取旧库 EdgeOne TAG 失败: %w", err)
+	}
+	if found && strings.TrimSpace(existing) != "" {
+		return nil
+	}
+	dnsTag, dnsFound, err := loadSettingValueTx(ctx, tx, "tag")
+	if err != nil {
+		return fmt.Errorf("读取旧库 DNS TAG 失败: %w", err)
+	}
+	if !dnsFound || strings.TrimSpace(dnsTag) == "" {
+		// 版本 1 已写入 auto-dns；版本 1 之后新增的库使用新默认值 auto-ddns。
+		dnsTag = DefaultDNSTag
+	}
+	if strings.TrimSpace(dnsTag) != DefaultEdgeOneTag {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		"INSERT OR REPLACE INTO settings (key, value) VALUES ('edgeone_tag', ?)",
+		LegacyEdgeOneTag,
+	); err != nil {
+		return fmt.Errorf("初始化旧库 EdgeOne TAG 失败: %w", err)
+	}
+	return nil
+}
+
+// tableExistsTx 判断当前事务可见的 Schema 中是否存在指定表。
+func tableExistsTx(ctx context.Context, tx *sql.Tx, table string) (bool, error) {
+	var one int
+	err := tx.QueryRowContext(ctx,
+		"SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?", table).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// readUserVersionTx 读取当前事务内的 PRAGMA user_version。
+//
+// 真实 SQLite 总会返回一行；测试注入的驱动可能用空结果模拟未初始化库，
+// 此时按 0 处理（仍需执行一次性迁移），不把「没有标记行」误报为内部故障。
+func readUserVersionTx(ctx context.Context, tx *sql.Tx) (int, error) {
+	var version int
+	err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return version, nil
+}
+
+// loadSettingValueTx 在同一事务内读取单项设置值，返回 found=false 表示键不存在。
+func loadSettingValueTx(ctx context.Context, tx *sql.Tx, key string) (string, bool, error) {
+	var value string
+	err := tx.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = ?", key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return value, true, nil
 }
 
 // migrateSchemaTx 执行显式 Schema 迁移（Build7 §4.2），不依赖
@@ -553,7 +706,8 @@ func ruleColumns(r DomainRule) (targetsJSON string, enableIPv6 int, err error) {
 // resetAllSQL 清空全部业务表，并重新写入四张单行表的默认行：
 // 邮件、Webhook、三个触发开关与 Push 全部回到关闭，health_timeout 回 10m、
 // Push interval 回 60s（Build7 §2.1、§4.2）。
-const resetAllSQL = "DELETE FROM targets; DELETE FROM rules; DELETE FROM settings; DELETE FROM sync_logs;" +
+const resetAllSQL = "DELETE FROM edgeone_site_targets; DELETE FROM edgeone_sites;" +
+	"DELETE FROM targets; DELETE FROM rules; DELETE FROM settings; DELETE FROM sync_logs;" +
 	"DELETE FROM alert_email; DELETE FROM alert_webhook; DELETE FROM alert_policy; DELETE FROM uptime_kuma_push;" +
 	"DELETE FROM scanned_resources;" +
 	"INSERT OR IGNORE INTO alert_email (id) VALUES (1);" +
@@ -1084,9 +1238,9 @@ func (s *Store) SaveUptimeKumaPushTx(ctx context.Context, tx *sql.Tx, cfg *Uptim
 	return err
 }
 
-// GetSettingsTx 在事务内按固定键集合读取设置（不返回数据库中的未知键）。
+// GetSettingsTx 在事务内按当前固定键集合读取设置（不返回数据库中的未知键）。
 func (s *Store) GetSettingsTx(ctx context.Context, q DBTX) (map[string]string, error) {
-	return loadSettingsByKeys(ctx, q, settingsKeysV3)
+	return loadSettingsByKeys(ctx, q, settingsKeysCurrent)
 }
 
 // AddSyncLog 添加同步日志
@@ -1201,6 +1355,14 @@ func (s *Store) LoadBusinessSnapshotTx(ctx context.Context, q DBTX) (*BusinessSn
 			}
 		}
 	}
+	sites, err := loadEdgeOneSites(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	sites, err = normalizeAndValidateEdgeOneSites(sites, targets)
+	if err != nil {
+		return nil, err
+	}
 	settings, err := loadSettings(ctx, q)
 	if err != nil {
 		return nil, err
@@ -1230,6 +1392,7 @@ func (s *Store) LoadBusinessSnapshotTx(ctx context.Context, q DBTX) (*BusinessSn
 	return &BusinessSnapshot{
 		Targets:        targets,
 		Rules:          rules,
+		EdgeOneSites:   sites,
 		Settings:       normalized,
 		Policy:         policy,
 		Email:          email,
@@ -1293,9 +1456,9 @@ func loadSettingsByKeys(ctx context.Context, q DBTX, keys []string) (map[string]
 //   - webui_port 等已不是业务设置的残留键一律忽略，不做迁移或清理；
 //   - 返回的 map 只包含 version 3 的完整设置键集合，未知键被丢弃。
 func normalizeSettings(raw map[string]string) (map[string]string, error) {
-	out := make(map[string]string, len(settingsKeysV3))
-	// 默认值（Build6 §3.1）
-	out["tag"] = "auto-dns"
+	out := make(map[string]string, len(settingsKeysCurrent))
+	// 默认值（Build6 §3.1；DNS TAG 见 Build8 Step 1；双功能设置见 Step 2）
+	out["tag"] = DefaultDNSTag
 	out["interval"] = "5m"
 	out["dns"] = "223.5.5.5"
 	out["dns_timeout"] = "10s"
@@ -1303,6 +1466,10 @@ func normalizeSettings(raw map[string]string) (map[string]string, error) {
 	out["log_level"] = "info"
 	out["theme"] = "light"
 	out["sync_enabled"] = "true"
+	out["dns_enabled"] = "true"
+	out["edgeone_enabled"] = "false"
+	out["edgeone_tag"] = DefaultEdgeOneTag
+	out["edgeone_interval"] = DefaultEdgeOneIntervalText
 	// 四个云凭据允许缺失/空值，按原值保存
 	out["tc_access_id"] = raw["tc_access_id"]
 	out["tc_access_key"] = raw["tc_access_key"]
@@ -1369,6 +1536,38 @@ func normalizeSettings(raw map[string]string) (map[string]string, error) {
 			out["sync_enabled"] = "false"
 		}
 	}
+	if v := strings.TrimSpace(raw["dns_enabled"]); v != "" {
+		normalized, err := NormalizeFeatureEnabled("dns_enabled", v)
+		if err != nil {
+			return nil, err
+		}
+		out["dns_enabled"] = normalized
+	}
+	if v := strings.TrimSpace(raw["edgeone_enabled"]); v != "" {
+		normalized, err := NormalizeFeatureEnabled("edgeone_enabled", v)
+		if err != nil {
+			return nil, err
+		}
+		out["edgeone_enabled"] = normalized
+	}
+	if v := strings.TrimSpace(raw["edgeone_tag"]); v != "" {
+		normalized, err := NormalizeEdgeOneTag(v)
+		if err != nil {
+			return nil, err
+		}
+		out["edgeone_tag"] = normalized
+	}
+	if v := strings.TrimSpace(raw["edgeone_interval"]); v != "" {
+		normalized, _, err := ParsePositiveDuration("edgeone_interval", v)
+		if err != nil {
+			return nil, err
+		}
+		out["edgeone_interval"] = normalized
+	}
+	// 两个 TAG 的互斥在全部键合并、各自 Trim/校验之后判定；大小写敏感。
+	if strings.TrimSpace(out["tag"]) == strings.TrimSpace(out["edgeone_tag"]) {
+		return nil, invalidField("edgeone_tag", "不能与 DNS TAG 相同")
+	}
 	return out, nil
 }
 
@@ -1376,7 +1575,7 @@ func normalizeSettings(raw map[string]string) (map[string]string, error) {
 //
 // 只写入调用方提供的键，不遍历数据库或请求中的任意 map。
 func (s *Store) writeSettingsTx(ctx context.Context, tx *sql.Tx, settings map[string]string) error {
-	for _, key := range settingsKeysV3 {
+	for _, key := range settingsKeysCurrent {
 		value, ok := settings[key]
 		if !ok {
 			continue
@@ -1388,10 +1587,11 @@ func (s *Store) writeSettingsTx(ctx context.Context, tx *sql.Tx, settings map[st
 	return nil
 }
 
-// ReplaceBusinessSettingsTx 在事务内显式写入 version 3 的完整设置键集合
-// （导入使用：调用方必须提供全部 12 个键，缺失键视为调用方错误）。
+// ReplaceBusinessSettingsTx 在事务内显式写入当前完整设置键集合
+// （导入使用：调用方必须提供全部 settingsKeysCurrent 键，缺失键视为调用方错误）。
+// v3 配置包不带新增键，由导入转换补齐默认值后再调用本方法。
 func (s *Store) ReplaceBusinessSettingsTx(ctx context.Context, tx *sql.Tx, settings map[string]string) error {
-	for _, key := range settingsKeysV3 {
+	for _, key := range settingsKeysCurrent {
 		if _, ok := settings[key]; !ok {
 			return fmt.Errorf("缺少设置键 %s", key)
 		}
@@ -1427,12 +1627,15 @@ func (s *Store) ClearScannedResourcesTx(ctx context.Context, tx *sql.Tx) error {
 	return err
 }
 
-// DeleteImportOwnedTablesTx 按依赖顺序清空导入覆盖的业务表（Build6 §12.12 固定顺序）：
-// rules → targets → settings → alert_email → alert_webhook。
+// DeleteImportOwnedTablesTx 按依赖顺序清空导入覆盖的业务表（Build6 §12.12 固定顺序，
+// Build8 Step 3 加入站点与绑定）：edgeone_site_targets → edgeone_sites → rules →
+// targets → settings → alert_email → alert_webhook → alert_policy → uptime_kuma_push。
 //
 // 即使当前 Schema 没有外键，也按依赖顺序实现；不触碰 sync_logs 与 sqlite_sequence。
 func (s *Store) DeleteImportOwnedTablesTx(ctx context.Context, tx *sql.Tx) error {
 	stmts := []string{
+		"DELETE FROM edgeone_site_targets",
+		"DELETE FROM edgeone_sites",
 		"DELETE FROM rules",
 		"DELETE FROM targets",
 		"DELETE FROM settings",

@@ -39,11 +39,11 @@ func TestI8113EmptyChannelRoundTrip(t *testing.T) {
 				t.Fatalf("导出: %d", w.Code)
 			}
 			body := w.Body.String()
-			var b bundleV3
+			var b bundleV4
 			if err := json.Unmarshal([]byte(body), &b); err != nil {
 				t.Fatal(err)
 			}
-			if b.Version != 3 || b.Alerts.Webhook.Channel != "" || b.Alerts.Webhook.Enabled {
+			if b.Version != 4 || b.Alerts.Webhook.Channel != "" || b.Alerts.Webhook.Enabled {
 				t.Fatalf("导出未保留未选择状态: %+v", b.Alerts.Webhook)
 			}
 			before = e.applyCount()

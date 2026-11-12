@@ -323,7 +323,7 @@ func TestLoadBusinessSnapshotSettingValidation(t *testing.T) {
 			t.Fatalf("空白值应按缺失处理: %v", err)
 		}
 		cfg := snapshot.ToRuntimeConfig()
-		if cfg.Tag != "auto-dns" || cfg.Interval != 5*time.Minute || cfg.DNS != "223.5.5.5" ||
+		if cfg.Tag != "auto-ddns" || cfg.Interval != 5*time.Minute || cfg.DNS != "223.5.5.5" ||
 			cfg.DNSTimeout != 10*time.Second || cfg.DNSFailThreshold != 5 || cfg.LogLevel != "info" {
 			t.Errorf("默认值不正确: %+v", cfg)
 		}

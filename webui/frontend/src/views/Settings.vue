@@ -188,7 +188,7 @@ async function save() {
   }
 }
 
-// ─── 配置导入导出（version 3 完整敏感快照，Build6 Step 5 / Build7 §4.3） ───
+// ─── 配置导入导出（version 4 完整敏感快照，Build6 Step 5 / Build8 Step 4） ───
 //
 // 安全边界：配置包是**明文完整敏感快照**（含腾讯云/阿里云密钥、SMTP 密码、
 // Webhook URL 与 Uptime Kuma Push URL），安全等级等同于生产 Secret 或 SQLite 数据库备份。
@@ -196,7 +196,7 @@ async function save() {
 // 不在 console 输出响应体；文件名从 Content-Disposition 解析，不可用时用固定安全名。
 
 // 导出响应不可用时的固定安全文件名
-const EXPORT_FALLBACK_FILENAME = 'fwalizer-config-v3.json'
+const EXPORT_FALLBACK_FILENAME = 'fwalizer-config-v4.json'
 
 // parseAttachmentFilename 从 Content-Disposition 中提取安全文件名。
 //

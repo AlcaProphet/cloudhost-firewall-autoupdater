@@ -732,10 +732,10 @@ func TestProcessSecretsNotLogged(t *testing.T) {
 	}
 }
 
-// ─── Build6 Step 5 / Build7：真实二进制进程级 version 3 配置导入导出 ───
+// ─── Build6 Step 5 / Build8 Step 4：真实二进制进程级 version 4 配置导入导出 ───
 
 // TestProcessConfigExportImportRoundTrip 真实二进制进程级验证：
-// POST 导出得到 version 3 附件（含完整敏感快照）→ 在另一数据目录导入 → 业务关系重建。
+// POST 导出得到 version 4 附件（含完整敏感快照与站点绑定）→ 在另一数据目录导入 → 业务关系重建。
 //
 // 这是「接口层 + 真实进程 + 真实 SQLite」的证据层，不使用 mock。
 func TestProcessConfigExportImportRoundTrip(t *testing.T) {
@@ -832,7 +832,7 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 	if headers.Get("Cache-Control") != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", headers.Get("Cache-Control"))
 	}
-	if !strings.HasPrefix(headers.Get("Content-Disposition"), `attachment; filename="fwalizer-config-v3-`) {
+	if !strings.HasPrefix(headers.Get("Content-Disposition"), `attachment; filename="fwalizer-config-v4-`) {
 		t.Errorf("Content-Disposition = %q", headers.Get("Content-Disposition"))
 	}
 	if !strings.HasSuffix(exportBody, "}\n") {
@@ -841,13 +841,13 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 	// 导出是唯一允许包含敏感值的响应
 	for _, secret := range []string{tcSecretKey, smtpPass, webhookURL} {
 		if !strings.Contains(exportBody, secret) {
-			t.Errorf("v3 导出应包含敏感值 %q", secret)
+			t.Errorf("v4 导出应包含敏感值 %q", secret)
 		}
 	}
-	// Build7 §4.3：version 3 固定结构必须包含 policy 与 monitoring
-	for _, fragment := range []string{`"version": 3`, `"policy"`, `"uptime_kuma_push"`, `"health_timeout": "25m"`, `"interval": "45s"`} {
+	// Build8 Step 4：version 4 固定结构必须包含 edgeone_sites、policy 与 monitoring
+	for _, fragment := range []string{`"version": 4`, `"edgeone_sites": []`, `"policy"`, `"uptime_kuma_push"`, `"health_timeout": "25m"`, `"interval": "45s"`} {
 		if !strings.Contains(exportBody, fragment) {
-			t.Errorf("v3 导出缺少 %s；body=%s", fragment, exportBody)
+			t.Errorf("v4 导出缺少 %s；body=%s", fragment, exportBody)
 		}
 	}
 
@@ -907,12 +907,15 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 		}
 	}
 
-	// 4) 版本策略：version 1 与 version 2 都必须 400（version 3 是唯一协议）
+	// 4) 版本策略：v3/v4 被接受（上方往返已覆盖）；v1、v2 与未知版本必须 400
 	if code := postJSON(t, dstBase+"/api/config/import", `{"version":1,"targets":[],"rules":[],"settings":{}}`); code != http.StatusBadRequest {
 		t.Errorf("version 1 导入状态码 = %d, want 400", code)
 	}
 	if code := postJSON(t, dstBase+"/api/config/import", `{"version":2,"targets":[],"rules":[],"settings":{}}`); code != http.StatusBadRequest {
 		t.Errorf("version 2 导入状态码 = %d, want 400", code)
+	}
+	if code := postJSON(t, dstBase+"/api/config/import", `{"version":5,"targets":[],"rules":[],"settings":{}}`); code != http.StatusBadRequest {
+		t.Errorf("version 5 导入状态码 = %d, want 400", code)
 	}
 
 	// 5) 进程日志不得泄露任何敏感值（导出响应是唯一允许包含它们的 HTTP 响应）

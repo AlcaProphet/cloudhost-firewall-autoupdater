@@ -111,6 +111,14 @@ func (d *Deps) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 		if len(refs) > 0 {
 			return conflict(fmt.Sprintf("目标被 %d 条规则引用，请先修改规则", len(refs)))
 		}
+		// EdgeOne 站点同样保护目标引用；删除仍被绑定的目标返回 409（Build8 Step 3）。
+		zones, zerr := d.Store.EdgeOneSitesReferencingTargetTx(ctx, tx, id)
+		if zerr != nil {
+			return zerr
+		}
+		if len(zones) > 0 {
+			return conflict(fmt.Sprintf("目标被 %d 个 EdgeOne 站点引用，请先修改站点", len(zones)))
+		}
 		// 不存在的目标按 RowsAffected=0 判定 404（Build6 §12.7、AGENTS §9.1）
 		rows, derr := d.Store.DeleteTargetTx(ctx, tx, id)
 		if derr != nil {

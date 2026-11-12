@@ -200,6 +200,11 @@ func (d *Deps) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/scan-resources", d.handleScanResources)
 	mux.HandleFunc("GET /api/scanned-resources", d.handleGetScannedResources)
 	mux.HandleFunc("DELETE /api/scanned-resources", d.handleDeleteScannedResources)
+	// EdgeOne 站点与目标绑定（Build8 Step 3；不查询腾讯云）
+	mux.HandleFunc("GET /api/edgeone/sites", d.handleGetEdgeOneSites)
+	mux.HandleFunc("POST /api/edgeone/sites", d.handleAddEdgeOneSite)
+	mux.HandleFunc("PUT /api/edgeone/sites/{zone_id}", d.handleUpdateEdgeOneSite)
+	mux.HandleFunc("DELETE /api/edgeone/sites/{zone_id}", d.handleDeleteEdgeOneSite)
 	// 规则管理
 	mux.HandleFunc("GET /api/rules", d.handleGetRules)
 	mux.HandleFunc("POST /api/rules", d.handleAddRule)

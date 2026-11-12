@@ -2,16 +2,23 @@ package config
 
 import "time"
 
-// settingsKeysV3 是 version 3 配置包与业务快照的**完整**设置键集合（Build6 §3.1、§12.12）。
+// settingsKeysV3 是 version 3 配置包的**完整**设置键集合（Build6 §3.1、§12.12）。
 //
-// 固定顺序即写入顺序；导入时显式逐键写入，绝不遍历请求里的任意 map，
-// 从而不会把旧数据库的未知键带回新快照。sync_enabled 也在集合内：
-// 它是业务配置，只是只能由 pause/resume 端点或配置导入写入。
+// 该集合只描述 v3 配置包与 v3 导入 DTO 的既有字段；v4 与当前业务快照使用
+// settingsKeysCurrent。固定顺序即写入顺序；导入时显式逐键写入，绝不遍历
+// 请求里的任意 map，从而不会把旧数据库的未知键带回新快照。
 var settingsKeysV3 = []string{
 	"tc_access_id", "tc_access_key", "ali_access_id", "ali_access_key",
 	"tag", "interval", "dns", "dns_timeout", "dns_fail_threshold",
 	"log_level", "sync_enabled", "theme",
 }
+
+// settingsKeysCurrent 是当前 SQLite/运行时快照的完整设置键集合：
+// v3 既有 12 键 + Build8 Step 2 新增的四个双功能设置键。
+//
+// v3 配置包不要求携带新增键，由 v3 转换补入默认值；当前写路径使用本集合。
+var settingsKeysCurrent = append(append([]string{}, settingsKeysV3...),
+	"dns_enabled", "edgeone_enabled", "edgeone_tag", "edgeone_interval")
 
 // BusinessSnapshot 是一个 SQLite 事务内取到的完整业务配置快照。
 //
@@ -27,6 +34,7 @@ var settingsKeysV3 = []string{
 type BusinessSnapshot struct {
 	Targets        []TargetConfig
 	Rules          []DomainRule
+	EdgeOneSites   []EdgeOneSite
 	Settings       map[string]string
 	Policy         AlertPolicyConfig
 	Email          AlertEmailConfig
@@ -66,6 +74,7 @@ type RuntimeConfig struct {
 	Credentials      Credentials
 	Targets          []TargetConfig
 	DomainRules      []DomainRule
+	EdgeOneSites     []EdgeOneSite
 	Tag              string
 	Interval         time.Duration
 	DNS              string
@@ -73,6 +82,10 @@ type RuntimeConfig struct {
 	DNSFailThreshold int
 	LogLevel         string
 	SyncEnabled      bool
+	DNSEnabled       bool
+	EdgeOneEnabled   bool
+	EdgeOneTag       string
+	EdgeOneInterval  time.Duration
 	Theme            string
 	Policy           AlertPolicyConfig
 	Email            AlertEmailConfig
@@ -88,6 +101,7 @@ func (rc RuntimeConfig) DeepCopy() RuntimeConfig {
 	out := rc
 	out.Targets = append([]TargetConfig(nil), rc.Targets...)
 	out.DomainRules = DeepCopyRules(rc.DomainRules)
+	out.EdgeOneSites = DeepCopyEdgeOneSites(rc.EdgeOneSites)
 	return out
 }
 
@@ -100,6 +114,7 @@ func (s *BusinessSnapshot) ToRuntimeConfig() RuntimeConfig {
 		Credentials:      s.Credentials(),
 		Targets:          append([]TargetConfig(nil), s.Targets...),
 		DomainRules:      DeepCopyRules(s.Rules),
+		EdgeOneSites:     DeepCopyEdgeOneSites(s.EdgeOneSites),
 		Tag:              s.Settings["tag"],
 		Interval:         mustDuration(s.Settings["interval"]),
 		DNS:              s.Settings["dns"],
@@ -107,6 +122,10 @@ func (s *BusinessSnapshot) ToRuntimeConfig() RuntimeConfig {
 		DNSFailThreshold: mustThreshold(s.Settings["dns_fail_threshold"]),
 		LogLevel:         s.Settings["log_level"],
 		SyncEnabled:      s.Settings["sync_enabled"] == "true",
+		DNSEnabled:       s.Settings["dns_enabled"] == "true",
+		EdgeOneEnabled:   s.Settings["edgeone_enabled"] == "true",
+		EdgeOneTag:       s.Settings["edgeone_tag"],
+		EdgeOneInterval:  mustDuration(s.Settings["edgeone_interval"]),
 		Theme:            s.Settings["theme"],
 		Policy:           s.Policy,
 		Email:            s.Email,

@@ -170,7 +170,7 @@ func TestI843Bounds(t *testing.T) {
 		}
 		unchanged(t)
 	}
-	for _, v := range []int{1, 2, 4} {
+	for _, v := range []int{1, 2, 5} {
 		r := i843ReplyFor(t, e, fmt.Sprintf(`{"version":%d}`, v))
 		if len(r.Fields) != 0 || !strings.Contains(r.Error, "不支持的配置版本") {
 			t.Fatalf("version %d reply=%+v", v, r)

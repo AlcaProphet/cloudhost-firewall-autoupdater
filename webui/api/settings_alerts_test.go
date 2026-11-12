@@ -10,7 +10,7 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
 
-// TestGetSettingsReturnsOnlyEditableKeys GET 只返回 11 个可编辑键并补齐默认值
+// TestGetSettingsReturnsOnlyEditableKeys GET 只返回当前可编辑键并补齐默认值
 func TestGetSettingsReturnsOnlyEditableKeys(t *testing.T) {
 	e := newTestEnv(t)
 	for k, v := range map[string]string{"webui_port": "61234", "sync_enabled": "false", "unknown_key": "x"} {
@@ -36,8 +36,10 @@ func TestGetSettingsReturnsOnlyEditableKeys(t *testing.T) {
 		}
 	}
 	want := map[string]string{
-		"tag": "auto-dns", "interval": "5m", "dns": "223.5.5.5", "dns_timeout": "10s",
+		"tag": config.DefaultDNSTag, "interval": "5m", "dns": "223.5.5.5", "dns_timeout": "10s",
 		"dns_fail_threshold": "5", "log_level": "info", "theme": "light",
+		"dns_enabled": "true", "edgeone_enabled": "false",
+		"edgeone_tag": config.DefaultEdgeOneTag, "edgeone_interval": config.DefaultEdgeOneIntervalText,
 	}
 	for k, v := range want {
 		if got[k] != v {

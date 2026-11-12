@@ -176,7 +176,7 @@ func TestI9R04EmailBodyDefaults(t *testing.T) {
 // TestI9R04ImportEmptyBody 独立构造空正文导入包，避免导出端替换掩盖导入行为。
 func TestI9R04ImportEmptyBody(t *testing.T) {
 	e := newTestEnv(t)
-	var bundle bundleV3
+	var bundle bundleV4
 	if err := json.Unmarshal([]byte(i9r04Export(t, e)), &bundle); err != nil {
 		t.Fatal(err)
 	}

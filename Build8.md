@@ -39,10 +39,10 @@
 ## 进度索引
 
 - [x] [Step 0 文档与基线](#step-0)
-- [ ] [Step 1 DNS 默认 TAG 和旧库迁移](#step-1)
-- [ ] [Step 2 双功能开关与间隔设置](#step-2)
-- [ ] [Step 3 站点与目标绑定 API](#step-3)
-- [ ] [Step 4 配置包往返与兼容](#step-4)
+- [x] [Step 1 DNS 默认 TAG 和旧库迁移](#step-1)
+- [x] [Step 2 双功能开关与间隔设置](#step-2)
+- [x] [Step 3 站点与目标绑定 API](#step-3)
+- [x] [Step 4 配置包往返与兼容](#step-4)
 - [ ] [Step 5 TEO 只读查询](#step-5)
 - [ ] [Step 6 CIDR 规划与 TAG 隔离](#step-6)
 - [ ] [Step 7 全局重叠判定和自动恢复状态](#step-7)
@@ -110,11 +110,15 @@
 
 **Checklist**
 
-- [ ] 新库及 reset 后使用 `auto-ddns`。共享默认值用于运行快照和设置回显，更新当前用户文档中的默认示例。
-- [ ] 在建表迁移事务内区分新库和旧库，保留旧库显式 TAG，并为原本靠隐式 `auto-dns` 运行的旧库写入原有效值。验证重复启动与 reset 不会重复迁移。
-- [ ] 用新库、缺键旧库、空白键旧库、显式自定义 TAG、迁移失败回滚验证行为。对照云规则描述，旧 TAG 的所有权保持可判定。
+- [x] 新库及 reset 后使用 `auto-ddns`。共享默认值用于运行快照和设置回显，更新当前用户文档中的默认示例。
+- [x] 在建表迁移事务内区分新库和旧库，保留旧库显式 TAG，并为原本靠隐式 `auto-dns` 运行的旧库写入原有效值。验证重复启动与 reset 不会重复迁移。
+- [x] 用新库、缺键旧库、空白键旧库、显式自定义 TAG、迁移失败回滚验证行为。对照云规则描述，旧 TAG 的所有权保持可判定。
 
-**证据**　待执行。
+**证据**　2026-11-12，`beta`，工作树改动（本步未提交）。实际改动：`config/config.go` 新增共享 `DefaultDNSTag=auto-ddns` 与仅迁移用的 `LegacyDefaultDNSTag=auto-dns`；`config/store.go` 在 `initTables` 事务内、建表前读取 `settings` 表是否存在与 `PRAGMA user_version`，`migrateDataTx` 对已初始化旧库的缺键/空白 `tag` 显式写入 `auto-dns`，并把 `user_version=1` 与建表、数据写入同事务提交；`normalizeSettings` 与 `webui/api/settings.go` 的默认回显统一使用共享默认值；`README.md` 两处当前默认示例改为 `auto-ddns`。新增 `config/store_dns_tag_test.go`（新库、缺键/空白旧库、显式 `my-dns`、注入 trigger 使写 TAG 失败、reset 后重启）与 `webui/api/dns_tag_test.go`（同一旧库的运行快照、GET 设置、导出三处一致，新库与 reset/重启一致）。
+
+执行命令与结果：`go test ./config -run 'TestNewStoreUsesAutoDDNSAndMarksMigration|TestLegacyMissingOrBlankDNSTagMigratesOnce|TestLegacyExplicitDNSTagPreserved|TestLegacyDNSTagMigrationFailureRollsBack|TestResetKeepsMigrationMarkerAndUsesAutoDDNS' -race -count=1 -v` → 5 个顶层用例及缺键/空白两个子用例全部 PASS（config 1.558s）；`go test ./webui/api -run 'TestDNSTagSources' -race -count=1 -v` → 3 个用例全部 PASS（api 1.461s）；`go test ./config ./webui/api -race -count=1 -timeout=10m` → 两包均 ok（config 34.851s，api 43.482s）。数据库实际值断言包括：新库无显式 `tag` 行且 `user_version=1`；缺键/空白旧库首次打开后 `tag=auto-dns`、`user_version=1`；第二次打开保持 `auto-dns`，删除该行后再打开得到 `auto-ddns`（证明迁移不重放）；显式值 `" my-dns "` 原样保留、运行快照为 `my-dns`，`[my-dns] 生产API` 可由 `internal/tag` 判定所有权；注入 trigger 失败后 `tag` 行、`user_version`、`alert_email`/`targets` 新表均未部分提交，移除故障后可重新完成迁移；reset 后 `user_version` 保留且运行快照、GET、导出均为 `auto-ddns`。既有 v3 导出仍为 version 3，备份字段与总开关未改（该句描述 Step 1 当时状态；Step 4 已按后续合同改为导出 v4；本步实施时迁移版本为 1，Step 2 提升为 2，见下一步证据）。
+
+待补项：本步未执行真实云规则核对、数据库跨版本文件互操作、Linux/Docker 与远端 CI；这些不属于 Step 1 的本地收口范围。`git diff --check` 在文档回填后随 Step 2 一并复查。
 
 <a name="step-2"></a>
 
@@ -139,12 +143,16 @@
 
 **Checklist**
 
-- [ ] 保留 `sync_enabled` 总暂停，新增独立 DNS 与 EdgeOne 开关，并把它们放入同一不可变运行时快照。默认 DNS 开启、EdgeOne 关闭。
-- [ ] 增加可自定义 EdgeOne TAG 和同步间隔，默认分别为 `edgeone` 和 `72h`。EdgeOne 间隔复用现有正时长解析，与 DNS 间隔分别保存和回显。
-- [ ] 校验去除首尾空白后 TAG 互斥。兼容 DNS TAG 已为 `edgeone` 的旧配置，给新模块初始化独立值。
-- [ ] 覆盖部分更新、同时改两个 TAG、非法时长、重名、回滚零发布和正确提交只发布一次。
+- [x] 保留 `sync_enabled` 总暂停，新增独立 DNS 与 EdgeOne 开关，并把它们放入同一不可变运行时快照。默认 DNS 开启、EdgeOne 关闭。
+- [x] 增加可自定义 EdgeOne TAG 和同步间隔，默认分别为 `edgeone` 和 `72h`。EdgeOne 间隔复用现有正时长解析，与 DNS 间隔分别保存和回显。
+- [x] 校验去除首尾空白后 TAG 互斥。兼容 DNS TAG 已为 `edgeone` 的旧配置，给新模块初始化独立值。
+- [x] 覆盖部分更新、同时改两个 TAG、非法时长、重名、回滚零发布和正确提交只发布一次。
 
-**证据**　待执行。
+**证据**　2026-11-12，`beta`，Step 1 工作树基础上继续（本步未提交）。实际改动：`config/config.go` 新增 `DefaultEdgeOneTag=edgeone`、`LegacyEdgeOneTag=edgeone-origin`、`DefaultEdgeOneIntervalText=72h`/`DefaultEdgeOneInterval=72h`；`config/validate.go` 新增功能开关字符串校验、`edgeone_tag` 字段化 TAG 校验与 `DefaultEdgeOneTagForDNS` 兼容选择；`config/runtime.go` 保持 `settingsKeysV3` 12 键不变，新增当前 16 键 `settingsKeysCurrent`，`RuntimeConfig` 增加 `DNSEnabled`、`EdgeOneEnabled`、`EdgeOneTag`、`EdgeOneInterval`；`config/store.go` 的迁移版本提升为 2，旧库缺键/空白 `edgeone_tag` 仅在 DNS TAG 恰为 `edgeone` 时显式写入 `edgeone-origin`（显式值保留、只执行一次），`normalizeSettings` 补四项默认值与校验，并在全部键合并后按 Trim 后大小写敏感比较两个 TAG；`webui/api/settings.go` 的 GET/PUT 扩展到 15 个字符串键（仍不接受 `sync_enabled`），PUT 每次保存后由协调器在同一事务内读取完整候选快照，TAG 重名时回滚并返回 400；`webui/api/bundle_v3.go` 的 v3 兼容转换补 `dns_enabled=true`、`edgeone_enabled=false`、按 DNS TAG 选择 EdgeOne TAG、`edgeone_interval=72h`，v3 DTO 字段集合本身未扩展。
+
+执行命令与结果：`go test ./config -run 'TestNewStoreEdgeOneDefaultsAndRuntime|TestLegacyDNSConflictBootstrapsEdgeOneTagOnce|TestLegacyEdgeOneTagExplicitPreserved|TestEdgeOneTagConflictRejectedBySnapshot|TestNormalizeSettingsRejectsInvalidFeatureValues|TestDefaultEdgeOneTagForDNS' -race -count=1 -v` → 6 个顶层用例全部 PASS；`go test ./webui/api -run 'TestPutSettingsFeatureFieldsAndRuntime|TestPutSettingsTagConflictAfterMerge|TestPutSettingsConcurrentTagChangesSerialized|TestV3ImportBootstrapsEdgeOneTag|TestPutSettingsRejectsUnknownAfterFeatureExpansion' -race -count=1 -v` → 5 个顶层用例及 9 个非法值/4 个冲突子用例全部 PASS；`go test ./config ./webui/api -race -count=1 -timeout=10m` → 两包均 ok（config 35.074s，api 42.114s；另一次组合运行 config 34.967s、api 43.696s）。关键断言：新库/迁移库运行快照为 DNS 开启、EdgeOne 关闭、`edgeone`/`72h`；旧库 DNS TAG 为 `edgeone` 时首次升级只写 `edgeone-origin`，重复启动不重写，显式改值后重启保留；`dns_enabled=false`、`edgeone_enabled=true`、`36h`/`1h30m`/`1.5h` 正确进入运行时；空白、`0s`、负值、错误类型均 400 且零发布；先存 `alpha`/`beta` 后单独改 `tag=beta` 或 `edgeone_tag=alpha` 均 400，数据库与运行快照保持，同一请求交换两项成功且只发布一次；两个并发请求分别写两个 TAG 为 `gamma` 时恰好一成一败、只多一次发布；v3 导入保留 `tag=edgeone` 并补 `edgeone_tag=edgeone-origin`，普通 TAG 补 `edgeone`。
+
+待补项：本步只发布配置字段，正式调度接线按 Step 8 实施；v4 配置包字段与文件往返按 Step 4 实施；未执行真实云、站点查询、Linux/Docker 或远端 CI。Step 1 证据中记录的 `user_version=1` 是本步实施前的版本；Step 2 将迁移版本提升为 2，Step 1 的迁移/回滚/reset 断言在两版代码上继续通过，旧 TAG 迁移本身仍只执行一次。
 
 <a name="step-3"></a>
 
@@ -169,12 +177,16 @@
 
 **Checklist**
 
-- [ ] 保存唯一 `ZoneId`、目标列表及入站协议、端口、地址族，复用现有目标 ID 与规则字段校验。
-- [ ] 实现站点读取、创建、编辑和删除，随事务发布完整运行快照。配置保存阶段只做本地校验，首轮查询在发布后调度。
-- [ ] 检查目标存在性、重复绑定、实际资源别名和引用闭包。被 EdgeOne 站点引用的目标删除返回 409。
-- [ ] 覆盖一站多目标、多个站点共用目标、reset、引用保护及无效写入的事务回滚。
+- [x] 保存唯一 `ZoneId`、目标列表及入站协议、端口、地址族，复用现有目标 ID 与规则字段校验。
+- [x] 实现站点读取、创建、编辑和删除，随事务发布完整运行快照。配置保存阶段只做本地校验，首轮查询在发布后调度。
+- [x] 检查目标存在性、重复绑定、实际资源别名和引用闭包。被 EdgeOne 站点引用的目标删除返回 409。
+- [x] 覆盖一站多目标、多个站点共用目标、reset、引用保护及无效写入的事务回滚。
 
-**证据**　待执行。
+**证据**　2026-11-12，`beta`，Step 2 工作树基础上继续（本步未提交）。实际改动：新增 `config/edgeone.go`（`EdgeOneSite`、`NormalizeZoneID`/`NormalizeEdgeOneSite`、端口表达式严格校验、`TargetIdentity`、站点深拷贝）与 `config/store_edgeone.go`（站点/绑定读取、增删改、目标引用查询、站内存在性/别名校验、完整快照闭包校验）；`config/store.go` 增加 `edgeone_sites`、`edgeone_site_targets` 与目标索引 DDL，站点读取接入 `LoadBusinessSnapshotTx`，reset 与导入清理按「绑定 → 站点 → 目标/规则」顺序执行；`config/runtime.go` 的 `BusinessSnapshot`/`RuntimeConfig` 增加 `EdgeOneSites` 并深拷贝；新增 `webui/api/edgeone.go` 与 `deps.go` 路由（`GET/POST /api/edgeone/sites`、`PUT/DELETE /api/edgeone/sites/{zone_id}`），`handleDeleteTarget` 增加站点引用 409 保护。站点动作不进入请求或数据库，按合同由后端固定 `ACCEPT`；本步没有任何腾讯云查询或防火墙调用。
+
+执行命令与结果：`go test ./config -run 'TestNormalizeEdgeOneSite|TestEdgeOneSite' -race -count=1 -v` → 6 个顶层用例及 18 个站点参数/端口反向子用例全部 PASS；`go test ./webui/api -run 'TestEdgeOne|TestTargetUpdateAlias' -race -count=1 -v` → 6 个顶层用例、15 个非法创建子用例与 4 个非法更新子用例全部 PASS；`go test ./config ./webui/api -race -count=1 -timeout=10m` → 两包均 ok（config 35.896s，api 47.007s）。关键断言：空列表为 `{"sites":[]}`；创建 201、重复 409、缺失更新/删除 404、路径与请求体 `zone_id` 不一致 400；空绑定、缺失 `target_ids`、重复本地 ID、悬空 ID、同实际资源别名、非法端口/协议/地址族、ZoneId 路径分隔符、请求体出现 `action` 均 400 且零发布零写库；合法创建/更新/删除各只发布一次；一站多目标按 `target_id`、站点按 `zone_id` 稳定排序且运行时快照独立深拷贝；两个站点可共享同一目标；非法更新保留旧绑定；绑定写入注入 trigger 失败时站点主行与绑定一起回滚且零发布；把目标改成同站点另一目标的实际资源返回 400 并回滚，改为新资源后成功；删除仍被站点绑定的目标返回 409，删除站点后目标可删除；reset 清空站点、绑定与运行时快照。
+
+待补项：前端站点页、腾讯云只读查询、站点状态与调度分别由 Step 13、5、7/8 实施；本步未执行真实云、Linux/Docker 或远端 CI。站点运行记录/过渡表的实际读写不在本步范围。`git diff --check` 在文档回填后复查。
 
 <a name="step-4"></a>
 
@@ -199,12 +211,16 @@
 
 **Checklist**
 
-- [ ] 实现严格 v4 导出及导入，纳入两项设置和站点绑定，并随版本更新下载名和相关说明。
-- [ ] 维持严格 v3 导入，保留原 DNS TAG、间隔和总暂停，填入 EdgeOne 关闭且无站点的默认状态。v1、v2 和未知版本继续拒绝。
-- [ ] 使用新旧 ID 不同的 SQLite 夹具验证一站多目标的 `export_id` 重映射，以及重名、悬空引用、坏载荷零写入和事务失败零发布。
-- [ ] 覆盖同步日志、告警和运行状态的备份边界，同步 [AGENTS.md 配置合同](AGENTS.md#九配置约束)。
+- [x] 实现严格 v4 导出及导入，纳入两项设置和站点绑定，并随版本更新下载名和相关说明。
+- [x] 维持严格 v3 导入，保留原 DNS TAG、间隔和总暂停，填入 EdgeOne 关闭且无站点的默认状态。v1、v2 和未知版本继续拒绝。
+- [x] 使用新旧 ID 不同的 SQLite 夹具验证一站多目标的 `export_id` 重映射，以及重名、悬空引用、坏载荷零写入和事务失败零发布。
+- [x] 覆盖同步日志、告警和运行状态的备份边界，同步 [AGENTS.md 配置合同](AGENTS.md#九配置约束)。
 
-**证据**　待执行。
+**证据**　2026-11-12，`beta`，Step 3 工作树基础上继续（本步未提交）。实际改动：`webui/api/bundle_v3.go` 保留 v3 wire DTO，导出 DTO 升级为 `bundleV4`/`bundleV4Settings`/`bundleV4Site`，`toBundleV4` 输出 version 4、`edgeone_sites`、两个功能开关和两个 TAG/间隔；新增 `webui/api/bundle_v4.go` 的 v4 严格 DTO、presence 顺序（`metadata → targets → rules → edgeone_sites → settings → alerts → monitoring`）、导出 ID 唯一性、站点目标闭包/本地重复/实际资源别名/ZoneId 重复与 TAG 互斥校验；`webui/api/decode.go` 改为先有界读取并识别 version，再按 v3/v4 选择 DTO 严格解码（v1/v2/未知版本直接 400，保留大小写字段的未知字段诊断）；`webui/api/export.go` 的导入事务新增站点重映射与插入，清理顺序保持「绑定 → 站点 → 规则 → 目标 → 设置 → 告警」，导出固定 v4 与 `fwalizer-config-v4-` 附件名；`webui/frontend/src/views/Settings.vue` 下载名回退改为 `fwalizer-config-v4.json`；`README.md` 与 `AGENTS.md` §9 当前版本条款更新为「导出 v4、严格接受 v3/v4」，历史 Build7/其他历史段落保留；新增前端回退行为断言。v3 导入仍走原 DTO，保留 DNS TAG、间隔和 `sync_enabled`，补 `dns_enabled=true`、`edgeone_enabled=false`、无站点，并在 DNS TAG 恰为 `edgeone` 时初始化 `edgeone-origin`。
+
+执行命令与结果：`go test ./webui/api -run 'TestExportV4ShapeAndNoRuntimeState|TestImportV4RoundTripWithSitesAndSettings|TestImportV4ValidationZeroWriteNoApply|TestImportV4TransactionFailureRollsBack|TestImportV3PreservesLegacySettingsAndAddsNewDefaults' -race -count=1 -v` → 5 个顶层用例及 17 个 v4 负向/兼容子用例全部 PASS（api 1.823s；补入重复 export_id、缺目标数组、zone 重复后单项复跑 1.615s）；v4 负向矩阵覆盖缺 `edgeone_sites`、`edgeone_sites:null`、缺 `dns_enabled`、开关错误类型、重复 `export_id`、站点空目标/缺目标数组/重复本地目标/悬空引用/实际资源别名/非法端口/非法地址族/非法 ZoneId/zone 重复、TAG 重名、未知版本 5、未知运行字段；每个拒绝例均断言 400、旧目标/设置/站点不变、Apply 为零。v4 往返夹具在来源库与目标库预置不同自增区间，导出后目标库已有 3 条目标历史，导入后一站两目标通过 `export_id → target_id` 映射解析到 `sg-src-a`/`sg-src-b`，站点绑定的目标 ID 与来源/目标旧 ID 均不同；v4 导出原始 JSON 断言 `edgeone_sites` 非 null、空时为 `[]`、开关为 JSON boolean、运行表字段不出现；v3 原始 fixture 导入保留 `legacy-tag`/`7m`/`sync_enabled=false`，并断言 v3 混入 `edgeone_sites` 仍 400 且不发布。`go test ./... -race -count=1 -timeout=20m` → 12 包全部 ok（最终复查：app 1.160s、config 35.947s、webui/api 47.288s、syncer 21.293s、provider 8.821s 等）；`go vet ./...` → 0（最终复查同）；`npm --prefix webui/frontend test` → 154 项全部通过（含新增 B8S4 下载名回退断言）；`npm --prefix webui/frontend run build` → `vue-tsc` + Vite 构建成功（446ms）；`git diff --check` → 0（最终复查同）。既有 v3 严格解码、缺失字段、10 MiB 限制、告警/凭据/同步日志边界与事务失败回滚回归继续通过；导出仍为唯一允许敏感值的响应且保持 no-store。
+
+待补项：配置包运行态表（`sync_address_conflict`、`edgeone_origin_transitions`）尚未实现，按 Step 7/10/11 接入且不进入备份；真实云、浏览器人工验收、Linux/Docker、依赖审计和远端 CI/GHCR 未执行，Step 16/17 收口。`bundle_v3.go` 仍承载 v3 wire 与两版本共用的 value 类型，导出构建函数已改为 v4；历史文档中的 v3 唯一协议记录按历史口径保留。
 
 <a name="step-5"></a>
 

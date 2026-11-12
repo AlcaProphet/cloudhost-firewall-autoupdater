@@ -11,8 +11,8 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
 
-// version3FilenamePattern 固定附件文件名：fwalizer-config-v3-<UTC 20060102T150405Z>.json
-var version3FilenamePattern = regexp.MustCompile(`^attachment; filename="fwalizer-config-v3-\d{8}T\d{6}Z\.json"$`)
+// version4FilenamePattern 固定附件文件名：fwalizer-config-v4-<UTC 20060102T150405Z>.json
+var version4FilenamePattern = regexp.MustCompile(`^attachment; filename="fwalizer-config-v4-\d{8}T\d{6}Z\.json"$`)
 
 // TestConfigExportEmptyDatabaseSchema 空数据库导出仍必须是完整合法 Schema：
 // 数组为 [] 而不是 null、四个凭据字段存在但为空、告警对象与全部字段存在、默认值齐全。
@@ -26,7 +26,7 @@ func TestConfigExportEmptyDatabaseSchema(t *testing.T) {
 
 	// 必须使用缩进格式并以换行结束
 	body := w.Body.String()
-	if !strings.Contains(body, "\n  \"version\": 3") {
+	if !strings.Contains(body, "\n  \"version\": 4") {
 		t.Errorf("导出应为缩进 JSON: %s", body)
 	}
 	if !strings.HasSuffix(body, "}\n") {
@@ -44,23 +44,29 @@ func TestConfigExportEmptyDatabaseSchema(t *testing.T) {
 	if string(raw["rules"]) != "[]" {
 		t.Errorf("rules 必须是 []，实际 %s", raw["rules"])
 	}
+	if string(raw["edgeone_sites"]) != "[]" {
+		t.Errorf("edgeone_sites 必须是 []，实际 %s", raw["edgeone_sites"])
+	}
 
-	var got bundleV3
+	var got bundleV4
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatalf(" struct 解码失败: %v", err)
 	}
-	if got.Version != 3 {
-		t.Errorf("version = %d, want 3", got.Version)
+	if got.Version != 4 {
+		t.Errorf("version = %d, want 4", got.Version)
 	}
-	if got.Targets == nil || got.Rules == nil {
-		t.Errorf("targets/rules 不得为 nil: %+v", got)
+	if got.Targets == nil || got.Rules == nil || got.EdgeOneSites == nil {
+		t.Errorf("targets/rules/edgeone_sites 不得为 nil: %+v", got)
 	}
 	if got.Settings.Credentials.Tencent.SecretID != "" || got.Settings.Credentials.Aliyun.AccessKeySecret != "" {
 		t.Errorf("空库凭据必须为空字符串: %+v", got.Settings.Credentials)
 	}
-	if got.Settings.Tag != "auto-dns" || got.Settings.Interval != "5m" || got.Settings.DNS != "223.5.5.5" ||
+	if got.Settings.Tag != "auto-ddns" || got.Settings.Interval != "5m" || got.Settings.DNS != "223.5.5.5" ||
 		got.Settings.DNSTimeout != "10s" || got.Settings.DNSFailThreshold != 5 ||
-		got.Settings.LogLevel != "info" || !got.Settings.SyncEnabled || got.Settings.Theme != "light" {
+		got.Settings.LogLevel != "info" || !got.Settings.SyncEnabled || got.Settings.Theme != "light" ||
+		!got.Settings.DNSEnabled || got.Settings.EdgeOneEnabled ||
+		got.Settings.EdgeOneTag != config.DefaultEdgeOneTag ||
+		got.Settings.EdgeOneInterval != config.DefaultEdgeOneIntervalText {
 		t.Errorf("空库导出未补齐默认值: %+v", got.Settings)
 	}
 	if got.Alerts.Email.Enabled || got.Alerts.Email.Port != "587" ||
@@ -99,7 +105,7 @@ func TestConfigExportHeaders(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want no-store", cc)
 	}
 	cd := w.Header().Get("Content-Disposition")
-	if !version3FilenamePattern.MatchString(cd) {
+	if !version4FilenamePattern.MatchString(cd) {
 		t.Errorf("Content-Disposition = %q, 不符合固定文件名格式", cd)
 	}
 }
@@ -109,7 +115,7 @@ func TestConfigExportMetadataUTC(t *testing.T) {
 	e := newTestEnv(t)
 
 	w := e.do(t, http.MethodPost, "/api/config/export", "")
-	var got bundleV3
+	var got bundleV4
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
@@ -161,7 +167,7 @@ func TestConfigExportStableOrdering(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d, want 200", w.Code)
 	}
-	var got bundleV3
+	var got bundleV4
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}

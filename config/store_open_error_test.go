@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,6 +42,18 @@ func (c *p310Conn) ExecContext(_ context.Context, q string, _ []driver.NamedValu
 	}
 	return driver.RowsAffected(0), nil
 }
+
+// QueryContext 模拟「建表前 Schema 探测」：返回空结果，使迁移前检查按
+// 「settings 表不存在、user_version=0」处理，同时保留 schema 阶段的主错误注入。
+func (c *p310Conn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+	return p310EmptyRows{}, nil
+}
+
+type p310EmptyRows struct{}
+
+func (p310EmptyRows) Columns() []string         { return []string{"value"} }
+func (p310EmptyRows) Close() error              { return nil }
+func (p310EmptyRows) Next([]driver.Value) error { return io.EOF }
 
 type p310Tx struct{ c *p310Connector }
 

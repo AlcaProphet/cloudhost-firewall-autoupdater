@@ -12,18 +12,21 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
 
-// schemaVersionV3 是唯一被接受的配置包版本（Build7 固定决策 20）。
+// 配置包版本（Build7 固定 v3；Build8 Step 4 起导出 v4，继续严格接受 v3）。
 //
 // version 1/2 与其他版本一律返回 400：不迁移、不猜测、不补全、无隐藏兼容入口。
-const schemaVersionV3 = 3
+const (
+	schemaVersionV3 = 3
+	schemaVersionV4 = 4
+)
 
 // bundleV3SecondsRFC3339 是导出时间与附件文件名共用的 UTC 时间格式。
 const (
 	bundleV3TimeLayout = time.RFC3339
 	// bundleV3FileTimeLayout 固定为 20060102T150405Z（Build6 §3.3）
 	bundleV3FileTimeLayout = "20060102T150405Z"
-	// bundleV3FilenamePrefix 附件文件名前缀
-	bundleV3FilenamePrefix = "fwalizer-config-v3-"
+	// bundleV4FilenamePrefix 附件文件名前缀（导出固定 v4）
+	bundleV4FilenamePrefix = "fwalizer-config-v4-"
 )
 
 // presenceSlice 是带 presence 信息的 JSON 数组：缺失与 null 都视为未提供。
@@ -107,9 +110,10 @@ type bundleV3AliyunCredentials struct {
 	AccessKeySecret string `json:"access_key_secret"`
 }
 
-// bundleV3Settings 完整业务设置。dns_fail_threshold 在配置包中是 JSON number，
-// 与普通 settings API 的字符串形态不同（Build6 §12.9）。
-type bundleV3Settings struct {
+// bundleV4Settings 是 v4 配置包的完整业务设置。dns_fail_threshold 在配置包中
+// 是 JSON number，与普通 settings API 的字符串形态不同（Build6 §12.9）。
+// 两个功能开关使用 JSON boolean；TAG 与间隔继续使用字符串。
+type bundleV4Settings struct {
 	Credentials      bundleV3Credentials `json:"credentials"`
 	Tag              string              `json:"tag"`
 	Interval         string              `json:"interval"`
@@ -118,7 +122,20 @@ type bundleV3Settings struct {
 	DNSFailThreshold int                 `json:"dns_fail_threshold"`
 	LogLevel         string              `json:"log_level"`
 	SyncEnabled      bool                `json:"sync_enabled"`
+	DNSEnabled       bool                `json:"dns_enabled"`
+	EdgeOneEnabled   bool                `json:"edgeone_enabled"`
+	EdgeOneTag       string              `json:"edgeone_tag"`
+	EdgeOneInterval  string              `json:"edgeone_interval"`
 	Theme            string              `json:"theme"`
+}
+
+// bundleV4Site 是 v4 配置包的 EdgeOne 站点绑定（target_export_ids 在导入时重映射）。
+type bundleV4Site struct {
+	ZoneID          string `json:"zone_id"`
+	TargetExportIDs []int  `json:"target_export_ids"`
+	Protocol        string `json:"protocol"`
+	Ports           string `json:"ports"`
+	AddressFamily   string `json:"address_family"`
 }
 
 type bundleV3Email struct {
@@ -165,15 +182,16 @@ type bundleV3Monitoring struct {
 	UptimeKumaPush bundleV3UptimeKumaPush `json:"uptime_kuma_push"`
 }
 
-// bundleV3 是导出使用的完整配置包（缺失字段无法表达，因此必然全部出现）。
-type bundleV3 struct {
-	Version    int                `json:"version"`
-	Metadata   bundleV3Metadata   `json:"metadata"`
-	Targets    []bundleV3Target   `json:"targets"`
-	Rules      []bundleV3Rule     `json:"rules"`
-	Settings   bundleV3Settings   `json:"settings"`
-	Alerts     bundleV3Alerts     `json:"alerts"`
-	Monitoring bundleV3Monitoring `json:"monitoring"`
+// bundleV4 是导出使用的完整配置包（缺失字段无法表达，因此必然全部出现）。
+type bundleV4 struct {
+	Version      int                `json:"version"`
+	Metadata     bundleV3Metadata   `json:"metadata"`
+	Targets      []bundleV3Target   `json:"targets"`
+	Rules        []bundleV3Rule     `json:"rules"`
+	EdgeOneSites []bundleV4Site     `json:"edgeone_sites"`
+	Settings     bundleV4Settings   `json:"settings"`
+	Alerts       bundleV3Alerts     `json:"alerts"`
+	Monitoring   bundleV3Monitoring `json:"monitoring"`
 }
 
 // ─── 导入 DTO（presence 型：缺失与 null 都能与合法零值区分） ───
@@ -282,19 +300,20 @@ type bundleV3Wire struct {
 	Monitoring *bundleV3WireMonitoring            `json:"monitoring"`
 }
 
-// checkedBundleV3 是预校验通过、已归一化的 version 3 配置包。
-type checkedBundleV3 struct {
+// checkedBundle 是预校验通过、已归一化的配置包（v3 与 v4 共用）。
+type checkedBundle struct {
 	ExportedAt time.Time
 	Targets    []bundleV3Target
 	Rules      []bundleV3Rule
-	Settings   checkedBundleV3Settings
+	Sites      []config.EdgeOneSite
+	Settings   checkedBundleSettings
 	Policy     config.AlertPolicyConfig
 	Email      config.AlertEmailConfig
 	Webhook    config.AlertWebhookConfig
 	Push       config.UptimeKumaPushConfig
 }
 
-type checkedBundleV3Settings struct {
+type checkedBundleSettings struct {
 	Credentials      config.Credentials
 	Tag              string
 	Interval         string
@@ -303,16 +322,20 @@ type checkedBundleV3Settings struct {
 	DNSFailThreshold string
 	LogLevel         string
 	SyncEnabled      bool
+	DNSEnabled       bool
+	EdgeOneEnabled   bool
+	EdgeOneTag       string
+	EdgeOneInterval  string
 	Theme            string
 }
 
 // ─── 导出构造 ───
 
-// toBundleV3 把事务内取到的业务快照转换为 version 3 配置包。
+// toBundleV4 把事务内取到的业务快照转换为 version 4 配置包。
 //
 // 目标与规则按数据库 ID 升序稳定输出；每条规则的 target_export_ids 按 export_id
 // 升序输出（Build6 §12.11）；数组一律初始化为空切片，保证编码为 [] 而不是 null。
-func toBundleV3(snapshot *config.BusinessSnapshot, exportedAt time.Time) bundleV3 {
+func toBundleV4(snapshot *config.BusinessSnapshot, exportedAt time.Time) bundleV4 {
 	targets := make([]bundleV3Target, 0, len(snapshot.Targets))
 	for _, t := range snapshot.Targets {
 		targets = append(targets, bundleV3Target{
@@ -366,12 +389,24 @@ func toBundleV3(snapshot *config.BusinessSnapshot, exportedAt time.Time) bundleV
 		push = config.DefaultUptimeKumaPush()
 	}
 
-	return bundleV3{
-		Version:  schemaVersionV3,
-		Metadata: bundleV3Metadata{ExportedAt: exportedAt.UTC().Format(bundleV3TimeLayout)},
-		Targets:  targets,
-		Rules:    rules,
-		Settings: bundleV3Settings{
+	sites := make([]bundleV4Site, 0, len(snapshot.EdgeOneSites))
+	for _, s := range snapshot.EdgeOneSites {
+		refs := make([]int, len(s.TargetIDs))
+		copy(refs, s.TargetIDs)
+		sortIntsAscending(refs)
+		sites = append(sites, bundleV4Site{
+			ZoneID: s.ZoneID, TargetExportIDs: refs, Protocol: s.Protocol,
+			Ports: s.Ports, AddressFamily: s.AddressFamily,
+		})
+	}
+
+	return bundleV4{
+		Version:      schemaVersionV4,
+		Metadata:     bundleV3Metadata{ExportedAt: exportedAt.UTC().Format(bundleV3TimeLayout)},
+		Targets:      targets,
+		Rules:        rules,
+		EdgeOneSites: sites,
+		Settings: bundleV4Settings{
 			Credentials: bundleV3Credentials{
 				Tencent: bundleV3TencentCredentials{
 					SecretID:  snapshot.Settings["tc_access_id"],
@@ -389,6 +424,10 @@ func toBundleV3(snapshot *config.BusinessSnapshot, exportedAt time.Time) bundleV
 			DNSFailThreshold: atoiOrZero(snapshot.Settings["dns_fail_threshold"]),
 			LogLevel:         snapshot.Settings["log_level"],
 			SyncEnabled:      snapshot.Settings["sync_enabled"] == "true",
+			DNSEnabled:       snapshot.Settings["dns_enabled"] == "true",
+			EdgeOneEnabled:   snapshot.Settings["edgeone_enabled"] == "true",
+			EdgeOneTag:       snapshot.Settings["edgeone_tag"],
+			EdgeOneInterval:  snapshot.Settings["edgeone_interval"],
 			Theme:            snapshot.Settings["theme"],
 		},
 		Alerts: bundleV3Alerts{
@@ -434,7 +473,7 @@ func toBundleV3(snapshot *config.BusinessSnapshot, exportedAt time.Time) bundleV
 //
 // 校验全部复用 config 包已实现的领域校验函数，不建立第二套更宽松或重复的规则
 // （Build6 §3.2、§4.2～§4.5、§12.10、§12.12）。
-func validateAndNormalizeBundle(wire *bundleV3Wire) (*checkedBundleV3, error) {
+func validateAndNormalizeBundleV3(wire *bundleV3Wire) (*checkedBundle, error) {
 	// version：只接受 3，缺失/null/其他一律 400，不做迁移或字段补全
 	if wire.Version == nil {
 		return nil, badRequest("version 字段缺失")
@@ -540,10 +579,11 @@ func validateAndNormalizeBundle(wire *bundleV3Wire) (*checkedBundleV3, error) {
 		return nil, err
 	}
 
-	return &checkedBundleV3{
+	return &checkedBundle{
 		ExportedAt: exportedAt,
 		Targets:    targets,
 		Rules:      rules,
+		Sites:      []config.EdgeOneSite{},
 		Settings:   settings,
 		Policy:     policy,
 		Email:      email,
@@ -596,8 +636,8 @@ func wrapBundleField(prefix string, err error) error {
 
 // normalizeBundleSettings 校验并归一化配置包设置（复用同一组领域校验函数）。
 // 调用前由 checkBundleV3Presence 保证全部必填对象与字段已提供。
-func normalizeBundleSettings(w *bundleV3WireSettings) (checkedBundleV3Settings, error) {
-	var out checkedBundleV3Settings
+func normalizeBundleSettings(w *bundleV3WireSettings) (checkedBundleSettings, error) {
+	var out checkedBundleSettings
 	// 凭据按原值保存，允许空字符串（明确清除旧凭据）
 	out.Credentials = config.Credentials{
 		TencentSecretID:       *w.Credentials.Tencent.SecretID,
@@ -636,6 +676,12 @@ func normalizeBundleSettings(w *bundleV3WireSettings) (checkedBundleV3Settings, 
 	}
 	out.LogLevel = logLevel
 	out.SyncEnabled = *w.SyncEnabled
+	// v3 兼容转换：DNS 开启、EdgeOne 关闭、无站点；DNS TAG 恰为 edgeone 时
+	// 新模块初始化为 edgeone-origin（Build8 Step 2 / Step 4）。
+	out.DNSEnabled = true
+	out.EdgeOneEnabled = false
+	out.EdgeOneTag = config.DefaultEdgeOneTagForDNS(out.Tag)
+	out.EdgeOneInterval = config.DefaultEdgeOneIntervalText
 	theme, err := config.NormalizeTheme(*w.Theme)
 	if err != nil {
 		return out, err
@@ -678,13 +724,10 @@ func normalizeBundleWebhook(w *bundleV3WireWebhook) (config.AlertWebhookConfig, 
 
 // bundleSettingsToStore 把已校验的配置包设置转换为**显式**的落库键值集合。
 //
-// 必须逐键写入 version 3 的完整键集合（Build6 §12.12）：不遍历任意 map，
-// 因此旧数据库的未知键不会进入新快照。
-func bundleSettingsToStore(s checkedBundleV3Settings) map[string]string {
-	syncEnabled := "false"
-	if s.SyncEnabled {
-		syncEnabled = "true"
-	}
+// 必须逐键写入当前完整键集合（Build6 §12.12）：不遍历任意 map，因此旧数据库的
+// 未知键不会进入新快照。v3 兼容转换已在 normalizeBundleSettings 中补入新增键；
+// v4 使用配置包自身的值。
+func bundleSettingsToStore(s checkedBundleSettings) map[string]string {
 	return map[string]string{
 		"tc_access_id":       s.Credentials.TencentSecretID,
 		"tc_access_key":      s.Credentials.TencentSecretKey,
@@ -696,9 +739,21 @@ func bundleSettingsToStore(s checkedBundleV3Settings) map[string]string {
 		"dns_timeout":        s.DNSTimeout,
 		"dns_fail_threshold": s.DNSFailThreshold,
 		"log_level":          s.LogLevel,
-		"sync_enabled":       syncEnabled,
+		"sync_enabled":       boolText(s.SyncEnabled),
 		"theme":              s.Theme,
+		"dns_enabled":        boolText(s.DNSEnabled),
+		"edgeone_enabled":    boolText(s.EdgeOneEnabled),
+		"edgeone_tag":        s.EdgeOneTag,
+		"edgeone_interval":   s.EdgeOneInterval,
 	}
+}
+
+// boolText 把布尔值转换为设置表中的固定字符串形态。
+func boolText(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
 }
 
 // atoiOrZero 解析已完成校验的整数设置；失败时返回 0（快照中的值不可能非法）。

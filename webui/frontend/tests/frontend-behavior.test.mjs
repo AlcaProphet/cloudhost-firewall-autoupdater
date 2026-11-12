@@ -203,3 +203,15 @@ for (const failure of [false, true]) {
     e.unmount()
   })
 }
+
+test('B8S4 配置包下载名回退为 v4 并继续剥离路径分隔符', () => {
+  const e = mount('views/Settings.vue')
+  assert.equal(e.s.EXPORT_FALLBACK_FILENAME, 'fwalizer-config-v4.json', 'B8S4_FALLBACK')
+  assert.equal(e.s.parseAttachmentFilename(null), 'fwalizer-config-v4.json', 'B8S4_NO_HEADER')
+  assert.equal(
+    e.s.parseAttachmentFilename('attachment; filename="fwalizer-config-v4-20261112T000000Z.json"'),
+    'fwalizer-config-v4-20261112T000000Z.json',
+    'B8S4_SERVER_NAME',
+  )
+  assert.equal(e.s.parseAttachmentFilename('attachment; filename="../evil.json"'), 'evil.json', 'B8S4_PATH')
+})
