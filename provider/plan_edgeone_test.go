@@ -178,6 +178,49 @@ func TestEdgeOnePlanCrossTagEquivalentIsConflictOnly(t *testing.T) {
 	}
 }
 
+// TestEdgeOnePlanLighthouseStaleRuleLocator 检查与期望无关的陈旧 key 的唯一性。
+func TestEdgeOnePlanLighthouseStaleRuleLocator(t *testing.T) {
+	sites := []EdgeOneSitePlanInput{{
+		Site:     edgeSite("zone-a", []int{1}, "TCP", "443", "ipv4"),
+		Snapshot: OriginACLSnapshot{ZoneID: "zone-a", Current: edgeVersion("2", "203.0.113.0/24")},
+	}}
+	current := config.RuleInfo{Protocol: "TCP", Port: "443", CidrBlock: "203.0.113.0/24", Action: "ACCEPT", Description: "[edgeone] current"}
+	stale := config.RuleInfo{Protocol: "TCP", CidrBlock: "198.51.100.0/24", Action: "ACCEPT", Description: "[edgeone] stale"}
+	for _, tc := range []struct {
+		name, stalePort, duplicatePort, duplicateDesc string
+	}{
+		{name: "唯一单端口", stalePort: "443"},
+		{name: "唯一合并端口", stalePort: "443,8443"},
+		{"手工同 key", "443", "443", "手工规则"},
+		{"另一功能 TAG 同 key", "443", "443", "[auto-ddns] stale"},
+		{"另一功能 TAG 重复合并规则的一个 key", "443,8443", "8443", "[auto-ddns] stale"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			staleRule := stale
+			staleRule.Port = tc.stalePort
+			snapshot := []config.RuleInfo{current, staleRule}
+			ambiguous := tc.duplicatePort != ""
+			if ambiguous {
+				duplicate := staleRule
+				duplicate.Port = tc.duplicatePort
+				duplicate.Description = tc.duplicateDesc
+				snapshot = append(snapshot, duplicate)
+			}
+			plan := planEdgeOne(t, config.CloudTCLighthouse, "edgeone", "auto-ddns", sites, snapshot)
+			if !plan.CoverageReady || len(plan.Conflicts) != 0 || len(plan.CleanupCandidates) != 1 {
+				t.Fatalf("陈旧规则仍应可预览，当前期望覆盖应成立: %+v", plan)
+			}
+			if ambiguous {
+				if len(plan.CleanupDeletable) != 0 || !hasIssue(plan.CleanupDeferred, IssueOwnedKeyAmbiguous) {
+					t.Fatalf("重复 key 应拒绝删除并标记定位歧义: %+v", plan)
+				}
+			} else if len(plan.CleanupDeletable) != 1 || len(plan.CleanupDeferred) != 0 {
+				t.Fatalf("唯一归属的陈旧规则应可删除: %+v", plan)
+			}
+		})
+	}
+}
+
 // TestEdgeOnePlanManualExactMatchStillCovers 手工规则继续沿用精确等价语义。
 func TestEdgeOnePlanManualExactMatchStillCovers(t *testing.T) {
 	manual := config.RuleInfo{

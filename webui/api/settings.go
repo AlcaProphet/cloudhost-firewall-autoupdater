@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
@@ -49,6 +51,8 @@ func (d *Deps) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	for k := range settingsEditableKeys {
 		out[k] = settings[k]
 	}
+	// 旧库可能保留带空白的自定义 TAG，回显与运行快照和导出使用同一个有效值。
+	out["tag"] = strings.TrimSpace(out["tag"])
 	for k, v := range settingsDefaults {
 		if out[k] == "" {
 			out[k] = v
@@ -57,8 +61,23 @@ func (d *Deps) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// settingsPatch PUT /api/settings 的部分更新请求体（15 个 pointer 字段，Build6 §12.9；
-// Build8 Step 2 增加双功能开关、EdgeOne TAG 与间隔）。
+// featureSettingPatch 区分字段省略和显式 null；同名字段的后续值不能覆盖 null。
+type featureSettingPatch struct {
+	value   *string
+	sawNull bool
+}
+
+func (p *featureSettingPatch) UnmarshalJSON(data []byte) error {
+	var value *string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	p.value = value
+	p.sawNull = p.sawNull || value == nil
+	return nil
+}
+
+// settingsPatch 是 PUT /api/settings 的部分更新请求体（Build6 §12.9、Build8 Step 2）。
 //
 // 省略字段保持不变；只有四个云凭据允许显式空字符串（用于清除旧值）。
 type settingsPatch struct {
@@ -73,14 +92,28 @@ type settingsPatch struct {
 	DNSFailThreshold *string `json:"dns_fail_threshold"`
 	LogLevel         *string `json:"log_level"`
 	Theme            *string `json:"theme"`
-	DNSEnabled       *string `json:"dns_enabled"`
-	EdgeOneEnabled   *string `json:"edgeone_enabled"`
-	EdgeOneTag       *string `json:"edgeone_tag"`
-	EdgeOneInterval  *string `json:"edgeone_interval"`
+
+	DNSEnabled      featureSettingPatch `json:"dns_enabled"`
+	EdgeOneEnabled  featureSettingPatch `json:"edgeone_enabled"`
+	EdgeOneTag      featureSettingPatch `json:"edgeone_tag"`
+	EdgeOneInterval featureSettingPatch `json:"edgeone_interval"`
 }
 
 // values 归一化并校验本次提交的字段，返回“设置键 → 应落库的值”。
 func (p settingsPatch) values() (map[string]string, error) {
+	for _, field := range []struct {
+		key     string
+		sawNull bool
+	}{
+		{"dns_enabled", p.DNSEnabled.sawNull},
+		{"edgeone_enabled", p.EdgeOneEnabled.sawNull},
+		{"edgeone_tag", p.EdgeOneTag.sawNull},
+		{"edgeone_interval", p.EdgeOneInterval.sawNull},
+	} {
+		if field.sawNull {
+			return nil, badRequest(field.key + " 不能为 null")
+		}
+	}
 	updates := make(map[string]string, len(settingsEditableKeys))
 
 	// 云凭据作为不透明文本按原值保存，允许显式空字符串
@@ -144,29 +177,29 @@ func (p settingsPatch) values() (map[string]string, error) {
 		}
 		updates["theme"] = v
 	}
-	if p.DNSEnabled != nil {
-		v, err := config.NormalizeFeatureEnabled("dns_enabled", *p.DNSEnabled)
+	if p.DNSEnabled.value != nil {
+		v, err := config.NormalizeFeatureEnabled("dns_enabled", *p.DNSEnabled.value)
 		if err != nil {
 			return nil, err
 		}
 		updates["dns_enabled"] = v
 	}
-	if p.EdgeOneEnabled != nil {
-		v, err := config.NormalizeFeatureEnabled("edgeone_enabled", *p.EdgeOneEnabled)
+	if p.EdgeOneEnabled.value != nil {
+		v, err := config.NormalizeFeatureEnabled("edgeone_enabled", *p.EdgeOneEnabled.value)
 		if err != nil {
 			return nil, err
 		}
 		updates["edgeone_enabled"] = v
 	}
-	if p.EdgeOneTag != nil {
-		v, err := config.NormalizeEdgeOneTag(*p.EdgeOneTag)
+	if p.EdgeOneTag.value != nil {
+		v, err := config.NormalizeEdgeOneTag(*p.EdgeOneTag.value)
 		if err != nil {
 			return nil, err
 		}
 		updates["edgeone_tag"] = v
 	}
-	if p.EdgeOneInterval != nil {
-		v, _, err := config.ParsePositiveDuration("edgeone_interval", *p.EdgeOneInterval)
+	if p.EdgeOneInterval.value != nil {
+		v, _, err := config.ParsePositiveDuration("edgeone_interval", *p.EdgeOneInterval.value)
 		if err != nil {
 			return nil, err
 		}

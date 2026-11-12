@@ -374,6 +374,96 @@ func TestAddressConflictStateReadFailureBlocksBoth(t *testing.T) {
 	}
 }
 
+func TestAddressConflictStateRetainsOverlapAcrossReadFailures(t *testing.T) {
+	ctx := context.Background()
+	readErr := errors.New("database read unavailable")
+	clearErr := errors.New("clear failed")
+	overlap := Preflight{
+		DNSEnabled:      true,
+		EdgeOneEnabled:  true,
+		DNSComplete:     true,
+		EdgeOneComplete: true,
+		DNS:             []DNSAddress{{Host: "home.example", Addr: netip.MustParseAddr("203.0.113.7")}},
+		EdgeOne:         []EdgeOnePrefix{{ZoneID: "zone-a", Prefix: netip.MustParsePrefix("203.0.113.0/24")}},
+	}
+	partial := overlap
+	partial.DNSComplete = false
+	partial.DNS = nil
+	noOverlap := overlap
+	noOverlap.DNS = []DNSAddress{{Host: "home.example", Addr: netip.MustParseAddr("192.0.2.7")}}
+
+	first := time.Now().UTC().Add(-time.Hour)
+	prior := config.AddressConflict{
+		DNSName: "home.example", DNSAddress: "203.0.113.7", EdgeOnePrefix: "203.0.113.0/24", ZoneID: "zone-a",
+		FirstSeenAt: first, LastSeenAt: first.Add(time.Minute),
+	}
+	for _, tc := range []struct {
+		name string
+		row  *config.AddressConflict
+	}{
+		{"库内缺行", nil},
+		{"库内已有相同地址证据", &prior},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeConflictStore{row: tc.row, getErr: readErr, clearErr: clearErr}
+			state := NewAddressConflictState(store)
+			outcome, err := state.Evaluate(ctx, overlap)
+			if !errors.Is(err, readErr) || outcome.Overlap == nil || outcome.Overlap.DNS != overlap.DNS[0] {
+				t.Fatalf("读取失败时仍须报告本轮重叠: %+v err=%v", outcome, err)
+			}
+			assertBlockedByConflict(t, outcome)
+			observed := state.memoryConflict()
+			if observed == nil {
+				t.Fatal("读失败后应保留进程内证据")
+			}
+
+			outcome, err = state.Evaluate(ctx, partial)
+			if !errors.Is(err, readErr) || outcome.Overlap != nil {
+				t.Fatalf("数据不足轮次应重试读取并报告原读取错误: %+v err=%v", outcome, err)
+			}
+			assertBlockedByConflict(t, outcome)
+			if gets, saves, clears := store.counts(); gets != 2 || saves != 0 || clears != 0 {
+				t.Fatalf("读取恢复前只允许读表: 读=%d 保存=%d 清除=%d", gets, saves, clears)
+			}
+
+			store.getErr = nil
+			outcome, err = state.Evaluate(ctx, partial)
+			if err != nil {
+				t.Fatalf("读取恢复后应保存待写入证据: %v", err)
+			}
+			assertBlockedByConflict(t, outcome)
+			if gets, saves, clears := store.counts(); gets != 3 || saves != 1 || clears != 0 {
+				t.Fatalf("恢复后应读取并写入一次: 读=%d 保存=%d 清除=%d", gets, saves, clears)
+			}
+			want := *observed
+			if tc.row != nil {
+				want.FirstSeenAt = tc.row.FirstSeenAt
+			}
+			if store.row == nil || *store.row != want {
+				t.Fatalf("应保留最新证据及已持久化的首次时间: got %+v, want %+v", store.row, want)
+			}
+
+			restarted := NewAddressConflictState(store)
+			outcome, err = restarted.Evaluate(ctx, partial)
+			if err != nil {
+				t.Fatalf("重启后读取冲突失败: %v", err)
+			}
+			assertBlockedByConflict(t, outcome)
+			outcome, err = restarted.Evaluate(ctx, noOverlap)
+			if !errors.Is(err, clearErr) {
+				t.Fatalf("解除失败应返回原错误: %v", err)
+			}
+			assertBlockedByConflict(t, outcome)
+			store.clearErr = nil
+			outcome, err = restarted.Evaluate(ctx, noOverlap)
+			if err != nil || outcome.State != PreflightStateClear || outcome.KnownConflict ||
+				!outcome.Admission.DNS || !outcome.Admission.EdgeOne || store.row != nil {
+				t.Fatalf("完整无重叠且解除提交后应放行: %+v err=%v", outcome, err)
+			}
+		})
+	}
+}
+
 func TestAddressConflictStateOverlapPriorityAndSaveRetry(t *testing.T) {
 	store := &fakeConflictStore{saveErr: errors.New("first save failed")}
 	state := NewAddressConflictState(store)

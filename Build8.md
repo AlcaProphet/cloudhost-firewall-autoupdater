@@ -1,7 +1,7 @@
 # Build8 — EdgeOne 回源同步构建追踪
 
 > 2026-11-12 · 工作分支 `beta` · 起始基线 `102d838f3bcc3d1624c32e44ed65f2eb6feaa0b4`。
-> 设计与已确认行为见 [Design6](Design6.md)。当前编码约束见 [AGENTS.md](AGENTS.md)。Step 0 是本次文档准备，后续 Step 均为计划。
+> 设计与已确认行为见 [Design6](Design6.md)。当前编码约束见 [AGENTS.md](AGENTS.md)。各 Step 的实施状态见[进度索引](#进度索引)。
 
 ## 使用方式
 
@@ -20,8 +20,8 @@
 
 | 阶段 | 当段可验收 | 后续由哪步接入 |
 |---|---|---|
-| Step 1～4 | 迁移、设置、站点 CRUD、完整备份与事务发布 | Step 5 才接腾讯云只读查询，Step 8 才接正式调度。 |
-| Step 5～7 | SDK 只读、纯规划、冲突决策与 SQLite 记录 | Step 8 接生产调度。此段以模拟请求和夹具验收。 |
+| Step 1～4 | 迁移、设置、站点 CRUD、完整备份与事务发布 | Step 8 接入正式调度，Step 13 接入配置界面。 |
+| Step 5～7 | SDK 只读、纯规划、冲突决策与 SQLite 记录 | Step 8 接入正式查询和预检，Step 9 接入目标执行。此段以模拟请求和夹具验收。 |
 | Step 8～10 | 正式准入、目标增量写入和站点确认链路 | 用本地替身验证写入、回读、确认。实际账号端到端验收留 Step 17。 |
 | Step 11～15 | 过渡保护与清理、只读模拟、WebUI、运行健康 | Step 11 完整接入保护前缀；Step 12 验证正式和模拟的一致性；Step 16 收口完整链路。 |
 | Step 16～17 | 本地完整验收、真实站点证据与远端发布 | 本地结果、真实云和发布分别标记。无待更新窗口时保留相应的外部验收项。 |
@@ -56,6 +56,14 @@
 - [ ] [Step 15 运行健康与日志](#step-15)
 - [ ] [Step 16 本地端到端验收](#step-16)
 - [ ] [Step 17 真实云验收与发布证据](#step-17)
+
+### 当前进度（2026-11-12）
+
+本地 `beta` 的 HEAD 为 `9df4e19`。Step 0～7 已达到各自的本地阶段判据，共 8/18 步，含 Step 0 文档准备。Step 1～4 的实施见 `cbec01b`、`1bcfbaa`，Step 5～7 的实施见 `14642a6`、`9df4e19`；[Step 1～7 的五项独立核验修复](#step-1-7-review-fixes)仍在本地工作树。
+
+[Step 8](#step-8) 的后端依赖已齐备，下一步是把双功能配置、TEO 查询和冲突状态接入正式调度。[Step 13](#step-13) 的配置界面也已有设置、站点和备份 API 可用。Step 8～17 的 Checklist 保持待完成，其中 Step 16 已有可复用的进程级回归和构建证据。
+
+本次核对在 Go 1.27.3（darwin/arm64）上使用 `-race -count=1` 复跑根包、`syncer`、`webui/api` 和 `provider` 的 11 个定向用例，覆盖启动、退出、v4 往返、配置和站点 API、暂停行为、冲突读取失败及本地 TEO 请求，全部通过。
 
 <a name="step-0"></a>
 
@@ -99,14 +107,14 @@
 |---|---|
 | 空文件新库 | 运行快照、GET 设置和导出解析出的 DNS TAG 都为 `auto-ddns`。 |
 | 老库无键或空白键 | 首次打开后得到 `auto-dns` 且写入旧有效值，第二次打开不重复迁移。 |
-| 老库已有 `my-dns` | 新旧两次启动均保持 `my-dns`；此前 `[my-dns]` 规则仍可识别。 |
+| 老库已有 `" my-dns "` | 首次打开和重启的有效值均为 `my-dns`，数据库原值保留空白，此前 `[my-dns]` 规则仍可识别。 |
 | 已迁移库 reset、重启；迁移中注入写入失败 | reset 后稳定使用 `auto-ddns`；迁移失败时原设置和迁移标记都未被部分提交。 |
 
 使用 `config/store_v3_test.go` 的旧库构造方式和 `TestConfigExportEmptyDatabaseSchema` 的导出断言方式。建议运行 `go test ./config ./webui/api -race -count=1`，证据包含数据库实际值及 API 回显。
 
 **本步改动边界**　主改动在 `config/config.go`、`config/store.go`、`webui/api/settings.go`、受影响的默认值测试与 README 默认值示例。备份字段、总开关和 DNS 同步流程留在原行为。
 
-**收口判据**　从同一旧库分别走启动加载、设置 GET、现有 v3 导出，三者看到的 TAG 必须相同。新库首次启动与 reset 后重启均返回 `auto-ddns`。迁移失败注入点放在写旧 TAG 后、提交前，以原值与迁移标记同时回滚为准。
+**收口判据**　从同一旧库分别走启动加载、设置 GET、配置导出（Step 4 起为 v4），三者看到的 TAG 必须相同。新库首次启动与 reset 后重启均返回 `auto-ddns`。迁移失败注入点放在写旧 TAG 后、提交前，以原值与迁移标记同时回滚为准。
 
 **Checklist**
 
@@ -131,7 +139,7 @@
 **实施顺序**
 
 1. 保留 `sync_enabled` 保留键，增加 `dns_enabled`、`edgeone_enabled`、`edgeone_tag`、`edgeone_interval` 的已知键、默认值与快照字段。不要将 v3 备份字段集合误扩展为要求 v3 带新字段。
-2. GET 保持字符串映射。PUT 增加独立指针字段并检查类型和空值，复用现有布尔文本、TAG 及正时长校验。将解析后的时长进入运行时，保留文本用于回显和备份。
+2. GET 保持字符串映射。PUT 区分四个新增字段的省略、字符串和显式 `null`，任一 `null` 返回 400。复用现有布尔文本、TAG 及正时长校验。运行时使用解析后的时长，回显和备份保留文本。
 3. 把两个 TAG 的比较放在事务内完整合并之后。请求只提交一项 TAG 时仍能判定与当前另一个 TAG 是否相同。验证并发设置与失败回滚。
 4. 把迁移、v3 转换和明确用户设置分开。历史 DNS TAG 已为 `edgeone` 时新模块初始化 `edgeone-origin`，普通保存与 v4 遇到重名直接返回校验错误。
 
@@ -152,7 +160,7 @@
 
 执行命令与结果：`go test ./config -run 'TestNewStoreEdgeOneDefaultsAndRuntime|TestLegacyDNSConflictBootstrapsEdgeOneTagOnce|TestLegacyEdgeOneTagExplicitPreserved|TestEdgeOneTagConflictRejectedBySnapshot|TestNormalizeSettingsRejectsInvalidFeatureValues|TestDefaultEdgeOneTagForDNS' -race -count=1 -v` → 6 个顶层用例全部 PASS；`go test ./webui/api -run 'TestPutSettingsFeatureFieldsAndRuntime|TestPutSettingsTagConflictAfterMerge|TestPutSettingsConcurrentTagChangesSerialized|TestV3ImportBootstrapsEdgeOneTag|TestPutSettingsRejectsUnknownAfterFeatureExpansion' -race -count=1 -v` → 5 个顶层用例及 9 个非法值/4 个冲突子用例全部 PASS；`go test ./config ./webui/api -race -count=1 -timeout=10m` → 两包均 ok（config 35.074s，api 42.114s；另一次组合运行 config 34.967s、api 43.696s）。关键断言：新库/迁移库运行快照为 DNS 开启、EdgeOne 关闭、`edgeone`/`72h`；旧库 DNS TAG 为 `edgeone` 时首次升级只写 `edgeone-origin`，重复启动不重写，显式改值后重启保留；`dns_enabled=false`、`edgeone_enabled=true`、`36h`/`1h30m`/`1.5h` 正确进入运行时；空白、`0s`、负值、错误类型均 400 且零发布；先存 `alpha`/`beta` 后单独改 `tag=beta` 或 `edgeone_tag=alpha` 均 400，数据库与运行快照保持，同一请求交换两项成功且只发布一次；两个并发请求分别写两个 TAG 为 `gamma` 时恰好一成一败、只多一次发布；v3 导入保留 `tag=edgeone` 并补 `edgeone_tag=edgeone-origin`，普通 TAG 补 `edgeone`。
 
-待补项：本步只发布配置字段，正式调度接线按 Step 8 实施；v4 配置包字段与文件往返按 Step 4 实施；未执行真实云、站点查询、Linux/Docker 或远端 CI。Step 1 证据中记录的 `user_version=1` 是本步实施前的版本；Step 2 将迁移版本提升为 2，Step 1 的迁移/回滚/reset 断言在两版代码上继续通过，旧 TAG 迁移本身仍只执行一次。
+后续接线：[Step 4](#step-4) 已接入 v4 配置包字段与文件往返，正式调度留 [Step 8](#step-8)。Step 1 证据中记录的 `user_version=1` 是本步实施前的版本。Step 2 将迁移版本提升为 2，Step 1 的迁移、回滚和 reset 断言在两版代码上均通过，旧 TAG 迁移只执行一次。
 
 <a name="step-3"></a>
 
@@ -186,7 +194,7 @@
 
 执行命令与结果：`go test ./config -run 'TestNormalizeEdgeOneSite|TestEdgeOneSite' -race -count=1 -v` → 6 个顶层用例及 17 个站点参数/端口反向子用例全部 PASS；`go test ./webui/api -run 'TestEdgeOne|TestTargetUpdateAlias' -race -count=1 -v` → 8 个顶层用例（含核验后补入的更新回滚与持久化空绑定错误分类）、15 个非法创建子用例与 4 个非法更新子用例全部 PASS；`go test ./config ./webui/api -race -count=1 -timeout=10m` → 两包均 ok（config 35.896s，api 47.007s）。关键断言：空列表为 `{"sites":[]}`；创建 201、重复 409、缺失更新/删除 404、路径与请求体 `zone_id` 不一致 400；空绑定、缺失 `target_ids`、重复本地 ID、悬空 ID、同实际资源别名、非法端口/协议/地址族、ZoneId 路径分隔符、请求体出现 `action` 均 400 且零发布零写库；合法创建/更新/删除各只发布一次；一站多目标按 `target_id`、站点按 `zone_id` 稳定排序且运行时快照独立深拷贝；两个站点可共享同一目标；非法更新保留旧绑定；绑定写入注入 trigger 失败时站点主行与绑定一起回滚且零发布；把目标改成同站点另一目标的实际资源返回 400 并回滚，改为新资源后成功；删除仍被站点绑定的目标返回 409，删除站点后目标可删除；reset 清空站点、绑定与运行时快照。
 
-待补项：前端站点页、腾讯云只读查询、站点状态与调度分别由 Step 13、5、7/8 实施；本步未执行真实云、Linux/Docker 或远端 CI。站点运行记录/过渡表的实际读写不在本步范围。`git diff --check` 在文档回填后复查。
+后续接线：[Step 5](#step-5) 已提供 TEO 只读客户端。正式调度、站点运行状态和过渡记录、前端站点配置页分别留 [Step 8](#step-8)、[Step 10～11](#step-10) 和 [Step 13](#step-13)。真实云、Linux/Docker 或远端 CI 无本步验收证据。
 
 <a name="step-4"></a>
 
@@ -220,11 +228,11 @@
 
 执行命令与结果：`go test ./webui/api -run 'TestExportV4ShapeAndNoRuntimeState|TestImportV4RoundTripWithSitesAndSettings|TestImportV4ValidationZeroWriteNoApply|TestImportV4TransactionFailureRollsBack|TestImportV3PreservesLegacySettingsAndAddsNewDefaults' -race -count=1 -v` → 5 个顶层用例及 17 个 v4 负向子用例全部 PASS（api 1.823s；补入重复 export_id、缺目标数组、zone 重复后单项复跑 1.615s）；v4 负向矩阵覆盖缺 `edgeone_sites`、`edgeone_sites:null`、缺 `dns_enabled`、开关错误类型、重复 `export_id`、站点空目标/缺目标数组/重复本地目标/悬空引用/实际资源别名/非法端口/非法地址族/非法 ZoneId/zone 重复、TAG 重名、未知版本 5、未知运行字段；每个拒绝例均断言 400、旧目标/设置/站点不变、Apply 为零。v4 往返夹具在来源库与目标库预置不同自增区间，导出后目标库已有 3 条目标历史，导入后一站两目标通过 `export_id → target_id` 映射解析到 `sg-src-a`/`sg-src-b`，站点绑定的目标 ID 与来源/目标旧 ID 均不同；v4 导出原始 JSON 断言 `edgeone_sites` 非 null、空时为 `[]`、开关为 JSON boolean、运行表字段不出现；v3 原始 fixture 导入保留 `legacy-tag`/`7m`/`sync_enabled=false`，并断言 v3 混入 `edgeone_sites` 仍 400 且不发布。`go test ./... -race -count=1 -timeout=20m` → 12 包全部 ok（最终复查：app 1.160s、config 35.947s、webui/api 47.288s、syncer 21.293s、provider 8.821s 等）；`go vet ./...` → 0（最终复查同）；`npm --prefix webui/frontend test` → 154 项全部通过（含新增 B8S4 下载名回退断言）；`npm --prefix webui/frontend run build` → `vue-tsc` + Vite 构建成功（446ms）；`git diff --check` → 0（最终复查同）。既有 v3 严格解码、缺失字段、10 MiB 限制、告警/凭据/同步日志边界与事务失败回滚回归继续通过；导出仍为唯一允许敏感值的响应且保持 no-store。
 
-待补项：配置包运行态表（`sync_address_conflict`、`edgeone_origin_transitions`）尚未实现，按 Step 7/10/11 接入且不进入备份；真实云、浏览器人工验收、Linux/Docker、依赖审计和远端 CI/GHCR 未执行，Step 16/17 收口。`bundle_v3.go` 仍承载 v3 wire 与两版本共用的 value 类型，导出构建函数已改为 v4；历史文档中的 v3 唯一协议记录按历史口径保留。
+后续接线：[Step 7](#step-7) 已加入 `sync_address_conflict`，并验证其排除在 v4 导出之外。`edgeone_origin_transitions` 的确认和保护记录由 [Step 10～11](#step-10) 接入，继续排除在备份之外。真实云、浏览器人工验收、Linux/Docker、依赖审计和远端 CI/GHCR 证据留 Step 16/17。`bundle_v3.go` 仍承载 v3 wire 与两版本共用的 value 类型，导出构建函数使用 v4。
 
 **核验后修复（2026-11-12）**　独立只读核验发现并修复：① `webui/api/bundle_v4.go` 未通过 `gofmt`，已格式化；② 持久化“站点存在但目标为空”被 `NormalizeEdgeOneSite` 的 `ValidationError` 包装成 HTTP 400，已改为在归一化前返回内部完整性错误，站内实际资源别名仍保留请求侧 400；③ `TargetIdentity` 增加云类型/地域/资源 ID 去首尾空白，避免历史/外部 SQL 空白值逃过别名检测。补测试：`TestLegacyV1DBBootstrapsEdgeOneTag`（Step 1 `user_version=1` 升级路径）、`TestEdgeOneSiteUpdateRollbackOnBindingFailure`（PUT 更新绑定中途失败整体回滚）、`TestEdgeOneSitePersistedEmptyBindingReturnsInternalError`（HTTP 500 与零 Apply）、`TestImportV3ClearsExistingSites`、v4 往返预置旧站点验证替换、`TestImportV4PreservesSyncLogsAndReplacesAlerts`（同步日志/扫描缓存/告警边界）、`TestImportV4PresenceMatrix`（顶层对象、四个新设置字段、站点目标 null/元素 null）、进程级往返加入真实站点绑定与目标重映射；`TestEdgeOneSiteEmptyBindingRejected` 增加 `!errors.As(..., *ValidationError)` 判别。
 
-核验后门禁：`gofmt -l config webui/api main_test.go` 无输出；`go test ./config ./webui/api -race -count=1 -timeout=10m` 两包 ok；`go test ./... -race -count=1 -timeout=20m` 12 包全部 ok（root 21.878s、config 36.015s、webui/api 45.690s 等）；`go vet ./...`、`go build ./...`、`npm --prefix webui/frontend test`（154 项）、`npm --prefix webui/frontend run build`、`git diff --check` 通过。未执行真实云、浏览器人工验收、Linux/Docker、依赖审计与远端 CI/GHCR，Step 5～17 保持待执行。当前核验后改动尚未提交。上一条提交说明“共 30 文件”与实际 `git show --stat cbec01b` 的 38 文件不一致，属提交元数据记录偏差。
+核验后门禁：`gofmt -l config webui/api main_test.go` 无输出；`go test ./config ./webui/api -race -count=1 -timeout=10m` 两包 ok；`go test ./... -race -count=1 -timeout=20m` 12 包全部 ok（root 21.878s、config 36.015s、webui/api 45.690s 等）；`go vet ./...`、`go build ./...`、`npm --prefix webui/frontend test`（154 项）、`npm --prefix webui/frontend run build`、`git diff --check` 通过。本批未执行真实云、浏览器人工验收、Linux/Docker、依赖审计与远端 CI/GHCR。该批核验修复已提交为 `1bcfbaa`。`cbec01b` 的提交说明“共 30 文件”与实际 `git show --stat cbec01b` 的 38 文件不一致，属提交元数据记录偏差。
 
 <a name="step-5"></a>
 
@@ -266,7 +274,7 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 
 反向与分类证据：`TestTEOResponseConversionMatrix` 覆盖 21 个子场景：无下一版、IPv4/IPv6 单族合法为空、两族整体为空（`empty`）、地址族字段缺失/`null`（`incomplete`）、非法 CIDR/空项/两向地址族错配（`malformed`）、`OriginACLInfo` 缺失、空响应、`offline`、状态/版本号/计划时间缺失、待更新版整体为空、主机位掩码化与去重、`updating` 并集；所有错误路径均断言绝不返回部分快照。`TestTEOErrorClassificationAndNoSDKRetry` 用模拟权限错误与限流响应断言 `permission`/`throttled`、`RequestId`/Code 保留、原始 Message 与虚构密钥不回显、请求数各为 1（无 SDK 内部重试）；请求预算超时用延迟 200ms 的本地服务与 50ms 预算断言 `timeout` 且请求已到达。`TestTEOInvalidZoneNeverBecomesEmptySnapshot` 对空/空白 `ZoneId` 断言 `malformed`、零请求、空快照，证明无效输入不会变成可用于清理的空集合。`TestOriginACLSnapshotPrefixesForFamily` 与 `TestParseTEOPlanTime` 覆盖并集/地址族筛选与四种时间文本。
 
-外部验收状态：本步只使用 `httptest` 与虚构凭据，未调用真实腾讯云，未验证真实账号权限、真实待更新窗口、真实响应形状、计划时间时区与实际限流配额；上述留 Step 17。真实 `ConfirmOriginACLUpdate` 未接线，留 Step 10；定期查询与调度合并留 Step 8；正式状态 API 留 Step 15。待补项：真实腾讯云 `DescribeOriginACL` 的 `CurrentOriginACL`/`NextOriginACL` 字段组合、`Status=updating` 时的地址完整性及 20 次/秒限流实测。
+外部验收状态：本步使用 `httptest` 与虚构凭据。真实账号权限、真实待更新窗口、响应形状、计划时间时区与实际限流配额留 Step 17，包含 `CurrentOriginACL`/`NextOriginACL` 字段组合、`Status=updating` 时的地址完整性及 20 次/秒限流实测。定期查询及调度状态留 Step 8，`ConfirmOriginACLUpdate` 与站点状态留 Step 10，运行健康与日志留 Step 15。
 
 <a name="step-6"></a>
 
@@ -306,7 +314,7 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 
 判别性证据：`TestSelectEdgeOneSitesForIdentityMergesAliases` 用两个本地 ID 指向同一 `lh-1` 实际目标（含首尾空白历史值）证明别名站点被归并、另一个 `lh-2` 站点被排除；`TestEdgeOnePlanTwoSitesSharePrefixProduceOneAdd` 让同目标两个站点共享 `203.0.113.0/24 TCP 443`，断言只产生一条 `Desired`/一条 `ToAdd` 且 `SiteIDs=[zone-a zone-b]`，同时排除只绑定其他目标的 `zone-other`；`TestEdgeOnePlanCurrentAndNextSamePrefixOneAdd` 验证同站点两版本共同 CIDR 去重、并集新增；`TestEdgeOnePlanPreservesMaskWhileDNSHostPrefix` 验证 DNS `203.0.113.7/32` 与 EdgeOne `203.0.113.0/24` 各自粒度；`TestEdgeOnePlanSharedKeyMergesDNSAndSite` 验证同一 key 只新增一条并保留 `RuleIDs=[11]` 与 `SiteIDs=[zone-a]`。`TestEdgeOnePlanCrossTagEquivalentIsConflictOnly` 用只有 `[auto-dns]` 等价规则的反例断言无覆盖、无新增、无清理、无改标且存在 `cross_tag_equivalent` 冲突；`TestEdgeOnePlanManualExactMatchStillCovers` 对照手工精确规则可覆盖、不同端口不覆盖；`TestEdgeOnePlanIPv6OnSWASUnsupported` 覆盖 IPv6/SWAS 能力矩阵与清理冻结；`TestEdgeOnePlanOppositeActionAndTemplateFreezeCleanup` 覆盖相反动作、模板/畸形规则与可删除集合为空；`TestEdgeOnePlanUnavailableSiteNeverBecomesEmpty` 覆盖查询失败、零值/半截快照、非法 `netip.Prefix` 与非 nil 空 `Next` 不被当作合法空集或新增来源；`TestEdgeOnePlanTCPUDPSplitAndPortExpansion` 覆盖 Lighthouse TCP+UDP 拆分、SWAS 原生化与 CVM 多端口展开；`TestDNSPlanArraysRemainNonNull` 保护 DNS 既有数组语义。既有 `TestPlan_ExternalExactMatchOnly`、`TestPlan_CoverageReadyImplementableSubset` 作为基线对照通过；既有 `TestTargetRound_CVMCapacityReject` 的 CVM 100 条容量、配额计数缺失与 SDK LimitExceeded 三个子场景定向 race 通过，Provider 容量路径未修改。
 
-外部验收状态：本步只运行纯函数与本地夹具，未读取真实云快照、未执行任何 RPC、未写入配置或云规则；真实 EdgeOne 站点前缀、目标归并、容量与回读覆盖证明留 Step 8/10/17。待补项：Step 8 按物理目标别名归并后调用本规划器并把站点查询失败映射为 `UnavailableReason`；Step 10 用本步 `SiteIDs` 从目标回读提取每站覆盖证明。
+后续接线：本步运行纯函数与本地夹具。Step 8 提供站点查询及预检结果，Step 9 按物理目标归并后调用本规划器，并将站点查询失败映射为 `UnavailableReason`。Step 10 用 `SiteIDs` 从目标回读提取每站覆盖证明，真实云快照及写入留 Step 17。
 
 <a name="step-7"></a>
 
@@ -348,11 +356,11 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 
 连续故障实证（真实临时 SQLite 写锁 + 计数替身）：`TestAddressConflictStateSQLiteAutoRecoverySequence` 用 `BEGIN IMMEDIATE` 在独立连接持有真实写锁，并断言首次 Save/解除失败文本含 `locked`/`busy` 且等待至少 2 秒，证明失败确由真实 SQLite 写锁造成。第 1 轮 `203.0.113.7` 对 `203.0.113.0/24` 查实重叠，`SaveAddressConflict` 等待 busy_timeout 后失败，进程内证据保留，`Admission.DNS/EdgeOne=false` 且 `KeepConflict=true`，DNS 写入、EdgeOne 写入、站点确认计数均为 0，数据库无行。第 2 轮 DNS 数据不足、EdgeOne 完整，已知冲突继续阻断并在本轮重试保存成功，三项计数仍为 0，`first_seen_at` 保持第 1 轮时间。第 3 轮新建状态并 `Load` 模拟重启，输入两侧不足仍阻断且零写入，`first_seen_at` 不变。第 4 轮完整无重叠但写锁使解除提交失败，内存与数据库记录保留、两侧零准入、计数仍为 0。第 5 轮完整无重叠且解除成功，先删行再清内存，状态变为 `clear`，DNS/EdgeOne/站点确认各计 1。第 6 轮再次完整复查保持 `clear`。`TestAddressConflictStateOverlapPriorityAndSaveRetry` 用受控替身单独验证「部分成功仍命中 → 首次保存失败 → 数据不足重试成功 → 完整解除」；`TestAddressConflictStateReadFailureBlocksBoth` 验证双开读失败两侧阻断、单开不读表；`TestAddressConflictStateClearFailureKeepsMemory` 验证解除失败保留内存并可重试；`TestAddressConflictStateSingleSideAndReopen` 验证关闭一项继续 DNS、重新双开立即恢复阻断；`TestAddressConflictStateNoKnownDataStates` 覆盖双关、完整无重叠、单侧不足与两侧不足；`TestPreflightConflictBlocksEveryTargetAndConfirmation` 对两个目标同时断言零写入；`TestFirstOverlapIncludesNextVersionPrefix` 证明只存在于待更新版的被跟踪网段经 `AllPrefixes` 注入后仍参与判定；`TestAddressConflictDoesNotTouchDNSCircuitBreaker` 证明冲突判定不增加熔断计数，真实 `RecordFailure` 仍单独打开熔断器；`TestAddressConflictStateInvalidSamplesForceIncomplete` 验证非法 DNS 地址/EdgeOne 网段即使调用方传 `Complete=true` 也强制对应侧不完整且停止准入；`TestAddressConflictStateLoadWithoutRowRetriesPersist` 验证外部清空 SQLite 行后进程内证据仍会重试保存；`TestAddressConflictSaveRejectsInvalidFilledTimeOrder` 验证零值首次时间补齐后 last 早于 first 被拒绝且不留坏行；`TestAddressConflictStateForgetAfterReset` 验证 reset 清空 SQLite 后 `Forget` 清除进程内证据、不残留阻断，完整无重叠输入可正常恢复；`TestAddressConflictStateForgetReReadsPersistedRow` 验证 reset 未真正清行时下一次评估重新读取并恢复阻断。`TestAddressConflictGetRejectsCorruptRows` 覆盖 DNS 名称/地址/网段/ZoneId/时间损坏；`TestAddressConflictStoreRoundTripAndNormalization` 覆盖规范化、更新保留首次时间与非法保存不覆盖旧记录；`TestAddressConflictResetAndImportBoundary` 覆盖 reset 清理与完整导入保留。
 
-外部验收状态：本步只用本地临时 SQLite 与纯输入，未调用真实 DNS/腾讯云、未执行云写入或站点确认，未接线 `runRound`；阻断期间的零写入由 `Admission` 落点计数证明，Step 8 必须在该准入点之前不调用任何目标/确认入口。真实双开预检、真实过渡保护前缀与真实站点确认留 Step 8/11/17；模拟测试留 Step 12；运行状态 API 留 Step 15。待补项：Step 8 启动时调用 `Load`、每轮在目标派发前调用 `Evaluate`，并把站点当前/待更新/过渡前缀合并后传入；reset 成功后调用 `Forget`，且 reset/导入必须与在途轮次串行或按配置代际丢弃旧结果；配置代际与旧轮次迟到结果的丢弃由 Step 8 通过单轮串行执行和配置快照比较接线（本步 `evalMu` 已串行化运行态写入，`loadLocked` 不覆盖较新的进程内证据）；Step 11 读取 `edgeone_origin_transitions` 注入 `EdgeOnePrefix`；Step 15 展示 `address_preflight` 状态与恢复一次记录。
+外部验收状态：本步使用本地临时 SQLite、受控输入及 `Admission` 落点计数；正式轮次、真实 DNS 和腾讯云请求仍待验收。后续接线：Step 8 启动时调用 `Load`，在目标派发前将当前和待更新网段传入 `Evaluate`，并输出 `address_preflight`。reset 成功后调用 `Forget`，reset/导入与在途轮次按既定串行或配置代际边界处理，避免旧结果重新写入。Step 11 从 `edgeone_origin_transitions` 补入受保护前缀，Step 12 接入只读模拟，Step 14 展示预检状态，Step 15 记录冲突和恢复事件。
 
 **本批收口门禁（Step 5～7）**　2026-11-12，构建提交为 `14642a6`（15 文件）。提交内容上复跑：`go test ./provider ./syncer ./config -race -count=1 -timeout=20m` → provider 9.845s、syncer 31.743s、config 37.221s；`go test ./webui/api -race -count=1 -timeout=20m` → 47.733s；提交前同一工作树的全量 `./...` 12 包通过。随后独立核验发现五项安全/证据缺口（见下），已在当前工作树修复并重跑：三包 9.362s/32.770s/36.510s、`webui/api` 46.521s、`go test ./... -race -count=1 -timeout=20m` 12 包全部 ok（root 21.622s、app 1.299s、config 36.510s、dns 1.530s、internal/health 43.257s、internal/portconv 1.283s、internal/tag 1.292s、notifier 15.921s、provider 9.234s、syncer 31.618s、webui 2.904s、webui/api 46.365s）。`go vet ./...`、`go build ./...` 无输出；本批 Go 文件 `gofmt -l` 无输出；`git show --check 14642a6`、`git diff --check` 与新增文件 whitespace 检查均无错误。当前工作树相对 `14642a6` 有 8 个修改文件、无新增文件、未提交；`beta` ahead 6 包含该构建提交。未执行真实腾讯云/真实 DNS、产品浏览器、Linux/Docker、依赖审计、远端 CI/GHCR 或发布；Step 8～17 保持待执行，真实证据边界见各步。
 
-**核验后修复（2026-11-12）**　对 `14642a6` 的 15 文件构建做独立核验，发现并修复以下五项；当前工作树未提交。
+**核验后修复（2026-11-12）**　对 `14642a6` 的 15 文件构建做独立核验后修复以下五项，已提交为 `9df4e19`。
 
 1. **Step 6 非法/空网段快照**：`appendEdgeOnePlannedRules` 原以 `PrefixesForFamily` 结果为准，零值/非法 `netip.Prefix` 会被族筛选丢弃并按“合法空地址族”处理；`Next` 指针存在但前缀为空也会被当作无下一版。新增 `originACLSnapshotPrefixesValid`：当前版至少一个前缀、当前/待更新版不得含非法前缀、非 nil `Next` 不得为空；不满足只记 `IssueEdgeOneUnavailable`，不产生 `Desired`/`ToAdd`/覆盖。`TestEdgeOnePlanUnavailableSiteNeverBecomesEmpty` 增加非法前缀与空 `Next` 子场景。
 2. **Step 7 非法预检样本**：`Evaluate` 原信任调用方 `DNSComplete/EdgeOneComplete`，而 `FirstOverlap` 会跳过非法样本，导致“非法样本 + Complete=true”可能被视为完整输入。现在先校验样本，任一非法 DNS 地址/EdgeOne 网段强制对应完整性为 false；非法侧停止准入，另一侧仍可按单侧继续。新增 `TestAddressConflictStateInvalidSamplesForceIncomplete`。
@@ -361,6 +369,24 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 5. **Step 7 reset 后进程内证据**：`ResetAllTx` 只清 SQLite 行，原进程内已知冲突会在 reset 后继续阻断后续数据不足轮次。新增 `AddressConflictState.Forget`：清除内存证据并把状态标为未加载，下一次双开评估重新读取 SQLite；reset 已成功时正常放行，reset 实际未提交时记录会重新进入阻断。测试 `TestAddressConflictStateForgetAfterReset` 覆盖 reset→Forget→数据不足轮次不再报 overlap→完整输入恢复，`TestAddressConflictStateForgetReReadsPersistedRow` 覆盖 SQLite 仍有记录时重新阻断。正式 reset API 的调用与在途轮次串行/配置代际处理留 Step 8。
 
 修复后定向用例、三包 race、`webui/api` race 与全量 12 包均通过。五项修复分别做仓外 overlay 负向控制（仅替换生产文件、移除对应修复）：`TestEdgeOnePlanUnavailableSiteNeverBecomesEmpty` 报“非法网段必须按不可用处理: []”；`TestAddressConflictStateInvalidSamplesForceIncomplete` 报 `Admission={DNS:true EdgeOne:true}`；`TestAddressConflictStateLoadWithoutRowRetriesPersist` 报外部清行后 `saves=1` 未重试；`TestAddressConflictSaveRejectsInvalidFilledTimeOrder` 报非法时间顺序未被拒绝；`TestAddressConflictStateForgetAfterReset` 在 `Forget` 置空实现时报“Forget 后进程内证据必须清空”。五个负向控制均按断言失败，恢复修复后全部通过。另对 `Forget` 的重读行为做 overlay 控制：将 `loaded` 置回 true 后，`TestAddressConflictStateForgetReReadsPersistedRow` 报 `state=data_unavailable`，未重新发现持久化冲突。未改变 Step 5 客户端契约、Step 6 公开规划字段或 Step 7 表结构/状态机顺序，真实外部验收状态保持未执行。
+
+<a name="step-1-7-review-fixes"></a>
+
+### Step 1～7 独立核验修复（2026-11-12）
+
+实施前为 `beta @ 9df4e19`，工作树干净。本轮修复独立核验复现的五项问题。
+
+| Step | 修复与回归 |
+|---|---|
+| 1 | 设置 GET 对旧库 DNS TAG 去首尾空白，再应用缺省值。`TestDNSTagSourcesLegacyExplicitTagWithWhitespace` 核对首次打开和重启的运行时、GET、v4 导出均为 `my-dns`，SQLite 原值仍带空白。 |
+| 2 | 四个新增设置字段中的显式 `null` 在进入协调器前返回 400。同一字段后续的合法值也无法覆盖该错误。`TestPutSettingsRejectsExplicitNullFeatureFields` 核对字段诊断、零写库和零发布。 |
+| 6 | Lighthouse 对陈旧候选的每个功能 key 同时检查当前 TAG、手工规则和另一功能 TAG。任一 key 定位歧义时，候选仍可预览，清理原因为 `owned_key_ambiguous`。`TestEdgeOnePlanLighthouseStaleRuleLocator` 覆盖唯一规则、手工和另一 TAG 重复及合并端口中仅一个 key 重复。 |
+| 7 | SQLite 读取失败时将本轮已查实的重叠保留在内存，两侧继续阻断，后续轮次重试读表。读恢复后保留待写入证据，沿用库内首次时间。`TestAddressConflictStateRetainsOverlapAcrossReadFailures` 覆盖连续读失败、缺行及已有行恢复、重启阻断和解除提交。 |
+| 7 | 冲突记录更新在同一 SQLite 写事务中读取并解析原 `first_seen_at`，拒绝早于该值的 `last_seen_at`。`TestAddressConflictSaveValidatesStoredFirstSeen` 证明非法更新保留原行，验证相等和相差一纳秒的边界。 |
+
+原核验的五个反例在修复后全部通过。五个新增回归在 `9df4e19` 生产代码的临时 overlay 上均按预期失败，使用修复后代码时全部通过。
+
+本地验证通过 `make all`（前端构建、154 项前端测试、`go vet`、12 个 Go 包的 race 回归及产品二进制构建）。五个新增回归和设置 API 字段回归使用 `-race -count=20` 重复通过。变更位于本地工作树，真实腾讯云、真实 DNS 和远端 CI 留待后续阶段验收。
 
 <a name="step-8"></a>
 
@@ -375,13 +401,13 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 1. 保留现有主循环作为唯一正式入口，计算 DNS 和 EdgeOne 各自的到期、首次启用、手动触发和恢复标记。读取运行快照后以同一准入点确定本轮来源。
 2. 只对实际改变的间隔重排对应来源。测试运行跨过到期时间、重复 tick、相同间隔设置、很短的自定义间隔以及等待限速时的合并。
 3. 两项启用时在任何目标任务前先形成可写来源集合。为本步使用计数执行器，验证门控后才会进入写入阶段。DNS 正式路径保留既有启停合同。
-4. 统一输出 `enabled`、`effective`、`next_due_at` 与预检摘要。调度只读取结果，页面不负责推进时钟或解除冲突。
+4. 经 `GET /api/sync/status` 提供 DNS、EdgeOne 各自的 `enabled`、`effective`、`next_due_at` 与 `address_preflight` 摘要，保留原有总开关字段。Step 14 读取状态用于展示。
 
 **最小测试矩阵**　四种开关组合、总暂停、Stop 前后、配置快速合并、EdgeOne 首次启用、只改 EdgeOne 间隔、手动触发撞定时与实际重叠。用可控时钟和通道控制交错；断言两个来源的查询/执行次数、到期值和跨目标零调用。参考 `TestP324CoalescedResumePreservesScheduling`、`TestStaleTriggerAfterPauseDoesNotAddRound`、`TestI8R18StopGateEntrances`。建议 `go test ./syncer -race -count=1`。
 
 **本步改动边界**　主改动在 `syncer/syncer.go` 的 Run 与触发门控、独立到期状态及测试时钟。该步接入正式调度和状态，EdgeOne 防火墙执行可用替身观察，实际执行接线在 Step 9。
 
-**收口判据**　记录 DNS 与 EdgeOne 的 next due 和调用计数。只改 EdgeOne 间隔、EdgeOne 单独到期或新增站点时，DNS 到期值保持；两项同时启用时允许为预检查询 DNS，但无 DNS 写入。测试总暂停后手动请求返回现有 409，恢复只调度已启用来源。
+**收口判据**　记录 DNS 与 EdgeOne 的 next due 和调用计数。只改 EdgeOne 间隔、EdgeOne 单独到期或新增站点时，DNS 到期值保持。双开且仅 EdgeOne 到期时，可为预检查询 DNS，该查询不触发 DNS 写入。测试总暂停后手动请求返回现有 409，恢复只调度已启用来源。
 
 **Checklist**
 
@@ -390,7 +416,7 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 - [ ] 总暂停、Stop 和恢复复用现有准入及在途收尾合同，模拟测试保持独立。验证计时到期、短间隔限速、排队触发和并发配置变更。
 - [ ] 在全部目标写入前完成全局判定。以双开关矩阵和跨目标冲突零写入计数证明任何正式入口均未绕过。
 
-**证据**　待执行。
+**当前基线与待接线**　运行快照已有两个功能开关和独立间隔，正式 `Run` 仍按 `sync_enabled` 和 `Config.Interval` 驱动现有 DNS 同步。现有启动、暂停、恢复及 Stop 门控可复用。待接入两项的到期状态、TEO 查询与缓存、目标派发前的全局预检，以及状态摘要。启动接 `Load`，正式轮接 `Evaluate`，成功 reset 后接 `Forget`。reset 和导入期间的在途结果沿 [Step 7](#step-7) 的配置代际边界处理。当前已有的 SQLite 回归验证冲突状态和准入结果，正式轮零目标调用仍待验证。 [主循环](syncer/syncer.go) · [冲突状态](syncer/conflict_state.go)
 
 <a name="step-9"></a>
 
@@ -420,7 +446,7 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 - [ ] 删除只允许该功能 TAG，沿用先增、回读、安全门和必要的 S2。EdgeOne 的过期网段清理等 Step 11 提供生效证明后准入。
 - [ ] 用本地模拟验证同组多站点、部分写入、配额不足、版本竞争、跨 TAG 残留和跨目标预检。失败时核对真实写入计数与保留旧规则。
 
-**证据**　待执行。
+**当前基线与待接线**　DNS 正式链已有 S0、增量添加、S1 和条件清理；Step 6 已提供站点 CIDR 规划和物理目标归并辅助。待用 Step 8 的预检结果生成正式目标输入，按实际资源合并执行，并在双开重试中复用已检查的数据、输出站点覆盖证明。 [正式目标链](syncer/target.go) · [规划器](provider/plan.go)
 
 <a name="step-10"></a>
 
@@ -435,7 +461,7 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 1. 把每个目标的回读结果转换为站点证据，核对同一 `ZoneId`、待更新版本、目标身份和配置。以配置要求的目标集作分母。
 2. 使用一个确认函数统一判断必要地址族、完整覆盖和相关冲突。重查腾讯云当前及待更新两版的版本和规范网段，并在发请求前再次检查当前配置和站点启用。总暂停后拒绝新发站点确认。
 3. 加入过渡运行表的确认状态读写，按 `ZoneId`、待更新版本和规范前缀摘要去重。请求前提交 `unknown`。同一指纹的 `accepted` 跨轮和重启均跳过确认；`unknown` 先只读复查，只有明确证据证明未执行或尚未确认时，才重新核验并允许重试。Step 11 接入写防火墙前的网段保护和清理准入。
-4. 发布供页面读取的状态摘要，包含 `RequestId` 及诊断原因，确认失败作为站点结果体现。
+4. 经 `GET /api/edgeone/status` 提供站点状态摘要，包含 `RequestId` 及诊断原因，确认失败作为站点结果体现。Step 11 补入过渡保护与清理信息，Step 14 读取该接口。
 
 **证据目标**　同一站点两个目标均通过且版本不变时确认恰好一次；分别让任一目标失败、只覆盖平台可实施子集、相反动作、绑定变更、总暂停、版本或同版本网段变化，确认计数均为零。加「无已知冲突、DNS 失败、EdgeOne 完整」正向用例。成功后让同一指纹在下一轮及重启后仍出现在 `Next`，确认计数仍为一次；超时后依次测试「重查仍未知」「明确未执行后允许重试」「`OperationDenied.LatestVersionNow` 后重查无待确认工作」。同时核对 `unknown` 提交失败不发送请求、`accepted` 写入失败后不重发。建议运行 TEO 相关包和 `./syncer` 的 race 门禁。
 
@@ -449,7 +475,7 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 - [ ] 确认前重查版本和网段，复核站点绑定和启用状态。全部通过时自动确认；无已知重叠而 DNS 查询失败时，EdgeOne 仍可完成确认。
 - [ ] 验证同一待更新指纹跨轮、重启去重，以及超时后只读复查与有明确证据时的重试准入。记录站点确认结果、`RequestId` 和实际生效状态，供站点页读取。
 
-**证据**　待执行。
+**当前基线与待接线**　TEO 客户端已通过本地服务验证签名 Describe 请求。站点配置 CRUD 已注册。确认调用、目标覆盖汇总、指纹去重和只读站点状态接口待本步实现。 [TEO 客户端](provider/teo.go) · [已注册路由](webui/api/deps.go)
 
 <a name="step-11"></a>
 
@@ -477,7 +503,7 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 - [ ] 覆盖已确认但尚未生效、下一版消失但当前版未变化、腾讯云强制切换等返回形态。有效查询明确新版成为当前版后，才允许清理过时 EdgeOne TAG 规则。
 - [ ] 复用安全删除门和 S2 验证，覆盖同目标另一站点仍需要旧网段、清理失败保留和再次执行收敛。
 
-**证据**　待执行。
+**当前基线与待接线**　Step 5～7 已支持当前版与待更新版 CIDR、纯规划和冲突持久化。待 Step 10 接入 `edgeone_origin_transitions` 的确认状态后，本步补入保护前缀持久化与重启恢复，并接入全局预检和旧网段清理准入。 [现有 SQLite 表](config/store.go) · [过渡表设计](Design6.md#schema-reference)
 
 <a name="step-12"></a>
 
@@ -505,7 +531,7 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 - [ ] 无适用规则的目标保持既有空结果语义。覆盖仅 DNS、仅 EdgeOne、两项同时启用、已暂停和查询不完整。
 - [ ] 验证模拟无云增删、无站点确认、无 DNS 熔断改写、无正式冲突状态变更，且前后端响应数组和错误字段一致。
 
-**证据**　待执行。
+**当前基线与待接线**　现有 DNS Dry Run 在总暂停时可运行，重叠的 Dry Run 请求返回 409；正式触发在总暂停时返回 409。已有按目标只读规划与空结果语义。待扩展 EdgeOne 站点、共用预检、保护网段、容量与覆盖输出，并验证正式与模拟的一致性。 [Dry Run 实现](syncer/syncer.go) · [暂停回归](syncer/state_test.go) · [HTTP 映射](webui/api/sync.go)
 
 <a name="step-13"></a>
 
@@ -535,7 +561,7 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 - [ ] EdgeOne 页面支持启用开关、站点配置和目标多选，展示安全组影响范围及全部实际源站绑定要求。
 - [ ] 验证保存失败保留表单、重复提交锁和晚到响应处理，覆盖一站多目标和备份导入后回显。
 
-**证据**　待执行。
+**当前基线与待接线**　Step 2～4 的字符串设置、站点 CRUD、目标绑定和 v3/v4 备份合同已具备，可直接用于配置表单。现有前端已有 DNS TAG 输入和配置包下载逻辑。新增功能字段、`#/edgeone` 路由、站点表单及行为验收待本步完成。 [设置 API](webui/api/settings.go) · [站点 API](webui/api/edgeone.go) · [现有设置页](webui/frontend/src/views/Settings.vue)
 
 <a name="step-14"></a>
 
@@ -563,7 +589,7 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 - [ ] 模拟结果显示按目标的容量与覆盖，以及全局地址重叠和数据不足单侧继续的区别。
 - [ ] 验证查询失败、待确认、自动恢复、没有适用目标和页面重新挂载时的状态反馈。
 
-**证据**　待执行。
+**当前基线与待接线**　仪表盘与模拟页已有原同步状态和 DNS 模拟结果的展示。本步待消费 Step 8 的调度与预检摘要、Step 10～11 的站点状态和 Step 12 的模拟响应，并接到 Step 13 的配置界面。 [仪表盘](webui/frontend/src/views/Dashboard.vue) · [模拟组件](webui/frontend/src/components/DryRunResults.vue)
 
 <a name="step-15"></a>
 
@@ -591,7 +617,7 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 - [ ] 记录冲突、单侧继续、恢复和站点确认结果。区分真实错误与无任务，按现有事件合同写日志和告警，验证无凭据泄露。
 - [ ] 验证长期冲突、自动恢复、总暂停、单侧失败和仅 EdgeOne 运行的状态与健康回归。
 
-**证据**　待执行。
+**当前基线与待接线**　已有运行健康、同步事件与日志链。调度停滞目前仍按单一间隔和最近轮次判断。待使用分来源的到期状态、冲突阻断与恢复，以及站点确认结果扩展健康和日志。 [运行健康](internal/health/health.go) · [同步日志](webui/api/logwriter.go)
 
 <a name="step-16"></a>
 
@@ -628,7 +654,7 @@ git diff --check
 - [ ] 验证一站多目标的全部回读、版本重查、自动确认、实际生效后清理，以及 DNS 单独运行的现有回归。
 - [ ] 运行受影响包定向 race、`make all`、适用的依赖审计及 `git diff --check`，记录 Go/Node 版本、真实二进制和浏览器结果。
 
-**证据**　待执行。
+**已具备的基线证据**　Step 1～7 工作树已通过 `make all`、12 个 Go 包的非缓存 race 回归及 154 项前端行为测试。现有真实进程回归覆盖空库启动、SIGTERM 退出和 v4 跨 SQLite 实例往返（含站点绑定重映射）。这些结果可作为接线前的对照。待完整功能接入后，以同一进程验证双功能调度、冲突与重启恢复、模拟、确认和清理，完成浏览器验证、依赖审计及最终全量门禁。 [阶段修复证据](#step-1-7-review-fixes) · [进程级测试](main_test.go)
 
 <a name="step-17"></a>
 
@@ -664,7 +690,7 @@ git diff --check
 - [ ] 更新 README、生产验收清单与阶段实施记录；逐项区分本地模拟、真实云和远端发布证据。
 - [ ] 如执行发布，记录 tag/提交、远端 Actions、目标架构和实物镜像；待补项目按实际状态登记。
 
-**证据**　待执行。
+**当前证据**　仓库记录的 `v3.0.2` 为 Build8 前的发布基线。Build8 的 TEO 查询证据来自本地模拟服务；真实站点与目标、实际待更新窗口、Build8 对应的远端 CI 与镜像均待本步取证。 [发布基线](AGENTS.md) · [TEO 本地证据](#step-5)
 
 <a name="acceptance-matrix"></a>
 
@@ -679,6 +705,7 @@ git diff --check
 | EdgeOne 间隔从 `72h` 改为 `36h`，再保存等价时长；缓存已到期或失效 | 只重排 EdgeOne 的计时。等价值不重置。过期缓存不被当作完整输入，其他来源按冻结决策处理。 | [Step 2](#step-2)、[Step 8](#step-8) |
 | DNS 与 EdgeOne 绑定不同目标、端口不同，DNS 命中 EdgeOne 网段 | 无任一目标新增或删除，无站点确认。即使另一项查询失败，已有命中仍阻断。 | [Step 7](#step-7)～[Step 9](#step-9) |
 | 首次查实冲突但 SQLite 写锁阻断；下一轮 DNS 数据不足；重试保存成功后重启 | 初次、下一轮及已提交状态重启后的两侧写入和确认均为零。完整输入无冲突且解除提交成功后才恢复。 | [Step 7](#step-7)、[Step 16](#step-16) |
+| 首轮查实重叠且 SQLite 读取失败；后续 DNS 数据不足，SQLite 稍后恢复 | 保留本轮冲突证据。读取恢复前继续阻断两侧且只重试读取；恢复后保存证据，完整无重叠且解除提交成功后才放行。Step 7 已有状态层回归，正式入口调用计数待验。 | [Step 7](#step-7)、[Step 8](#step-8)、[Step 16](#step-16) |
 | 双开且无已知冲突，DNS 查询失败，EdgeOne 所有目标覆盖有效 | DNS 零写入；EdgeOne 按本轮可用输入写入、回读，重查与状态提交通过后恰好一次确认。 | [Step 8](#step-8)～[Step 10](#step-10) |
 | 双开且无已知冲突，某一必需 EdgeOne 站点无可用数据 | EdgeOne 零写入及零确认；可用 DNS 继续，状态明确显示单侧继续。 | [Step 7](#step-7)～[Step 9](#step-9) |
 | 一个站点绑两个物理目标；分别注入 S1 不全、平台能力限制或配置变化 | 缺任一证明时零确认。所有目标达到同轮覆盖并重查相符的正向对照恰好一次。 | [Step 9](#step-9)、[Step 10](#step-10) |

@@ -13,7 +13,7 @@ import (
 )
 
 // 本文件验证 Build8 Step 1 的收口判据：同一旧库经启动加载（运行快照）、
-// GET /api/settings 与 v3 导出看到的 DNS TAG 相同；新库与 reset 后重启均使用 auto-ddns。
+// GET /api/settings 与 v4 导出看到的 DNS TAG 相同；新库与 reset 后重启均使用 auto-ddns。
 
 // createLegacySettingsDB 构造只含 settings 表的旧库并写入给定值。
 func createLegacySettingsDB(t *testing.T, values map[string]string) string {
@@ -60,7 +60,7 @@ func assertDNSTagSources(t *testing.T, d *Deps, store *config.Store, want string
 	if err != nil {
 		t.Fatalf("LoadBusinessSnapshot 失败: %v", err)
 	}
-	if got := snapshot.Settings["tag"]; got != want {
+	if got := snapshot.ToRuntimeConfig().Tag; got != want {
 		t.Errorf("运行快照 DNS TAG = %q, want %q", got, want)
 	}
 
@@ -100,6 +100,29 @@ func TestDNSTagSourcesLegacyMissingTag(t *testing.T) {
 	assertDNSTagSources(t, d, store, config.LegacyDefaultDNSTag)
 	if err := store.Close(); err != nil {
 		t.Fatalf("关闭旧库失败: %v", err)
+	}
+}
+
+func TestDNSTagSourcesLegacyExplicitTagWithWhitespace(t *testing.T) {
+	const rawTag = " my-dns "
+	path := createLegacySettingsDB(t, map[string]string{"tag": rawTag})
+	for _, phase := range []string{"首次打开", "重启"} {
+		t.Run(phase, func(t *testing.T) {
+			store, err := config.OpenStore(path)
+			if err != nil {
+				t.Fatalf("打开旧库失败: %v", err)
+			}
+			defer func() {
+				if err := store.Close(); err != nil {
+					t.Errorf("关闭旧库失败: %v", err)
+				}
+			}()
+			assertDNSTagSources(t, &Deps{Store: store}, store, "my-dns")
+			settings, err := store.GetSettings()
+			if err != nil || settings["tag"] != rawTag {
+				t.Fatalf("旧库 TAG 应保留原值 %q，实际 %q，err=%v", rawTag, settings["tag"], err)
+			}
+		})
 	}
 }
 

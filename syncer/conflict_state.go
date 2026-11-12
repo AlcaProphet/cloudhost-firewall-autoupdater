@@ -59,16 +59,17 @@ func (s *AddressConflictState) Load(ctx context.Context) error {
 // loadLocked 调用方必须持有 evalMu。
 func (s *AddressConflictState) loadLocked(ctx context.Context) error {
 	conflict, err := s.store.GetAddressConflict(ctx)
-	if err != nil {
-		return err
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err != nil {
+		s.loaded = false
+		return err
+	}
+	s.loaded = true
 	if conflict == nil {
 		// 已提交记录不存在：即使进程内还有证据，也不能认为它已持久化。
 		// 后续数据不足轮次会重新保存，避免外部 reset/清理后证据只留在内存。
 		s.persisted = false
-		s.loaded = true
 		return nil
 	}
 	if s.known == nil {
@@ -77,10 +78,10 @@ func (s *AddressConflictState) loadLocked(ctx context.Context) error {
 		s.persisted = true
 	} else {
 		// 进程内可能有比 SQLite 更新的证据（例如首次保存失败后再次观察）。
-		// 只有记录内容一致时才把它视为已持久化，否则保留待重试状态。
-		s.persisted = sameConflictEvidence(s.known, conflict)
+		// 以库内的首次时间为准，保留内存中待写入的证据和最后观察时间。
+		s.known.FirstSeenAt = conflict.FirstSeenAt
+		s.persisted = sameConflictEvidence(s.known, conflict) && s.known.LastSeenAt.Equal(conflict.LastSeenAt)
 	}
-	s.loaded = true
 	return nil
 }
 
@@ -135,41 +136,37 @@ func (s *AddressConflictState) Evaluate(ctx context.Context, in Preflight) (Pref
 		return outcome, nil
 	}
 
+	// 正向命中优先于查询失败：部分样本也可能证明重叠，读库失败时仍须保留证据。
+	host, prefix, overlap := FirstOverlap(in.DNS, in.EdgeOne)
 	known, persisted, err := s.currentKnown(ctx)
+	var observed config.AddressConflict
+	if overlap {
+		evidence := AddressOverlap{DNS: host, EdgeOne: prefix}
+		outcome.Overlap = &evidence
+		observed = s.observe(evidence)
+		known = true
+	}
+	outcome.KnownConflict = known
+	if known {
+		outcome.State = PreflightStateOverlap
+		outcome.Admission = Admission{KeepConflict: true}
+	}
 	if err != nil {
-		// 双开读取冲突状态失败：两侧保持阻断，等待可读后复查。
-		outcome.State = PreflightStateDataUnavailable
-		outcome.KnownConflict = known
-		if known {
-			outcome.State = PreflightStateOverlap
+		// 读取恢复前不改写 SQLite；已查实的重叠留在进程内继续阻断。
+		if !known {
+			outcome.State = PreflightStateDataUnavailable
 		}
 		return outcome, fmt.Errorf("读取地址冲突状态失败: %w", err)
 	}
-	in.KnownConflict = known
-	outcome.KnownConflict = known
-
-	// 正向命中优先于查询失败：即使某一侧不完整，已取得的样本仍可证明重叠。
-	host, prefix, overlap := FirstOverlap(in.DNS, in.EdgeOne)
 	if overlap {
-		in.Overlap = true
-		evidence := AddressOverlap{DNS: host, EdgeOne: prefix}
-		outcome.Overlap = &evidence
-		conflict := s.observe(evidence)
-		outcome.KnownConflict = true
-		outcome.State = PreflightStateOverlap
-		outcome.Admission = Admission{KeepConflict: true}
-		if err := s.persist(ctx, conflict); err != nil {
-			return outcome, err
-		}
-		return outcome, nil
+		return outcome, s.persist(ctx, observed)
 	}
+	in.KnownConflict = known
 
 	if known {
 		if in.DNSComplete && in.EdgeOneComplete {
 			// 完整有效输入证明无重叠：先提交解除，成功后才清除进程内状态。
 			if err := s.store.ClearAddressConflict(ctx); err != nil {
-				outcome.State = PreflightStateOverlap
-				outcome.Admission = Admission{KeepConflict: true}
 				return outcome, err
 			}
 			s.clearMemory()
@@ -181,8 +178,6 @@ func (s *AddressConflictState) Evaluate(ctx context.Context, in Preflight) (Pref
 		}
 
 		// 数据不足：保持阻断；首次保存失败的证据在后续轮次继续重试持久化。
-		outcome.State = PreflightStateOverlap
-		outcome.Admission = Admission{KeepConflict: true}
 		if !persisted {
 			current := s.memoryConflict()
 			if current == nil {
@@ -214,19 +209,18 @@ func (s *AddressConflictState) hasKnown() bool {
 
 // currentKnown 返回是否存在已知冲突及是否已持久化。
 //
-// 内存中没有证据且尚未成功加载时，读取一次 SQLite；读取失败不改变 loaded，
-// 后续 Evaluate 会再次尝试，期间双开保持阻断。
+// 尚未成功加载时，即使已有进程内证据也要重试读取 SQLite。
 func (s *AddressConflictState) currentKnown(ctx context.Context) (known, persisted bool, err error) {
 	s.mu.Lock()
 	known = s.known != nil
 	persisted = s.persisted
 	loaded := s.loaded
 	s.mu.Unlock()
-	if known || loaded {
+	if loaded {
 		return known, persisted, nil
 	}
 	if err := s.loadLocked(ctx); err != nil {
-		return false, false, err
+		return known, persisted, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -253,7 +247,6 @@ func (s *AddressConflictState) observe(overlap AddressOverlap) config.AddressCon
 		LastSeenAt:    now,
 	}
 	s.known = &conflict
-	s.loaded = true
 	// 本轮观察（含 last_seen 刷新）尚未确认写入；persist 成功后再置 true。
 	s.persisted = false
 	return conflict

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -68,6 +69,8 @@ func TestPutSettingsFeatureFieldsAndRuntime(t *testing.T) {
 		"间隔不可解析":          `{"edgeone_interval":"abc"}`,
 		"间隔空白":            `{"edgeone_interval":"   "}`,
 		"间隔空串":            `{"edgeone_interval":""}`,
+		"间隔 JSON 数字":      `{"edgeone_interval":72}`,
+		"DNS 开关 JSON 布尔":  `{"dns_enabled":true}`,
 		"DNS 开关大写":        `{"dns_enabled":"TRUE"}`,
 		"EdgeOne 开关数字":    `{"edgeone_enabled":"1"}`,
 		"EdgeOne TAG 空白":  `{"edgeone_tag":"   "}`,
@@ -83,6 +86,39 @@ func TestPutSettingsFeatureFieldsAndRuntime(t *testing.T) {
 			}
 			if after := e.snapshot(); after == nil || !reflect.DeepEqual(after.Config, before.Config) {
 				t.Errorf("非法保存不得改变运行时状态: %+v -> %+v", before, after)
+			}
+		})
+	}
+}
+
+func TestPutSettingsRejectsExplicitNullFeatureFields(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, body string
+	}{
+		{"DNS 开关", "dns_enabled", `{"dns_enabled":null,"theme":"dark"}`},
+		{"EdgeOne 开关", "edgeone_enabled", `{"edgeone_enabled":null,"theme":"dark"}`},
+		{"EdgeOne TAG", "edgeone_tag", `{"edgeone_tag":null,"theme":"dark"}`},
+		{"EdgeOne 间隔", "edgeone_interval", `{"edgeone_interval":null,"theme":"dark"}`},
+		{"后续值不能覆盖 null", "edgeone_interval", `{"edgeone_interval":null,"edgeone_interval":"36h","theme":"dark"}`},
+		{"后续同名变体不能覆盖 null", "dns_enabled", `{"dns_enabled":null,"DNS_ENABLED":"false","theme":"dark"}`},
+		{"重复字段末尾为 null", "edgeone_enabled", `{"edgeone_enabled":"true","edgeone_enabled":null,"theme":"dark"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			before, err := e.store.GetSettings()
+			if err != nil {
+				t.Fatalf("读取原设置失败: %v", err)
+			}
+			w := e.do(t, http.MethodPut, "/api/settings", tc.body)
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), tc.field) {
+				t.Errorf("应返回 HTTP 400 和字段名 %s，实际 %d: %s", tc.field, w.Code, w.Body.String())
+			}
+			after, err := e.store.GetSettings()
+			if err != nil || !reflect.DeepEqual(after, before) {
+				t.Errorf("拒绝请求后数据库设置应保持原样，err=%v", err)
+			}
+			if got := e.applyCount(); got != 0 {
+				t.Errorf("拒绝请求后发布次数 = %d，want 0", got)
 			}
 		})
 	}

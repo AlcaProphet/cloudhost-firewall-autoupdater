@@ -126,7 +126,22 @@ func (s *Store) SaveAddressConflict(ctx context.Context, c AddressConflict) erro
 	lastSeen := formatConflictTime(normalized.LastSeenAt)
 
 	return s.WithTransactionContext(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx,
+		// 写事务已预留写锁；比较实际会保留的首次时间，避免在检查后被其他写入替换。
+		var storedFirst string
+		err := tx.QueryRowContext(ctx, `SELECT first_seen_at FROM sync_address_conflict WHERE id = 1`).Scan(&storedFirst)
+		if err == nil {
+			firstAt, err := parseConflictTime(storedFirst)
+			if err != nil {
+				return fmt.Errorf("全局地址冲突记录首次观察时间无效: %w", err)
+			}
+			if normalized.LastSeenAt.Before(firstAt) {
+				return fmt.Errorf("地址冲突记录时间顺序无效：最后观察时间早于已保存的首次观察时间")
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("读取全局地址冲突记录首次观察时间失败: %w", err)
+		}
+
+		_, err = tx.ExecContext(ctx,
 			`INSERT INTO sync_address_conflict
 			     (id, dns_name, dns_address, edgeone_prefix, zone_id, first_seen_at, last_seen_at)
 			 VALUES (1, ?, ?, ?, ?, ?, ?)

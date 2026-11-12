@@ -837,7 +837,7 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 			case owned:
 				ownedIndex[k] = append(ownedIndex[k], r)
 			case otherOwned:
-				// 另一功能 TAG 的规则只用于目标级冲突检测；永不作为覆盖或删除候选。
+				// 另一功能 TAG 参与冲突和删除定位检查，不作为覆盖或删除候选。
 				otherTagIndex[k] = append(otherTagIndex[k], r)
 			default:
 				externalIndex[k] = append(externalIndex[k], r)
@@ -998,7 +998,7 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 	for _, c := range candidates {
 		// 定位问题始终登记（Dry Run 需要展示每个候选为何不能删除）；
 		// 但只有清理门全部满足时才可能进入可删除集合。
-		if issue, bad := cleanupLocatorIssue(in.CloudType, c.rule, c.keys, ownedIndex, externalIndex); bad {
+		if issue, bad := cleanupLocatorIssue(in.CloudType, c.rule, c.keys, ownedIndex, externalIndex, otherTagIndex); bad {
 			plan.CleanupDeferred = append(plan.CleanupDeferred, issue)
 			continue
 		}
@@ -1027,7 +1027,7 @@ func cleanupLocatorIssue(
 	ct config.CloudType,
 	rule config.RuleInfo,
 	keys []FunctionalKey,
-	ownedIndex, externalIndex map[FunctionalKey][]config.RuleInfo,
+	ownedIndex, externalIndex, otherTagIndex map[FunctionalKey][]config.RuleInfo,
 ) (PlanIssue, bool) {
 	key := keys[0]
 	issue := PlanIssue{Key: &key, Message: "候选缺少无歧义的删除定位，保留为残留：" + describeCloudRule(rule)}
@@ -1035,7 +1035,7 @@ func cleanupLocatorIssue(
 	switch ct {
 	case config.CloudTCLighthouse:
 		for _, k := range keys {
-			if len(ownedIndex[k]) != 1 || len(externalIndex[k]) != 0 {
+			if len(ownedIndex[k]) != 1 || len(externalIndex[k]) != 0 || len(otherTagIndex[k]) != 0 {
 				issue.Code = IssueOwnedKeyAmbiguous
 				issue.Message = "Lighthouse 同功能 key 在快照中不唯一或与外部规则并存，无法唯一定位，保留为残留：" + describeCloudRule(rule)
 				return issue, true

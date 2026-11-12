@@ -197,3 +197,52 @@ func TestAddressConflictSaveRejectsInvalidFilledTimeOrder(t *testing.T) {
 		t.Fatalf("非法保存不得留下记录: %+v err=%v", row, gerr)
 	}
 }
+
+func TestAddressConflictSaveValidatesStoredFirstSeen(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	first := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	initial := AddressConflict{
+		DNSName:       "home.example",
+		DNSAddress:    "203.0.113.7",
+		EdgeOnePrefix: "203.0.113.0/24",
+		ZoneID:        "zone-a",
+		FirstSeenAt:   first,
+		LastSeenAt:    first,
+	}
+	if err := s.SaveAddressConflict(ctx, initial); err != nil {
+		t.Fatalf("预置冲突记录失败: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		offset time.Duration
+	}{
+		{"早一纳秒", -time.Nanosecond},
+		{"等于首次时间", 0},
+		{"晚一纳秒", time.Nanosecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			update := initial
+			update.DNSName = "updated.example"
+			update.FirstSeenAt = first.Add(-time.Hour)
+			update.LastSeenAt = first.Add(tc.offset)
+			want := initial
+			err := s.SaveAddressConflict(ctx, update)
+			if tc.offset < 0 {
+				if err == nil || !strings.Contains(err.Error(), "早于已保存的首次观察时间") {
+					t.Errorf("必须拒绝早于库内首次时间的更新，实际 err=%v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("合法更新失败: %v", err)
+				}
+				want.DNSName = update.DNSName
+				want.LastSeenAt = update.LastSeenAt
+			}
+			got, err := s.GetAddressConflict(ctx)
+			if err != nil || got == nil || *got != want {
+				t.Fatalf("库内冲突记录 = %+v, err=%v, want %+v", got, err, want)
+			}
+		})
+	}
+}
