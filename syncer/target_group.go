@@ -99,15 +99,15 @@ func filterRulesForTargetIDs(rules []config.DomainRule, ids map[int]bool) []conf
 	return out
 }
 
-// targetUnitCount 统计本轮有 DNS 规则或 EdgeOne 站点的物理目标数。
-func targetUnitCount(groups []targetGroup) int {
-	n := 0
-	for _, g := range groups {
-		if len(g.rules) > 0 || len(g.sites) > 0 {
-			n++
+// activeTargetGroups 只派发本轮获准且到期的来源所绑定的目标，共享目标保留两侧规划输入。
+func activeTargetGroups(groups []targetGroup, dnsActive, edgeActive bool) []targetGroup {
+	active := groups[:0]
+	for _, group := range groups {
+		if (dnsActive && len(group.rules) > 0) || (edgeActive && len(group.sites) > 0) {
+			active = append(active, group)
 		}
 	}
-	return n
+	return active
 }
 
 func groupTargetsByCloud(groups []targetGroup) map[config.CloudType][]targetGroup {

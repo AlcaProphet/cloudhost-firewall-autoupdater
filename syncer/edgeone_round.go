@@ -69,6 +69,8 @@ type EdgeOneSiteStatus struct {
 	ActualEffective     bool                 `json:"actual_effective"`
 	ActualActiveAt      *time.Time           `json:"actual_active_at"`
 	ActualConfirmed     *bool                `json:"actual_confirmed"`
+
+	confirmationFingerprint [32]byte
 }
 
 // EdgeOneStatus 是 GET /api/edgeone/status 的响应主体。
@@ -411,6 +413,11 @@ func (s *Syncer) setEdgeSiteQueryStatus(site config.EdgeOneSite, snapshot provid
 		st.CurrentVersion = snapshot.Current.Version
 		if snapshot.Next != nil {
 			st.PendingVersion = snapshot.Next.Version
+			if st.confirmationFingerprint != pendingFingerprint(snapshot.Next) {
+				st.ConfirmationState = ""
+				st.ConfirmationID = ""
+				st.LastConfirmationErr = ""
+			}
 		} else {
 			st.PendingVersion = ""
 		}
@@ -730,7 +737,6 @@ func (s *Syncer) forgetEdgeOneSiteLocked(zone string) {
 	delete(s.edgeCache, zone)
 	delete(s.edgeStatus, zone)
 	delete(s.confirmedMem, zone)
-	delete(s.confirmErrors, zone)
 	for key := range s.roundCoverage {
 		if strings.HasPrefix(key, zone+"\x00") {
 			delete(s.roundCoverage, key)
@@ -752,7 +758,6 @@ func (s *Syncer) ForgetEdgeOneRuntime() {
 	s.edgeStatus = nil
 	s.roundCoverage = nil
 	s.confirmedMem = nil
-	s.confirmErrors = nil
 	s.preflightSet = false
 	s.preflight = PreflightOutcome{}
 	s.preflightAt = time.Time{}
@@ -817,18 +822,18 @@ func (s *Syncer) resolveRoundDNS(state *RuntimeState, round *dnsRound) *roundDNS
 		}
 		used := 0
 		for _, ip := range hr.ips {
+			addr, ok := netip.AddrFromSlice(ip.IP)
+			if !ok {
+				out.complete = false
+				continue
+			}
+			// 全局预检检查实际 DNS 应答，地址族限制仅用于目标规划。
+			out.addresses = append(out.addresses, DNSAddress{Host: rule.Host, Addr: addr.Unmap()})
 			if ip.IsIPv6 && !rule.EnableIPv6 {
 				continue
 			}
-			ips := out.resolved[rule.ID]
-			ips = append(ips, ip)
-			out.resolved[rule.ID] = ips
+			out.resolved[rule.ID] = append(out.resolved[rule.ID], ip)
 			used++
-			if addr, ok := netip.AddrFromSlice(ip.IP); ok {
-				out.addresses = append(out.addresses, DNSAddress{Host: rule.Host, Addr: addr.Unmap()})
-			} else {
-				out.complete = false
-			}
 		}
 		if used == 0 {
 			out.complete = false

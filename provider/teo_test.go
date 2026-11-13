@@ -14,7 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -666,7 +668,7 @@ func TestTEOProductionDefaults(t *testing.T) {
 func TestTEOConfirmOriginACLUpdatePostsSignedRequest(t *testing.T) {
 	server := newTEOCaptureServer(t, 0, `{"Response":{"RequestId":"req-confirm"}}`)
 	client := teoTestClient(t, server.URL, time.Second, 0)
-	requestID, err := client.ConfirmOriginACLUpdate(context.Background(), "zone-test")
+	requestID, err := client.ConfirmOriginACLUpdate(context.Background(), "zone-test", func() bool { return true })
 	if err != nil {
 		t.Fatalf("确认失败: %v", err)
 	}
@@ -689,12 +691,52 @@ func TestTEOConfirmOriginACLUpdatePostsSignedRequest(t *testing.T) {
 	}
 }
 
+func TestTEOConfirmAdmissionRunsAfterRateLimit(t *testing.T) {
+	server := newTEOCaptureServer(t, 0, `{"Response":{"RequestId":"req-confirm"}}`)
+	client := teoTestClient(t, server.URL, time.Second, 50*time.Millisecond)
+	// 即使准入回归而发出请求，也让 SDK 在收到回包后关闭连接，避免空闲连接留在虚拟时钟内。
+	// 阻断路径的客户端和恢复后的真实 HTTP 对照使用独立连接池。
+	client.client.WithHttpTransport(&http.Transport{DisableKeepAlives: true})
+	synctest.Test(t, func(t *testing.T) {
+		client.next = time.Now().Add(100 * time.Millisecond)
+		var admit atomic.Bool
+		var checks atomic.Int32
+		admit.Store(true)
+		done := make(chan error, 1)
+		go func() {
+			_, err := client.ConfirmOriginACLUpdate(context.Background(), "zone-test", func() bool {
+				checks.Add(1)
+				return admit.Load()
+			})
+			done <- err
+		}()
+		synctest.Wait()
+		if got := checks.Load(); got != 0 {
+			t.Errorf("限速等待结束前已检查准入 %d 次", got)
+		}
+		admit.Store(false)
+		var teoErr *TEOError
+		if err := <-done; !errors.As(err, &teoErr) || !teoErr.NotSent || teoErr.Kind != TEOErrorCanceled || checks.Load() != 1 {
+			t.Fatalf("准入被撤销应明确未发送，checks=%d err=%+v", checks.Load(), err)
+		}
+	})
+	if requests, _, _, _, _, _ := server.snapshot(); requests != 0 {
+		t.Fatalf("准入被撤销后收到 %d 个 HTTP 请求", requests)
+	}
+	allowedClient := teoTestClient(t, server.URL, time.Second, 50*time.Millisecond)
+	id, err := allowedClient.ConfirmOriginACLUpdate(context.Background(), "zone-test", func() bool { return true })
+	requests, _, _, _, _, _ := server.snapshot()
+	if err != nil || id != "req-confirm" || requests != 1 {
+		t.Fatalf("允许准入后应发送一次确认，requests=%d id=%q err=%v", requests, id, err)
+	}
+}
+
 func TestTEOConfirmErrorEvidence(t *testing.T) {
 	t.Run("LatestVersionNow", func(t *testing.T) {
 		server := newTEOCaptureServer(t, 0,
 			`{"Response":{"Error":{"Code":"OperationDenied.LatestVersionNow","Message":"already latest"},"RequestId":"req-latest"}}`)
 		client := teoTestClient(t, server.URL, time.Second, 0)
-		_, err := client.ConfirmOriginACLUpdate(context.Background(), "zone-test")
+		_, err := client.ConfirmOriginACLUpdate(context.Background(), "zone-test", func() bool { return true })
 		if err == nil {
 			t.Fatal("期望 LatestVersionNow 错误")
 		}
@@ -718,7 +760,10 @@ func TestTEOConfirmErrorEvidence(t *testing.T) {
 		client.mu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 		defer cancel()
-		_, err := client.ConfirmOriginACLUpdate(ctx, "zone-test")
+		_, err := client.ConfirmOriginACLUpdate(ctx, "zone-test", func() bool {
+			t.Error("限速等待超时后不应进入最终准入")
+			return true
+		})
 		if err == nil {
 			t.Fatal("期望预发送超时")
 		}
@@ -734,7 +779,7 @@ func TestTEOConfirmErrorEvidence(t *testing.T) {
 	t.Run("MissingRequestId", func(t *testing.T) {
 		server := newTEOCaptureServer(t, 0, `{"Response":{}}`)
 		client := teoTestClient(t, server.URL, time.Second, 0)
-		_, err := client.ConfirmOriginACLUpdate(context.Background(), "zone-test")
+		_, err := client.ConfirmOriginACLUpdate(context.Background(), "zone-test", func() bool { return true })
 		if err == nil || TEOErrorKindOf(err) != TEOErrorIncomplete {
 			t.Fatalf("缺少 RequestId 应返回 incomplete: %v", err)
 		}

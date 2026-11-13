@@ -65,6 +65,9 @@ func (d *Deps) handleGetEdgeOneStatus(w http.ResponseWriter, r *http.Request) {
 		if t, ok := byZone[zone]; ok {
 			st.ConfirmationState = t.ConfirmationState
 			st.ConfirmationID = t.ConfirmationRequestID
+			if t.ConfirmationState == config.EdgeOneConfirmationUnknown {
+				st.LastConfirmationErr = st.UnknownConfirmationDiagnostic(t)
+			}
 		}
 		if st.ConfirmationState == "" {
 			st.ConfirmationState = config.EdgeOneConfirmationNotAttempted

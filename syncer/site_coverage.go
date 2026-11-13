@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
 
@@ -79,7 +80,7 @@ func pendingFingerprint(next *provider.OriginACLVersion) [32]byte {
 	return out
 }
 
-// siteCoverageForExec 从同一 S1 规划生成每个适用站点的证明。
+// siteCoverageForExec 从最新目标回读的规划生成每个适用站点的证明。
 func siteCoverageForExec(state *RuntimeState, exec targetExecution, plan provider.TargetPlan) map[string]SiteCoverage {
 	out := make(map[string]SiteCoverage)
 	if len(exec.edgeSites) == 0 {
@@ -114,7 +115,7 @@ func siteCoverageForExec(state *RuntimeState, exec targetExecution, plan provide
 				proof.Pending = data.snapshot.Next.Version
 			}
 			proof.SnapshotDigest = snapshotDigest(data.snapshot)
-			if len(data.snapshot.PrefixesForFamily(site.AddressFamily)) == 0 {
+			if !hasRequiredAddressFamilies(data.snapshot, site.AddressFamily) {
 				proof.Reasons = append(proof.Reasons, "address_family_missing")
 			}
 		}
@@ -153,6 +154,14 @@ func siteCoverageForExec(state *RuntimeState, exec targetExecution, plan provide
 		out[zone] = proof
 	}
 	return out
+}
+
+func hasRequiredAddressFamilies(snapshot provider.OriginACLSnapshot, family string) bool {
+	if family == config.EdgeOneAddressFamilyDual {
+		return len(snapshot.PrefixesForFamily(config.EdgeOneAddressFamilyIPv4)) > 0 &&
+			len(snapshot.PrefixesForFamily(config.EdgeOneAddressFamilyIPv6)) > 0
+	}
+	return len(snapshot.PrefixesForFamily(family)) > 0
 }
 
 func containsString(list []string, v string) bool {

@@ -59,7 +59,7 @@
 
 ### 当前进度（2026-11-13）
 
-Step 0～7 的实施及核验提交见 `cbec01b`、`1bcfbaa`、`14642a6`、`9df4e19`、`8efbda8`。Step 8～10 在 `beta` 的实施基线为 `76241cc`，首次独立核验修复为 `2c4653d`。本次复核发现并修复查询期间缓存失效和旧代次确认回包两处问题，证据见下方。Step 0～10 已达到本地阶段判据，共 11/18 步；Step 11～17 待执行。真实云与发布验收留 Step 17。
+Step 0～7 的实施及核验提交见 `cbec01b`、`1bcfbaa`、`14642a6`、`9df4e19`、`8efbda8`。Step 8～10 在 `beta` 的实施基线为 `76241cc`，首次独立核验修复为 `2c4653d`。合并前复核修复为 `29ca91a`。本轮在该基线上修复后续独立核验复现的六项问题，见[二次独立核验修复](#step-8-10-second-audit)。Step 0～10 已达到本地阶段判据，共 11/18 步；Step 11～17 待执行。真实云与发布验收留 Step 17。
 
 <a name="step-0"></a>
 
@@ -403,7 +403,7 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 
 **本步改动边界**　主改动在 `syncer/syncer.go` 的 Run 与触发门控、独立到期状态及测试时钟。该步接入正式调度和状态，EdgeOne 防火墙执行可用替身观察，实际执行接线在 Step 9。
 
-**收口判据**　记录 DNS 与 EdgeOne 的 next due 和调用计数。只改 EdgeOne 间隔、EdgeOne 单独到期或新增站点时，DNS 到期值保持。双开且仅 EdgeOne 到期时，可为预检查询 DNS，该查询不触发 DNS 写入。测试总暂停后手动请求返回现有 409，恢复只调度已启用来源。
+**收口判据**　记录 DNS 与 EdgeOne 的 next due 和调用计数。只改 EdgeOne 间隔、EdgeOne 单独到期或新增站点时，DNS 到期值保持。双开且仅 EdgeOne 到期时，可为预检查询 DNS，该查询不触发 DNS 写入，且不派发仅绑定 DNS 的目标。全局预检覆盖实际取得的 A/AAAA，目标规则继续按各自地址族筛选。测试总暂停后手动请求返回现有 409，恢复只调度已启用来源。
 
 **Checklist**
 
@@ -441,7 +441,7 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 
 **本步改动边界**　主改动在 `syncer/target.go`、同目标执行分组和回读证明。允许通过测试接缝使用四平台实现；现有 API 版本、删除定位与并发策略保持既有边界。旧 EdgeOne 网段清理按 Step 11 接入。
 
-**收口判据**　给同一物理目标两个本地别名，记录 S0→Create→S1 调用顺序，确保该目标只有一个写入执行单元。对腾讯版本冲突重读 S0，核对新版本和原先通过预检的输入；DNS-only 回归仍观察到逐 attempt 解析。能力跳过或 S1 失配时站点覆盖不可用。
+**收口判据**　给同一物理目标两个本地别名，记录 S0→Create→S1 调用顺序，确保该目标只有一个写入执行单元。对腾讯版本冲突重读 S0，核对新版本和原先通过预检的输入；DNS-only 回归仍观察到逐 attempt 解析。能力跳过或 S1 失配时站点覆盖不可用。执行 S2 后按实际覆盖和冲突更新站点证明，失去覆盖则失败并保留已确认的增删计数。
 
 **Checklist**
 
@@ -479,7 +479,7 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 
 **本步改动边界**　主改动在 TEO Confirm 适配、站点证明汇总、确认状态的 SQLite 短事务和只读状态响应。旧网段保护与释放规则由 Step 11 接入，目标写入继续走 Step 9。
 
-**收口判据**　两个目标读回同一指纹后，确认序列为重查→提交 `unknown`→一次发送→保存 `accepted`。撤掉一个证明、变更配置或重查版本时确认计数为零。同指纹跨轮及重启合计一次；超时而重查仍未知时仅新增 Describe 调用。
+**收口判据**　两个目标读回同一指纹后，确认序列为重查→提交 `unknown`→限速后最终准入→一次发送→保存 `accepted`。撤掉一个证明、双栈缺一族、最终准入前暂停或重查版本变化时确认计数为零。同指纹跨轮及重启合计一次。超时而重查仍未知时仅新增 Describe 调用并保留同指纹的诊断。
 
 **Checklist**
 
@@ -567,6 +567,25 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 - **验证范围。** `syncer/build8_followup_test.go` 覆盖查询返回和预检前的失效、有效缓存回退、仅 DNS 到期、在途确认回包与 SQLite 配置变更，并以正式 Run 补齐一站两物理目标的确认计数（全部覆盖时一次，缺任一 S1 证明时零次）。`webui/api/edgeone_confirm_import_test.go` 走正式 `POST /api/config/import`、临时 SQLite 和配置发布，验证同站点保留 `unknown`、移除站点剪枝、旧回包零回写。
 
 **本地结果**　Go 1.27.3（darwin/arm64）。Step 8～10 专项和导入回归 race 20 轮、全仓 race（`-count=1`）12 包、`go vet ./...`、`go build ./...`、前端 154 项、前端构建、格式与差异检查均通过。用 `2c4653d` 的两份生产源文件做负向对照，新增缓存、旧代次与正式导入用例按行为断言失败。真实云、Linux/Docker 和发布验收未在本轮执行。
+
+<a name="step-8-10-second-audit"></a>
+
+### Step 8～10 二次独立核验修复（2026-11-13）
+
+实施基线为 `beta / 29ca91ae6924c6d4053e1b9c1ccff22910435ffd`，开工时工作树与暂存区干净。本轮工作树修复对应六项复现。
+
+| 问题 | 实施与本地证据 |
+|---|---|
+| Step 8 · 关闭 IPv6 写入后预检漏掉重叠 AAAA | 同一次解析产出全局 A/AAAA 与目标地址族过滤结果。重叠时零防火墙读取、创建、删除和站点确认。非重叠对照只有一条 DNS IPv4 规则和一条 EdgeOne IPv4 规则，并确认一次。 [正式调度回归](syncer/build8_audit_test.go) |
+| Step 8/9 · 单源到期仍执行对侧专属目标 | 物理归并后按本轮到期且获准的来源筛选派发。DNS 与 EdgeOne 各自单独到期时，对侧专属目标的快照及增删计数均不增加，整轮 `total=1` 且成功。共享目标继续携带两侧完整期望。 [派发逻辑](syncer/target_group.go) · [正式调度回归](syncer/build8_audit_test.go) |
+| Step 9/10 · S2 失去覆盖仍使用 S1 证明 | S2 直接校验实际覆盖，跨 TAG 等价即使使 `ToAdd` 为空也会在失去覆盖时使目标失败并丢弃证明。S2 仍有精确覆盖但发现相反动作时，按最新冲突输出部分实施并阻断确认。覆盖和冲突均通过的对照确认一次。三种路径均保留两条已确认新增和一条已确认删除。 [S2 实现](syncer/target.go) · [正式回归](syncer/build8_audit_test.go) |
+| Step 10 · 双栈缺一个地址族仍确认 | 校验当前版与待更新版规范前缀并集。缺 IPv4 或 IPv6 时证明为 `address_family_missing`，目标部分实施且零确认。两族分属两版且均覆盖时确认一次。 [覆盖证明](syncer/site_coverage.go) · [正式回归](syncer/build8_audit_test.go) |
+| Step 10 · `unknown` 提交后暂停仍发送 | SDK 入口在限速结束后复核暂停、Stop、配置代次和站点准入。明确未发送时按站点、指纹、`unknown` 和前置提交时间撤销本次记录。正式暂停 API 与临时 SQLite 证明暂停先提交时拦截发送并恢复 `not_attempted`。真实 TEO SDK 接本地 HTTP 服务证明限速期间撤销准入时零 HTTP 请求，获准时一次。SQLite 对照证明已接受、已删除、新指纹或同指纹新时间的记录不受影响。已准入请求的旧代次回包继续丢弃。 [暂停 API 回归](webui/api/edgeone_confirm_pause_test.go) · [TEO 回归](provider/teo_test.go) · [SQLite 回归](config/store_edgeone_transition_test.go) |
+| Step 10 · `unknown` 复查擦掉诊断 | 同一待更新指纹保留诊断，变更同版本的待更新网段时不继承旧原因。重启或状态 API 只读到 SQLite 的 `unknown` 时显示固定诊断。复查保持只读。 [确认回归](syncer/step10_confirm_test.go) · [状态 API 回归](webui/api/edgeone_status_test.go) |
+
+**本地结果**　Go 1.27.3（darwin/arm64）。`go test ./syncer ./provider ./config ./webui/api -run 'TestStep(8|9|10)|TestTEOConfirm|TestEdgeOneTransitionRestore|TestEdgeOneStatus|TestEdgeOneConfirmationPause|TestEdgeOneLateConfirmation' -race -count=20 -timeout=10m` 四包通过。另跑 `go test ./... -race -count=1 -timeout=20m`，12 包全部实际执行并通过。`make all` 使用临时 npm 缓存，前端构建、154 项行为测试、Go race、`go vet ./...` 和二进制构建均通过。受影响 Go 文件格式与差异检查通过。九个仓库外 Go overlay 逐项撤销关键修复，相关用例均按行为断言失败，覆盖 AAAA 预检、派发、S2 覆盖判定、S2 证明来源、双栈覆盖、暂停门控、SDK 门控、诊断保留和 SQLite 条件撤销。
+
+**外部验收**　真实腾讯云、真实 DNS、Linux/Docker、产品浏览器及远端 CI/GHCR 待验。Step 11～17 待执行。
 
 <a name="step-11"></a>
 

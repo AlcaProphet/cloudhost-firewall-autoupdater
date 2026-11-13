@@ -127,7 +127,6 @@ type Syncer struct {
 	roundCoverage map[string]SiteCoverage
 	transitions   EdgeOneTransitionStore
 	confirmedMem  map[string][32]byte
-	confirmErrors map[string]string
 	preflight     PreflightOutcome
 	preflightAt   time.Time
 	preflightSet  bool
@@ -1160,8 +1159,8 @@ func (s *Syncer) syncAllStateWithInput(state *RuntimeState, dnsData *roundDNSDat
 		return
 	}
 
-	groups := s.targetGroups(state)
-	total := targetUnitCount(groups)
+	groups := activeTargetGroups(s.targetGroups(state), dnsActive, edgeActive)
+	total := len(groups)
 	if edgeActive {
 		s.clearRoundCoverage()
 	}

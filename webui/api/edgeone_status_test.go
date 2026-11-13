@@ -81,7 +81,8 @@ func TestEdgeOneStatusReadsLocalStateOnly(t *testing.T) {
 	}
 	site := got.Sites[0]
 	if site.ZoneID != "zone-a" || site.CurrentVersion != "v1" || site.PendingVersion != "v2" ||
-		site.ConfirmationState != config.EdgeOneConfirmationUnknown || site.LastQueryRequestID != "req-query" {
+		site.ConfirmationState != config.EdgeOneConfirmationUnknown || site.LastQueryRequestID != "req-query" ||
+		site.LastConfirmationErr != syncer.EdgeOneUnknownConfirmationDiagnostic {
 		t.Fatalf("站点状态 = %+v", site)
 	}
 	if len(site.Coverage) != 1 || !site.Coverage[0].Complete {

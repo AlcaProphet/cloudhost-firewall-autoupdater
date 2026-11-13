@@ -23,7 +23,10 @@ func (c *importConfirmClient) DescribeOriginACL(context.Context, string) (provid
 	return c.snapshot, nil
 }
 
-func (c *importConfirmClient) ConfirmOriginACLUpdate(context.Context, string) (string, error) {
+func (c *importConfirmClient) ConfirmOriginACLUpdate(_ context.Context, _ string, admit func() bool) (string, error) {
+	if !admit() {
+		return "", &provider.TEOError{Kind: provider.TEOErrorCanceled, NotSent: true}
+	}
 	close(c.started)
 	<-c.release
 	return "req-before-import", nil

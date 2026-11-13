@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"sort"
 	"strings"
@@ -19,7 +20,11 @@ type EdgeOneTransitionStore interface {
 	GetEdgeOneTransition(ctx context.Context, zoneID string) (*config.EdgeOneTransition, error)
 	SaveEdgeOneObservation(ctx context.Context, transition config.EdgeOneTransition) error
 	SetEdgeOneConfirmation(ctx context.Context, zoneID, pendingVersion string, pendingCIDRs []netip.Prefix, state, requestID string, updated time.Time) (bool, error)
+	RestoreUnsentEdgeOneConfirmation(ctx context.Context, zoneID, pendingVersion string, pendingCIDRs []netip.Prefix, preparedAt time.Time) (bool, error)
 }
+
+// EdgeOneUnknownConfirmationDiagnostic 用于本机只有 unknown 记录时的只读状态展示。
+const EdgeOneUnknownConfirmationDiagnostic = "确认结果未知，需只读复查"
 
 // SetEdgeOneTransitionStore 注入确认状态表；必须在 Run 前调用。
 func (s *Syncer) SetEdgeOneTransitionStore(store EdgeOneTransitionStore) {
@@ -99,6 +104,7 @@ func (s *Syncer) ConfirmEdgeOneSites(state *RuntimeState, edgeData map[string]ed
 		if zone == "" || data.unavailable != "" || data.snapshot.Next == nil {
 			continue
 		}
+		fingerprint := pendingFingerprint(data.snapshot.Next)
 		// 已 accepted/unknown 的同一指纹先于覆盖检查去重：accepted 不因本轮
 		// 目标回读暂时不完整而重发；unknown 只做只读复查。
 		if transition, terr := store.GetEdgeOneTransition(context.Background(), zone); terr == nil && transition != nil {
@@ -107,10 +113,10 @@ func (s *Syncer) ConfirmEdgeOneSites(state *RuntimeState, edgeData map[string]ed
 				canonicalCIDRListJSONString(transition.PendingCIDRs) == expectedJSON {
 				switch transition.ConfirmationState {
 				case config.EdgeOneConfirmationAccepted:
-					s.setEdgeConfirmStatusForState(state, epoch, zone, config.EdgeOneConfirmationAccepted, transition.ConfirmationRequestID, "")
+					s.setEdgeConfirmStatusForState(state, epoch, zone, fingerprint, config.EdgeOneConfirmationAccepted, transition.ConfirmationRequestID)
 					continue
 				case config.EdgeOneConfirmationUnknown:
-					s.setEdgeConfirmStatusForState(state, epoch, zone, config.EdgeOneConfirmationUnknown, transition.ConfirmationRequestID, "")
+					s.setEdgeConfirmStatusForState(state, epoch, zone, fingerprint, config.EdgeOneConfirmationUnknown, transition.ConfirmationRequestID)
 					// unknown 必须先只读复查，不能仅凭缓存等待下一轮。
 					if state.TEO != nil {
 						if after, derr := state.TEO.DescribeOriginACL(context.Background(), zone); derr == nil {
@@ -133,7 +139,7 @@ func (s *Syncer) ConfirmEdgeOneSites(state *RuntimeState, edgeData map[string]ed
 			retry = true
 		}
 		if err != nil {
-			s.setEdgeConfirmErrorForState(state, epoch, zone, safeConfirmErrorText(err))
+			s.setEdgeConfirmErrorForState(state, epoch, zone, fingerprint, safeConfirmErrorText(err))
 		}
 	}
 	return retry
@@ -155,16 +161,16 @@ func (s *Syncer) confirmOneSite(state *RuntimeState, site config.EdgeOneSite, sn
 		canonicalCIDRListJSONString(transition.PendingCIDRs) == pendingJSON {
 		switch transition.ConfirmationState {
 		case config.EdgeOneConfirmationAccepted:
-			s.setEdgeConfirmStatusForState(state, epoch, zone, config.EdgeOneConfirmationAccepted, transition.ConfirmationRequestID, "")
+			s.setEdgeConfirmStatusForState(state, epoch, zone, fingerprint, config.EdgeOneConfirmationAccepted, transition.ConfirmationRequestID)
 			return false, nil
 		case config.EdgeOneConfirmationUnknown:
 			// 同一指纹仍待确认：本轮只读复查，不自动重发。
-			s.setEdgeConfirmStatusForState(state, epoch, zone, config.EdgeOneConfirmationUnknown, transition.ConfirmationRequestID, "")
+			s.setEdgeConfirmStatusForState(state, epoch, zone, fingerprint, config.EdgeOneConfirmationUnknown, transition.ConfirmationRequestID)
 			return true, nil
 		}
 	}
 	if s.confirmedMemory(zone) == fingerprint {
-		s.setEdgeConfirmStatusForState(state, epoch, zone, config.EdgeOneConfirmationAccepted, "", "")
+		s.setEdgeConfirmStatusForState(state, epoch, zone, fingerprint, config.EdgeOneConfirmationAccepted, "")
 		return false, nil
 	}
 
@@ -182,21 +188,14 @@ func (s *Syncer) confirmOneSite(state *RuntimeState, site config.EdgeOneSite, sn
 		currentFingerprint(recheck.Current) != currentFingerprint(snapshot.Current) ||
 		recheck.Next == nil || recheck.Next.Version != pending.Version ||
 		pendingFingerprint(recheck.Next) != fingerprint {
-		s.setEdgeConfirmErrorForState(state, epoch, zone, "发送前重查发现版本或网段变化，本轮未发送")
+		s.setEdgeConfirmErrorForState(state, epoch, zone, fingerprint, "发送前重查发现版本或网段变化，本轮未发送")
 		return true, nil
 	}
 
-	// 发送前状态准入与 unknown 前置提交在同一稳定区；网络调用不在锁内。
-	prepared := false
-	allowed := s.withStableConfig(func() bool {
-		if s.runtime.Snapshot() != state || s.Generation() != epoch || s.isStopped() {
-			return false
-		}
-		if !state.Config.SyncEnabled || !state.Config.EdgeOneEnabled {
-			return false
-		}
-		currentSite, ok := edgeSiteForProof(state.Config.EdgeOneSites, zone)
-		if !ok || edgeOneSiteKey(currentSite) != edgeOneSiteKey(site) {
+	// 先提交 unknown，TEO 客户端等完限速后再做最终准入。
+	var preparedAt time.Time
+	prepared := s.withStableConfig(func() bool {
+		if !s.canConfirmEdgeOne(state, epoch, site) {
 			return false
 		}
 		if err := store.SaveEdgeOneObservation(context.Background(), config.EdgeOneTransition{
@@ -210,28 +209,55 @@ func (s *Syncer) confirmOneSite(state *RuntimeState, site config.EdgeOneSite, sn
 		}); err != nil {
 			return false
 		}
-		ok, err = store.SetEdgeOneConfirmation(context.Background(), zone, pending.Version, pending.Prefixes,
-			config.EdgeOneConfirmationUnknown, "", time.Now().UTC())
-		if err != nil || !ok {
-			return false
-		}
-		prepared = true
-		return true
+		preparedAt = time.Now().UTC()
+		ok, err := store.SetEdgeOneConfirmation(context.Background(), zone, pending.Version, pending.Prefixes,
+			config.EdgeOneConfirmationUnknown, "", preparedAt)
+		return err == nil && ok
 	})
-	if !allowed || !prepared {
+	if !prepared {
 		return true, errors.New("确认前置状态提交失败或配置已变化")
 	}
 
-	requestID, confirmErr := state.TEO.ConfirmOriginACLUpdate(context.Background(), zone)
+	admitted := false
+	requestID, confirmErr := state.TEO.ConfirmOriginACLUpdate(context.Background(), zone, func() bool {
+		admitted = s.withStableConfig(func() bool {
+			return s.canConfirmEdgeOne(state, epoch, site)
+		})
+		return admitted
+	})
 	var teoErr *provider.TEOError
-	if errors.As(confirmErr, &teoErr) && teoErr.Kind == provider.TEOErrorAlreadyLatest {
+	errors.As(confirmErr, &teoErr)
+	if teoErr != nil && teoErr.NotSent {
+		retry := s.withStableConfig(func() bool {
+			current := s.runtime.Snapshot() == state && s.Generation() == epoch
+			if admitted && !current {
+				return false
+			}
+			// 尚未取得最终准入且明确未发送时，可跨代次条件撤销本次前置记录。
+			saved, saveErr := store.RestoreUnsentEdgeOneConfirmation(context.Background(), zone, pending.Version, pending.Prefixes, preparedAt)
+			if saveErr != nil {
+				slog.Warn("确认未发送，撤销前置状态失败", "zone", zone)
+			}
+			if !current {
+				return false
+			}
+			if saveErr != nil || !saved {
+				s.setEdgeConfirmStatus(zone, fingerprint, config.EdgeOneConfirmationUnknown, "", "确认未发送，但状态更新失败或记录已变化")
+			} else {
+				s.setEdgeConfirmStatus(zone, fingerprint, config.EdgeOneConfirmationNotAttempted, "", safeConfirmErrorText(confirmErr))
+			}
+			return true
+		})
+		return retry, nil
+	}
+	if teoErr != nil && teoErr.Kind == provider.TEOErrorAlreadyLatest {
 		// 网络复查在稳定区外；返回后再次按代次校验。
 		after, derr := state.TEO.DescribeOriginACL(context.Background(), zone)
 		if derr == nil {
 			s.applyEdgeOneQueryResult(state, epoch, site, after, "", after.ObservedAt, after.PlannedActiveAt, true)
 		}
 		current := s.withCurrentEdgeConfirmation(state, epoch, func() {
-			s.setEdgeConfirmStatus(zone, config.EdgeOneConfirmationUnknown, "", "云端已是最新版本，未记录 accepted")
+			s.setEdgeConfirmStatus(zone, fingerprint, config.EdgeOneConfirmationUnknown, "", "云端已是最新版本，未记录 accepted")
 		})
 		return current && (derr != nil || (after.Next != nil && currentFingerprint(after.Current) != currentFingerprint(pending))), nil
 	}
@@ -244,27 +270,39 @@ func (s *Syncer) confirmOneSite(state *RuntimeState, site config.EdgeOneSite, sn
 				config.EdgeOneConfirmationAccepted, requestID, time.Now().UTC())
 			if saveErr != nil || !saved {
 				s.rememberConfirmed(zone, fingerprint)
-				s.setEdgeConfirmError(zone, "确认成功但状态保存失败或指纹已变化")
+				s.setEdgeConfirmStatus(zone, fingerprint, config.EdgeOneConfirmationUnknown, "", "确认成功但状态保存失败或指纹已变化")
 				retry = true
 				return
 			}
 			s.forgetConfirmed(zone)
-			s.setEdgeConfirmStatus(zone, config.EdgeOneConfirmationAccepted, requestID, "")
-		case teoErr != nil && (teoErr.NotSent || teoErr.Kind == provider.TEOErrorPermission || teoErr.Kind == provider.TEOErrorDenied):
+			s.setEdgeConfirmStatus(zone, fingerprint, config.EdgeOneConfirmationAccepted, requestID, "")
+		case teoErr != nil && (teoErr.Kind == provider.TEOErrorPermission || teoErr.Kind == provider.TEOErrorDenied):
 			saved, saveErr := store.SetEdgeOneConfirmation(context.Background(), zone, pending.Version, pending.Prefixes,
 				config.EdgeOneConfirmationNotAttempted, "", time.Now().UTC())
 			if saveErr != nil || !saved {
-				s.setEdgeConfirmStatus(zone, config.EdgeOneConfirmationUnknown, "", "确认未执行，但状态更新失败或指纹已变化")
+				s.setEdgeConfirmStatus(zone, fingerprint, config.EdgeOneConfirmationUnknown, "", "确认未执行，但状态更新失败或指纹已变化")
 			} else {
-				s.setEdgeConfirmStatus(zone, config.EdgeOneConfirmationNotAttempted, "", "确认未执行或服务端明确拒绝，允许下一轮重试")
+				s.setEdgeConfirmStatus(zone, fingerprint, config.EdgeOneConfirmationNotAttempted, "", "确认未执行或服务端明确拒绝，允许下一轮重试")
 			}
 			retry = true
 		default:
-			s.setEdgeConfirmStatus(zone, config.EdgeOneConfirmationUnknown, "", "确认结果未知（超时或网络错误）")
+			s.setEdgeConfirmStatus(zone, fingerprint, config.EdgeOneConfirmationUnknown, "", "确认结果未知（超时或网络错误）")
 			retry = true
 		}
 	})
 	return retry, nil
+}
+
+// canConfirmEdgeOne 同锁读取 Stop 和配置状态。调用方须在协调器稳定区内。
+func (s *Syncer) canConfirmEdgeOne(state *RuntimeState, epoch uint64, site config.EdgeOneSite) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.stopped || s.runtime.Snapshot() != state || s.generation != epoch ||
+		!state.Config.SyncEnabled || !state.Config.EdgeOneEnabled {
+		return false
+	}
+	currentSite, ok := edgeSiteForProof(state.Config.EdgeOneSites, site.ZoneID)
+	return ok && edgeOneSiteKey(currentSite) == edgeOneSiteKey(site)
 }
 
 // withCurrentEdgeConfirmation 序列化配置发布和确认结果写入。网络操作始终在锁外。
@@ -278,15 +316,15 @@ func (s *Syncer) withCurrentEdgeConfirmation(state *RuntimeState, epoch uint64, 
 	})
 }
 
-func (s *Syncer) setEdgeConfirmStatusForState(state *RuntimeState, epoch uint64, zone, status, requestID, errText string) {
+func (s *Syncer) setEdgeConfirmStatusForState(state *RuntimeState, epoch uint64, zone string, fingerprint [32]byte, status, requestID string) {
 	s.withCurrentEdgeConfirmation(state, epoch, func() {
-		s.setEdgeConfirmStatus(zone, status, requestID, errText)
+		s.setEdgeConfirmStatus(zone, fingerprint, status, requestID, "")
 	})
 }
 
-func (s *Syncer) setEdgeConfirmErrorForState(state *RuntimeState, epoch uint64, zone, errText string) {
+func (s *Syncer) setEdgeConfirmErrorForState(state *RuntimeState, epoch uint64, zone string, fingerprint [32]byte, errText string) {
 	s.withCurrentEdgeConfirmation(state, epoch, func() {
-		s.setEdgeConfirmError(zone, errText)
+		s.setEdgeConfirmStatus(zone, fingerprint, "", "", errText)
 	})
 }
 
@@ -323,7 +361,7 @@ func canonicalJSONArray(values []string) string {
 	return string(raw)
 }
 
-func (s *Syncer) setEdgeConfirmStatus(zone, state, requestID, errText string) {
+func (s *Syncer) setEdgeConfirmStatus(zone string, fingerprint [32]byte, state, requestID, errText string) {
 	zone = strings.TrimSpace(zone)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -331,30 +369,30 @@ func (s *Syncer) setEdgeConfirmStatus(zone, state, requestID, errText string) {
 		s.edgeStatus = make(map[string]EdgeOneSiteStatus)
 	}
 	st := s.edgeStatus[zone]
-	st.ZoneID = zone
-	st.ConfirmationState = state
-	if requestID != "" {
-		st.ConfirmationID = requestID
+	if state == "" && st.confirmationFingerprint == fingerprint {
+		state, requestID = st.ConfirmationState, st.ConfirmationID
 	}
+	if state == config.EdgeOneConfirmationUnknown && errText == "" {
+		errText = EdgeOneUnknownConfirmationDiagnostic
+		if st.confirmationFingerprint == fingerprint && st.ConfirmationState == state && st.LastConfirmationErr != "" {
+			errText = st.LastConfirmationErr
+		}
+	}
+	st.ZoneID = zone
+	st.confirmationFingerprint = fingerprint
+	st.ConfirmationState = state
+	st.ConfirmationID = requestID
 	st.LastConfirmationErr = errText
 	s.edgeStatus[zone] = st
 }
 
-func (s *Syncer) setEdgeConfirmError(zone, errText string) {
-	zone = strings.TrimSpace(zone)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.confirmErrors == nil {
-		s.confirmErrors = make(map[string]string)
+// UnknownConfirmationDiagnostic 返回此 SQLite 指纹的安全诊断。
+func (st EdgeOneSiteStatus) UnknownConfirmationDiagnostic(transition config.EdgeOneTransition) string {
+	pending := provider.OriginACLVersion{Version: transition.PendingVersion, Prefixes: transition.PendingCIDRs}
+	if st.confirmationFingerprint == pendingFingerprint(&pending) && st.LastConfirmationErr != "" {
+		return st.LastConfirmationErr
 	}
-	s.confirmErrors[zone] = errText
-	if s.edgeStatus == nil {
-		s.edgeStatus = make(map[string]EdgeOneSiteStatus)
-	}
-	st := s.edgeStatus[zone]
-	st.ZoneID = zone
-	st.LastConfirmationErr = errText
-	s.edgeStatus[zone] = st
+	return EdgeOneUnknownConfirmationDiagnostic
 }
 
 func (s *Syncer) confirmedMemory(zone string) [32]byte {

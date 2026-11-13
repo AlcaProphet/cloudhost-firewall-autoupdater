@@ -129,3 +129,64 @@ func TestEdgeOneTransitionPruneDeleteAndReset(t *testing.T) {
 		t.Fatalf("reset 后过渡记录 = %+v err=%v", rows, err)
 	}
 }
+
+func TestEdgeOneTransitionRestoreUnsentMatchesPreparedRecord(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	prefixes := []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}
+	zone := "zone-a"
+	initial := EdgeOneTransition{ZoneID: zone, BaseVersion: "v1", PendingVersion: "v2", PendingCIDRs: prefixes}
+	if err := store.SaveEdgeOneObservation(ctx, initial); err != nil {
+		t.Fatal(err)
+	}
+	prepared := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
+	set := func(at time.Time, state, id string) {
+		t.Helper()
+		ok, err := store.SetEdgeOneConfirmation(ctx, zone, "v2", prefixes, state, id, at)
+		if !ok || err != nil {
+			t.Fatalf("set: %v %v", ok, err)
+		}
+	}
+	restore := func(want bool) {
+		t.Helper()
+		ok, err := store.RestoreUnsentEdgeOneConfirmation(ctx, zone, "v2", prefixes, prepared)
+		if ok != want || err != nil {
+			t.Fatalf("restore: %v %v; want %v", ok, err, want)
+		}
+	}
+	set(prepared, EdgeOneConfirmationUnknown, "")
+	restore(true)
+	row, err := store.GetEdgeOneTransition(ctx, zone)
+	if err != nil || row == nil || row.ConfirmationState != EdgeOneConfirmationNotAttempted {
+		t.Fatalf("restore status: %+v %v", row, err)
+	}
+	set(prepared.Add(time.Second), EdgeOneConfirmationUnknown, "")
+	restore(false)
+	set(prepared, EdgeOneConfirmationAccepted, "req-accepted")
+	restore(false)
+	row, err = store.GetEdgeOneTransition(ctx, zone)
+	if err != nil || row == nil || row.ConfirmationState != EdgeOneConfirmationAccepted || row.ConfirmationRequestID != "req-accepted" {
+		t.Fatalf("accepted touched: %+v %v", row, err)
+	}
+	newPrefixes := []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}
+	initial.PendingCIDRs = newPrefixes
+	if err := store.SaveEdgeOneObservation(ctx, initial); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.SetEdgeOneConfirmation(ctx, zone, "v2", newPrefixes, EdgeOneConfirmationUnknown, "", prepared); !ok || err != nil {
+		t.Fatalf("保存新指纹：%v %v", ok, err)
+	}
+	restore(false)
+	if err := store.DeleteEdgeOneTransition(ctx, zone); err != nil {
+		t.Fatal(err)
+	}
+	restore(false)
+	row, err = store.GetEdgeOneTransition(ctx, zone)
+	if err != nil || row != nil {
+		t.Fatalf("deleted record recreated: %+v %v", row, err)
+	}
+}

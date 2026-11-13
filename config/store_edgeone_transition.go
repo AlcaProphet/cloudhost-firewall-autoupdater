@@ -281,6 +281,28 @@ func (s *Store) SetEdgeOneConfirmation(ctx context.Context, zoneID, pendingVersi
 	return n > 0, nil
 }
 
+// RestoreUnsentEdgeOneConfirmation 只撤销本次已证明未发送的 unknown。
+// 指纹、状态和前置提交时间必须仍匹配，已删除的记录不会重建。
+func (s *Store) RestoreUnsentEdgeOneConfirmation(ctx context.Context, zoneID, pendingVersion string, pendingCIDRs []netip.Prefix, preparedAt time.Time) (bool, error) {
+	pendingJSON, err := canonicalCIDRJSON(pendingCIDRs)
+	if err != nil {
+		return false, err
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE edgeone_origin_transitions
+		SET confirmation_state = ?, confirmation_request_id = '', updated_at = ?
+		WHERE zone_id = ? AND pending_version = ? AND pending_cidrs_json = ?
+		      AND confirmation_state = ? AND updated_at = ?`,
+		EdgeOneConfirmationNotAttempted, time.Now().UTC().Format(time.RFC3339Nano),
+		strings.TrimSpace(zoneID), strings.TrimSpace(pendingVersion), pendingJSON,
+		EdgeOneConfirmationUnknown, preparedAt.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // PruneEdgeOneTransitionsTx 删除已不存在站点的过渡记录；同一站点保留记录。
 func (s *Store) PruneEdgeOneTransitionsTx(ctx context.Context, tx *sql.Tx) error {
 	_, err := tx.ExecContext(ctx,

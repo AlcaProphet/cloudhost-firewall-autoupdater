@@ -38,7 +38,10 @@ func (f *step8FakeTEO) DescribeOriginACL(_ context.Context, zoneID string) (prov
 	return f.snapshot, nil
 }
 
-func (f *step8FakeTEO) ConfirmOriginACLUpdate(context.Context, string) (string, error) {
+func (f *step8FakeTEO) ConfirmOriginACLUpdate(_ context.Context, _ string, admit func() bool) (string, error) {
+	if !admit() {
+		return "", &provider.TEOError{Kind: provider.TEOErrorCanceled, NotSent: true}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.confirms++

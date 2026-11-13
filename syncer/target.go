@@ -75,6 +75,7 @@ type cleanupResult struct {
 	deferred   int
 	basis      string
 	deferredAt time.Time
+	plan       *provider.TargetPlan
 }
 
 // targetExecution 是一个物理目标的单次写入执行输入。本地别名已合并；
@@ -333,6 +334,15 @@ func (s *Syncer) runTargetAttemptExec(
 	if err != nil {
 		return res, err
 	}
+	if cleanup.plan != nil && exec.edgeActive && len(exec.edgeSites) > 0 {
+		res.siteProofs = siteCoverageForExec(state, exec, *cleanup.plan)
+		for _, proof := range res.siteProofs {
+			if !proof.Complete {
+				res.outcome = TargetPartial
+				break
+			}
+		}
+	}
 	return res, nil
 }
 
@@ -503,23 +513,16 @@ func (s *Syncer) runTargetCleanup(
 	}
 
 	switch {
-	case delErr == nil, isPartialDelete(delErr):
-		// 已确认删除或部分成功：必须取得 S2 并复算覆盖
-		finalDeferred, err := s.verifyCleanupResult(state, p, rules, s1.Revision, resolvedIPs, dnsErrors, edgeOneSites, edgeOneTag)
+	case delErr == nil, isPartialDelete(delErr), isIdempotentDelete(delErr):
+		if delErr != nil && !isPartialDelete(delErr) {
+			slog.Warn("清理候选已不存在，按幂等处理", "provider", p.Name())
+		}
+		plan, err := s.verifyCleanupResult(state, p, rules, s1.Revision, resolvedIPs, dnsErrors, edgeOneSites, edgeOneTag)
 		if err != nil {
 			return result, err
 		}
-		result.deferred = finalDeferred
-		result.basis = "s2"
-		result.deferredAt = time.Now()
-	case isIdempotentDelete(delErr):
-		// 「已不存在」视为清理成功但不计 Deleted；仍需 S2 确认覆盖
-		slog.Warn("清理候选已不存在，按幂等处理", "provider", p.Name())
-		finalDeferred, err := s.verifyCleanupResult(state, p, rules, s1.Revision, resolvedIPs, dnsErrors, edgeOneSites, edgeOneTag)
-		if err != nil {
-			return result, err
-		}
-		result.deferred = finalDeferred
+		result.plan = &plan
+		result.deferred = len(plan.CleanupCandidates)
 		result.basis = "s2"
 		result.deferredAt = time.Now()
 	case isVersionMismatch(delErr):
@@ -539,8 +542,8 @@ func (s *Syncer) runTargetCleanup(
 	return result, nil
 }
 
-// verifyCleanupResult 取得 S2 并用同一 planner 复算覆盖；验证成功后返回 S2 实际剩余的
-// 清理候选数。S2 失败或不再覆盖所需功能即 failed，调用方继续保留既有 fallback。
+// verifyCleanupResult 用 S2 复算覆盖，供残留计数和站点证明共用。
+// S2 失败或不再覆盖所需功能即 failed，调用方保留已确认的增删计数。
 func (s *Syncer) verifyCleanupResult(
 	state *RuntimeState,
 	p provider.Provider,
@@ -550,13 +553,13 @@ func (s *Syncer) verifyCleanupResult(
 	dnsErrors map[int]string,
 	edgeOneSites []provider.EdgeOneSitePlanInput,
 	edgeOneTag string,
-) (int, error) {
+) (provider.TargetPlan, error) {
 	s2, err := p.GetSnapshot()
 	if err != nil {
-		return 0, fmt.Errorf("获取 S2 快照失败: %w", err)
+		return provider.TargetPlan{}, fmt.Errorf("获取 S2 快照失败: %w", err)
 	}
 	if strings.TrimSpace(s2.Revision) == "" && strings.TrimSpace(s1Revision) != "" {
-		return 0, fmt.Errorf("%w: S2 缺少版本号，无法证明清理后状态", provider.ErrSnapshotIncomplete)
+		return provider.TargetPlan{}, fmt.Errorf("%w: S2 缺少版本号，无法证明清理后状态", provider.ErrSnapshotIncomplete)
 	}
 	plan2 := provider.PlanTarget(provider.TargetPlanInput{
 		CloudType:       p.CloudType(),
@@ -570,10 +573,10 @@ func (s *Syncer) verifyCleanupResult(
 		DNSErrors:       dnsErrors,
 		Snapshot:        s2,
 	})
-	if len(plan2.ToAdd) > 0 {
-		return 0, fmt.Errorf("S2 覆盖验证失败：清理后 %d 个期望功能不再被快照覆盖", len(plan2.ToAdd))
+	if !plan2.CoverageReady {
+		return provider.TargetPlan{}, errors.New("S2 覆盖验证失败：清理后无法证明完整期望功能")
 	}
-	return len(plan2.CleanupCandidates), nil
+	return plan2, nil
 }
 
 // resolveTargetRules 按 host 去重解析，正式同步通过轮次协调对象维护熔断器。

@@ -94,6 +94,20 @@ func (s *step10Store) row(zone string) (config.EdgeOneTransition, bool) {
 	return row, ok
 }
 
+func (s *step10Store) RestoreUnsentEdgeOneConfirmation(_ context.Context, zone, pendingVersion string, pendingCIDRs []netip.Prefix, preparedAt time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	row, ok := s.rows[zone]
+	if !ok || row.PendingVersion != pendingVersion || edgePendingJSON(row.PendingCIDRs) != edgePendingJSON(pendingCIDRs) ||
+		row.ConfirmationState != config.EdgeOneConfirmationUnknown || !row.UpdatedAt.Equal(preparedAt) {
+		return false, nil
+	}
+	row.ConfirmationState = config.EdgeOneConfirmationNotAttempted
+	row.ConfirmationRequestID = ""
+	s.rows[zone] = row
+	return true, nil
+}
+
 type step10TEO struct {
 	mu         sync.Mutex
 	describes  int
@@ -117,7 +131,10 @@ func (f *step10TEO) DescribeOriginACL(context.Context, string) (provider.OriginA
 	}
 	return step10Snapshot(), nil
 }
-func (f *step10TEO) ConfirmOriginACLUpdate(context.Context, string) (string, error) {
+func (f *step10TEO) ConfirmOriginACLUpdate(_ context.Context, _ string, admit func() bool) (string, error) {
+	if !admit() {
+		return "", &provider.TEOError{Kind: provider.TEOErrorCanceled, NotSent: true}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.confirms++
@@ -296,6 +313,36 @@ func TestStep10TimeoutOnlyRechecks(t *testing.T) {
 	s.ConfirmEdgeOneSites(st, edgeData, s.Generation())
 	if describes, confirms := teo.counts(); describes != 2 || confirms != 1 {
 		t.Fatalf("unknown 同指纹应只增加 Describe，实际 describe=%d confirm=%d", describes, confirms)
+	}
+	if got := s.EdgeOneRuntimeStatus()[0].LastConfirmationErr; got != statuses[0].LastConfirmationErr {
+		t.Fatalf("同指纹复查应保留诊断，之前=%q 现在=%q", statuses[0].LastConfirmationErr, got)
+	}
+
+	next := step10Snapshot()
+	next.Next.Prefixes = []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}
+	if err := store.SaveEdgeOneObservation(context.Background(), config.EdgeOneTransition{
+		ZoneID: next.ZoneID, PendingVersion: next.Next.Version, PendingCIDRs: next.Next.Prefixes,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.SetEdgeOneConfirmation(context.Background(), next.ZoneID, next.Next.Version, next.Next.Prefixes,
+		config.EdgeOneConfirmationUnknown, "", time.Now()); err != nil || !ok {
+		t.Fatalf("预置同版本新网段的 unknown 失败：%v %v", ok, err)
+	}
+	teo.snapshots = []provider.OriginACLSnapshot{next, next}
+	edgeData[next.ZoneID] = edgeOneSiteData{site: st.Config.EdgeOneSites[0], snapshot: next}
+	restarted := New(NewRuntimeManager(st))
+	restarted.SetEdgeOneTransitionStore(store)
+	for _, engine := range []*Syncer{s, restarted} {
+		if !engine.ConfirmEdgeOneSites(st, edgeData, engine.Generation()) {
+			t.Fatal("结果仍未知时应安排只读复查")
+		}
+		if got := engine.EdgeOneRuntimeStatus()[0].LastConfirmationErr; got != EdgeOneUnknownConfirmationDiagnostic {
+			t.Fatalf("新指纹或重启后应使用固定诊断，got=%q", got)
+		}
+	}
+	if describes, confirms := teo.counts(); describes != 4 || confirms != 1 {
+		t.Fatalf("新指纹已有 unknown 时只读复查，describe=%d confirm=%d", describes, confirms)
 	}
 }
 

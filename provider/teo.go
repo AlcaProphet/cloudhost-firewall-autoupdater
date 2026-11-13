@@ -80,8 +80,8 @@ type TEOError struct {
 	Code      string
 	RequestID string
 	Message   string
-	// NotSent 表示错误发生在本客户端发请求之前（参数校验、限速等待或预算在
-	// wait 阶段耗尽）。请求一旦交给 SDK，即使没有 RequestId 也不能据此断言
+	// NotSent 表示错误发生在本客户端发请求之前（参数校验、限速等待或发送准入）。
+	// 请求一旦交给 SDK，即使没有 RequestId 也不能据此断言
 	// 未执行，调用方必须按“结果未知”处理。
 	NotSent bool
 	cause   error
@@ -196,7 +196,7 @@ func (s OriginACLSnapshot) PrefixesForFamily(family string) []netip.Prefix {
 // 生产由 *TEOClient 实现；同步器运行态持有该接口，测试可注入本地替身。
 type OriginACLClient interface {
 	DescribeOriginACL(ctx context.Context, zoneID string) (OriginACLSnapshot, error)
-	ConfirmOriginACLUpdate(ctx context.Context, zoneID string) (string, error)
+	ConfirmOriginACLUpdate(ctx context.Context, zoneID string, admit func() bool) (string, error)
 }
 
 // TEOClient 是 EdgeOne 只读查询与确认客户端。
@@ -368,9 +368,9 @@ func (c *TEOClient) DescribeOriginACL(ctx context.Context, zoneID string) (Origi
 // ConfirmOriginACLUpdate 确认一个站点已更新到最新回源网段。
 //
 // 接口只接收 ZoneId，成功只返回 RequestId；不提供版本条件参数。调用方必须在
-// 调用前完成覆盖、版本重查和配置准入，并在调用后把空 RequestId、超时、网络错误
-// 一律视为“结果未知”，不能当作成功或未执行。限速与查询共用同一 TEOClient。
-func (c *TEOClient) ConfirmOriginACLUpdate(ctx context.Context, zoneID string) (string, error) {
+// 调用前完成覆盖、版本重查和前置状态提交。admit 在限速结束后、请求交给 SDK 前
+// 判定最终准入。交给 SDK 后的空 RequestId、超时和网络错误按结果未知处理。
+func (c *TEOClient) ConfirmOriginACLUpdate(ctx context.Context, zoneID string, admit func() bool) (string, error) {
 	zoneID = strings.TrimSpace(zoneID)
 	if zoneID == "" {
 		return "", &TEOError{
@@ -394,6 +394,20 @@ func (c *TEOClient) ConfirmOriginACLUpdate(ctx context.Context, zoneID string) (
 
 	req := teo.NewConfirmOriginACLUpdateRequest()
 	req.ZoneId = common.StringPtr(zoneID)
+	if err := confirmCtx.Err(); err != nil {
+		return "", classifyTEOContextError(zoneID, err)
+	}
+	if !admit() {
+		return "", &TEOError{
+			Kind:    TEOErrorCanceled,
+			ZoneID:  zoneID,
+			Message: "确认发送前准入已失效",
+			NotSent: true,
+		}
+	}
+	if err := confirmCtx.Err(); err != nil {
+		return "", classifyTEOContextError(zoneID, err)
+	}
 	resp, err := c.client.ConfirmOriginACLUpdateWithContext(confirmCtx, req)
 	if err != nil {
 		classified := classifyTEOError(zoneID, err)

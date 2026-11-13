@@ -57,7 +57,10 @@ type blockingStep10Confirm struct {
 	err     error
 }
 
-func (c *blockingStep10Confirm) ConfirmOriginACLUpdate(context.Context, string) (string, error) {
+func (c *blockingStep10Confirm) ConfirmOriginACLUpdate(_ context.Context, _ string, admit func() bool) (string, error) {
+	if !admit() {
+		return "", &provider.TEOError{Kind: provider.TEOErrorCanceled, NotSent: true}
+	}
 	close(c.started)
 	<-c.release
 	if c.err != nil {
