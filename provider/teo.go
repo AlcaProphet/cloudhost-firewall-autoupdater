@@ -19,10 +19,10 @@ import (
 	teo "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/teo/v20220901"
 )
 
-// 本文件是 Build8 Step 5 的 TEO 只读适配层。
+// 本文件是 Build8 Step 5/10 的 TEO 适配层。
 //
 // 固定边界：
-//   - 只做 DescribeOriginACL；确认（ConfirmOriginACLUpdate）留给 Step 10；
+//   - 查询 DescribeOriginACL 与确认 ConfirmOriginACLUpdate 共用限速与安全错误分类；
 //   - 构造函数只做本地初始化，零网络请求；
 //   - 只返回已校验、已 Mask、已去重的快照；任何字段缺失、畸形地址族、
 //     整体空集合都返回错误，绝不退化为可授权的空集合；
@@ -201,8 +201,8 @@ type OriginACLClient interface {
 
 // TEOClient 是 EdgeOne 只读查询与确认客户端。
 //
-// 构造时只创建本地 SDK client；查询与确认前共用 rate limiter。当前阶段只暴露
-// DescribeOriginACL；确认入口由 Step 10 接入。
+// 构造时只创建本地 SDK client；查询与确认前共用 rate limiter。查询与确认
+// 入口均提供，确认成功只以非空 RequestId 为证据。
 type TEOClient struct {
 	client   *teo.Client
 	endpoint string
@@ -270,7 +270,7 @@ func newTEOClient(pool *ClientPool, opts teoClientOptions) (*TEOClient, error) {
 			return nil, err
 		}
 		// 缓存包装对象而不是裸 SDK client，使同一 pool+endpoint 的查询与
-		// 未来确认共享同一个 rate limiter（Step 10 复用）。
+		// 确认共享同一个 rate limiter。
 		return &TEOClient{
 			client:      sdkClient,
 			endpoint:    opts.Endpoint,

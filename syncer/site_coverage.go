@@ -129,7 +129,12 @@ func siteCoverageForExec(state *RuntimeState, exec targetExecution, plan provide
 		}
 		siteMissing := false
 		for _, d := range plan.Desired {
-			if !containsString(d.SiteIDs, zone) || !d.Implementable {
+			if !containsString(d.SiteIDs, zone) {
+				continue
+			}
+			if !d.Implementable {
+				// 当前平台无法实施该站点期望：站点覆盖不可用，确认必须为零。
+				proof.Reasons = append(proof.Reasons, "unsupported")
 				continue
 			}
 			if !covered[d.Key] {

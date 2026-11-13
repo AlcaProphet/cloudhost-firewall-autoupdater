@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/netip"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -288,6 +289,10 @@ func TestStep10TimeoutOnlyRechecks(t *testing.T) {
 	if row.ConfirmationState != config.EdgeOneConfirmationUnknown {
 		t.Fatalf("超时后状态 = %s，期望 unknown", row.ConfirmationState)
 	}
+	statuses := s.EdgeOneRuntimeStatus()
+	if len(statuses) != 1 || statuses[0].LastConfirmationErr == "" {
+		t.Fatalf("超时后必须留下确认诊断原因: %+v", statuses)
+	}
 	s.ConfirmEdgeOneSites(st, edgeData, s.Generation())
 	if describes, confirms := teo.counts(); describes != 2 || confirms != 1 {
 		t.Fatalf("unknown 同指纹应只增加 Describe，实际 describe=%d confirm=%d", describes, confirms)
@@ -327,6 +332,11 @@ func TestStep10DNSFailureStillConfirmsCompleteEdgeOne(t *testing.T) {
 		if _, confirms := teo.counts(); confirms != 1 {
 			t.Fatalf("DNS 失败但 EdgeOne 完整时确认次数 = %d，期望 1", confirms)
 		}
+		for _, desc := range p.createdSince(0) {
+			if strings.HasPrefix(desc, "[auto-dns]") {
+				t.Fatalf("DNS 失败时仍创建了 DNS TAG 动作: %q", desc)
+			}
+		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		for _, rule := range p.rules {
@@ -362,6 +372,13 @@ func TestStep10LatestVersionNowDoesNotMarkAccepted(t *testing.T) {
 	row, _ := store.row("zone-a")
 	if row.ConfirmationState == config.EdgeOneConfirmationAccepted {
 		t.Fatalf("LatestVersionNow 不得伪造 accepted: %+v", row)
+	}
+	statuses := s.EdgeOneRuntimeStatus()
+	if len(statuses) != 1 || !statuses[0].ActualEffective {
+		t.Fatalf("LatestVersionNow 后应更新实际生效状态: %+v", statuses)
+	}
+	if statuses[0].LastConfirmationErr == "" {
+		t.Fatalf("LatestVersionNow 后应有诊断原因: %+v", statuses[0])
 	}
 }
 

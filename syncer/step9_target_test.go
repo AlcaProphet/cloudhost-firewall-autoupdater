@@ -62,8 +62,9 @@ func TestStep9AliasesShareOneExecutionUnit(t *testing.T) {
 		defer func() { s.Stop(); s.Wait() }()
 		synctest.Wait()
 
-		if p1.snapshotCalls != 0 {
-			t.Fatalf("别名目标不应有第二个执行单元，p1 snapshot=%d", p1.snapshotCalls)
+		if p1.snapshotCalls != 0 || p1.createCalls != 0 || p1.deleteCalls != 0 {
+			t.Fatalf("别名目标不应有第二个执行单元，p1 snapshot/create/delete=%d/%d/%d",
+				p1.snapshotCalls, p1.createCalls, p1.deleteCalls)
 		}
 		if p0.createCalls != 1 {
 			t.Fatalf("同一物理目标应只有一个 CreateRules 调用，实际 %d", p0.createCalls)
@@ -147,8 +148,11 @@ func TestStep9S1MissingBlocksConfirmation(t *testing.T) {
 		if _, confirms := teo.counts(); confirms != 0 {
 			t.Fatalf("S1 缺项时确认次数 = %d，期望 0", confirms)
 		}
-		if len(s.RoundCoverage()) == 0 {
-			t.Fatal("S1 缺项应保留不完整证明")
+		if len(s.RoundCoverage()) != 0 {
+			t.Fatal("失败 attempt 的证明不得留到最终失败结果，避免错误授权确认")
+		}
+		if round := s.Status().LastRound; round == nil || round.Failed != 1 {
+			t.Fatalf("S1 缺项目标必须最终 failed: %+v", round)
 		}
 	})
 }

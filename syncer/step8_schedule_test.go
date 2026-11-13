@@ -170,6 +170,8 @@ func TestStep8OnlyEdgeOneDueDoesNotWriteDNS(t *testing.T) {
 		defer func() { s.Stop(); s.Wait() }()
 		synctest.Wait()
 		startupDNSRules := probeTaggedRules(p, "auto-dns")
+		startupCreated := p.createdCount()
+		_, _, startupDeletes := p.counts()
 		startupDescribes, _ := teo.counts()
 		if startupDNSRules == 0 || startupDescribes != 1 {
 			t.Fatalf("启动轮应写入 DNS 并查询一次 TEO：dnsRules=%d teo=%d", startupDNSRules, startupDescribes)
@@ -180,8 +182,21 @@ func TestStep8OnlyEdgeOneDueDoesNotWriteDNS(t *testing.T) {
 		if got := probeTaggedRules(p, "auto-dns"); got != startupDNSRules {
 			t.Fatalf("仅 EdgeOne 到期时 DNS 规则数 = %d，启动轮后为 %d", got, startupDNSRules)
 		}
+		for _, desc := range p.createdSince(startupCreated) {
+			if strings.HasPrefix(desc, "[auto-dns]") {
+				t.Fatalf("仅 EdgeOne 到期时仍创建了 DNS TAG 动作: %q", desc)
+			}
+		}
+		if _, _, deletes := p.counts(); deletes != startupDeletes {
+			t.Fatalf("仅 EdgeOne 到期时不应发生删除调用: %d → %d", startupDeletes, deletes)
+		}
 		if got := probeTaggedRules(p, "edgeone"); got == 0 {
 			t.Fatal("仅 EdgeOne 到期时应写入 EdgeOne TAG 规则")
+		}
+		for _, desc := range p.createdSince(startupCreated) {
+			if !strings.HasPrefix(desc, "[edgeone]") {
+				t.Fatalf("EdgeOne 到期轮只允许 EdgeOne TAG 新增，实际 %q", desc)
+			}
 		}
 		if describes, confirms := teo.counts(); describes != startupDescribes+1 || confirms != 0 {
 			t.Fatalf("EdgeOne 查询/确认 = %d/%d，期望 %d/0", describes, confirms, startupDescribes+1)

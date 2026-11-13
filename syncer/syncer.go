@@ -3,6 +3,7 @@ package syncer
 import (
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -202,12 +203,29 @@ func (s *Syncer) applyStateLocked(next *RuntimeState) {
 		}
 		if !previous.Config.EdgeOneEnabled && next.Config.EdgeOneEnabled {
 			s.pendingEdgeOneDue = true
+			s.edgeRetryDelay = 0
 		}
 		nextSig := edgeOneSitesSignature(next.Config.EdgeOneSites)
 		if next.Config.EdgeOneEnabled && nextSig != s.edgeSiteSig {
 			s.pendingEdgeOneDue = true
+			s.edgeRetryDelay = 0
+		}
+		// 站点删除/替换后不能继续复用旧快照、旧确认内存证据或旧覆盖摘要。
+		nextZones := make(map[string]bool, len(next.Config.EdgeOneSites))
+		for _, site := range next.Config.EdgeOneSites {
+			nextZones[strings.TrimSpace(site.ZoneID)] = true
+		}
+		for _, site := range previous.Config.EdgeOneSites {
+			zone := strings.TrimSpace(site.ZoneID)
+			if zone != "" && !nextZones[zone] {
+				s.forgetEdgeOneSiteLocked(zone)
+			}
 		}
 		s.edgeSiteSig = nextSig
+		// 预检摘要与覆盖证明属于旧配置；新状态发布后不得继续展示为当前结果。
+		s.preflightSet = false
+		s.preflight = PreflightOutcome{}
+		s.roundCoverage = nil
 	}
 	s.runtime.Apply(next)
 	s.enabled = next.Config.SyncEnabled
@@ -351,7 +369,11 @@ func (s *Syncer) Run() {
 			slog.Info("同步引擎已停止，跳过启动轮")
 			return
 		}
-		s.runScheduledRound(state, state.Config.DNSFeatureEnabled(), state.Config.EdgeOneEnabled)
+		dispatch := s.runScheduledRound(state, state.Config.DNSFeatureEnabled(), state.Config.EdgeOneEnabled)
+		if retry, ok := s.settleEdgeAfterStartResume(state, dispatch); ok {
+			edgeTicker.Reset(retry)
+			edgeInterval = edgeOneIntervalOf(state)
+		}
 	} else {
 		slog.Info("同步已暂停（SyncEnabled=false），等待开启")
 	}
@@ -497,6 +519,10 @@ func (s *Syncer) Run() {
 				return
 			}
 			dispatch = s.runScheduledRound(latest, latest.Config.DNSFeatureEnabled(), latest.Config.EdgeOneEnabled)
+			if retry, ok := s.settleEdgeAfterStartResume(latest, dispatch); ok {
+				edgeTicker.Reset(retry)
+				edgeInterval = edgeOneIntervalOf(latest)
+			}
 			dispatched = true
 		case wasEnabled && enabled:
 			if pendingDNS || pendingEdge {
@@ -695,6 +721,16 @@ func (s *Syncer) beginRound() bool {
 	return true
 }
 
+// clearRoundStarted 幂等清空当前轮次开始时间。
+//
+// runScheduledRound 的所有返回路径都必须经过它；syncAllStateWithInput 的
+// defer 仍保留，兼容旧的 syncAll 测试入口。
+func (s *Syncer) clearRoundStarted() {
+	s.mu.Lock()
+	s.roundStarted = nil
+	s.mu.Unlock()
+}
+
 // SetBeforeRoundHook 注入「stop 门控通过、轮次开始之前」的测试钩子。
 //
 // 仅用于测试构造确定性交错；默认 nil，生产零行为变化（与 SetStateAppliedHook 同风格）。
@@ -711,6 +747,8 @@ func (s *Syncer) Wait() { <-s.doneCh }
 func (s *Syncer) TriggerSync() {
 	s.mu.Lock()
 	s.manualPending = true
+	// 手动触发按合同重置 EdgeOne 只读复查退避。
+	s.edgeRetryDelay = 0
 	s.mu.Unlock()
 	s.requestScheduleWake()
 }
@@ -828,10 +866,23 @@ func (s *Syncer) sourceStatusLocked(state *RuntimeState, dnsSource bool) SourceS
 
 func (s *Syncer) preflightStatusLocked(state *RuntimeState) AddressPreflightStatus {
 	out := AddressPreflightStatus{State: PreflightStateSingleSource}
-	if state != nil && state.Config.DNSFeatureEnabled() && state.Config.EdgeOneEnabled {
-		out.State = PreflightStateDataUnavailable
+	dual := state != nil && state.Config.DNSFeatureEnabled() && state.Config.EdgeOneEnabled
+	if !dual {
+		// 单源/双关时状态由开关本身表达；旧双开预检摘要只保留已查实的
+		// 冲突证据，不得把旧 clear/overlap 状态当成当前预检结论。
+		out.KnownConflict = s.hasKnownConflict()
+		if s.preflightSet && s.preflight.Overlap != nil {
+			out.Conflict = &AddressConflictStatus{
+				DNSName:       s.preflight.Overlap.DNS.Host,
+				DNSAddress:    s.preflight.Overlap.DNS.Addr.Unmap().String(),
+				EdgeOnePrefix: s.preflight.Overlap.EdgeOne.Prefix.Masked().String(),
+				ZoneID:        s.preflight.Overlap.EdgeOne.ZoneID,
+			}
+		}
+		return out
 	}
 	if !s.preflightSet {
+		out.State = PreflightStateDataUnavailable
 		return out
 	}
 	out.State = s.preflight.State
@@ -1096,18 +1147,14 @@ func (s *Syncer) syncAll() {
 
 // syncAllState 保留单源/DNS-only 入口。
 func (s *Syncer) syncAllState(state *RuntimeState) {
-	s.syncAllStateWithInput(state, nil, nil, state != nil && state.Config.DNSFeatureEnabled(), false)
+	s.syncAllStateWithInput(state, nil, nil, state != nil && state.Config.DNSFeatureEnabled(), false, s.Generation())
 }
 
-// syncAllStateWithInput 使用调用方捕获的不可变状态与轮次冻结输入执行目标链。
-func (s *Syncer) syncAllStateWithInput(state *RuntimeState, dnsData *roundDNSData, edgeData map[string]edgeOneSiteData, dnsActive, edgeActive bool) {
+// syncAllStateWithInput 使用调用方捕获的不可变状态、轮次代次与冻结输入执行目标链。
+func (s *Syncer) syncAllStateWithInput(state *RuntimeState, dnsData *roundDNSData, edgeData map[string]edgeOneSiteData, dnsActive, edgeActive bool, epoch uint64) {
 	// 无论轮次如何结束（正常、空状态提前返回、panic 展开）都必须清空轮次开始时间，
 	// 否则会留下“陈旧在途轮次”并让健康判定长期误报同步轮次超时。
-	defer func() {
-		s.mu.Lock()
-		s.roundStarted = nil
-		s.mu.Unlock()
-	}()
+	defer s.clearRoundStarted()
 
 	if state == nil {
 		return
@@ -1134,6 +1181,7 @@ func (s *Syncer) syncAllStateWithInput(state *RuntimeState, dnsData *roundDNSDat
 		dnsActive:  dnsActive,
 		edgeActive: edgeActive,
 		edgeData:   edgeData,
+		epoch:      epoch,
 	})
 	summary.FinishedAt = time.Now()
 	summary.DurationMS = time.Since(start).Milliseconds()
@@ -1189,7 +1237,10 @@ func outcomeOf(s RoundSummary) RoundOutcome {
 // 来自该快照，下游函数一律显式接收参数，不再回读运行时状态。
 func (s *Syncer) runRound(state *RuntimeState, total int) RoundSummary {
 	groups := s.targetGroups(state)
-	return s.runRoundInput(state, groups, total, roundInput{dnsActive: state != nil && state.Config.DNSFeatureEnabled()})
+	return s.runRoundInput(state, groups, total, roundInput{
+		dnsActive: state != nil && state.Config.DNSFeatureEnabled(),
+		epoch:     s.Generation(),
+	})
 }
 
 // roundInput 是一轮目标执行的活动来源与冻结输入。
@@ -1198,6 +1249,7 @@ type roundInput struct {
 	edgeData   map[string]edgeOneSiteData
 	dnsActive  bool
 	edgeActive bool
+	epoch      uint64
 }
 
 func (s *Syncer) runRoundInput(state *RuntimeState, groups []targetGroup, total int, input roundInput) RoundSummary {
@@ -1229,7 +1281,7 @@ func (s *Syncer) runRoundInput(state *RuntimeState, groups []targetGroup, total 
 				s.sleep(time.Until(next))
 				res := s.syncTargetExec(state, targetExecution{
 					identity:   g.identity,
-					epoch:      s.Generation(),
+					epoch:      input.epoch,
 					provider:   g.primary,
 					rules:      g.rules,
 					targetIDs:  g.targetIDs,
@@ -1240,7 +1292,7 @@ func (s *Syncer) runRoundInput(state *RuntimeState, groups []targetGroup, total 
 					edgeSites:  g.sites,
 				}, round)
 				if len(res.siteProofs) > 0 {
-					s.storeSiteProofs(res.siteProofs)
+					s.storeSiteProofsForState(state, input.epoch, res.siteProofs)
 				}
 				// 成功、部分实施与失败均从完整目标结束后计时，包含重试及退避。
 				s.mu.Lock()

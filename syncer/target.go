@@ -93,6 +93,26 @@ type targetExecution struct {
 	edgeSites  []config.EdgeOneSite
 }
 
+// coverageOnlyTagForState 返回停用来源的 TAG，供规划器把该 TAG 下的精确
+// 等价规则当作只读覆盖证据，而不是跨 TAG 冲突或删除候选。
+//
+// 双开时为空，保持既有 owned 双 TAG 语义；两项均关闭时不会进入目标执行。
+func coverageOnlyTagForState(state *RuntimeState) string {
+	if state == nil {
+		return ""
+	}
+	dnsEnabled := state.Config.DNSFeatureEnabled()
+	edgeEnabled := state.Config.EdgeOneEnabled
+	switch {
+	case dnsEnabled && !edgeEnabled:
+		return state.Config.EdgeOneTag
+	case !dnsEnabled && edgeEnabled:
+		return state.Config.Tag
+	default:
+		return ""
+	}
+}
+
 // syncTarget 保留单目标 DNS-only 调用入口，供既有回归直接使用。
 func (s *Syncer) syncTarget(state *RuntimeState, p provider.Provider, rules []config.DomainRule, round *dnsRound) targetResult {
 	return s.syncTargetExec(state, targetExecution{
@@ -138,19 +158,20 @@ func (s *Syncer) syncTargetExec(state *RuntimeState, exec targetExecution, round
 		res.deleted += attemptRes.deleted
 		res.mergeObservations(attemptRes, attempt+1)
 		res.cleanupDeleted += attemptRes.cleanupDeleted
-		if len(attemptRes.siteProofs) > 0 {
-			res.siteProofs = attemptRes.siteProofs
-		}
 
 		if err == nil {
+			res.siteProofs = attemptRes.siteProofs
 			res.outcome = attemptRes.outcome
 			return finish()
 		}
+		// 失败 attempt 的证明不能留到下一次 attempt：最终目标失败时不得据此确认。
+		res.siteProofs = nil
 		lastErr = err
 		var cleanupErr *retryableCleanupError
 		if attempt == maxRetries-1 && errors.As(err, &cleanupErr) {
 			// 本次已由 S1 证明所需功能存在；三次清理重试耗尽只延后残留，
 			// 不得把访问能力正常的目标误报为 failed/unhealthy。
+			res.siteProofs = attemptRes.siteProofs
 			res.outcome = attemptRes.outcome
 			res.err = nil
 			slog.Warn("清理重试耗尽，保留残留并记为 cleanup_deferred",
@@ -203,15 +224,16 @@ func (s *Syncer) runTargetAttemptExec(
 
 	// 3) Plan(S0)
 	plan0 := provider.PlanTarget(provider.TargetPlanInput{
-		CloudType:    p.CloudType(),
-		Tag:          state.Config.Tag,
-		OtherTag:     state.Config.EdgeOneTag,
-		EdgeOneTag:   edgeOneTagForExec(state, exec),
-		Rules:        rules,
-		EdgeOneSites: edgeOneInputsForExec(exec),
-		Resolved:     resolved,
-		DNSErrors:    dnsErrors,
-		Snapshot:     s0,
+		CloudType:       p.CloudType(),
+		Tag:             state.Config.Tag,
+		OtherTag:        state.Config.EdgeOneTag,
+		EdgeOneTag:      edgeOneTagForExec(state, exec),
+		CoverageOnlyTag: coverageOnlyTagForState(state),
+		Rules:           rules,
+		EdgeOneSites:    edgeOneInputsForExec(exec),
+		Resolved:        resolved,
+		DNSErrors:       dnsErrors,
+		Snapshot:        s0,
 	})
 	// S0 已经确定的平台能力限制必须立即进入 attempt 结果；若后续 Add 失败，
 	// 最终 failed 事件仍需保留这些 unsupported 明细（Issue7 §5.3、§7.2）。
@@ -240,15 +262,16 @@ func (s *Syncer) runTargetAttemptExec(
 
 	// 6) 用同一 canonical key / 同一纯规划器复算覆盖
 	plan1 := provider.PlanTarget(provider.TargetPlanInput{
-		CloudType:    p.CloudType(),
-		Tag:          state.Config.Tag,
-		OtherTag:     state.Config.EdgeOneTag,
-		EdgeOneTag:   edgeOneTagForExec(state, exec),
-		Rules:        rules,
-		EdgeOneSites: edgeOneInputsForExec(exec),
-		Resolved:     resolved,
-		DNSErrors:    dnsErrors,
-		Snapshot:     s1,
+		CloudType:       p.CloudType(),
+		Tag:             state.Config.Tag,
+		OtherTag:        state.Config.EdgeOneTag,
+		EdgeOneTag:      edgeOneTagForExec(state, exec),
+		CoverageOnlyTag: coverageOnlyTagForState(state),
+		Rules:           rules,
+		EdgeOneSites:    edgeOneInputsForExec(exec),
+		Resolved:        resolved,
+		DNSErrors:       dnsErrors,
+		Snapshot:        s1,
 	})
 	res.observeUnsupported(plan1.Unsupported, "s1", complete)
 	observedAt := time.Now()
@@ -392,7 +415,11 @@ func activeAddActions(state *RuntimeState, plan provider.TargetPlan, exec target
 			continue
 		}
 		tag := state.Config.Tag
-		if len(d.RuleIDs) == 0 && len(d.SiteIDs) > 0 {
+		switch {
+		case len(d.RuleIDs) == 0 && len(d.SiteIDs) > 0:
+			tag = state.Config.EdgeOneTag
+		case len(d.RuleIDs) > 0 && len(d.SiteIDs) > 0 && !exec.dnsActive && exec.edgeActive:
+			// 共享 key 只有 EdgeOne 到期时写 EdgeOne TAG；DNS 同时到期时 DNS 优先。
 			tag = state.Config.EdgeOneTag
 		}
 		a := d.Action
@@ -532,15 +559,16 @@ func (s *Syncer) verifyCleanupResult(
 		return 0, fmt.Errorf("%w: S2 缺少版本号，无法证明清理后状态", provider.ErrSnapshotIncomplete)
 	}
 	plan2 := provider.PlanTarget(provider.TargetPlanInput{
-		CloudType:    p.CloudType(),
-		Tag:          state.Config.Tag,
-		OtherTag:     state.Config.EdgeOneTag,
-		EdgeOneTag:   edgeOneTag,
-		Rules:        rules,
-		EdgeOneSites: edgeOneSites,
-		Resolved:     resolvedIPs, // 与本次 attempt 完全相同的解析结果
-		DNSErrors:    dnsErrors,
-		Snapshot:     s2,
+		CloudType:       p.CloudType(),
+		Tag:             state.Config.Tag,
+		OtherTag:        state.Config.EdgeOneTag,
+		EdgeOneTag:      edgeOneTag,
+		CoverageOnlyTag: coverageOnlyTagForState(state),
+		Rules:           rules,
+		EdgeOneSites:    edgeOneSites,
+		Resolved:        resolvedIPs, // 与本次 attempt 完全相同的解析结果
+		DNSErrors:       dnsErrors,
+		Snapshot:        s2,
 	})
 	if len(plan2.ToAdd) > 0 {
 		return 0, fmt.Errorf("S2 覆盖验证失败：清理后 %d 个期望功能不再被快照覆盖", len(plan2.ToAdd))

@@ -28,6 +28,9 @@ var ErrInternalBuild = errors.New("构造运行时状态失败")
 type Candidate struct {
 	State  *syncer.RuntimeState
 	Alerts alertSet
+	// ResetEdgeOneRuntime 表示这是一次完整导入/重置，提交后应清除 EdgeOne
+	// 进程内缓存、站点状态和确认内存证据，避免旧快照跨配置复用。
+	ResetEdgeOneRuntime bool
 }
 
 // ConfigCoordinator 进程内配置变更协调器（Build6 §12.4）。

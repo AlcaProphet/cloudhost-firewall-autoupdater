@@ -256,6 +256,9 @@ func (d *Deps) handleConfigReset(w http.ResponseWriter, r *http.Request) {
 		if forgetter, ok := d.Syncer.(interface{ ForgetAddressConflict() }); ok {
 			forgetter.ForgetAddressConflict()
 		}
+		if forgetter, ok := d.Syncer.(interface{ ForgetEdgeOneRuntime() }); ok {
+			forgetter.ForgetEdgeOneRuntime()
+		}
 	}, func(ctx context.Context, tx *sql.Tx) error {
 		return d.Store.ResetAllTx(ctx, tx)
 	})

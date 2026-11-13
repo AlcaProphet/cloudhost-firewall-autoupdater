@@ -114,7 +114,7 @@ func (s *Syncer) ConfirmEdgeOneSites(state *RuntimeState, edgeData map[string]ed
 					// unknown 必须先只读复查，不能仅凭缓存等待下一轮。
 					if state.TEO != nil {
 						if after, derr := state.TEO.DescribeOriginACL(context.Background(), zone); derr == nil {
-							s.setEdgeSiteQueryStatus(site, after, "", after.PlannedActiveAt)
+							s.applyEdgeOneQueryResult(state, epoch, site, after, "", after.ObservedAt, after.PlannedActiveAt, true)
 							if after.Next == nil {
 								continue
 							}
@@ -133,7 +133,7 @@ func (s *Syncer) ConfirmEdgeOneSites(state *RuntimeState, edgeData map[string]ed
 			retry = true
 		}
 		if err != nil {
-			s.setEdgeConfirmError(zone, safeTEOErrorText(err))
+			s.setEdgeConfirmError(zone, safeConfirmErrorText(err))
 		}
 	}
 	return retry
@@ -176,10 +176,13 @@ func (s *Syncer) confirmOneSite(state *RuntimeState, site config.EdgeOneSite, sn
 	if err != nil {
 		return true, err
 	}
+	// 确认前重查也是成功查询：刷新缓存年龄/快照，供后续轮次复用。
+	s.applyEdgeOneQueryResult(state, epoch, site, recheck, "", recheck.ObservedAt, recheck.PlannedActiveAt, true)
 	if recheck.Current.Version != snapshot.Current.Version ||
 		currentFingerprint(recheck.Current) != currentFingerprint(snapshot.Current) ||
 		recheck.Next == nil || recheck.Next.Version != pending.Version ||
 		pendingFingerprint(recheck.Next) != fingerprint {
+		s.setEdgeConfirmError(zone, "发送前重查发现版本或网段变化，本轮未发送")
 		return true, nil
 	}
 
@@ -227,7 +230,9 @@ func (s *Syncer) confirmOneSite(state *RuntimeState, site config.EdgeOneSite, sn
 			case teoErr.Kind == provider.TEOErrorAlreadyLatest:
 				// 只读复查实际状态；不伪造 accepted。
 				if after, derr := state.TEO.DescribeOriginACL(context.Background(), zone); derr == nil {
+					s.applyEdgeOneQueryResult(state, epoch, site, after, "", after.ObservedAt, after.PlannedActiveAt, true)
 					s.setEdgeConfirmStatus(zone, config.EdgeOneConfirmationUnknown, "", "")
+					s.setEdgeConfirmError(zone, "云端已是最新版本，未记录 accepted")
 					if after.Next == nil || (after.Current.Version == pending.Version && pendingFingerprint(&provider.OriginACLVersion{Version: after.Current.Version, Prefixes: after.Current.Prefixes}) == fingerprint) {
 						return false, nil
 					}
@@ -237,10 +242,14 @@ func (s *Syncer) confirmOneSite(state *RuntimeState, site config.EdgeOneSite, sn
 				// 明确未执行：允许下一轮在重新满足覆盖/准入后重试。
 				_, _ = store.SetEdgeOneConfirmation(context.Background(), zone, pending.Version, pending.Prefixes,
 					config.EdgeOneConfirmationNotAttempted, "", time.Now().UTC())
+				s.setEdgeConfirmStatus(zone, config.EdgeOneConfirmationNotAttempted, "", "")
+				s.setEdgeConfirmError(zone, "确认未执行或服务端明确拒绝，允许下一轮重试")
 				return true, nil
 			}
 		}
-		// 超时/网络/未知：保持 unknown，只读复查。
+		// 超时/网络/未知：保持 unknown，只读复查；必须留下诊断原因。
+		s.setEdgeConfirmStatus(zone, config.EdgeOneConfirmationUnknown, "", "")
+		s.setEdgeConfirmError(zone, "确认结果未知（超时或网络错误）")
 		return true, nil
 	}
 

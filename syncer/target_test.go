@@ -32,6 +32,7 @@ type targetProbeProvider struct {
 	snapshotCalls int
 	createCalls   int
 	deleteCalls   int
+	createdDesc   []string // 每次 CreateRules 实际提交的动作描述（按调用顺序）
 
 	deleteErr       error    // 非 nil 时删除调用直接失败
 	deleteErrs      []error  // 按 delete 调用序号（0 基）返回；用于验证清理重试收敛
@@ -51,7 +52,22 @@ func newProbeProvider(ct config.CloudType, targetIndex int, rules ...config.Rule
 	return &targetProbeProvider{cloudType: ct, targetIndex: targetIndex, rules: rules, revision: 1, createVisible: true}
 }
 
-func (p *targetProbeProvider) Name() string                { return fmt.Sprintf("probe(%d)", p.targetIndex) }
+func (p *targetProbeProvider) Name() string { return fmt.Sprintf("probe(%d)", p.targetIndex) }
+
+func (p *targetProbeProvider) createdCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.createdDesc)
+}
+
+func (p *targetProbeProvider) createdSince(n int) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if n < 0 || n > len(p.createdDesc) {
+		return nil
+	}
+	return append([]string(nil), p.createdDesc[n:]...)
+}
 func (p *targetProbeProvider) CloudType() config.CloudType { return p.cloudType }
 func (p *targetProbeProvider) TargetIndex() int            { return p.targetIndex }
 
@@ -83,6 +99,9 @@ func (p *targetProbeProvider) CreateRules(_ provider.RuleSnapshot, rules []confi
 	defer p.mu.Unlock()
 	n := p.createCalls
 	p.createCalls++
+	for _, r := range rules {
+		p.createdDesc = append(p.createdDesc, r.Description)
+	}
 	p.seq = append(p.seq, fmt.Sprintf("create:%d", len(rules)))
 	if n < len(p.createErrs) && p.createErrs[n] != nil {
 		// 幂等「已存在」场景：云端本就有等价规则，后续快照可见

@@ -209,6 +209,10 @@ type TargetPlanInput struct {
 	// owned TAG 的精确等价规则满足，缺失时只新增一条（DNS TAG 优先）。
 	// 为空时保持既有单源规划语义（Tag 为当前来源 TAG，OtherTag 为另一 TAG）。
 	EdgeOneTag string
+	// CoverageOnlyTag 是已停用来源的 TAG。该 TAG 下的精确等价规则只作为只读
+	// 覆盖证据：不计 owned、不报跨 TAG 冲突、不新增、不删除、不改标。
+	// 仅在 DNS/EdgeOne 只有一侧启用时由调用方设置；双开时为空。
+	CoverageOnlyTag string
 	// TargetID 非零时只使用 TargetIDs 包含它的 EdgeOne 站点。
 	// 已用 SelectEdgeOneSitesForIdentity 归并物理目标别名时应保持 0，
 	// 避免再次按单个本地 ID 过滤掉绑定在其他别名上的站点。
@@ -830,6 +834,7 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 	if dualTag {
 		edgeTag = in.EdgeOneTag
 	}
+	coverageOnlyTag := strings.TrimSpace(in.CoverageOnlyTag)
 
 	// ── 2) 云端快照索引：DNS / EdgeOne / External 多值结构，禁止静默覆盖重复项 ──
 	dnsIndex := make(map[FunctionalKey][]config.RuleInfo)
@@ -861,6 +866,8 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 		}
 		owner := ownerNone
 		switch {
+		case coverageOnlyTag != "" && tag.IsOwned(r.Description, coverageOnlyTag):
+			// 已停用来源的 TAG：只作为只读精确覆盖证据，归入 external。
 		case tag.IsOwned(r.Description, in.Tag):
 			owner = ownerDNS
 		case edgeTag != "" && tag.IsOwned(r.Description, edgeTag):

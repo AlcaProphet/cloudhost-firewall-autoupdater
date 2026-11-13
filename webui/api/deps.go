@@ -129,7 +129,11 @@ func (d *Deps) buildCandidate(snapshot *config.BusinessSnapshot, policy syncer.B
 	} else {
 		alerts = BuildAlertSet(rc)
 	}
-	return Candidate{State: state, Alerts: alerts}, nil
+	return Candidate{
+		State:               state,
+		Alerts:              alerts,
+		ResetEdgeOneRuntime: policy == syncer.BreakerReset,
+	}, nil
 }
 
 // applyCandidate 在 commit 之后按固定顺序执行无失败发布：
@@ -155,6 +159,12 @@ func (d *Deps) applyCandidate(candidate Candidate) {
 	// 2) 告警集合（取消旧订阅 → 安装新订阅）
 	if d.Alerts != nil {
 		d.Alerts.Apply(candidate.Alerts)
+	}
+
+	if candidate.ResetEdgeOneRuntime && d.Syncer != nil {
+		if forgetter, ok := d.Syncer.(interface{ ForgetEdgeOneRuntime() }); ok {
+			forgetter.ForgetEdgeOneRuntime()
+		}
 	}
 
 	// 3) 先发布完整 RuntimeState，再唤醒读取共享快照的 Health/Push，避免消费旧配置。

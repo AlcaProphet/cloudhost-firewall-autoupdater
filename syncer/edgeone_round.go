@@ -15,9 +15,9 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
 
-// 本文件是 Build8 Step 8 的双源准备层：EdgeOne 快照缓存、只读预检输入、
-// 调度状态与站点状态快照。正式目标写入仍由 runRound/target.go 负责；
-// Step 9 才把 EdgeOne 站点输入接入目标执行。
+// 本文件是 Build8 Step 8～10 的双源准备与调度层：EdgeOne 快照缓存、只读
+// 预检输入、调度状态、站点状态与稳定区/代次写入。正式目标写入仍由
+// runRound/target.go 负责；站点确认见 edgeone_confirm.go。
 
 // SourceStatus 是单个功能来源的调度摘要（GET /api/sync/status）。
 type SourceStatus struct {
@@ -152,9 +152,11 @@ func (s *Syncer) edgeCacheFresh(entry edgeOneCacheEntry, site config.EdgeOneSite
 
 // prepareEdgeOneData 为全部站点准备一份本轮只读数据；同一站点最多查询一次。
 //
-// 查询失败不返回部分快照；旧缓存未过期时可继续作为完整输入，但状态会保留
-// 最近查询错误。调用方必须把 unavailable 非空视为该站点输入不完整。
-func (s *Syncer) prepareEdgeOneData(state *RuntimeState) map[string]edgeOneSiteData {
+// force 为 true 时必须实际查询（EdgeOne 到期、首次启用、新站点、手动触发、
+// 恢复）；仅 DNS 到期时 force=false，可复用仍有效的缓存。强制查询失败时，
+// 若旧缓存仍满足年龄/站点/凭据/计划切换条件，则继续使用旧快照并记录错误；
+// 过期或失效缓存不得当作完整输入。
+func (s *Syncer) prepareEdgeOneData(state *RuntimeState, epoch uint64, force bool) map[string]edgeOneSiteData {
 	out := make(map[string]edgeOneSiteData)
 	if state == nil || !state.Config.EdgeOneEnabled {
 		return out
@@ -168,40 +170,81 @@ func (s *Syncer) prepareEdgeOneData(state *RuntimeState) map[string]edgeOneSiteD
 		s.mu.RLock()
 		cached, ok := s.edgeCache[zoneID]
 		s.mu.RUnlock()
-		if ok && s.edgeCacheFresh(cached, site, state, now) {
+		fresh := ok && s.edgeCacheFresh(cached, site, state, now)
+		if fresh && !force {
 			out[zoneID] = edgeOneSiteData{site: site, snapshot: cached.snapshot}
-			s.setEdgeSiteQueryStatus(site, cached.snapshot, "", nil)
+			s.applyEdgeOneQueryResult(state, epoch, site, cached.snapshot, "",
+				cached.observedAt, cached.snapshot.PlannedActiveAt, false)
 			continue
 		}
 		if state.TEO == nil {
 			out[zoneID] = edgeOneSiteData{site: site, unavailable: "TEO 客户端未接线"}
-			s.setEdgeSiteQueryStatus(site, provider.OriginACLSnapshot{}, "TEO 客户端未接线", nil)
+			s.applyEdgeOneQueryResult(state, epoch, site, provider.OriginACLSnapshot{},
+				"TEO 客户端未接线", time.Time{}, nil, false)
 			continue
 		}
 		snapshot, err := state.TEO.DescribeOriginACL(context.Background(), zoneID)
 		if err != nil {
 			reason := safeTEOErrorText(err)
+			if fresh {
+				// 强制查询失败但旧缓存仍在有效期内：按合同使用最后成功快照。
+				out[zoneID] = edgeOneSiteData{site: site, snapshot: cached.snapshot}
+				s.applyEdgeOneQueryResult(state, epoch, site, cached.snapshot, reason,
+					cached.observedAt, cached.snapshot.PlannedActiveAt, false)
+				continue
+			}
 			out[zoneID] = edgeOneSiteData{site: site, unavailable: reason}
-			s.setEdgeSiteQueryStatus(site, provider.OriginACLSnapshot{}, reason, nil)
+			s.applyEdgeOneQueryResult(state, epoch, site, provider.OriginACLSnapshot{},
+				reason, time.Time{}, nil, false)
 			continue
 		}
-		entry := edgeOneCacheEntry{
-			snapshot:      snapshot,
-			siteKey:       edgeOneSiteKey(site),
-			credential:    s.credentialFingerprint(state),
-			observedAt:    now,
-			plannedActive: snapshot.PlannedActiveAt,
+		observedAt := snapshot.ObservedAt
+		if observedAt.IsZero() {
+			observedAt = s.now()
 		}
-		s.mu.Lock()
-		if s.edgeCache == nil {
-			s.edgeCache = make(map[string]edgeOneCacheEntry)
-		}
-		s.edgeCache[zoneID] = entry
-		s.mu.Unlock()
 		out[zoneID] = edgeOneSiteData{site: site, snapshot: snapshot}
-		s.setEdgeSiteQueryStatus(site, snapshot, "", snapshot.PlannedActiveAt)
+		s.applyEdgeOneQueryResult(state, epoch, site, snapshot, "",
+			observedAt, snapshot.PlannedActiveAt, true)
 	}
 	return out
+}
+
+// applyEdgeOneQueryResult 在协调器稳定区内校验轮次代次后写入缓存与状态。
+// 网络查询不在稳定区内；state/epoch 不符时丢弃旧轮次结果。
+func (s *Syncer) applyEdgeOneQueryResult(state *RuntimeState, epoch uint64, site config.EdgeOneSite, snapshot provider.OriginACLSnapshot, queryErr string, queryAt time.Time, planned *time.Time, updateCache bool) {
+	_ = s.withStableConfig(func() bool {
+		if state == nil || s.runtime.Snapshot() != state || s.Generation() != epoch {
+			return false
+		}
+		if updateCache && queryErr == "" {
+			s.storeEdgeOneCacheLocked(site, snapshot, queryAt, state)
+		}
+		s.setEdgeSiteQueryStatus(site, snapshot, queryErr, queryAt, planned)
+		return true
+	})
+}
+
+// storeEdgeOneCacheLocked 要求调用者已持有稳定区；内部只锁 s.mu。
+func (s *Syncer) storeEdgeOneCacheLocked(site config.EdgeOneSite, snapshot provider.OriginACLSnapshot, observedAt time.Time, state *RuntimeState) {
+	if observedAt.IsZero() {
+		observedAt = s.now()
+	}
+	zoneID := strings.TrimSpace(site.ZoneID)
+	if zoneID == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.edgeCache == nil {
+		s.edgeCache = make(map[string]edgeOneCacheEntry)
+	}
+	s.edgeCache[zoneID] = edgeOneCacheEntry{
+		snapshot:      snapshot,
+		siteKey:       edgeOneSiteKey(site),
+		credential:    s.credentialFingerprint(state),
+		observedAt:    observedAt,
+		plannedActive: snapshot.PlannedActiveAt,
+	}
+	s.mu.Unlock()
 }
 
 // edgePrefixInputs 返回稳定排序的预检网段与完整性。
@@ -319,8 +362,21 @@ func safeTEOErrorText(err error) string {
 	return "TEO 查询失败"
 }
 
+// safeConfirmErrorText 为确认状态/配置错误提供固定安全文案，避免把
+// SQLite/路径细节误标成 TEO 查询失败，也避免回显底层错误原文。
+func safeConfirmErrorText(err error) string {
+	var teoErr *provider.TEOError
+	if errors.As(err, &teoErr) {
+		return teoErr.Error()
+	}
+	return "确认状态或配置检查失败"
+}
+
 // setEdgeSiteQueryStatus 更新进程内站点查询状态；不访问网络。
-func (s *Syncer) setEdgeSiteQueryStatus(site config.EdgeOneSite, snapshot provider.OriginACLSnapshot, queryErr string, planned *time.Time) {
+//
+// queryAt 是实际成功查询时间（缓存命中时传缓存的观测时间），不是本轮时间；
+// planned 是该快照对应的计划切换时间，缓存命中时也必须保留。
+func (s *Syncer) setEdgeSiteQueryStatus(site config.EdgeOneSite, snapshot provider.OriginACLSnapshot, queryErr string, queryAt time.Time, planned *time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.edgeStatus == nil {
@@ -332,8 +388,10 @@ func (s *Syncer) setEdgeSiteQueryStatus(site config.EdgeOneSite, snapshot provid
 	st.TargetIDs = append([]int(nil), site.TargetIDs...)
 	st.LastQueryError = queryErr
 	if queryErr == "" {
-		now := s.now()
-		st.LastQueryAt = &now
+		if queryAt.IsZero() {
+			queryAt = s.now()
+		}
+		st.LastQueryAt = &queryAt
 		st.LastQueryRequestID = snapshot.RequestID
 		st.CurrentVersion = snapshot.Current.Version
 		if snapshot.Next != nil {
@@ -341,7 +399,7 @@ func (s *Syncer) setEdgeSiteQueryStatus(site config.EdgeOneSite, snapshot provid
 		} else {
 			st.PendingVersion = ""
 		}
-		st.PlannedActiveAt = planned
+		st.PlannedActiveAt = copyTimePtr(planned)
 		st.ActualEffective = snapshot.Next == nil && strings.TrimSpace(snapshot.Current.Version) != ""
 		st.ActualActiveAt = snapshot.Current.ActiveTime
 		st.ActualConfirmed = snapshot.Current.IsPlaned
@@ -349,8 +407,32 @@ func (s *Syncer) setEdgeSiteQueryStatus(site config.EdgeOneSite, snapshot provid
 	s.edgeStatus[zone] = st
 }
 
-// storeSiteProofs 汇总本轮每站、每物理目标的覆盖证明。
+// storeSiteProofs 保留测试/旧入口的无条件写入；生产轮次使用
+// storeSiteProofsForState 校验状态指针与配置代次。
 func (s *Syncer) storeSiteProofs(proofs map[string]SiteCoverage) {
+	s.storeSiteProofsLocked(proofs)
+}
+
+// storeSiteProofsForState 只在轮次捕获的状态仍是当前状态、且证明属于同一
+// 配置代次时写入；旧轮次证明不得覆盖新状态。
+func (s *Syncer) storeSiteProofsForState(state *RuntimeState, epoch uint64, proofs map[string]SiteCoverage) {
+	_ = s.withStableConfig(func() bool {
+		if state == nil || s.runtime.Snapshot() != state || s.Generation() != epoch {
+			return false
+		}
+		filtered := make(map[string]SiteCoverage, len(proofs))
+		for zone, proof := range proofs {
+			if proof.ConfigEpoch != epoch {
+				continue
+			}
+			filtered[zone] = proof
+		}
+		s.storeSiteProofsLocked(filtered)
+		return true
+	})
+}
+
+func (s *Syncer) storeSiteProofsLocked(proofs map[string]SiteCoverage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.roundCoverage == nil {
@@ -477,13 +559,14 @@ type roundDispatch struct {
 // runScheduledRound 是 Run 唯一正式轮入口：先准备来源数据，双开时完成全局预检，
 // 再只让获准且到期的来源进入目标执行。
 //
-// Step 8 只接通 DNS 目标链；EdgeOne 的正式目标写入在 Step 9 接入，本步只做
-// 查询、缓存、预检与状态，绝不把 EdgeOne 当空集或绕过后续安全门。
+// 被预检/数据完整性阻断、因而没有进入 syncAllStateWithInput 的轮次也必须在
+// 返回时清空 round_started_at，不能留下假在途轮次。
 func (s *Syncer) runScheduledRound(state *RuntimeState, dnsDue, edgeDue bool) roundDispatch {
 	out := roundDispatch{DNSDue: dnsDue, EdgeDue: edgeDue}
 	if state == nil {
 		return out
 	}
+	defer s.clearRoundStarted()
 	dnsDue = dnsDue && state.Config.DNSFeatureEnabled()
 	edgeDue = edgeDue && state.Config.EdgeOneEnabled
 	out.DNSDue, out.EdgeDue = dnsDue, edgeDue
@@ -491,7 +574,9 @@ func (s *Syncer) runScheduledRound(state *RuntimeState, dnsDue, edgeDue bool) ro
 
 	edgeData := map[string]edgeOneSiteData{}
 	if state.Config.EdgeOneEnabled {
-		edgeData = s.prepareEdgeOneData(state)
+		// EdgeOne 到期（含手动/首次启用/新站点/恢复）必须实际查询；
+		// 仅 DNS 到期时允许复用仍有效的缓存。
+		edgeData = s.prepareEdgeOneData(state, epoch, edgeDue)
 	}
 
 	dnsWrite, edgeWrite := dnsDue, edgeDue
@@ -503,7 +588,7 @@ func (s *Syncer) runScheduledRound(state *RuntimeState, dnsDue, edgeDue bool) ro
 		edgePrefixes, edgeComplete := edgePrefixInputs(edgeData)
 		outcome, err := s.evaluatePreflight(state, dnsData.addresses, dnsData.complete, edgePrefixes, edgeComplete)
 		out.Preflight, out.PreflightErr = outcome, err
-		s.storePreflight(state, outcome)
+		s.storePreflight(state, epoch, outcome)
 		if err != nil {
 			dnsWrite, edgeWrite = false, false
 		} else {
@@ -520,21 +605,23 @@ func (s *Syncer) runScheduledRound(state *RuntimeState, dnsDue, edgeDue bool) ro
 			EdgeOneComplete: edgeComplete,
 			Admission:       Admission{EdgeOne: edgeComplete},
 		}
-		s.storePreflight(state, out.Preflight)
+		s.storePreflight(state, epoch, out.Preflight)
 		edgeWrite = edgeDue && edgeComplete
 		if edgeDue && !edgeWrite {
 			out.EdgeRetry = true
 		}
 	} else if state.Config.DNSFeatureEnabled() {
 		out.Preflight = PreflightOutcome{
-			State:       PreflightStateSingleSource,
-			DNSComplete: true,
-			Admission:   Admission{DNS: true},
+			State:         PreflightStateSingleSource,
+			DNSComplete:   true,
+			KnownConflict: s.hasKnownConflict(),
+			Admission:     Admission{DNS: true},
 		}
+		s.storePreflight(state, epoch, out.Preflight)
 	}
 
 	if dnsWrite || edgeWrite {
-		s.syncAllStateWithInput(state, dnsData, edgeData, dnsWrite, edgeWrite)
+		s.syncAllStateWithInput(state, dnsData, edgeData, dnsWrite, edgeWrite, epoch)
 		out.DNSRan = dnsWrite
 		out.EdgeRan = edgeWrite
 	}
@@ -557,16 +644,19 @@ func edgeDataComplete(data map[string]edgeOneSiteData) bool {
 	return true
 }
 
-// storePreflight 仅在轮次捕获的状态仍是当前状态时更新只读摘要。
-func (s *Syncer) storePreflight(state *RuntimeState, outcome PreflightOutcome) {
-	if s.runtime.Snapshot() != state {
-		return
-	}
-	s.mu.Lock()
-	s.preflight = outcome
-	s.preflightAt = s.now()
-	s.preflightSet = true
-	s.mu.Unlock()
+// storePreflight 仅在轮次捕获的状态与配置代次仍是当前值时更新只读摘要。
+func (s *Syncer) storePreflight(state *RuntimeState, epoch uint64, outcome PreflightOutcome) {
+	_ = s.withStableConfig(func() bool {
+		if state == nil || s.runtime.Snapshot() != state || s.Generation() != epoch {
+			return false
+		}
+		s.mu.Lock()
+		s.preflight = outcome
+		s.preflightAt = s.now()
+		s.preflightSet = true
+		s.mu.Unlock()
+		return true
+	})
 }
 
 // nextEdgeRetry 返回下一次 EdgeOne 查询/只读复查的退避时长。
@@ -590,6 +680,63 @@ func (s *Syncer) nextEdgeRetry(edgeInterval time.Duration) time.Duration {
 
 func (s *Syncer) resetEdgeRetry() {
 	s.mu.Lock()
+	s.edgeRetryDelay = 0
+	s.mu.Unlock()
+}
+
+// settleEdgeAfterStartResume 在启动/恢复轮结束后应用 EdgeOne 失败退避。
+//
+// 启动/恢复的“成功”保持轮前计时，因此这里只在 EdgeRetry 时推进 next_due；
+// 成功时只重置退避计数，不改变已设置的正常到期时间。
+func (s *Syncer) settleEdgeAfterStartResume(latest *RuntimeState, dispatch roundDispatch) (time.Duration, bool) {
+	if !dispatch.EdgeDue {
+		return 0, false
+	}
+	if !dispatch.EdgeRetry {
+		s.resetEdgeRetry()
+		return 0, false
+	}
+	retry := s.nextEdgeRetry(edgeOneIntervalOf(latest))
+	s.setNextDue(s.now(), false, retry)
+	return retry, true
+}
+
+// forgetEdgeOneSiteLocked 清除一个站点的进程内缓存、状态、确认内存证据与
+// 覆盖摘要；调用方必须持有 s.mu（applyStateLocked 路径）。
+func (s *Syncer) forgetEdgeOneSiteLocked(zone string) {
+	zone = strings.TrimSpace(zone)
+	if zone == "" {
+		return
+	}
+	delete(s.edgeCache, zone)
+	delete(s.edgeStatus, zone)
+	delete(s.confirmedMem, zone)
+	delete(s.confirmErrors, zone)
+	for key := range s.roundCoverage {
+		if strings.HasPrefix(key, zone+"\x00") {
+			delete(s.roundCoverage, key)
+		}
+	}
+}
+
+// ForgetEdgeOneSite 清除单个站点的进程内运行状态；站点删除时使用。
+func (s *Syncer) ForgetEdgeOneSite(zone string) {
+	s.mu.Lock()
+	s.forgetEdgeOneSiteLocked(zone)
+	s.mu.Unlock()
+}
+
+// ForgetEdgeOneRuntime 清除全部 EdgeOne 进程内运行状态；reset/完整导入使用。
+func (s *Syncer) ForgetEdgeOneRuntime() {
+	s.mu.Lock()
+	s.edgeCache = nil
+	s.edgeStatus = nil
+	s.roundCoverage = nil
+	s.confirmedMem = nil
+	s.confirmErrors = nil
+	s.preflightSet = false
+	s.preflight = PreflightOutcome{}
+	s.preflightAt = time.Time{}
 	s.edgeRetryDelay = 0
 	s.mu.Unlock()
 }

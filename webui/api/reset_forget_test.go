@@ -8,10 +8,12 @@ import (
 
 type forgetStub struct {
 	*stubSyncer
-	forgets atomic.Int32
+	forgets     atomic.Int32
+	edgeForgets atomic.Int32
 }
 
 func (s *forgetStub) ForgetAddressConflict() { s.forgets.Add(1) }
+func (s *forgetStub) ForgetEdgeOneRuntime()  { s.edgeForgets.Add(1) }
 
 func TestConfigResetForgetsAddressConflictAfterCommit(t *testing.T) {
 	e := newTestEnv(t)
@@ -23,5 +25,8 @@ func TestConfigResetForgetsAddressConflictAfterCommit(t *testing.T) {
 	}
 	if got := spy.forgets.Load(); got != 1 {
 		t.Fatalf("reset 成功后 Forget 次数 = %d, want 1", got)
+	}
+	if got := spy.edgeForgets.Load(); got != 1 {
+		t.Fatalf("reset 成功后 EdgeOne 运行态清理次数 = %d, want 1", got)
 	}
 }
