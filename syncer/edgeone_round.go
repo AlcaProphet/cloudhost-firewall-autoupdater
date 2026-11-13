@@ -91,6 +91,8 @@ type edgeOneSiteData struct {
 	site        config.EdgeOneSite
 	snapshot    provider.OriginACLSnapshot
 	unavailable string
+	reused      *edgeOneCacheEntry
+	queryFailed bool
 }
 
 func (s *Syncer) now() time.Time { return time.Now() }
@@ -161,7 +163,6 @@ func (s *Syncer) prepareEdgeOneData(state *RuntimeState, epoch uint64, force boo
 	if state == nil || !state.Config.EdgeOneEnabled {
 		return out
 	}
-	now := s.now()
 	for _, site := range state.Config.EdgeOneSites {
 		zoneID := strings.TrimSpace(site.ZoneID)
 		if zoneID == "" {
@@ -170,9 +171,9 @@ func (s *Syncer) prepareEdgeOneData(state *RuntimeState, epoch uint64, force boo
 		s.mu.RLock()
 		cached, ok := s.edgeCache[zoneID]
 		s.mu.RUnlock()
-		fresh := ok && s.edgeCacheFresh(cached, site, state, now)
+		fresh := ok && s.edgeCacheFresh(cached, site, state, s.now())
 		if fresh && !force {
-			out[zoneID] = edgeOneSiteData{site: site, snapshot: cached.snapshot}
+			out[zoneID] = edgeOneSiteData{site: site, snapshot: cached.snapshot, reused: &cached}
 			s.applyEdgeOneQueryResult(state, epoch, site, cached.snapshot, "",
 				cached.observedAt, cached.snapshot.PlannedActiveAt, false)
 			continue
@@ -186,14 +187,14 @@ func (s *Syncer) prepareEdgeOneData(state *RuntimeState, epoch uint64, force boo
 		snapshot, err := state.TEO.DescribeOriginACL(context.Background(), zoneID)
 		if err != nil {
 			reason := safeTEOErrorText(err)
-			if fresh {
+			if ok && s.edgeCacheFresh(cached, site, state, s.now()) {
 				// 强制查询失败但旧缓存仍在有效期内：按合同使用最后成功快照。
-				out[zoneID] = edgeOneSiteData{site: site, snapshot: cached.snapshot}
+				out[zoneID] = edgeOneSiteData{site: site, snapshot: cached.snapshot, reused: &cached, queryFailed: true}
 				s.applyEdgeOneQueryResult(state, epoch, site, cached.snapshot, reason,
 					cached.observedAt, cached.snapshot.PlannedActiveAt, false)
 				continue
 			}
-			out[zoneID] = edgeOneSiteData{site: site, unavailable: reason}
+			out[zoneID] = edgeOneSiteData{site: site, unavailable: reason, queryFailed: true}
 			s.applyEdgeOneQueryResult(state, epoch, site, provider.OriginACLSnapshot{},
 				reason, time.Time{}, nil, false)
 			continue
@@ -207,6 +208,20 @@ func (s *Syncer) prepareEdgeOneData(state *RuntimeState, epoch uint64, force boo
 			observedAt, snapshot.PlannedActiveAt, true)
 	}
 	return out
+}
+
+// validateReusedEdgeOneData 在预检使用前复核缓存，包含等待其他站点和 DNS 的时间。
+func (s *Syncer) validateReusedEdgeOneData(state *RuntimeState, data map[string]edgeOneSiteData) bool {
+	now := s.now()
+	failed := false
+	for zone, item := range data {
+		failed = failed || item.queryFailed
+		if item.reused != nil && !s.edgeCacheFresh(*item.reused, item.site, state, now) {
+			item.unavailable = "EdgeOne 缓存已失效"
+			data[zone] = item
+		}
+	}
+	return failed
 }
 
 // applyEdgeOneQueryResult 在协调器稳定区内校验轮次代次后写入缓存与状态。
@@ -585,6 +600,8 @@ func (s *Syncer) runScheduledRound(state *RuntimeState, dnsDue, edgeDue bool) ro
 		round := newDNSRound(state)
 		defer round.finish()
 		dnsData = s.resolveRoundDNS(state, round)
+		queryFailed := s.validateReusedEdgeOneData(state, edgeData)
+		out.EdgeRetry = edgeDue && queryFailed
 		edgePrefixes, edgeComplete := edgePrefixInputs(edgeData)
 		outcome, err := s.evaluatePreflight(state, dnsData.addresses, dnsData.complete, edgePrefixes, edgeComplete)
 		out.Preflight, out.PreflightErr = outcome, err
@@ -599,6 +616,8 @@ func (s *Syncer) runScheduledRound(state *RuntimeState, dnsDue, edgeDue bool) ro
 			out.EdgeRetry = true
 		}
 	} else if state.Config.EdgeOneEnabled {
+		queryFailed := s.validateReusedEdgeOneData(state, edgeData)
+		out.EdgeRetry = edgeDue && queryFailed
 		edgeComplete := edgeDataComplete(edgeData)
 		out.Preflight = PreflightOutcome{
 			State:           PreflightStateSingleSource,

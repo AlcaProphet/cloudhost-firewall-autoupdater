@@ -59,9 +59,7 @@
 
 ### 当前进度（2026-11-13）
 
-本地 `beta` 的 HEAD 为 `76241cc612435cc389258ef4b732d6c2158046ac`，与 `origin/beta` 一致；该提交包含 Step 8～10 的实现与文档，工作树/暂存区在修复前干净。Step 0～7 的提交见 `cbec01b`、`1bcfbaa`、`14642a6`、`9df4e19`、`8efbda8`；Step 8～10 的实施提交为 `76241cc`（提交说明写“27 文件”，实际 diff 为 32 文件）。Step 8～10 已达到各自的本地阶段判据，共 11/18 步（含 Step 0 文档准备）；Step 11～17 仍待执行。
-
-2026-11-13 在本机从 `76241cc` 建立 `fix/build8-step8-10` 分支，针对独立核验发现的调度、共享 TAG、能力跳过、失败证明、缓存/状态/代次问题实施修复（详见下方“Step 8～10 修复批次”）。本轮只使用本地假 TEO/Provider、临时 SQLite 与 `httptest`；真实腾讯云/真实 DNS/真实确认、Linux/Docker 与远端 CI 仍未执行，不能外推为外部验收通过。
+Step 0～7 的实施及核验提交见 `cbec01b`、`1bcfbaa`、`14642a6`、`9df4e19`、`8efbda8`。Step 8～10 在 `beta` 的实施基线为 `76241cc`，首次独立核验修复为 `2c4653d`。本次复核发现并修复查询期间缓存失效和旧代次确认回包两处问题，证据见下方。Step 0～10 已达到本地阶段判据，共 11/18 步；Step 11～17 待执行。真实云与发布验收留 Step 17。
 
 <a name="step-0"></a>
 
@@ -561,6 +559,14 @@ httptest 真实 SDK 证据：`TestTEODescribeOriginACLPostsSignedRequest` 经真
 - `TargetPartial` 的确认准入按 EdgeOne 证明完整性判断；DNS 侧能力跳过不单独阻断 EdgeOne，EdgeOne 侧能力跳过会阻断。
 - 按来源统计（DNS/EdgeOne 各自的 added/deleted）仍留 Step 14/15。
 - 真实外部证据仍缺 Step 17。
+
+### Step 8～10 合并前复核修复（2026-11-13）
+
+- **Step 8 缓存有效期。** 逐站在查询失败返回后检查缓存，并在其他站点和 DNS 输入准备完成、预检开始前再次检查复用快照。超过间隔或达到已观察到的计划切换时间即按不完整处理。有效缓存回退保留最后成功查询时间和失败诊断。EdgeOne 到期轮仍按查询失败退避；仅 DNS 到期时保持 EdgeOne 调度。
+- **Step 10 确认回包代次。** SQLite 和内存确认结果写入共用配置协调器的稳定区，先校验 RuntimeState 与 ConfigEpoch。请求和只读复查保持在锁外。重置、删除或导入已经清除的状态不会被旧回包恢复。若同一站点的过渡记录仍保留，则已提交的 `unknown` 保持原值，后续同指纹只读复查。当前代次的正常成功仍持久化 `accepted` 和 RequestId。
+- **验证范围。** `syncer/build8_followup_test.go` 覆盖查询返回和预检前的失效、有效缓存回退、仅 DNS 到期、在途确认回包与 SQLite 配置变更，并以正式 Run 补齐一站两物理目标的确认计数（全部覆盖时一次，缺任一 S1 证明时零次）。`webui/api/edgeone_confirm_import_test.go` 走正式 `POST /api/config/import`、临时 SQLite 和配置发布，验证同站点保留 `unknown`、移除站点剪枝、旧回包零回写。
+
+**本地结果**　Go 1.27.3（darwin/arm64）。Step 8～10 专项和导入回归 race 20 轮、全仓 race（`-count=1`）12 包、`go vet ./...`、`go build ./...`、前端 154 项、前端构建、格式与差异检查均通过。用 `2c4653d` 的两份生产源文件做负向对照，新增缓存、旧代次与正式导入用例按行为断言失败。真实云、Linux/Docker 和发布验收未在本轮执行。
 
 <a name="step-11"></a>
 
