@@ -8,15 +8,49 @@
 //   - 所有数组在 DTO 层恒为 []，这里只做空态展示。
 import { NCard, NDataTable, NAlert, NSpace, NStatistic, NGrid, NGi, NTag } from 'naive-ui'
 import { computed } from 'vue'
-import type { DryRunResult, PlannedRule, RuleChange, PlanIssue, PlanMatch } from '../types'
+import type { DryRunExecutionUnit, DryRunPreflight, DryRunResult, PlannedRule, RuleChange, PlanIssue, PlanMatch } from '../types'
 import { cloudLabelMap } from '../constants'
 
 const props = defineProps<{
   results: DryRunResult[]
   warnings: string[]
+  preflight?: DryRunPreflight | null
+  executionUnits?: DryRunExecutionUnit[]
   status: 'idle' | 'running' | 'completed' | 'failed'
   error: string
 }>()
+
+const units = computed(() => props.executionUnits || [])
+
+const preflightHint = computed(() => {
+  const p = props.preflight
+  if (!p) return null
+  switch (p.state) {
+    case 'overlap': {
+      const c = p.conflict
+      const detail = c ? `：${c.dns_name} ${c.dns_address} 落入 ${c.edgeone_prefix}（${c.zone_id}）` : ''
+      return { type: 'error' as const, text: `全局地址重叠，正式同步会阻断两侧${detail}` }
+    }
+    case 'data_unavailable': {
+      const failed = !p.dns_complete && !p.edgeone_complete ? 'DNS 与 EdgeOne'
+        : !p.dns_complete ? 'DNS' : 'EdgeOne'
+      return { type: 'warning' as const, text: `数据不足：${failed} 侧输入不完整；完整侧按自身安全门继续（单侧继续）` }
+    }
+    case 'clear':
+      return { type: 'success' as const, text: '全局预检完整，未发现地址重叠；以下仍只是预览，不会写入云端' }
+    default:
+      return { type: 'info' as const, text: '仅单项来源启用，当前不做全局重叠判定' }
+  }
+})
+
+function versionLabel(value: string): string {
+  return value || '未知'
+}
+
+function limitLabel(unit: DryRunExecutionUnit): string {
+  if (unit.limit === null || unit.limit === undefined) return '未知'
+  return `${unit.limit}（${unit.limit_source}）`
+}
 
 // ─── 顶部统计条（目标级口径） ───
 const stats = computed(() => {
@@ -121,6 +155,14 @@ function issueText(issue: PlanIssue): string {
         </template>
       </NAlert>
 
+      <NAlert v-if="preflightHint" :type="preflightHint.type" :show-icon="false" style="margin-bottom: 12px" data-testid="dryrun-preflight">
+        {{ preflightHint.text }}
+        <div v-if="props.preflight?.error" style="font-size: 13px; margin-top: 4px">{{ props.preflight.error }}</div>
+        <div v-if="props.preflight?.protected_cidrs?.length" style="font-size: 13px; margin-top: 4px">
+          过渡保护：{{ props.preflight.protected_cidrs.join(', ') }}
+        </div>
+      </NAlert>
+
       <!-- 统计条（目标级口径） -->
       <NGrid :cols="8" :x-gap="12" style="margin-bottom: 16px">
         <NGi><NStatistic label="已配置目标" :value="stats.targets" /></NGi>
@@ -132,6 +174,41 @@ function issueText(issue: PlanIssue): string {
         <NGi><NStatistic label="无法实施" :value="stats.unsupported" /></NGi>
         <NGi><NStatistic label="错误" :value="stats.errors" /></NGi>
       </NGrid>
+
+      <NSpace v-if="units.length" vertical size="large" style="margin-bottom: 16px">
+        <NCard v-for="unit in units" :key="unit.target_key" size="small" :title="`执行单元 ${unit.provider}`">
+          <div style="font-size: 14px; color: #888; margin-bottom: 6px">
+            物理目标 {{ unit.target_key }}；绑定本地目标 {{ unit.target_ids.join(', ') || '-' }}
+          </div>
+          <div style="font-size: 14px; line-height: 1.9">
+            已读规则 <b>{{ unit.rules_read }}</b>；当前规则 <b>{{ unit.current_rule_count }}</b>；
+            预计新增 <b>{{ unit.planned_add }}</b>；过渡期峰值 <b>{{ unit.transition_peak }}</b>；
+            已知限额 <b>{{ limitLabel(unit) }}</b>
+          </div>
+          <NAlert v-if="unit.limit_exceeded" type="warning" :show-icon="false" style="margin-top: 6px">
+            过渡期峰值 {{ unit.transition_peak }} 超过已知限额 {{ unit.limit }}，正式同步可能被平台拒绝。
+          </NAlert>
+          <div style="font-size: 14px; line-height: 1.9">
+            覆盖：{{ unit.coverage_ready ? '完整' : '未完整' }}；数据：{{ unit.data_complete ? '完整' : '不完整' }}；
+            清理候选 {{ unit.cleanup_candidates.length }}，可删除 {{ unit.cleanup_deletable.length }}，
+            受过渡保护 {{ unit.cleanup_protected.length }}
+          </div>
+          <div v-if="unit.error" style="color: #d03050; font-size: 14px">快照错误：{{ unit.error }}</div>
+          <div v-if="unit.sites.length" style="margin-top: 6px">
+            <div v-for="site in unit.sites" :key="site.zone_id" style="font-size: 14px; line-height: 1.8">
+              站点 <b>{{ site.zone_id }}</b>：当前 {{ versionLabel(site.current_version) }}，
+              待更新 {{ versionLabel(site.pending_version) }}，
+              数据{{ site.data_complete ? '完整' : `不完整（${site.reasons.join(', ') || '原因未知'}）` }}
+              <span v-if="site.protected_cidrs.length">；保护 {{ site.protected_cidrs.join(', ') }}</span>
+            </div>
+          </div>
+          <template v-if="unit.conflicts.length">
+            <NAlert v-for="(issue, i) in unit.conflicts" :key="`uc-${i}`" type="error" :show-icon="false" style="margin-top: 6px">
+              {{ issueText(issue) }}
+            </NAlert>
+          </template>
+        </NCard>
+      </NSpace>
 
       <NAlert v-if="results.length === 0" type="info" :show-icon="false">
         本次未返回目标预览，请检查目标配置及页面提示

@@ -190,3 +190,50 @@ func TestEdgeOneTransitionRestoreUnsentMatchesPreparedRecord(t *testing.T) {
 		t.Fatalf("deleted record recreated: %+v %v", row, err)
 	}
 }
+
+func TestEdgeOneTransitionProtectedObservation(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenStore(filepath.Join(t.TempDir(), "protected.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	v4 := netip.MustParsePrefix("203.0.113.0/24")
+	v6 := netip.MustParsePrefix("2001:db8::/64")
+	zone := "zone-a"
+	if err := store.SaveEdgeOneObservation(ctx, EdgeOneTransition{
+		ZoneID: zone, BaseVersion: "v1", PendingVersion: "v2", PendingCIDRs: []netip.Prefix{v4},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := store.SetEdgeOneConfirmation(ctx, zone, "v2", []netip.Prefix{v4}, EdgeOneConfirmationAccepted, "req-1", time.Now().UTC())
+	if err != nil || !ok {
+		t.Fatalf("accepted: %v %v", ok, err)
+	}
+	// 显式写入保护但同一指纹：保留 accepted。
+	if err := store.SaveEdgeOneProtectedObservation(ctx, EdgeOneTransition{
+		ZoneID: zone, BaseVersion: "v1", PendingVersion: "v2",
+		PendingCIDRs: []netip.Prefix{v4}, ProtectedCIDRs: []netip.Prefix{v4, v6},
+	}, false); err != nil {
+		t.Fatal(err)
+	}
+	row, err := store.GetEdgeOneTransition(ctx, zone)
+	if err != nil || row == nil || row.ConfirmationState != EdgeOneConfirmationAccepted ||
+		row.ConfirmationRequestID != "req-1" || len(row.ProtectedCIDRs) != 2 {
+		t.Fatalf("同指纹显式保护写入 = %+v %v", row, err)
+	}
+	// 新指纹 + reset：写入 not_attempted 并清空 RequestId。
+	if err := store.SaveEdgeOneProtectedObservation(ctx, EdgeOneTransition{
+		ZoneID: zone, BaseVersion: "v1", PendingVersion: "v3",
+		PendingCIDRs: []netip.Prefix{v6}, ProtectedCIDRs: []netip.Prefix{v4, v6},
+		ConfirmationState: EdgeOneConfirmationNotAttempted,
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	row, err = store.GetEdgeOneTransition(ctx, zone)
+	if err != nil || row == nil || row.PendingVersion != "v3" ||
+		row.ConfirmationState != EdgeOneConfirmationNotAttempted || row.ConfirmationRequestID != "" ||
+		len(row.ProtectedCIDRs) != 2 {
+		t.Fatalf("新指纹 reset = %+v %v", row, err)
+	}
+}

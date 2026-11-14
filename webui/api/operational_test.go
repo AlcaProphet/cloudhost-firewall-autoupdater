@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -415,3 +416,49 @@ func TestAlertsAndImportPublishBeforeWake(t *testing.T) {
 		})
 	}
 }
+
+// TestOperationalEndpointOverlapMatchesChecker 端点与内部 Evaluate 对同一状态一致，
+// 且全局重叠在无目标结果时仍可见；静态 /api/health 继续可用。
+func TestOperationalEndpointOverlapMatchesChecker(t *testing.T) {
+	e := newTestEnv(t)
+	now := time.Now()
+	status := syncer.SyncStatus{
+		Running: true, Enabled: true, ProcessStartedAt: now.Add(-time.Hour),
+		LastSync:  ptrTimeAPI(now.Add(-time.Minute)),
+		LastRound: &syncer.RoundSummary{FinishedAt: now.Add(-time.Minute), Total: 0, Outcome: syncer.RoundIdle},
+		DNS:       syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeBlocked, IntervalSeconds: 300},
+		EdgeOne:   syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeBlocked, IntervalSeconds: 3600},
+		Preflight: syncer.AddressPreflightStatus{State: syncer.PreflightStateOverlap, DNSComplete: true, EdgeOneComplete: true, KnownConflict: true},
+	}
+	checker := health.New(health.Deps{
+		Pinger:      passingPinger{},
+		Status:      func() syncer.SyncStatus { return status },
+		Policy:      func() config.AlertPolicyConfig { return config.DefaultAlertPolicy() },
+		Interval:    func() time.Duration { return 5 * time.Minute },
+		Now:         func() time.Time { return now },
+		PingTimeout: 100 * time.Millisecond,
+	})
+	e.deps.Health = checkerSource{checker}
+
+	w := e.do(t, http.MethodGet, "/api/health/operational", "")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("重叠必须 503: %d %s", w.Code, w.Body.String())
+	}
+	got := decodeOperational(t, w.Body.Bytes())
+	internal := checker.Evaluate(context.Background())
+	if !slices.Equal(got.Reasons, internal.Reasons) {
+		t.Fatalf("端点与内部计算不一致：endpoint=%v internal=%v", got.Reasons, internal.Reasons)
+	}
+	if !slices.Contains(got.Reasons, health.ReasonAddressOverlap) {
+		t.Fatalf("必须包含重叠原因：%v", got.Reasons)
+	}
+
+	// 静态 /api/health 由 webui.Server 提供，不在 API Deps mux 内；
+	// 其独立回归见 webui/server_test.go。
+}
+
+type passingPinger struct{}
+
+func (passingPinger) PingContext(context.Context) error { return nil }
+
+func ptrTimeAPI(v time.Time) *time.Time { return &v }

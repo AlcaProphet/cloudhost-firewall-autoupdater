@@ -6,7 +6,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { request } from '../api'
 import { useSettings } from '../composables/useSettings'
-import type { SyncStatus } from '../types'
+import type { EdgeOneSiteStatus, EdgeOneStatus, SourceStatus, SyncStatus } from '../types'
 
 const status = ref<SyncStatus>({
   running: false,
@@ -18,6 +18,7 @@ const status = ref<SyncStatus>({
   round_started_at: null,
   process_started_at: '',
 })
+const edgeStatus = ref<EdgeOneStatus | null>(null)
 const switching = ref(false) // 开关请求 loading
 const stats = ref({ targets: 0, rules: 0 })
 const showGuide = ref(false) // 首次使用引导条
@@ -28,6 +29,7 @@ let pageActive = true
 // 状态与统计各自只接受最新发起请求的响应。
 let statusSequence = 0
 let statsSequence = 0
+let edgeSequence = 0
 let triggerTimer: ReturnType<typeof setTimeout> | null = null
 let timer: ReturnType<typeof setInterval> | null = null
 
@@ -46,6 +48,68 @@ async function fetchStatus() {
     const s = await request<SyncStatus>('/api/sync/status')
     if (pageActive && sequence === statusSequence) status.value = s
   } catch { /* 轮询失败忽略 */ }
+}
+
+// 预检状态：同一 HTTP 200 下 clear/overlap/data_unavailable/single_source 必须可区分。
+const preflightHint = computed(() => {
+  const p = status.value.address_preflight
+  if (!p) return { type: 'info' as const, text: '全局预检状态未知（后端未返回 address_preflight）' }
+  switch (p.state) {
+    case 'overlap': {
+      const c = p.conflict
+      const detail = c ? `：${c.dns_name} ${c.dns_address} 落入 ${c.edgeone_prefix}（${c.zone_id}）` : ''
+      return { type: 'error' as const, text: `地址重叠，正式同步已阻断两侧${detail}` }
+    }
+    case 'data_unavailable': {
+      const failed = !p.dns_complete && !p.edgeone_complete ? 'DNS 与 EdgeOne'
+        : !p.dns_complete ? 'DNS' : 'EdgeOne'
+      return { type: 'warning' as const, text: `数据不足：${failed} 侧输入不完整；完整侧仍按自身安全门继续（单侧继续）` }
+    }
+    case 'clear':
+      return { type: 'success' as const, text: '全局预检完整，未发现地址重叠' }
+    default:
+      return { type: 'info' as const, text: '仅单项来源启用，当前不做全局重叠判定' }
+  }
+})
+
+function sourceLabel(src?: SourceStatus): string {
+  if (!src) return '未知'
+  if (!src.enabled) return '已关闭'
+  return src.effective ? '已启用并生效' : '已启用（总暂停中）'
+}
+
+function dueLabel(value: string | null | undefined): string {
+  return value ? new Date(value).toLocaleString() : '暂无记录'
+}
+
+function outcomeLabel(value: string | undefined): string {
+  switch (value) {
+    case 'success': return '成功'
+    case 'partial': return '部分完成'
+    case 'failed': return '失败'
+    case 'idle': return '无任务'
+    case 'blocked': return '被阻断'
+    case 'incomplete': return '数据不足'
+    default: return '暂无结果'
+  }
+}
+
+function confirmationLabel(st: EdgeOneSiteStatus): string {
+  if (st.actual_effective) return '已生效'
+  if (st.confirmation_state === 'accepted') return '已确认，等待生效'
+  if (st.confirmation_state === 'unknown') return '结果未知'
+  return '待确认'
+}
+
+function coverageLabel(st: EdgeOneSiteStatus): string {
+  if (!st.coverage?.length) return '暂无覆盖记录'
+  const complete = st.coverage.filter(item => item.complete).length
+  const reasons = [...new Set(st.coverage.flatMap(item => item.reasons || []))]
+  return `覆盖 ${complete}/${st.coverage.length}${reasons.length ? `；${reasons.join(', ')}` : ''}`
+}
+
+function versionLabel(value: string): string {
+  return value || '未知'
 }
 
 // 清理观察独立于累计操作；历史、估计和未知都不能作为完整当前残留。
@@ -83,6 +147,15 @@ const healthHint = computed(() => {
   }
   return null
 })
+
+async function fetchEdgeStatus() {
+  if (!pageActive) return
+  const sequence = ++edgeSequence
+  try {
+    const data = await request<EdgeOneStatus>('/api/edgeone/status')
+    if (pageActive && sequence === edgeSequence) edgeStatus.value = data
+  } catch { /* 站点状态轮询失败保留已知记录 */ }
+}
 
 // 统计概览：目标数 / 规则数（最近一轮增删直接使用同步状态快照）
 async function fetchStats() {
@@ -148,9 +221,10 @@ async function toggleSync() {
 
 onMounted(() => {
   fetchStatus()
+  fetchEdgeStatus()
   fetchStats()
   checkGuide()
-  timer = setInterval(() => { fetchStatus(); fetchStats() }, 5000)
+  timer = setInterval(() => { fetchStatus(); fetchEdgeStatus(); fetchStats() }, 5000)
 })
 
 onUnmounted(() => {
@@ -175,12 +249,24 @@ onUnmounted(() => {
       {{ healthHint.text }}
     </NAlert>
 
+    <NAlert v-if="preflightHint" :type="preflightHint.type" style="margin-bottom: 16px" data-testid="preflight-hint">
+      {{ preflightHint.text }}
+    </NAlert>
+
     <!-- 2×2 大卡片（改进 2：方案 B） -->
     <NGrid :cols="2" :x-gap="16" :y-gap="16">
       <NGi>
         <NCard title="同步引擎" style="min-height: 200px">
           <div :style="{ fontSize: '28px', fontWeight: 600, marginTop: '20px', color: engineTag.color }">{{ engineTag.text }}</div>
           <!-- NTag 已移除（Build4 Step 9：状态显示去重，唯一展示） -->
+          <div style="font-size: 14px; color: #888; margin-top: 12px">
+            DNS：{{ sourceLabel(status.dns) }}；下次到期：{{ dueLabel(status.dns?.next_due_at) }}；
+            最近结果：{{ outcomeLabel(status.dns?.last_outcome) }}
+          </div>
+          <div style="font-size: 14px; color: #888; margin-top: 4px">
+            EdgeOne：{{ sourceLabel(status.edgeone) }}；下次到期：{{ dueLabel(status.edgeone?.next_due_at) }}；
+            最近结果：{{ outcomeLabel(status.edgeone?.last_outcome) }}
+          </div>
           <div style="font-size: 14px; color: #888; margin-top: 8px">开启后按同步间隔自动执行；变更预览请使用「模拟测试」页</div>
         </NCard>
       </NGi>
@@ -228,5 +314,24 @@ onUnmounted(() => {
         </NCard>
       </NGi>
     </NGrid>
+
+    <NCard title="EdgeOne 站点状态" style="margin-top: 16px" size="small">
+      <div v-if="!status.edgeone?.enabled" style="color: #888">EdgeOne 回源未启用，暂无站点运行状态。</div>
+      <div v-else-if="!edgeStatus || edgeStatus.sites.length === 0" style="color: #888">暂无站点运行状态记录。</div>
+      <div v-else>
+        <div v-for="st in edgeStatus.sites" :key="st.zone_id" style="border-bottom: 1px solid #eee; padding: 8px 0">
+          <div style="font-family: monospace; font-weight: 600">{{ st.zone_id }}</div>
+          <div style="font-size: 14px; line-height: 1.8">
+            当前版本 <b>{{ versionLabel(st.current_version) }}</b>，
+            待更新版本 <b>{{ versionLabel(st.pending_version) }}</b>；
+            最近查询：{{ st.last_query_at ? new Date(st.last_query_at).toLocaleString() : '暂无记录' }}
+          </div>
+          <div style="font-size: 14px; line-height: 1.8">
+            覆盖：{{ coverageLabel(st) }}；确认：<b>{{ confirmationLabel(st) }}</b>
+            <span v-if="st.last_query_error">；查询错误：{{ st.last_query_error }}</span>
+          </div>
+        </div>
+      </div>
+    </NCard>
   </div>
 </template>

@@ -507,6 +507,8 @@ resp, err := client.ConfirmOriginACLUpdateWithContext(ctx, req)
 }
 ```
 
+实施后 `dns`/`edgeone` 另含 `last_started_at`、`last_completed_at`、`last_outcome`、`interval_seconds`，供运行健康按来源判断；`address_preflight` 另含 `protected_cidrs`。Dry Run 在既有 `results`/`warnings` 外新增 `preflight` 与按物理目标聚合的 `execution_units`，所有数组保持非 null。
+
 此示例仅列本阶段新增的状态及既有总开关，现有轮次、健康和时间字段继续输出。 `address_preflight.state` 可使用 `single_source`、`clear`、`overlap`、`data_unavailable`；已查实冲突且复查数据不足时保留 `overlap`，同时附失败来源。恢复时发布一次状态变化。Dry Run 使用本次预览的判定和实际受影响目标；云端未知配额标为未知，已读快照数和预计新增数分别显示。建议只增加适配既有前端结构的字段，保持 `results`、`warnings` 等数组为空时为 `[]`。 [同步响应](syncer/syncer.go) · [前端类型](webui/frontend/src/types.ts) · [模拟测试页面](webui/frontend/src/views/RunTest.vue)
 
 日志和健康沿用现有事件与端点。健康使用来源自己的到期与结果，区分可继续的部分结果与两侧全局阻断。诊断只包含安全字段，例如 `ZoneId`、目标标识、版本、状态和 RequestId。目标明确写入数量、候选数、已清理数和残留分别统计。用本地模拟证明各入口边界，真实站点数据形状、规则配额、权限、确认后的实际时序由 Build8 Step 17 留存独立证据。 [运行健康](internal/health/health.go) · [日志入库](webui/api/logwriter.go) · [构建追踪](Build8.md#step-17)
@@ -568,7 +570,7 @@ resp, err := client.ConfirmOriginACLUpdateWithContext(ctx, req)
 | 新增 | 来源通过预检且到期，目标 S0 完整，功能可表达，按现有配额和增量写入规则处理。每个物理目标仅一条串行写入链。 | 保留旧规则。仅统计云端已确认的新增；能力跳过或错误仍进入覆盖证明。 |
 | 回读覆盖 | 使用 S1 与本轮同一输入校验功能 key。若执行 S2，最终证明和冲突判断使用 S2。另一功能 TAG 的等价残留报目标冲突，手工等价规则继续按既有合同只读计入。 | S2 失去覆盖时目标失败并丢弃证明，保留已确认增删计数。无法完整证明时，该站点确认保持零调用。 |
 | 站点确认 | 待更新指纹存在且需确认；同一站点本轮全部绑定目标有最终成功 attempt 的覆盖证明；当前与待更新版在重查时相符；配置、暂停和启用准入仍有效；`unknown` 已提交。 | 已确认同一指纹跳过。超时和响应未知只读复查，凭明确证据及新覆盖才可重试。目标通过和确认成功分开记录。中间失败 attempt 的证明必须丢弃；只有最终成功 attempt 的证明可参与确认，最后一次清理重试耗尽的既有 `success + cleanup_deferred` 分支除外。确认失败必须留下安全诊断原因；缓存命中时 `last_query_at` 仍是实际查询时间，`planned_active_at` 保留。 |
-| 过渡保护 | 观察到待更新版时持久化保护；重启读取保护，仍可能用于回源的前缀进入全局预检和目标保护。 | `Next` 消失、确认成功、到达计划时间或查询失败均保留尚未证明可释放的保护。 |
+| 过渡保护 | 观察到待更新版时尝试持久化保护；重启读取保护，仍可能用于回源的前缀进入全局预检和目标保护。 | `Next` 消失、确认成功、到达计划时间或查询失败均保留尚未证明可释放的保护。保护写入失败时按 2026-11-14 用户裁决 C 保留内存保护继续 EdgeOne 写入并记录安全诊断；读取失败无法证明保护集合，按 EdgeOne 输入不完整阻断 EdgeOne 写入。重启可能丢失尚未落库的保护证据。 |
 | 清理 | 有效查询证明追踪的新版为当前且网段一致；在预检中重算保护集合；目标 S1 覆盖完整、TAG 精确归属、无能力/冲突阻断且删除定位无歧义。 | 保留残留并按现有合同延后，允许后续从新快照收敛。其他站点仍需要的 key 保持。 |
 
 明确未取得最终准入且未发送时，按站点、待更新指纹、`unknown` 状态和本次前置提交时间条件恢复 `not_attempted`。更新失败时保留已有记录并记录安全诊断。处理已准入请求的确认回包时，协调器在稳定区内用轮次捕获的 RuntimeState 与 ConfigEpoch 校验确认结果写入。代次已变更时，仍存在的 `unknown` 保留给后续只读复查，已由重置或站点删除清除的状态不会被旧回包恢复。网络调用仍在稳定区外。
@@ -580,3 +582,9 @@ resp, err := client.ConfirmOriginACLUpdateWithContext(ctx, req)
 - 模拟测试调用同一套预检和规划，读取当前运行记录和 S0。模拟前后云规则、冲突与过渡表、正式缓存、DNS 熔断和调度时间保持相同。正式计划候选与执行后的实际写入分别记录，未知容量和确认状态保持可辨识。
 - 当前阶段可调整包内文件拆分、私有接口、测试夹具、数据遍历实现和界面内部组件。修改任何公开字段、配置兼容语义、调度触发条件、失败准入、TAG 所有权、确认或删除授权均属于方案变更。
 - 本地模拟可证明本地流程和请求形状，真实云权限、响应、生效时序及发布状态各自保留证据。缺少真实待更新窗口时，当前版链路可独立验收，确认与生效场景保留待补。
+
+**2026-11-14 实施补充（Step 11～15）**
+
+- Step 11 按用户裁决 C 接入过渡保护：旧行按 `pending_cidrs` 回填；有效查询证明待更新版成为当前且规范前缀集合完全相等才释放；释放后先重算预检保护，实际删除继续经过 S1/TAG/版本/稳定定位/S2。保护写入失败仍使用内存保护继续 EdgeOne 写入；读取失败阻断 EdgeOne。
+- Step 12 保留 Dry Run `results` 每本地目标一项，新增顶层 `preflight` 与按物理目标聚合的 `execution_units`；只读复用正式冲突判定、保护集合、EdgeOne 缓存与规划器，不写缓存/状态/冲突/过渡表，不 Create/Delete/Confirm，不发事件。
+- Step 15 为 `dns`/`edgeone` 增加 `last_started_at`、`last_completed_at`、`last_outcome`、`interval_seconds`；健康按来源自身 `next_due + health_timeout` 判断停滞，新增“地址重叠阻断”“DNS/EdgeOne 数据不足（单侧继续）”等原因。预检 overlap/known conflict 在 `total=0/idle` 时仍 unhealthy；长期冲突只在健康边沿通知一次，恢复沿用 INFO，不新增事件类型或同步日志行。

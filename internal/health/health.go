@@ -34,6 +34,23 @@ const (
 	ReasonScheduleStalled = "同步调度停滞"
 	// ReasonNoCompletedRound 同步开启但启动后超过 health_timeout 仍无完成轮次
 	ReasonNoCompletedRound = "启动后尚无完成轮次"
+	// ReasonAddressOverlap 已查实或保留的全局地址重叠。
+	ReasonAddressOverlap = "地址重叠阻断"
+	// ReasonDNSIncomplete DNS 侧数据不足；另一侧仍可继续。
+	ReasonDNSIncomplete = "DNS 数据不足（单侧继续）"
+	// ReasonEdgeOneIncomplete EdgeOne 侧数据不足；另一侧仍可继续。
+	ReasonEdgeOneIncomplete = "EdgeOne 数据不足（单侧继续）"
+	// ReasonDNSSourceFailed / ReasonDNSSourcePartial DNS 来源最近结果。
+	ReasonDNSSourceFailed  = "DNS 同步失败"
+	ReasonDNSSourcePartial = "DNS 同步部分完成"
+	// ReasonEdgeOneSourceFailed / ReasonEdgeOneSourcePartial EdgeOne 来源最近结果。
+	ReasonEdgeOneSourceFailed  = "EdgeOne 同步失败"
+	ReasonEdgeOneSourcePartial = "EdgeOne 同步部分完成"
+	// ReasonSourceBlocked 来源因冲突/预检错误被阻断。
+	ReasonSourceBlocked = "同步来源被阻断"
+	// ReasonDNSScheduleStalled / ReasonEdgeOneScheduleStalled 来源自身到期停滞。
+	ReasonDNSScheduleStalled     = "DNS 调度停滞"
+	ReasonEdgeOneScheduleStalled = "EdgeOne 调度停滞"
 )
 
 // DefaultPingTimeout SQLite 探活的硬上限（Build7 §7.2 第 1 步）。
@@ -162,24 +179,86 @@ func (c *Checker) Evaluate(ctx context.Context) Result {
 		res.Reasons = append(res.Reasons, ReasonRoundTimeout)
 	}
 
-	// 5) 最近一轮结论（success/idle 覆盖，failed/partial 保持异常）
-	if status.LastRound != nil {
-		switch status.LastRound.Outcome {
-		case syncer.RoundFailed:
-			res.Reasons = append(res.Reasons, ReasonLastRoundFailed)
-		case syncer.RoundPartial:
-			res.Reasons = append(res.Reasons, ReasonLastRoundPartial)
+	addReason := func(reason string) {
+		if reason != "" && !slices.Contains(res.Reasons, reason) {
+			res.Reasons = append(res.Reasons, reason)
 		}
 	}
 
-	// 6) 调度停滞 / 启动后尚无完成轮次（仅在当前没有在途轮次时判定）
+	// 5) 预检冲突 / 单侧数据不足：即使本轮没有目标结果也不能被 idle 掩盖。
+	preflight := status.Preflight
+	dual := status.DNS.Enabled && status.EdgeOne.Enabled
+	if preflight.State == syncer.PreflightStateOverlap || preflight.KnownConflict {
+		addReason(ReasonAddressOverlap)
+	}
+	if dual && (preflight.State == syncer.PreflightStateDataUnavailable || preflight.State == syncer.PreflightStateOverlap) {
+		if !preflight.DNSComplete {
+			addReason(ReasonDNSIncomplete)
+		}
+		if !preflight.EdgeOneComplete {
+			addReason(ReasonEdgeOneIncomplete)
+		}
+	}
+
+	// 6) 按来源最近结论；没有来源级结果时保留旧的最近一轮全局结论。
+	sourceResultSeen := false
+	if status.DNS.Enabled && status.DNS.LastOutcome != "" {
+		sourceResultSeen = true
+		switch status.DNS.LastOutcome {
+		case syncer.SourceOutcomeFailed:
+			addReason(ReasonDNSSourceFailed)
+		case syncer.SourceOutcomePartial:
+			addReason(ReasonDNSSourcePartial)
+		case syncer.SourceOutcomeBlocked:
+			if !slices.Contains(res.Reasons, ReasonAddressOverlap) {
+				addReason(ReasonSourceBlocked)
+			}
+		case syncer.SourceOutcomeIncomplete:
+			addReason(ReasonDNSIncomplete)
+		}
+	}
+	if status.EdgeOne.Enabled && status.EdgeOne.LastOutcome != "" {
+		sourceResultSeen = true
+		switch status.EdgeOne.LastOutcome {
+		case syncer.SourceOutcomeFailed:
+			addReason(ReasonEdgeOneSourceFailed)
+		case syncer.SourceOutcomePartial:
+			addReason(ReasonEdgeOneSourcePartial)
+		case syncer.SourceOutcomeBlocked:
+			if !slices.Contains(res.Reasons, ReasonAddressOverlap) {
+				addReason(ReasonSourceBlocked)
+			}
+		case syncer.SourceOutcomeIncomplete:
+			addReason(ReasonEdgeOneIncomplete)
+		}
+	}
+	if !sourceResultSeen && status.LastRound != nil {
+		switch status.LastRound.Outcome {
+		case syncer.RoundFailed:
+			addReason(ReasonLastRoundFailed)
+		case syncer.RoundPartial:
+			addReason(ReasonLastRoundPartial)
+		}
+	}
+
+	// 7) 调度停滞：有来源级调度信息时按各自 next_due + health_timeout 判定；
+	// 旧夹具没有来源字段时保留原有全局 interval + last_sync 口径。
+	hasSourceSchedule := status.DNS.IntervalSeconds > 0 || status.DNS.NextDueAt != nil ||
+		status.EdgeOne.IntervalSeconds > 0 || status.EdgeOne.NextDueAt != nil
 	if status.RoundStartedAt == nil {
-		if status.LastSync != nil {
+		if hasSourceSchedule {
+			if sourceStalled(status.DNS, now, healthTimeout) {
+				addReason(ReasonDNSScheduleStalled)
+			}
+			if sourceStalled(status.EdgeOne, now, healthTimeout) {
+				addReason(ReasonEdgeOneScheduleStalled)
+			}
+		} else if status.LastSync != nil {
 			if now.Sub(*status.LastSync) > interval+healthTimeout {
-				res.Reasons = append(res.Reasons, ReasonScheduleStalled)
+				addReason(ReasonScheduleStalled)
 			}
 		} else if now.Sub(status.ProcessStartedAt) > healthTimeout {
-			res.Reasons = append(res.Reasons, ReasonNoCompletedRound)
+			addReason(ReasonNoCompletedRound)
 		}
 	}
 
@@ -187,6 +266,17 @@ func (c *Checker) Evaluate(ctx context.Context) Result {
 	res.Reasons = slices.Compact(res.Reasons)
 	res.Healthy = len(res.Reasons) == 0
 	return res
+}
+
+// sourceStalled 判断启用来源是否超过自身 next_due + health_timeout。
+//
+// 没有 next_due 表示该来源没有可调度任务（例如无目标/无站点），不制造停滞；
+// 首次启用/恢复的调度由正式入口设置 next_due。
+func sourceStalled(src syncer.SourceStatus, now time.Time, healthTimeout time.Duration) bool {
+	if !src.Enabled || !src.Effective || src.NextDueAt == nil {
+		return false
+	}
+	return now.After(src.NextDueAt.Add(healthTimeout))
 }
 
 // TriggerEnabled 报告第三个触发条件（运行健康异常）当前是否开启。

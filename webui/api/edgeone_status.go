@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/netip"
 	"sort"
 	"strings"
 
@@ -62,12 +63,29 @@ func (d *Deps) handleGetEdgeOneStatus(w http.ResponseWriter, r *http.Request) {
 		if st.Coverage == nil {
 			st.Coverage = []syncer.SiteTargetCoverage{}
 		}
+		if st.ProtectedCIDRs == nil {
+			st.ProtectedCIDRs = []string{}
+		}
 		if t, ok := byZone[zone]; ok {
 			st.ConfirmationState = t.ConfirmationState
 			st.ConfirmationID = t.ConfirmationRequestID
 			if t.ConfirmationState == config.EdgeOneConfirmationUnknown {
 				st.LastConfirmationErr = st.UnknownConfirmationDiagnostic(t)
 			}
+			// Step 11：SQLite 是保护证据的权威来源；运行态字段只作补充。
+			st.ProtectedCIDRs = prefixStrings(t.ProtectedCIDRs)
+			if len(t.ProtectedCIDRs) == 0 && t.BaseVersion != t.PendingVersion {
+				// Step 10 旧行：确认指纹仍在，但保护前缀尚未回填。
+				st.ProtectedCIDRs = prefixStrings(t.PendingCIDRs)
+			}
+			st.TransitionBaseVersion = t.BaseVersion
+			if t.BaseVersion != t.PendingVersion {
+				st.TransitionPendingVersion = t.PendingVersion
+			} else {
+				st.TransitionPendingVersion = ""
+			}
+			updated := t.UpdatedAt
+			st.TransitionUpdatedAt = &updated
 		}
 		if st.ConfirmationState == "" {
 			st.ConfirmationState = config.EdgeOneConfirmationNotAttempted
@@ -77,6 +95,24 @@ func (d *Deps) handleGetEdgeOneStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.SliceStable(out.Sites, func(i, j int) bool { return out.Sites[i].ZoneID < out.Sites[j].ZoneID })
 	writeJSON(w, http.StatusOK, out)
+}
+
+func prefixStrings(prefixes []netip.Prefix) []string {
+	out := make([]string, 0, len(prefixes))
+	seen := make(map[string]bool, len(prefixes))
+	for _, p := range prefixes {
+		if !p.IsValid() {
+			continue
+		}
+		v := p.Masked().String()
+		if seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func buildSiteTargetCoverage(site config.EdgeOneSite, store *config.Store, proofs map[string]syncer.SiteCoverage) []syncer.SiteTargetCoverage {

@@ -8,7 +8,7 @@ export const testDirectory = fileURLToPath(new URL('../', import.meta.url))
 export const suites = {
   alerts: 'alerts-load', dashboard: 'dashboard-observation', dryrun: 'dryrun-state',
   state: 'p316-state', delete: 'delete-confirm', logs: 'logs-stream', import: 'import-presence',
-  behavior: 'frontend-behavior', runner: 'test-runner',
+  behavior: 'frontend-behavior', runner: 'test-runner', edgeone: 'edgeone-ui', step14: 'step14-ui',
 }
 
 export function selectFiles(args, cwd = testDirectory) {

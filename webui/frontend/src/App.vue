@@ -59,6 +59,7 @@ const menuOptions = [
   { label: '仪表盘', key: '/' },
   { label: '云资源管理', key: '/targets' },
   { label: '域名规则', key: '/rules' },
+  { label: 'EdgeOne 回源', key: '/edgeone' },
   { label: '全局设置', key: '/settings' },
   { label: '同步日志', key: '/logs' },
   { label: '模拟测试', key: '/dry-run' },

@@ -1,12 +1,14 @@
 package health
 
 import (
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/notifier"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/syncer"
 )
 
 // ─── Build7 §7.3：30 秒内部监督器的边沿语义 ───
@@ -244,3 +246,73 @@ var errTestPing = testPingError{}
 type testPingError struct{}
 
 func (testPingError) Error() string { return "test ping failure" }
+
+// TestSupervisorOverlapEdgePublishesOnceAndRecovers 长期冲突只在健康边沿通知一次。
+func TestSupervisorOverlapEdgePublishesOnceAndRecovers(t *testing.T) {
+	d := newHealthTestDeps()
+	now := time.Now()
+	overlap := baseStatus(now)
+	overlap.LastRound = &syncer.RoundSummary{FinishedAt: now.Add(-time.Minute), Total: 0, Outcome: syncer.RoundIdle}
+	overlap.DNS = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeBlocked}
+	overlap.EdgeOne = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeBlocked}
+	overlap.Preflight = syncer.AddressPreflightStatus{
+		State: syncer.PreflightStateOverlap, DNSComplete: true, EdgeOneComplete: true, KnownConflict: true,
+	}
+	d.setup(func() { d.status = overlap })
+	d.setOperationalEnabled(true)
+	pub := &recordingPublisher{}
+
+	startSupervisor(t, d, pub, 20*time.Millisecond)
+	waitForChecks(t, d, 4, 5*time.Second)
+	if got := pub.count(); got != 1 {
+		t.Fatalf("长期冲突应只发布一次边沿事件，实际 %d", got)
+	}
+	ev, _ := pub.last()
+	reasons, _ := ev.Data["reasons"].([]string)
+	if !slices.Contains(reasons, ReasonAddressOverlap) {
+		t.Fatalf("事件必须携带重叠原因：%+v", ev.Data)
+	}
+
+	// 恢复：不发布第二个异常事件。
+	healthy := baseStatus(now)
+	healthy.DNS = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeSuccess}
+	healthy.EdgeOne = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeSuccess}
+	healthy.Preflight = syncer.AddressPreflightStatus{State: syncer.PreflightStateClear, DNSComplete: true, EdgeOneComplete: true}
+	d.setup(func() { d.status = healthy })
+	waitForChecks(t, d, 7, 5*time.Second)
+	if got := pub.count(); got != 1 {
+		t.Fatalf("恢复后不得发布异常事件，实际 %d", got)
+	}
+}
+
+// TestSupervisorOverlapEventEntersEventBus 真实 EventBus 订阅链收到异常事件。
+func TestSupervisorOverlapEventEntersEventBus(t *testing.T) {
+	d := newHealthTestDeps()
+	now := time.Now()
+	status := baseStatus(now)
+	status.Preflight = syncer.AddressPreflightStatus{
+		State: syncer.PreflightStateOverlap, DNSComplete: true, EdgeOneComplete: true, KnownConflict: true,
+	}
+	status.DNS = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeBlocked}
+	status.EdgeOne = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeBlocked}
+	status.LastRound = &syncer.RoundSummary{FinishedAt: now.Add(-time.Minute), Total: 0, Outcome: syncer.RoundIdle}
+	d.setup(func() { d.status = status })
+	d.setOperationalEnabled(true)
+	bus := notifier.NewEventBus()
+	ch, unsubscribe := bus.SubscribeChan()
+	defer unsubscribe()
+	s := NewSupervisor(SupervisorDeps{Checker: d.checker(), Bus: bus, Interval: time.Hour})
+	s.check()
+	select {
+	case ev := <-ch:
+		if ev.Type != notifier.EventOperationalUnhealthy {
+			t.Fatalf("事件类型 = %s", ev.Type)
+		}
+		reasons, _ := ev.Data["reasons"].([]string)
+		if !slices.Contains(reasons, ReasonAddressOverlap) {
+			t.Fatalf("事件原因 = %+v", ev.Data)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("EventBus 未收到运行健康异常事件")
+	}
+}

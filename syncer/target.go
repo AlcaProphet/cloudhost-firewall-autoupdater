@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -224,17 +225,21 @@ func (s *Syncer) runTargetAttemptExec(
 	}
 
 	// 3) Plan(S0)
+	protectedPrefixes := protectedPrefixesForExec(exec)
+	protectedUnknown := protectedUnknownForExec(exec)
 	plan0 := provider.PlanTarget(provider.TargetPlanInput{
-		CloudType:       p.CloudType(),
-		Tag:             state.Config.Tag,
-		OtherTag:        state.Config.EdgeOneTag,
-		EdgeOneTag:      edgeOneTagForExec(state, exec),
-		CoverageOnlyTag: coverageOnlyTagForState(state),
-		Rules:           rules,
-		EdgeOneSites:    edgeOneInputsForExec(exec),
-		Resolved:        resolved,
-		DNSErrors:       dnsErrors,
-		Snapshot:        s0,
+		CloudType:         p.CloudType(),
+		Tag:               state.Config.Tag,
+		OtherTag:          state.Config.EdgeOneTag,
+		EdgeOneTag:        edgeOneTagForExec(state, exec),
+		CoverageOnlyTag:   coverageOnlyTagForState(state),
+		Rules:             rules,
+		EdgeOneSites:      edgeOneInputsForExec(exec),
+		Resolved:          resolved,
+		DNSErrors:         dnsErrors,
+		Snapshot:          s0,
+		ProtectedPrefixes: protectedPrefixes,
+		ProtectedUnknown:  protectedUnknown,
 	})
 	// S0 已经确定的平台能力限制必须立即进入 attempt 结果；若后续 Add 失败，
 	// 最终 failed 事件仍需保留这些 unsupported 明细（Issue7 §5.3、§7.2）。
@@ -263,16 +268,18 @@ func (s *Syncer) runTargetAttemptExec(
 
 	// 6) 用同一 canonical key / 同一纯规划器复算覆盖
 	plan1 := provider.PlanTarget(provider.TargetPlanInput{
-		CloudType:       p.CloudType(),
-		Tag:             state.Config.Tag,
-		OtherTag:        state.Config.EdgeOneTag,
-		EdgeOneTag:      edgeOneTagForExec(state, exec),
-		CoverageOnlyTag: coverageOnlyTagForState(state),
-		Rules:           rules,
-		EdgeOneSites:    edgeOneInputsForExec(exec),
-		Resolved:        resolved,
-		DNSErrors:       dnsErrors,
-		Snapshot:        s1,
+		CloudType:         p.CloudType(),
+		Tag:               state.Config.Tag,
+		OtherTag:          state.Config.EdgeOneTag,
+		EdgeOneTag:        edgeOneTagForExec(state, exec),
+		CoverageOnlyTag:   coverageOnlyTagForState(state),
+		Rules:             rules,
+		EdgeOneSites:      edgeOneInputsForExec(exec),
+		Resolved:          resolved,
+		DNSErrors:         dnsErrors,
+		Snapshot:          s1,
+		ProtectedPrefixes: protectedPrefixes,
+		ProtectedUnknown:  protectedUnknown,
 	})
 	res.observeUnsupported(plan1.Unsupported, "s1", complete)
 	observedAt := time.Now()
@@ -321,8 +328,8 @@ func (s *Syncer) runTargetAttemptExec(
 
 	// 7) 条件清理：只有安全门全部满足（CleanupDeletable 非空）且 S1 覆盖已确认时才删除；
 	//    Add 或覆盖验证失败时上面的 return 已保证本 attempt 零删除。
-	cleanup, err := s.runTargetCleanup(state, p, rules, s1, plan1, resolved, dnsErrors, exec.dnsActive,
-		edgeOneInputsForExec(exec), edgeOneTagForExec(state, exec))
+	cleanup, err := s.runTargetCleanup(state, p, rules, s1, plan1, resolved, dnsErrors, exec.dnsActive, exec.edgeActive,
+		edgeOneInputsForExec(exec), edgeOneTagForExec(state, exec), protectedPrefixes, protectedUnknown)
 	res.cleanupDeleted = cleanup.deleted
 	res.deleted += cleanup.deleted
 	res.cleanupDeferred = cleanup.deferred
@@ -344,6 +351,28 @@ func (s *Syncer) runTargetAttemptExec(
 		}
 	}
 	return res, nil
+}
+
+// protectedPrefixesForExec 返回本执行单元适用站点的过渡保护并集。
+func protectedPrefixesForExec(exec targetExecution) []netip.Prefix {
+	var out []netip.Prefix
+	for _, site := range exec.edgeSites {
+		zone := strings.TrimSpace(site.ZoneID)
+		data := exec.edgeData[zone]
+		out = append(out, data.protected...)
+	}
+	return normalizeEdgeOnePrefixes(out)
+}
+
+// protectedUnknownForExec 表示本执行单元任一站点无法确定保护集合。
+func protectedUnknownForExec(exec targetExecution) bool {
+	for _, site := range exec.edgeSites {
+		zone := strings.TrimSpace(site.ZoneID)
+		if exec.edgeData[zone].transitionReadErr != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func edgeOneTagForExec(state *RuntimeState, exec targetExecution) string {
@@ -457,14 +486,14 @@ func (s *Syncer) runTargetCleanup(
 	plan1 provider.TargetPlan,
 	resolvedIPs map[int][]dns.ResolvedIP,
 	dnsErrors map[int]string,
-	allowDNS bool,
+	allowDNS, allowEdge bool,
 	edgeOneSites []provider.EdgeOneSitePlanInput,
 	edgeOneTag string,
+	protectedPrefixes []netip.Prefix,
+	protectedUnknown bool,
 ) (cleanupResult, error) {
 	fallback := cleanupResult{deferred: len(plan1.CleanupCandidates)}
-	if !allowDNS {
-		// 仅 EdgeOne 到期的轮次不得删除 DNS TAG 规则；EdgeOne TAG 清理在
-		// Step 9 按合同仍延后到 Step 11。
+	if !allowDNS && !allowEdge {
 		return fallback, nil
 	}
 	if len(plan1.CleanupDeletable) == 0 {
@@ -477,9 +506,10 @@ func (s *Syncer) runTargetCleanup(
 	}
 	deletable := make([]config.RuleInfo, 0, len(plan1.CleanupDeletable))
 	for _, c := range plan1.CleanupDeletable {
-		if !tag.IsOwned(c.Description, state.Config.Tag) {
-			// 非当前 TAG：绝不操作，也不计入已处理
-			slog.Warn("清理候选不属于当前 TAG，跳过", "provider", p.Name(), "description", c.Description)
+		ownedDNS := allowDNS && tag.IsOwned(c.Description, state.Config.Tag)
+		ownedEdge := allowEdge && edgeOneTag != "" && tag.IsOwned(c.Description, edgeOneTag)
+		if !ownedDNS && !ownedEdge {
+			// 本轮未到期的来源或非当前 TAG：绝不操作，也不计入已处理。
 			continue
 		}
 		keys, ok := provider.SnapshotRuleKeys(c)
@@ -497,6 +527,21 @@ func (s *Syncer) runTargetCleanup(
 		if conflict {
 			slog.Warn("清理候选仍属于完整期望集，跳过", "provider", p.Name(), "description", c.Description)
 			continue
+		}
+		if ownedEdge {
+			if protectedUnknown {
+				continue
+			}
+			protected := false
+			for _, k := range keys {
+				if protectedPrefixesOverlapCandidate(protectedPrefixes, k.CIDR) {
+					protected = true
+					break
+				}
+			}
+			if protected {
+				continue
+			}
 		}
 		deletable = append(deletable, c)
 	}
@@ -517,7 +562,7 @@ func (s *Syncer) runTargetCleanup(
 		if delErr != nil && !isPartialDelete(delErr) {
 			slog.Warn("清理候选已不存在，按幂等处理", "provider", p.Name())
 		}
-		plan, err := s.verifyCleanupResult(state, p, rules, s1.Revision, resolvedIPs, dnsErrors, edgeOneSites, edgeOneTag)
+		plan, err := s.verifyCleanupResult(state, p, rules, s1.Revision, resolvedIPs, dnsErrors, edgeOneSites, edgeOneTag, protectedPrefixes, protectedUnknown)
 		if err != nil {
 			return result, err
 		}
@@ -553,6 +598,8 @@ func (s *Syncer) verifyCleanupResult(
 	dnsErrors map[int]string,
 	edgeOneSites []provider.EdgeOneSitePlanInput,
 	edgeOneTag string,
+	protectedPrefixes []netip.Prefix,
+	protectedUnknown bool,
 ) (provider.TargetPlan, error) {
 	s2, err := p.GetSnapshot()
 	if err != nil {
@@ -562,16 +609,18 @@ func (s *Syncer) verifyCleanupResult(
 		return provider.TargetPlan{}, fmt.Errorf("%w: S2 缺少版本号，无法证明清理后状态", provider.ErrSnapshotIncomplete)
 	}
 	plan2 := provider.PlanTarget(provider.TargetPlanInput{
-		CloudType:       p.CloudType(),
-		Tag:             state.Config.Tag,
-		OtherTag:        state.Config.EdgeOneTag,
-		EdgeOneTag:      edgeOneTag,
-		CoverageOnlyTag: coverageOnlyTagForState(state),
-		Rules:           rules,
-		EdgeOneSites:    edgeOneSites,
-		Resolved:        resolvedIPs, // 与本次 attempt 完全相同的解析结果
-		DNSErrors:       dnsErrors,
-		Snapshot:        s2,
+		CloudType:         p.CloudType(),
+		Tag:               state.Config.Tag,
+		OtherTag:          state.Config.EdgeOneTag,
+		EdgeOneTag:        edgeOneTag,
+		CoverageOnlyTag:   coverageOnlyTagForState(state),
+		Rules:             rules,
+		EdgeOneSites:      edgeOneSites,
+		Resolved:          resolvedIPs, // 与本次 attempt 完全相同的解析结果
+		DNSErrors:         dnsErrors,
+		Snapshot:          s2,
+		ProtectedPrefixes: protectedPrefixes,
+		ProtectedUnknown:  protectedUnknown,
 	})
 	if !plan2.CoverageReady {
 		return provider.TargetPlan{}, errors.New("S2 覆盖验证失败：清理后无法证明完整期望功能")

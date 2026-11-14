@@ -11,7 +11,7 @@ let pageActive = true
 onUnmounted(() => { pageActive = false })
 
 // 模拟测试：按当前云资源目标与域名规则计算变更预览，不实际写入
-const { status, loading, results, warnings, error, lastFinishedAt, run } = useDryRun()
+const { status, loading, results, warnings, preflight, executionUnits, error, lastFinishedAt, run } = useDryRun()
 
 async function runDryRun() {
   if (!pageActive || loading.value) return
@@ -40,7 +40,14 @@ async function runDryRun() {
           最近请求结束：{{ lastFinishedAt.toLocaleTimeString() }}
         </span>
       </NSpace>
-      <DryRunResults :results="results" :warnings="warnings" :status="status" :error="error" />
+      <DryRunResults
+        :results="results"
+        :warnings="warnings"
+        :preflight="preflight"
+        :execution-units="executionUnits"
+        :status="status"
+        :error="error"
+      />
     </NSpace>
   </div>
 </template>

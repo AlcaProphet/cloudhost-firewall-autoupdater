@@ -8,6 +8,7 @@ const router = createRouter({
     { path: '/', component: () => import('./views/Dashboard.vue') },
     { path: '/targets', component: () => import('./views/Targets.vue') },
     { path: '/rules', component: () => import('./views/Rules.vue') },
+    { path: '/edgeone', component: () => import('./views/EdgeOne.vue') },
     { path: '/settings', component: () => import('./views/Settings.vue') },
     { path: '/logs', component: () => import('./views/Logs.vue') },
     { path: '/dry-run', component: () => import('./views/RunTest.vue') },

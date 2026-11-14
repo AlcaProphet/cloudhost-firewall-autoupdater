@@ -469,6 +469,28 @@ func validateDryRunArrayJSON(raw []byte) error {
 	if _, err := requireJSONArray(top, "warnings"); err != nil {
 		return err
 	}
+	units, err := requireJSONArray(top, "execution_units")
+	if err != nil {
+		return err
+	}
+	var preflight map[string]json.RawMessage
+	if err := json.Unmarshal(top["preflight"], &preflight); err != nil || preflight == nil {
+		return fmt.Errorf("preflight 必须是非 null 对象: %w", err)
+	}
+	if _, err := requireJSONArray(preflight, "protected_cidrs"); err != nil {
+		return fmt.Errorf("preflight: %w", err)
+	}
+	for i, rawUnit := range units {
+		var unit map[string]json.RawMessage
+		if err := json.Unmarshal(rawUnit, &unit); err != nil || unit == nil {
+			return fmt.Errorf("execution_units[%d] 必须是非 null 对象", i)
+		}
+		for _, field := range []string{"target_ids", "sites", "protected_cidrs", "conflicts", "cleanup_candidates", "cleanup_deletable", "cleanup_protected"} {
+			if _, err := requireJSONArray(unit, field); err != nil {
+				return fmt.Errorf("execution_units[%d]: %w", i, err)
+			}
+		}
+	}
 
 	for i, rawResult := range results {
 		var result map[string]json.RawMessage
@@ -571,7 +593,7 @@ func TestValidateDryRunArrayJSON_RejectsInvalidShapes(t *testing.T) {
 			{name: "对象", apply: func(obj map[string]any) { obj[field] = map[string]any{} }},
 		} {
 			t.Run("顶层_"+field+"_"+mutation.name, func(t *testing.T) {
-				response := map[string]any{"results": []any{validTarget()}, "warnings": []any{}}
+				response := map[string]any{"results": []any{validTarget()}, "warnings": []any{}, "execution_units": []any{}, "preflight": map[string]any{"protected_cidrs": []any{}}}
 				mutation.apply(response)
 				if err := validateDryRunArrayJSON(marshal(t, response)); err == nil {
 					t.Fatalf("字段 %s 为%s时必须拒绝", field, mutation.name)
@@ -592,7 +614,7 @@ func TestValidateDryRunArrayJSON_RejectsInvalidShapes(t *testing.T) {
 			t.Run("目标层_"+field+"_"+mutation.name, func(t *testing.T) {
 				target := validTarget()
 				mutation.apply(target)
-				response := map[string]any{"results": []any{target}, "warnings": []any{}}
+				response := map[string]any{"results": []any{target}, "warnings": []any{}, "execution_units": []any{}, "preflight": map[string]any{"protected_cidrs": []any{}}}
 				if err := validateDryRunArrayJSON(marshal(t, response)); err == nil {
 					t.Fatalf("字段 %s 为%s时必须拒绝", field, mutation.name)
 				}
@@ -601,7 +623,7 @@ func TestValidateDryRunArrayJSON_RejectsInvalidShapes(t *testing.T) {
 	}
 
 	t.Run("目标项为null", func(t *testing.T) {
-		response := map[string]any{"results": []any{nil}, "warnings": []any{}}
+		response := map[string]any{"results": []any{nil}, "warnings": []any{}, "execution_units": []any{}, "preflight": map[string]any{"protected_cidrs": []any{}}}
 		if err := validateDryRunArrayJSON(marshal(t, response)); err == nil {
 			t.Fatal("results 中的 null 目标项必须拒绝")
 		}

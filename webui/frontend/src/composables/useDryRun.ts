@@ -1,13 +1,15 @@
 // Dry Run 请求阶段与本次预览；completed 仅表示请求完成，不代表全部目标正常。
 import { ref, computed } from 'vue'
 import { request } from '../api'
-import type { DryRunResponse } from '../types'
+import type { DryRunExecutionUnit, DryRunPreflight, DryRunResponse } from '../types'
 
 export function useDryRun() {
   const status = ref<'idle' | 'running' | 'completed' | 'failed'>('idle')
   const loading = computed(() => status.value === 'running')
   const results = ref<DryRunResponse['results']>([])
   const warnings = ref<string[]>([])
+  const preflight = ref<DryRunPreflight | null>(null)
+  const executionUnits = ref<DryRunExecutionUnit[]>([])
   const error = ref('')
   const lastFinishedAt = ref<Date | null>(null)
 
@@ -17,10 +19,14 @@ export function useDryRun() {
     error.value = ''
     results.value = []
     warnings.value = []
+    preflight.value = null
+    executionUnits.value = []
     try {
       const data = await request<DryRunResponse>('/api/sync/dryrun', { method: 'POST' })
       results.value = data.results || []
       warnings.value = data.warnings || []
+      preflight.value = data.preflight || null
+      executionUnits.value = Array.isArray(data.execution_units) ? data.execution_units : []
       lastFinishedAt.value = new Date()
       status.value = 'completed'
     } catch (e: unknown) {
@@ -31,5 +37,5 @@ export function useDryRun() {
     }
   }
 
-  return { status, loading, results, warnings, error, lastFinishedAt, run }
+  return { status, loading, results, warnings, preflight, executionUnits, error, lastFinishedAt, run }
 }

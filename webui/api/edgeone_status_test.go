@@ -88,6 +88,11 @@ func TestEdgeOneStatusReadsLocalStateOnly(t *testing.T) {
 	if len(site.Coverage) != 1 || !site.Coverage[0].Complete {
 		t.Fatalf("覆盖状态 = %+v", site.Coverage)
 	}
+	// Step 10 旧行 protected 为空时，状态只读展示 pending 兼容保护。
+	if len(site.ProtectedCIDRs) != 1 || site.ProtectedCIDRs[0] != prefix.String() ||
+		site.TransitionBaseVersion != "v1" || site.TransitionPendingVersion != "v2" || site.TransitionUpdatedAt == nil {
+		t.Fatalf("过渡保护状态 = %+v", site)
+	}
 }
 
 func TestEdgeOneStatusNilDependency(t *testing.T) {

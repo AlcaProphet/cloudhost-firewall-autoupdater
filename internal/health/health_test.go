@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -404,3 +405,102 @@ func TestEvaluateStartupGrace(t *testing.T) {
 		t.Fatalf("已启动后停止必须立即异常（不受启动宽限影响）: %+v", res3)
 	}
 }
+
+func TestEvaluateEdgeOneOnlyNormalWaitAndOwnStall(t *testing.T) {
+	now := time.Now()
+	completed := now.Add(-time.Hour)
+	next := now.Add(71 * time.Hour)
+	status := baseStatus(now)
+	status.LastSync = &completed
+	status.DNS = syncer.SourceStatus{Enabled: false, Effective: false}
+	status.EdgeOne = syncer.SourceStatus{
+		Enabled: true, Effective: true, NextDueAt: &next, LastCompletedAt: &completed,
+		LastOutcome: syncer.SourceOutcomeSuccess, IntervalSeconds: int64((72 * time.Hour) / time.Second),
+	}
+	d := newHealthTestDeps()
+	d.setup(func() { d.status = status })
+	if res := d.checker().Evaluate(context.Background()); !res.Healthy {
+		t.Fatalf("EdgeOne-only 72h 正常等待期必须健康：%+v", res)
+	}
+
+	// 超过自身 next_due + health_timeout：只报 EdgeOne 停滞，不误报 DNS。
+	staleNext := now.Add(-11 * time.Minute)
+	status.EdgeOne.NextDueAt = &staleNext
+	status.EdgeOne.LastCompletedAt = ptrTime(now.Add(-73 * time.Hour))
+	d.setup(func() { d.status = status })
+	res := d.checker().Evaluate(context.Background())
+	if res.Healthy || !slices.Contains(res.Reasons, ReasonEdgeOneScheduleStalled) ||
+		slices.Contains(res.Reasons, ReasonDNSScheduleStalled) {
+		t.Fatalf("EdgeOne 自身到期边界：%+v", res)
+	}
+}
+
+func TestEvaluateOverlapVisibleWithIdleRound(t *testing.T) {
+	now := time.Now()
+	status := baseStatus(now)
+	status.LastRound = &syncer.RoundSummary{FinishedAt: now.Add(-time.Minute), Total: 0, Outcome: syncer.RoundIdle}
+	status.DNS = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeBlocked, IntervalSeconds: 300}
+	status.EdgeOne = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeBlocked, IntervalSeconds: 3600}
+	status.Preflight = syncer.AddressPreflightStatus{
+		State: syncer.PreflightStateOverlap, DNSComplete: true, EdgeOneComplete: true, KnownConflict: true,
+	}
+	d := newHealthTestDeps()
+	d.setup(func() { d.status = status })
+	res := d.checker().Evaluate(context.Background())
+	if res.Healthy || !slices.Contains(res.Reasons, ReasonAddressOverlap) {
+		t.Fatalf("空闲轮次不得掩盖已查实重叠：%+v", res)
+	}
+	for _, reason := range res.Reasons {
+		if reason == ReasonLastRoundFailed || reason == ReasonLastRoundPartial {
+			t.Fatalf("idle 轮次不得被误报为失败/部分完成：%+v", res.Reasons)
+		}
+	}
+}
+
+func TestEvaluateSingleSideIncompleteKeepsFailedSource(t *testing.T) {
+	now := time.Now()
+	status := baseStatus(now)
+	status.DNS = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeIncomplete, IntervalSeconds: 300}
+	status.EdgeOne = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeSuccess, IntervalSeconds: 3600}
+	status.Preflight = syncer.AddressPreflightStatus{
+		State: syncer.PreflightStateDataUnavailable, DNSComplete: false, EdgeOneComplete: true,
+	}
+	d := newHealthTestDeps()
+	d.setup(func() { d.status = status })
+	res := d.checker().Evaluate(context.Background())
+	if res.Healthy || !slices.Contains(res.Reasons, ReasonDNSIncomplete) ||
+		slices.Contains(res.Reasons, ReasonEdgeOneIncomplete) {
+		t.Fatalf("单侧不足必须只保留失败来源：%+v", res.Reasons)
+	}
+}
+
+func TestEvaluateSourceOutcomeFailedIsVisible(t *testing.T) {
+	now := time.Now()
+	status := baseStatus(now)
+	status.DNS = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeFailed, IntervalSeconds: 300}
+	status.EdgeOne = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeSuccess, IntervalSeconds: 3600}
+	d := newHealthTestDeps()
+	d.setup(func() { d.status = status })
+	res := d.checker().Evaluate(context.Background())
+	if res.Healthy || !slices.Contains(res.Reasons, ReasonDNSSourceFailed) ||
+		slices.Contains(res.Reasons, ReasonEdgeOneSourceFailed) {
+		t.Fatalf("来源级失败必须可见且不串到另一侧：%+v", res.Reasons)
+	}
+}
+
+func TestEvaluatePausedSkipsPreflightAndSourceReasons(t *testing.T) {
+	now := time.Now()
+	status := baseStatus(now)
+	status.Enabled = false
+	status.DNS = syncer.SourceStatus{Enabled: true, Effective: false, LastOutcome: syncer.SourceOutcomeFailed}
+	status.EdgeOne = syncer.SourceStatus{Enabled: true, Effective: false, LastOutcome: syncer.SourceOutcomeBlocked}
+	status.Preflight = syncer.AddressPreflightStatus{State: syncer.PreflightStateOverlap, KnownConflict: true}
+	d := newHealthTestDeps()
+	d.setup(func() { d.status = status })
+	res := d.checker().Evaluate(context.Background())
+	if !res.Healthy {
+		t.Fatalf("总暂停沿用既有健康边界，不加入预检/来源原因：%+v", res)
+	}
+}
+
+func ptrTime(v time.Time) *time.Time { return &v }

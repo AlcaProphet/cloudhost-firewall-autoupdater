@@ -16,7 +16,9 @@
     "test:import": "node scripts/test-frontend.mjs import",
     "test": "node scripts/test-frontend.mjs",
     "test:behavior": "node scripts/test-frontend.mjs behavior",
-    "test:runner": "node scripts/test-frontend.mjs runner"
+    "test:runner": "node scripts/test-frontend.mjs runner",
+    "test:edgeone": "node scripts/test-frontend.mjs edgeone",
+    "test:step14": "node scripts/test-frontend.mjs step14"
   },
   "dependencies": {
     "naive-ui": "^2.45.3",

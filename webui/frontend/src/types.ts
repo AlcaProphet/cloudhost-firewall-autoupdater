@@ -23,6 +23,15 @@ export interface ScannedResource {
   resource_name: string
 }
 
+// EdgeOneSite 是一个 ZoneId 的站点配置（GET/POST/PUT /api/edgeone/sites）。
+export interface EdgeOneSite {
+  zone_id: string
+  target_ids: number[]
+  protocol: string
+  ports: string
+  address_family: 'ipv4' | 'ipv6' | 'dual'
+}
+
 export interface DomainRule {
   id: number
   host: string
@@ -95,6 +104,33 @@ export interface RoundSummary {
   outcome: 'success' | 'failed' | 'partial' | 'idle'
 }
 
+export interface SourceStatus {
+  enabled: boolean
+  effective: boolean
+  next_due_at: string | null
+  last_started_at?: string | null
+  last_completed_at?: string | null
+  last_outcome?: 'success' | 'partial' | 'failed' | 'idle' | 'blocked' | 'incomplete' | ''
+  interval_seconds?: number
+}
+
+export interface AddressConflictStatus {
+  dns_name: string
+  dns_address: string
+  edgeone_prefix: string
+  zone_id: string
+}
+
+export interface AddressPreflightStatus {
+  state: 'single_source' | 'clear' | 'overlap' | 'data_unavailable'
+  conflict?: AddressConflictStatus
+  dns_complete: boolean
+  edgeone_complete: boolean
+  known_conflict: boolean
+  protected_cidrs: string[]
+  observed_at?: string | null
+}
+
 export interface SyncStatus {
   running: boolean
   last_sync: string | null
@@ -107,6 +143,10 @@ export interface SyncStatus {
   // round_started_at 无在途轮次时为 null；process_started_at 为 Syncer 构造时间
   round_started_at: string | null
   process_started_at: string
+  // Build8 Step 8/11 追加：独立来源调度与全局预检摘要。
+  dns?: SourceStatus
+  edgeone?: SourceStatus
+  address_preflight?: AddressPreflightStatus
 }
 
 // RuleChange 规则变更摘要（Dry Run 明细化）
@@ -170,6 +210,7 @@ export interface PlanIssue {
 // DryRunResult 目标级试运行结果（Issue7 §7.1）：每个已配置目标一项，数组恒为 []，绝不为 null
 export interface DryRunResult {
   target_id: number
+  execution_target_key: string
   provider: string
   domains: string[]
   desired: PlannedRule[]
@@ -187,9 +228,85 @@ export interface DryRunResult {
 }
 
 // DryRunResponse Dry Run 响应包装（空状态语义化）
+export interface DryRunPreflight {
+  state: 'single_source' | 'clear' | 'overlap' | 'data_unavailable'
+  conflict?: AddressConflictStatus
+  dns_complete: boolean
+  edgeone_complete: boolean
+  known_conflict: boolean
+  protected_cidrs: string[]
+  error: string
+}
+
+export interface DryRunSite {
+  zone_id: string
+  target_ids: number[]
+  current_version: string
+  pending_version: string
+  planned_active_at: string | null
+  address_family: string
+  data_complete: boolean
+  reasons: string[]
+  protected_cidrs: string[]
+}
+
+export interface DryRunExecutionUnit {
+  target_key: string
+  target_ids: number[]
+  provider: string
+  sites: DryRunSite[]
+  protected_cidrs: string[]
+  rules_read: number
+  current_rule_count: number
+  planned_add: number
+  transition_peak: number
+  limit: number | null
+  limit_source: string
+  limit_exceeded: boolean
+  coverage_ready: boolean
+  data_complete: boolean
+  conflicts: PlanIssue[]
+  cleanup_candidates: RuleChange[]
+  cleanup_deletable: RuleChange[]
+  cleanup_protected: RuleChange[]
+  error: string
+}
+
 export interface DryRunResponse {
   results: DryRunResult[]
   warnings: string[]
+  preflight: DryRunPreflight
+  execution_units: DryRunExecutionUnit[]
+}
+
+export interface EdgeOneSiteStatus {
+  zone_id: string
+  target_ids: number[]
+  current_version: string
+  pending_version: string
+  planned_active_at: string | null
+  last_query_at: string | null
+  last_query_request_id: string
+  last_query_error: string
+  coverage: { target_id: number; target_key: string; complete: boolean; reasons: string[] }[]
+  confirmation_state: 'not_attempted' | 'unknown' | 'accepted' | ''
+  confirmation_request_id: string
+  last_confirmation_error: string
+  actual_effective: boolean
+  actual_active_at: string | null
+  actual_confirmed: boolean | null
+  protected_cidrs: string[]
+  transition_base_version: string
+  transition_pending_version: string
+  transition_updated_at: string | null
+  transition_error: string
+}
+
+export interface EdgeOneStatus {
+  enabled: boolean
+  effective: boolean
+  next_due_at: string | null
+  sites: EdgeOneSiteStatus[]
 }
 
 // TestConnectionResult 连接测试结果

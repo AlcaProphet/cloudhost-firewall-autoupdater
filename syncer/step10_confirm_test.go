@@ -18,10 +18,13 @@ import (
 )
 
 type step10Store struct {
-	mu           sync.Mutex
-	rows         map[string]config.EdgeOneTransition
-	failUnknown  bool
-	failAccepted bool
+	mu               sync.Mutex
+	rows             map[string]config.EdgeOneTransition
+	failUnknown      bool
+	failAccepted     bool
+	listErr          error
+	saveProtectedErr error
+	deleteErr        error
 }
 
 func newStep10Store() *step10Store {
@@ -47,16 +50,58 @@ func (s *step10Store) GetEdgeOneTransition(_ context.Context, zone string) (*con
 	}
 	cp := row
 	cp.PendingCIDRs = append([]netip.Prefix(nil), row.PendingCIDRs...)
+	cp.ProtectedCIDRs = append([]netip.Prefix(nil), row.ProtectedCIDRs...)
 	return &cp, nil
 }
 
+func (s *step10Store) ListEdgeOneTransitions(_ context.Context) ([]config.EdgeOneTransition, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	zones := make([]string, 0, len(s.rows))
+	for zone := range s.rows {
+		zones = append(zones, zone)
+	}
+	sort.Strings(zones)
+	out := make([]config.EdgeOneTransition, 0, len(zones))
+	for _, zone := range zones {
+		row := s.rows[zone]
+		row.PendingCIDRs = append([]netip.Prefix(nil), row.PendingCIDRs...)
+		row.ProtectedCIDRs = append([]netip.Prefix(nil), row.ProtectedCIDRs...)
+		out = append(out, row)
+	}
+	return out, nil
+}
+
 func (s *step10Store) SaveEdgeOneObservation(_ context.Context, t config.EdgeOneTransition) error {
+	return s.saveObservation(t, true, false)
+}
+
+func (s *step10Store) SaveEdgeOneProtectedObservation(_ context.Context, t config.EdgeOneTransition, reset bool) error {
+	s.mu.Lock()
+	fail := s.saveProtectedErr
+	s.mu.Unlock()
+	if fail != nil {
+		return fail
+	}
+	return s.saveObservation(t, false, reset)
+}
+
+func (s *step10Store) saveObservation(t config.EdgeOneTransition, preserveProtected, reset bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	old, ok := s.rows[t.ZoneID]
-	state := config.EdgeOneConfirmationNotAttempted
-	requestID := ""
-	if ok && old.PendingVersion == t.PendingVersion && edgePendingJSON(old.PendingCIDRs) == edgePendingJSON(t.PendingCIDRs) {
+	if preserveProtected && ok {
+		t.ProtectedCIDRs = append([]netip.Prefix(nil), old.ProtectedCIDRs...)
+	}
+	state := t.ConfirmationState
+	requestID := t.ConfirmationRequestID
+	if state == "" {
+		state = config.EdgeOneConfirmationNotAttempted
+	}
+	if ok && !reset && old.PendingVersion == t.PendingVersion && edgePendingJSON(old.PendingCIDRs) == edgePendingJSON(t.PendingCIDRs) {
 		if old.ConfirmationState == config.EdgeOneConfirmationAccepted || old.ConfirmationState == config.EdgeOneConfirmationUnknown {
 			state, requestID = old.ConfirmationState, old.ConfirmationRequestID
 		}
@@ -64,6 +109,16 @@ func (s *step10Store) SaveEdgeOneObservation(_ context.Context, t config.EdgeOne
 	t.ConfirmationState = state
 	t.ConfirmationRequestID = requestID
 	s.rows[t.ZoneID] = t
+	return nil
+}
+
+func (s *step10Store) DeleteEdgeOneTransition(_ context.Context, zone string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	delete(s.rows, zone)
 	return nil
 }
 

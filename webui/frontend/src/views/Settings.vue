@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NForm, NFormItem, NInput, NSelect, NButton, NSpace, NCard, NGrid, NGi, NModal, useMessage, useThemeVars } from 'naive-ui'
+import { NForm, NFormItem, NInput, NSelect, NButton, NSpace, NCard, NGrid, NGi, NModal, NSwitch, useMessage, useThemeVars } from 'naive-ui'
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { request, RequestError, type MissingFieldsDetails } from '../api'
 import { useZones } from '../composables/useZones'
@@ -153,10 +153,11 @@ async function resetAll() {
   }
 }
 
-// 设置页只提交十个可见字段；theme 由侧边栏单独更新，后端仍保留十一字段部分更新 DTO
+// 设置页只提交十三个可见字段；theme 由侧边栏单独更新，总暂停与 EdgeOne 开关不在本页提交
 const editableKeys = [
   'tc_access_id', 'tc_access_key', 'ali_access_id', 'ali_access_key',
   'tag', 'interval', 'dns', 'dns_timeout', 'dns_fail_threshold', 'log_level',
+  'dns_enabled', 'edgeone_tag', 'edgeone_interval',
 ] as const
 
 // buildSettingsPayload 只构造当前设置页可见字段的保存 payload
@@ -409,13 +410,32 @@ async function confirmImport() {
     <NForm :model="settings" label-placement="left" label-width="120">
       <NGrid :cols="2" :x-gap="16">
         <NGi>
-          <NFormItem label="TAG">
+          <NFormItem label="DNS 同步">
+            <NSwitch
+              :value="settings.dns_enabled !== 'false'"
+              :disabled="saving"
+              @update:value="(v: boolean) => settings.dns_enabled = v ? 'true' : 'false'"
+            />
+          </NFormItem>
+        </NGi>
+        <NGi>
+          <NFormItem label="DNS TAG">
             <NInput v-model:value="settings.tag" />
           </NFormItem>
         </NGi>
         <NGi>
-          <NFormItem label="同步间隔">
+          <NFormItem label="DNS 间隔">
             <NInput v-model:value="settings.interval" placeholder="5m（30s / 1h30m / 1.5h）" />
+          </NFormItem>
+        </NGi>
+        <NGi>
+          <NFormItem label="EdgeOne TAG">
+            <NInput v-model:value="settings.edgeone_tag" />
+          </NFormItem>
+        </NGi>
+        <NGi>
+          <NFormItem label="EdgeOne 间隔">
+            <NInput v-model:value="settings.edgeone_interval" placeholder="72h（36h / 1h30m / 1.5h）" />
           </NFormItem>
         </NGi>
         <NGi>

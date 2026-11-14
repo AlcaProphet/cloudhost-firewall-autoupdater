@@ -3,6 +3,7 @@ package syncer
 import (
 	"errors"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -110,6 +111,10 @@ type Syncer struct {
 	// generation 是运行时状态代次，用于站点覆盖证明与旧结果隔离。
 	generation uint64
 
+	// 来源级最近结果（Step 15，mu 保护）。只保存本次进程内实际执行过的来源。
+	dnsResult  sourceRuntimeResult
+	edgeResult sourceRuntimeResult
+
 	// 双源调度状态（mu 保护）。nextDue 只在 Run 内推进，Status 只读。
 	dnsNextDue        time.Time
 	edgeNextDue       time.Time
@@ -122,14 +127,17 @@ type Syncer struct {
 	edgeRetryDelay    time.Duration
 
 	// EdgeOne 进程内缓存与站点状态（mu 保护）。
-	edgeCache     map[string]edgeOneCacheEntry
-	edgeStatus    map[string]EdgeOneSiteStatus
-	roundCoverage map[string]SiteCoverage
-	transitions   EdgeOneTransitionStore
-	confirmedMem  map[string][32]byte
-	preflight     PreflightOutcome
-	preflightAt   time.Time
-	preflightSet  bool
+	edgeCache          map[string]edgeOneCacheEntry
+	edgeStatus         map[string]EdgeOneSiteStatus
+	roundCoverage      map[string]SiteCoverage
+	transitions        EdgeOneTransitionStore
+	confirmedMem       map[string][32]byte
+	preflight          PreflightOutcome
+	preflightProtected []string
+	preflightAt        time.Time
+	preflightSet       bool
+	preflightLogState  PreflightState
+	preflightLogSet    bool
 }
 
 // New 创建同步引擎。
@@ -224,6 +232,7 @@ func (s *Syncer) applyStateLocked(next *RuntimeState) {
 		// 预检摘要与覆盖证明属于旧配置；新状态发布后不得继续展示为当前结果。
 		s.preflightSet = false
 		s.preflight = PreflightOutcome{}
+		s.preflightProtected = nil
 		s.roundCoverage = nil
 	}
 	s.runtime.Apply(next)
@@ -781,6 +790,23 @@ func (s *Syncer) clearManualPending() {
 // LastSuccess / LastRound 是对既有三字段的**向后兼容追加**（Issue6 A3/A18）：
 // 既有字段的类型与语义完全不变，仅新增同步健康表达。
 // 两者都是内存态，进程重启后归 null——前端文案不得表述为「从未成功」。
+// 来源级最近结论（Step 15）。blocked/incomplete 表示来源因预检/数据不足未执行，
+// 与目标级 success/partial/failed/idle 分开，避免把“没有目标”误报成失败。
+const (
+	SourceOutcomeSuccess    = "success"
+	SourceOutcomePartial    = "partial"
+	SourceOutcomeFailed     = "failed"
+	SourceOutcomeIdle       = "idle"
+	SourceOutcomeBlocked    = "blocked"
+	SourceOutcomeIncomplete = "incomplete"
+)
+
+type sourceRuntimeResult struct {
+	LastStartedAt   time.Time
+	LastCompletedAt time.Time
+	LastOutcome     string
+}
+
 type SyncStatus struct {
 	Running     bool          `json:"running"`
 	Enabled     bool          `json:"enabled"`
@@ -848,23 +874,59 @@ func (s *Syncer) sourceStatusLocked(state *RuntimeState, dnsSource bool) SourceS
 	interval := state.Config.Interval
 	next := s.dnsNextDue
 	scheduled := s.dnsScheduled
+	result := s.dnsResult
 	if !dnsSource {
 		enabled = state.Config.EdgeOneEnabled
 		interval = edgeOneIntervalOf(state)
 		next = s.edgeNextDue
 		scheduled = s.edgeScheduled
+		result = s.edgeResult
 	}
 	out.Enabled = enabled
 	out.Effective = enabled && state.Config.SyncEnabled
+	if interval > 0 {
+		out.IntervalSeconds = int64(interval / time.Second)
+	}
 	if out.Effective && scheduled && !next.IsZero() && interval > 0 {
 		t := next
 		out.NextDueAt = &t
 	}
+	if !result.LastStartedAt.IsZero() {
+		t := result.LastStartedAt
+		out.LastStartedAt = &t
+	}
+	if !result.LastCompletedAt.IsZero() {
+		t := result.LastCompletedAt
+		out.LastCompletedAt = &t
+	}
+	out.LastOutcome = result.LastOutcome
 	return out
 }
 
+func (s *Syncer) markSourceStarted(dnsSource bool, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if dnsSource {
+		s.dnsResult.LastStartedAt = at
+	} else {
+		s.edgeResult.LastStartedAt = at
+	}
+}
+
+func (s *Syncer) finishSourceResult(dnsSource bool, at time.Time, outcome string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if dnsSource {
+		s.dnsResult.LastCompletedAt = at
+		s.dnsResult.LastOutcome = outcome
+	} else {
+		s.edgeResult.LastCompletedAt = at
+		s.edgeResult.LastOutcome = outcome
+	}
+}
+
 func (s *Syncer) preflightStatusLocked(state *RuntimeState) AddressPreflightStatus {
-	out := AddressPreflightStatus{State: PreflightStateSingleSource}
+	out := AddressPreflightStatus{State: PreflightStateSingleSource, ProtectedCIDRs: []string{}}
 	dual := state != nil && state.Config.DNSFeatureEnabled() && state.Config.EdgeOneEnabled
 	if !dual {
 		// 单源/双关时状态由开关本身表达；旧双开预检摘要只保留已查实的
@@ -888,6 +950,10 @@ func (s *Syncer) preflightStatusLocked(state *RuntimeState) AddressPreflightStat
 	out.DNSComplete = s.preflight.DNSComplete
 	out.EdgeOneComplete = s.preflight.EdgeOneComplete
 	out.KnownConflict = s.preflight.KnownConflict
+	out.ProtectedCIDRs = append([]string{}, s.preflightProtected...)
+	if o := out.ProtectedCIDRs; o == nil {
+		out.ProtectedCIDRs = []string{}
+	}
 	if !s.preflightAt.IsZero() {
 		t := s.preflightAt
 		out.ObservedAt = &t
@@ -933,8 +999,10 @@ var ErrDryRunInProgress = errors.New("Dry Run 正在执行中")
 //
 // Issue7 §7.1：results 每个已配置目标一项，且必须是非 null 数组（空态序列化为 []）。
 type DryRunResponse struct {
-	Results  []DryRunResult `json:"results"`
-	Warnings []string       `json:"warnings"`
+	Results        []DryRunResult        `json:"results"`
+	Warnings       []string              `json:"warnings"`
+	Preflight      DryRunPreflight       `json:"preflight"`
+	ExecutionUnits []DryRunExecutionUnit `json:"execution_units"`
 }
 
 // DryRunResult 目标级试运行结果（Issue7 §7.1）。
@@ -945,6 +1013,7 @@ type DryRunResponse struct {
 // 而不是对未来 Add 的预测。
 type DryRunResult struct {
 	TargetID            int                    `json:"target_id"`
+	ExecutionTargetKey  string                 `json:"execution_target_key"`
 	Provider            string                 `json:"provider"`
 	Domains             []string               `json:"domains"`
 	Desired             []provider.PlannedRule `json:"desired"`
@@ -966,6 +1035,7 @@ type DryRunResult struct {
 func emptyDryRunResult(targetID int, name string, domains []string) DryRunResult {
 	return DryRunResult{
 		TargetID:            targetID,
+		ExecutionTargetKey:  "",
 		Provider:            name,
 		Domains:             domains,
 		Desired:             []provider.PlannedRule{},
@@ -991,12 +1061,16 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 	defer s.dryRunMu.Unlock()
 
 	state := s.runtime.Snapshot()
-	resp := DryRunResponse{Results: []DryRunResult{}, Warnings: []string{}}
+	resp := DryRunResponse{
+		Results:        []DryRunResult{},
+		Warnings:       []string{},
+		Preflight:      DryRunPreflight{State: PreflightStateSingleSource, ProtectedCIDRs: []string{}},
+		ExecutionUnits: []DryRunExecutionUnit{},
+	}
 	if state == nil {
 		resp.Warnings = append(resp.Warnings, "运行时状态尚未就绪")
 		return resp, nil
 	}
-
 	if len(state.Providers) == 0 {
 		resp.Warnings = append(resp.Warnings, "暂无云资源目标，请先在云资源管理页配置")
 	}
@@ -1004,63 +1078,231 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 		resp.Warnings = append(resp.Warnings, "暂无域名规则，请先在域名规则页配置")
 	}
 
-	// 与正式同步共用同一纯规划器（provider.PlanTarget）；这里的差异只有：
-	// 不写入、不发布事件、不修改熔断器、只取 S0。
-	for _, p := range state.Providers {
-		rules := filterRulesForTarget(state.Config.DomainRules, p.TargetIndex())
-		result := emptyDryRunResult(p.TargetIndex(), p.Name(), ruleHosts(rules))
-		if len(rules) == 0 {
-			// Dry Run 展示所有已配置目标，便于发现规则适用范围遗漏；但正式同步不会
-			// 调度无适用规则的目标，因此这里也只返回未调度骨架，不解析 DNS、
-			// 不读取云快照、不进入 planner，也不产生限速等待。
-			resp.Results = append(resp.Results, result)
+	edgeData := s.previewEdgeOneData(state)
+	if len(edgeData) > 0 {
+		for _, item := range edgeData {
+			if item.transitionReadErr != "" {
+				resp.Warnings = append(resp.Warnings, "过渡保护记录读取失败，EdgeOne 预览不完整")
+				break
+			}
+		}
+	}
+	dnsData := dryRunDNSData{complete: true, resolved: map[int][]dns.ResolvedIP{}, errors: map[int]string{}}
+	if state.Config.EdgeOneEnabled {
+		dnsData = s.previewDNS(state)
+	}
+	edgePrefixes, edgeComplete := edgePrefixInputs(edgeData)
+	outcome, preflightErr := s.previewPreflight(state, dnsData.addresses, dnsData.complete, edgePrefixes, edgeComplete)
+	resp.Preflight = dryRunPreflight(outcome, transitionProtectedInputs(edgeData), preflightErr)
+	if preflightErr != nil {
+		resp.Warnings = append(resp.Warnings, "地址冲突只读检查失败，预检状态不可用")
+	}
+
+	groups := s.targetGroups(state)
+	resultsByID := make(map[int]DryRunResult, len(state.Providers))
+	for _, group := range groups {
+		targetRules, targetSites := group.rules, group.sites
+		limit, limitSource := dryRunLimit(group.primary.CloudType())
+		if len(targetRules) == 0 && len(targetSites) == 0 {
+			for _, id := range group.targetIDs {
+				rules := filterRulesForTarget(state.Config.DomainRules, id)
+				result := emptyDryRunResult(id, group.primary.Name(), ruleHosts(rules))
+				result.ExecutionTargetKey = group.identity
+				resultsByID[id] = result
+			}
+			resp.ExecutionUnits = append(resp.ExecutionUnits, DryRunExecutionUnit{
+				TargetKey: group.identity, TargetIDs: append([]int(nil), group.targetIDs...),
+				Provider: group.primary.Name(), Sites: []DryRunSite{}, ProtectedCIDRs: []string{},
+				Limit: limit, LimitSource: limitSource, DataComplete: true,
+				Conflicts: []provider.PlanIssue{}, CleanupCandidates: []provider.RuleChange{},
+				CleanupDeletable: []provider.RuleChange{}, CleanupProtected: []provider.RuleChange{},
+			})
 			continue
 		}
 
-		// 每目标按 host 去重解析一次（report=false：不写熔断器、不发 DNS 事件）
-		resolved, dnsErrors, _ := s.resolveTargetRules(state, rules, nil, false, nil)
+		resolvedByID := make(map[int]map[int][]dns.ResolvedIP, len(group.targetIDs))
+		errorsByID := make(map[int]map[int]string, len(group.targetIDs))
+		if !state.Config.EdgeOneEnabled {
+			// DNS-only 保持既有「每目标解析后再进入该平台冷却」顺序。
+			for _, id := range group.targetIDs {
+				rules := filterRulesForTarget(state.Config.DomainRules, id)
+				resolved, dnsErrors, _ := s.resolveTargetRules(state, rules, nil, false, nil)
+				resolvedByID[id], errorsByID[id] = resolved, dnsErrors
+			}
+		}
 
-		// 只在下一次同平台读取前补足冷却，首次读取与末尾返回不额外等待。
-		// DNS/规划及其他平台处理已消耗的时间可抵扣；冷却跨连续 Dry Run 保留。
+		// 只读冷却与正式 Dry Run 一致；一次物理目标只读取一份 S0。
 		if s.dryRunNextRead == nil {
 			s.dryRunNextRead = make(map[config.CloudType]time.Time)
 		}
-		s.sleep(time.Until(s.dryRunNextRead[p.CloudType()]))
-		snapshot, err := p.GetSnapshot()
-		// 失败读取同样消耗请求预算；从完整快照操作结束后开始冷却，分页逻辑不变。
-		s.dryRunNextRead[p.CloudType()] = time.Now().Add(rateLimitInterval(p.CloudType()))
+		s.sleep(time.Until(s.dryRunNextRead[group.primary.CloudType()]))
+		snapshot, err := group.primary.GetSnapshot()
+		s.dryRunNextRead[group.primary.CloudType()] = time.Now().Add(rateLimitInterval(group.primary.CloudType()))
 		if err != nil {
-			result.Error = err.Error()
-			resp.Results = append(resp.Results, result)
+			for _, id := range group.targetIDs {
+				rules := filterRulesForTarget(state.Config.DomainRules, id)
+				result := emptyDryRunResult(id, group.primary.Name(), ruleHosts(rules))
+				result.ExecutionTargetKey = group.identity
+				result.Error = err.Error()
+				resultsByID[id] = result
+			}
+			resp.ExecutionUnits = append(resp.ExecutionUnits, DryRunExecutionUnit{
+				TargetKey: group.identity, TargetIDs: append([]int(nil), group.targetIDs...),
+				Provider: group.primary.Name(), Sites: dryRunSites(targetSites, edgeData),
+				ProtectedCIDRs:    protectedEdgeOneCIDRStrings(protectedPrefixesForSites(targetSites, edgeData)),
+				Limit:             limit,
+				LimitSource:       limitSource,
+				Conflicts:         []provider.PlanIssue{},
+				CleanupCandidates: []provider.RuleChange{},
+				CleanupDeletable:  []provider.RuleChange{},
+				CleanupProtected:  []provider.RuleChange{},
+				Error:             "云快照读取失败",
+			})
 			continue
 		}
 
+		for _, id := range group.targetIDs {
+			rules := filterRulesForTarget(state.Config.DomainRules, id)
+			sites := localTargetSites(targetSites, id)
+			resolved, dnsErrors := subsetDNSData(dnsData, rules)
+			if !state.Config.EdgeOneEnabled {
+				resolved, dnsErrors = resolvedByID[id], errorsByID[id]
+			}
+			protected := protectedPrefixesForSites(sites, edgeData)
+			protectedUnknown := protectedUnknownForSites(sites, edgeData)
+			tag := ""
+			if len(sites) > 0 {
+				tag = state.Config.EdgeOneTag
+			}
+			plan := provider.PlanTarget(provider.TargetPlanInput{
+				CloudType:         group.primary.CloudType(),
+				Tag:               state.Config.Tag,
+				OtherTag:          state.Config.EdgeOneTag,
+				EdgeOneTag:        tag,
+				CoverageOnlyTag:   coverageOnlyTagForState(state),
+				Rules:             rules,
+				EdgeOneSites:      edgeOneInputsForPreview(sites, edgeData),
+				Resolved:          resolved,
+				DNSErrors:         dnsErrors,
+				Snapshot:          snapshot,
+				ProtectedPrefixes: protected,
+				ProtectedUnknown:  protectedUnknown,
+			})
+			result := dryRunResultFromPlan(id, group.primary.Name(), ruleHosts(rules), group.identity, plan)
+			resultsByID[id] = result
+		}
+
+		resolved, dnsErrors := subsetDNSData(dnsData, targetRules)
+		if !state.Config.EdgeOneEnabled {
+			resolved = make(map[int][]dns.ResolvedIP)
+			dnsErrors = make(map[int]string)
+			for _, id := range group.targetIDs {
+				for ruleID, ips := range resolvedByID[id] {
+					resolved[ruleID] = ips
+				}
+				for ruleID, msg := range errorsByID[id] {
+					dnsErrors[ruleID] = msg
+				}
+			}
+		}
+		protected := protectedPrefixesForSites(targetSites, edgeData)
+		protectedUnknown := protectedUnknownForSites(targetSites, edgeData)
+		tag := ""
+		if len(targetSites) > 0 {
+			tag = state.Config.EdgeOneTag
+		}
 		plan := provider.PlanTarget(provider.TargetPlanInput{
-			CloudType: p.CloudType(),
-			Tag:       state.Config.Tag,
-			Rules:     rules,
-			Resolved:  resolved,
-			DNSErrors: dnsErrors,
-			Snapshot:  snapshot,
+			CloudType:         group.primary.CloudType(),
+			Tag:               state.Config.Tag,
+			OtherTag:          state.Config.EdgeOneTag,
+			EdgeOneTag:        tag,
+			CoverageOnlyTag:   coverageOnlyTagForState(state),
+			Rules:             targetRules,
+			EdgeOneSites:      edgeOneInputsForPreview(targetSites, edgeData),
+			Resolved:          resolved,
+			DNSErrors:         dnsErrors,
+			Snapshot:          snapshot,
+			ProtectedPrefixes: protected,
+			ProtectedUnknown:  protectedUnknown,
 		})
-		result.Desired = plan.Desired
-		result.SatisfiedByOwned = plan.SatisfiedByOwned
-		result.SatisfiedByExternal = plan.SatisfiedByExternal
-		result.CleanupDeferred = plan.CleanupDeferred
-		result.DNSErrors = plan.DNSErrors
-		result.Unsupported = plan.Unsupported
-		result.Conflicts = plan.Conflicts
-		result.CoverageReady = plan.CoverageReady
-		for _, a := range plan.ToAdd {
-			result.ToAdd = append(result.ToAdd, provider.RuleChangeFromAction(a))
+		dataComplete := desiredInputComplete(targetRules, resolved, dnsErrors) && edgePreviewComplete(targetSites, edgeData)
+		unit := DryRunExecutionUnit{
+			TargetKey:         group.identity,
+			TargetIDs:         append([]int(nil), group.targetIDs...),
+			Provider:          group.primary.Name(),
+			Sites:             dryRunSites(targetSites, edgeData),
+			ProtectedCIDRs:    protectedEdgeOneCIDRStrings(protected),
+			RulesRead:         len(snapshot.Rules),
+			CurrentRuleCount:  len(snapshot.Rules),
+			PlannedAdd:        len(plan.ToAdd),
+			TransitionPeak:    len(snapshot.Rules) + len(plan.ToAdd),
+			Limit:             limit,
+			LimitSource:       limitSource,
+			CoverageReady:     plan.CoverageReady,
+			DataComplete:      dataComplete,
+			Conflicts:         plan.Conflicts,
+			CleanupCandidates: dryRunRuleChanges(plan.CleanupCandidates),
+			CleanupDeletable:  dryRunRuleChanges(plan.CleanupDeletable),
+			CleanupProtected:  dryRunProtectedCleanup(plan, tag, protected, protectedUnknown),
 		}
-		// 清理候选只是预览：正式流程还要在 S1 上重新过一遍全部安全门
-		for _, c := range plan.CleanupCandidates {
-			result.CleanupCandidates = append(result.CleanupCandidates, provider.RuleChangeFromInfo(c))
+		if limit != nil && unit.TransitionPeak > *limit {
+			unit.LimitExceeded = true
 		}
-		resp.Results = append(resp.Results, result)
+		resp.ExecutionUnits = append(resp.ExecutionUnits, unit)
+	}
+
+	// 保持既有「每个已配置目标一项」顺序；target_id 是前端稳定 key。
+	for _, p := range state.Providers {
+		if result, ok := resultsByID[p.TargetIndex()]; ok {
+			resp.Results = append(resp.Results, result)
+		}
 	}
 	return resp, nil
+}
+
+func transitionProtectedInputs(data map[string]edgeOneSiteData) []EdgeOnePrefix {
+	zones := make([]string, 0, len(data))
+	for zone := range data {
+		zones = append(zones, zone)
+	}
+	sort.Strings(zones)
+	out := make([]EdgeOnePrefix, 0)
+	for _, zone := range zones {
+		for _, prefix := range data[zone].protected {
+			out = append(out, EdgeOnePrefix{ZoneID: zone, Prefix: prefix})
+		}
+	}
+	return out
+}
+
+func edgePreviewComplete(sites []config.EdgeOneSite, data map[string]edgeOneSiteData) bool {
+	for _, site := range sites {
+		item := data[strings.TrimSpace(site.ZoneID)]
+		if item.unavailable != "" || item.transitionReadErr != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func dryRunResultFromPlan(targetID int, providerName string, domains []string, executionKey string, plan provider.TargetPlan) DryRunResult {
+	result := emptyDryRunResult(targetID, providerName, domains)
+	result.ExecutionTargetKey = executionKey
+	result.Desired = plan.Desired
+	result.SatisfiedByOwned = plan.SatisfiedByOwned
+	result.SatisfiedByExternal = plan.SatisfiedByExternal
+	result.CleanupDeferred = plan.CleanupDeferred
+	result.DNSErrors = plan.DNSErrors
+	result.Unsupported = plan.Unsupported
+	result.Conflicts = plan.Conflicts
+	result.CoverageReady = plan.CoverageReady
+	for _, action := range plan.ToAdd {
+		result.ToAdd = append(result.ToAdd, provider.RuleChangeFromAction(action))
+	}
+	for _, candidate := range plan.CleanupCandidates {
+		result.CleanupCandidates = append(result.CleanupCandidates, provider.RuleChangeFromInfo(candidate))
+	}
+	return result
 }
 
 // syncAll 执行一轮完整同步。

@@ -81,6 +81,8 @@ const (
 	IssueCrossTagEquivalent = "cross_tag_equivalent"
 	// IssueEdgeOneUnavailable EdgeOne 站点查询失败或结果不完整
 	IssueEdgeOneUnavailable = "edgeone_unavailable"
+	// IssueTransitionProtected 清理候选仍处于过渡保护范围，不能自动删除
+	IssueTransitionProtected = "transition_protected"
 )
 
 // RuleSnapshot 一次云端读取的不可拆分结果：规则 + 版本。
@@ -229,6 +231,12 @@ type TargetPlanInput struct {
 	// AddStateUnknown 表示调用方尚未确认 Add 提交状态，置 true 时冻结覆盖与清理。
 	// 当前正式目标链对普通 Add 错误早退，幂等错误仍须经 S1 覆盖验证，故无需置 true。
 	AddStateUnknown bool
+	// ProtectedPrefixes 是过渡中仍可能用于回源的 EdgeOne 网段；受保护的
+	// EdgeOne TAG 候选保留在 CleanupCandidates，但不进入 CleanupDeletable。
+	ProtectedPrefixes []netip.Prefix
+	// ProtectedUnknown 表示过渡保护记录不可读；所有 EdgeOne TAG 候选均为
+	// deferred，DNS TAG 清理不受影响。
+	ProtectedUnknown bool
 }
 
 // Capability 平台能力矩阵：唯一的能力判定源（期望展开与 CreateRules 的防御检查均须遵循本矩阵）。
@@ -1044,9 +1052,10 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 		desiredKeys[d.Key] = true
 	}
 	type candidate struct {
-		rule  config.RuleInfo
-		keys  []FunctionalKey
-		owner ruleOwner
+		rule      config.RuleInfo
+		keys      []FunctionalKey
+		owner     ruleOwner
+		protected bool
 	}
 	var candidates []candidate
 	for i, r := range in.Snapshot.Rules {
@@ -1068,7 +1077,20 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 		if !allAbsent {
 			continue
 		}
-		candidates = append(candidates, candidate{rule: r, keys: entry.keys, owner: entry.owner})
+		protected := false
+		if entry.owner == ownerEdge {
+			if in.ProtectedUnknown {
+				protected = true
+			} else {
+				for _, k := range entry.keys {
+					if functionalKeyProtected(in.ProtectedPrefixes, k) {
+						protected = true
+						break
+					}
+				}
+			}
+		}
+		candidates = append(candidates, candidate{rule: r, keys: entry.keys, owner: entry.owner, protected: protected})
 		plan.CleanupCandidates = append(plan.CleanupCandidates, r)
 	}
 
@@ -1111,6 +1133,17 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 	// 清理门未全部满足时，全部候选只作预览（deferred），可删除集合为空。
 	gateBlocked := len(gateIssues) > 0
 	for _, c := range candidates {
+		if c.protected {
+			key := c.keys[0]
+			message := "候选仍处于过渡保护范围，保留为残留：" + describeCloudRule(c.rule)
+			if in.ProtectedUnknown {
+				message = "过渡保护状态未知，保留全部 EdgeOne TAG 清理候选：" + describeCloudRule(c.rule)
+			}
+			plan.CleanupDeferred = append(plan.CleanupDeferred, PlanIssue{
+				Code: IssueTransitionProtected, Message: message, Key: &key,
+			})
+			continue
+		}
 		// 定位问题始终登记（Dry Run 需要展示每个候选为何不能删除）；
 		// 但只有清理门全部满足时才可能进入可删除集合。
 		ownedIndex, otherIndex := dnsIndex, edgeIndex
@@ -1133,6 +1166,30 @@ func PlanTarget(in TargetPlanInput) TargetPlan {
 	sortIssues(plan.Conflicts)
 	sortIssues(plan.CleanupDeferred)
 	return plan
+}
+
+// functionalKeyProtected 判断候选功能 key 的 CIDR 是否与过渡保护网段重叠。
+//
+// 采用双向包含的保守判定：候选比保护网段更宽时删除同样会移除受保护源站。
+func functionalKeyProtected(protected []netip.Prefix, key FunctionalKey) bool {
+	candidate, err := netip.ParsePrefix(strings.TrimSpace(key.CIDR))
+	if err != nil {
+		return true
+	}
+	candidate = candidate.Masked()
+	for _, p := range protected {
+		if !p.IsValid() {
+			continue
+		}
+		p = p.Masked()
+		if p.Addr().BitLen() != candidate.Addr().BitLen() {
+			continue
+		}
+		if p.Contains(candidate.Addr()) || candidate.Contains(p.Addr()) {
+			return true
+		}
+	}
+	return false
 }
 
 // cleanupLocatorIssue 判断候选在**当前快照**中是否具备无歧义的删除定位。

@@ -154,6 +154,19 @@ func (s *Store) ListEdgeOneTransitions(ctx context.Context) ([]EdgeOneTransition
 // 同一待更新指纹保留已 accepted/unknown 状态；指纹变化则重置为
 // not_attempted。已有 protected_cidrs（Step 11 写入）必须保留。
 func (s *Store) SaveEdgeOneObservation(ctx context.Context, t EdgeOneTransition) error {
+	return s.saveEdgeOneObservation(ctx, t, true, false)
+}
+
+// SaveEdgeOneProtectedObservation 写入一次带显式保护集合的观察（Step 11）。
+//
+// resetConfirmation 为 true 时强制写入调用方的确认状态（通常为
+// not_attempted），用于已释放的待更新指纹被新指纹替换的场景；
+// 为 false 时沿用 SaveEdgeOneObservation 的同指纹保留语义。
+func (s *Store) SaveEdgeOneProtectedObservation(ctx context.Context, t EdgeOneTransition, resetConfirmation bool) error {
+	return s.saveEdgeOneObservation(ctx, t, false, resetConfirmation)
+}
+
+func (s *Store) saveEdgeOneObservation(ctx context.Context, t EdgeOneTransition, preserveProtected, resetConfirmation bool) error {
 	if t.ConfirmationState == "" {
 		t.ConfirmationState = EdgeOneConfirmationNotAttempted
 	}
@@ -168,19 +181,24 @@ func (s *Store) SaveEdgeOneObservation(ctx context.Context, t EdgeOneTransition)
 	if err != nil {
 		return err
 	}
+	protectedJSON, err := canonicalCIDRJSON(t.ProtectedCIDRs)
+	if err != nil {
+		return err
+	}
 	return s.WithTransactionContext(ctx, func(tx *sql.Tx) error {
 		existing, err := loadEdgeOneTransitionTx(ctx, tx, t.ZoneID)
 		if err != nil {
 			return err
 		}
-		state := EdgeOneConfirmationNotAttempted
-		requestID := ""
-		protectedJSON := "[]"
-		if existing != nil {
+		state := t.ConfirmationState
+		requestID := t.ConfirmationRequestID
+		if preserveProtected && existing != nil {
 			protectedJSON, err = canonicalCIDRJSON(existing.ProtectedCIDRs)
 			if err != nil {
 				return err
 			}
+		}
+		if existing != nil && !resetConfirmation {
 			existingJSON, jerr := canonicalCIDRJSON(existing.PendingCIDRs)
 			if jerr != nil {
 				return jerr
@@ -190,7 +208,7 @@ func (s *Store) SaveEdgeOneObservation(ctx context.Context, t EdgeOneTransition)
 				case EdgeOneConfirmationAccepted:
 					state, requestID = EdgeOneConfirmationAccepted, existing.ConfirmationRequestID
 				case EdgeOneConfirmationUnknown:
-					state = EdgeOneConfirmationUnknown
+					state, requestID = EdgeOneConfirmationUnknown, existing.ConfirmationRequestID
 				}
 			}
 		}

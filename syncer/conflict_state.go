@@ -297,3 +297,93 @@ func (s *AddressConflictState) memoryConflict() *config.AddressConflict {
 	cp := *s.known
 	return &cp
 }
+
+// Preview 计算与正式预检相同的准入结论，但不写入任何运行状态。
+//
+// 只读模拟必须与正式 Evaluate 共用 FirstOverlap/DecideAdmission；区别仅在于
+// 不 observe/persist/clear，也不把读到的 SQLite 记录写入进程内缓存。
+func (s *AddressConflictState) Preview(ctx context.Context, in Preflight) (PreflightOutcome, error) {
+	if s == nil || s.store == nil {
+		return PreflightOutcome{
+			State:           PreflightStateDataUnavailable,
+			DNSComplete:     in.DNSComplete,
+			EdgeOneComplete: in.EdgeOneComplete,
+		}, errors.New("地址冲突状态缺少 Store")
+	}
+
+	s.evalMu.Lock()
+	defer s.evalMu.Unlock()
+
+	if !allDNSAddressesValid(in.DNS) {
+		in.DNSComplete = false
+	}
+	if !allEdgeOnePrefixesValid(in.EdgeOne) {
+		in.EdgeOneComplete = false
+	}
+	s.mu.Lock()
+	knownMemory := s.known != nil
+	s.mu.Unlock()
+
+	outcome := PreflightOutcome{
+		DNSComplete:     in.DNSComplete,
+		EdgeOneComplete: in.EdgeOneComplete,
+	}
+
+	// 单项/双关与正式 Evaluate 一样不读取冲突表。
+	if !in.DNSEnabled || !in.EdgeOneEnabled {
+		in.KnownConflict = knownMemory
+		outcome.KnownConflict = knownMemory
+		outcome.State = PreflightStateSingleSource
+		outcome.Admission = DecideAdmission(in)
+		return outcome, nil
+	}
+
+	host, prefix, overlap := FirstOverlap(in.DNS, in.EdgeOne)
+	persisted, err := s.store.GetAddressConflict(ctx)
+	known := knownMemory || persisted != nil
+	if overlap {
+		evidence := AddressOverlap{DNS: host, EdgeOne: prefix}
+		outcome.Overlap = &evidence
+		outcome.KnownConflict = true
+		outcome.State = PreflightStateOverlap
+		outcome.Admission = Admission{KeepConflict: true}
+		if err != nil {
+			return outcome, err
+		}
+		return outcome, nil
+	}
+	if err != nil {
+		outcome.KnownConflict = known
+		if known {
+			outcome.State = PreflightStateOverlap
+			outcome.Admission = Admission{KeepConflict: true}
+		} else {
+			outcome.State = PreflightStateDataUnavailable
+		}
+		return outcome, err
+	}
+
+	in.KnownConflict = known
+	outcome.KnownConflict = known
+	if known {
+		if in.DNSComplete && in.EdgeOneComplete {
+			// 正式轮会先提交解除再放行；预览只展示“可解除后放行”，不改写记录。
+			in.KnownConflict = false
+			outcome.KnownConflict = false
+			outcome.State = PreflightStateClear
+			outcome.Admission = DecideAdmission(in)
+			return outcome, nil
+		}
+		outcome.State = PreflightStateOverlap
+		outcome.Admission = Admission{KeepConflict: true}
+		return outcome, nil
+	}
+
+	outcome.Admission = DecideAdmission(in)
+	if in.DNSComplete && in.EdgeOneComplete {
+		outcome.State = PreflightStateClear
+	} else {
+		outcome.State = PreflightStateDataUnavailable
+	}
+	return outcome, nil
+}
