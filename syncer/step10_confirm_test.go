@@ -453,6 +453,7 @@ func TestStep10LatestVersionNowDoesNotMarkAccepted(t *testing.T) {
 	p := newProbeProvider(config.CloudTCCVM, 0)
 	next := step10Snapshot()
 	noNext := next
+	noNext.Current = *next.Next
 	noNext.Next = nil
 	teo := &step10TEO{
 		snapshots:  []provider.OriginACLSnapshot{next, noNext},

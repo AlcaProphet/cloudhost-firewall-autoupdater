@@ -55,6 +55,12 @@ async function fetchStatus() {
 const preflightHint = computed(() => {
   const p = status.value.address_preflight
   if (!p) return { type: 'info' as const, text: '全局预检状态未知（后端未返回 address_preflight）' }
+  if (p.state === 'single_source' && p.known_conflict) {
+    return { type: 'info' as const, text: '保留历史地址冲突记录；当前按已启用来源运行，重新双开后复查' }
+  }
+  if (p.error && p.state !== 'overlap') {
+    return { type: 'error' as const, text: '全局预检未能完成；正式同步已阻断两侧' }
+  }
   if (p.known_conflict && p.state !== 'overlap') {
     return { type: 'error' as const, text: '存在已查实地址重叠；正式同步保持保守阻断' }
   }
@@ -343,6 +349,9 @@ onUnmounted(() => {
           <div style="font-size: 14px; line-height: 1.8">
             当前版本 <b>{{ versionLabel(st.current_version) }}</b>，
             待更新版本 <b>{{ versionLabel(st.pending_version) }}</b>；
+            <span v-if="!st.pending_version && st.transition_pending_version">
+              正在追踪版本 <b>{{ st.transition_pending_version }}</b>；
+            </span>
             最近查询：{{ st.last_query_at ? new Date(st.last_query_at).toLocaleString() : '暂无记录' }}
           </div>
           <div style="font-size: 14px; line-height: 1.8">

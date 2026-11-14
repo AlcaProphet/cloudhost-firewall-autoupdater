@@ -463,7 +463,7 @@ func TestEvaluateSingleSideIncompleteKeepsFailedSource(t *testing.T) {
 	status.DNS = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeIncomplete, IntervalSeconds: 300}
 	status.EdgeOne = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeSuccess, IntervalSeconds: 3600}
 	status.Preflight = syncer.AddressPreflightStatus{
-		State: syncer.PreflightStateDataUnavailable, DNSComplete: false, EdgeOneComplete: true,
+		State: syncer.PreflightStateDataUnavailable, DNSComplete: false, EdgeOneComplete: true, ObservedAt: &now,
 	}
 	d := newHealthTestDeps()
 	d.setup(func() { d.status = status })
@@ -530,6 +530,8 @@ func TestEvaluateKnownConflictWithoutObservationIsVisible(t *testing.T) {
 	// 尚未重新预检时，已持久化的已知冲突仍必须保持可见。
 	now := time.Now()
 	status := baseStatus(now)
+	status.DNS.Enabled = true
+	status.EdgeOne.Enabled = true
 	status.Preflight = syncer.AddressPreflightStatus{
 		State: syncer.PreflightStateDataUnavailable, KnownConflict: true,
 	}
@@ -578,5 +580,25 @@ func TestEvaluateSourceOutcomePartialIsVisible(t *testing.T) {
 	if res.Healthy || !slices.Contains(res.Reasons, ReasonDNSSourcePartial) ||
 		slices.Contains(res.Reasons, ReasonDNSSourceFailed) {
 		t.Fatalf("来源 partial 必须独立可见：%+v", res.Reasons)
+	}
+}
+
+func TestEvaluateRetainedConflictWithSingleSource(t *testing.T) {
+	d := newHealthTestDeps()
+	d.status.DNS = syncer.SourceStatus{Enabled: true, Effective: true, IntervalSeconds: 300, LastOutcome: syncer.SourceOutcomeSuccess}
+	d.status.Preflight = syncer.AddressPreflightStatus{State: syncer.PreflightStateSingleSource, KnownConflict: true}
+	if got := d.checker().Evaluate(context.Background()); !got.Healthy {
+		t.Fatalf("retained conflict still causes an operational anomaly after single-source success: %+v", got)
+	}
+}
+
+func TestEvaluateSuccessfulPreflightClearsHistoricalBlock(t *testing.T) {
+	d := newHealthTestDeps()
+	started := d.now.Add(-time.Minute)
+	d.status.DNS = syncer.SourceStatus{Enabled: true, Effective: true, IntervalSeconds: 300, LastOutcome: syncer.SourceOutcomeSuccess}
+	d.status.EdgeOne = syncer.SourceStatus{Enabled: true, Effective: true, IntervalSeconds: 259200, LastCompletedAt: &started, LastOutcome: syncer.SourceOutcomeBlocked}
+	d.status.Preflight = syncer.AddressPreflightStatus{State: syncer.PreflightStateClear, DNSComplete: true, EdgeOneComplete: true, ObservedAt: &d.now}
+	if got := d.checker().Evaluate(context.Background()); !got.Healthy {
+		t.Fatalf("fully recovered preflight still reports a source currently blocked: %+v", got)
 	}
 }

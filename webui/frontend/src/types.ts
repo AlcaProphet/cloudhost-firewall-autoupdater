@@ -129,6 +129,7 @@ export interface AddressPreflightStatus {
   known_conflict: boolean
   protected_cidrs: string[]
   observed_at?: string | null
+  error?: string
 }
 
 export interface SyncStatus {

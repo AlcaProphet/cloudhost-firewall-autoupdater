@@ -311,6 +311,9 @@ onMounted(async () => {
           <div style="font-size: 14px; line-height: 1.9">
             当前版本 <b>{{ versionLabel(st.current_version) }}</b>，
             待更新版本 <b>{{ versionLabel(st.pending_version) }}</b>；
+            <span v-if="!st.pending_version && st.transition_pending_version">
+              正在追踪版本 <b>{{ st.transition_pending_version }}</b>；
+            </span>
             最近查询 {{ timeLabel(st.last_query_at) }}。
           </div>
           <div style="font-size: 14px; line-height: 1.9">

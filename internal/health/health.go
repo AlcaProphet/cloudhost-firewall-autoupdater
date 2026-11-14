@@ -185,26 +185,26 @@ func (c *Checker) Evaluate(ctx context.Context) Result {
 		}
 	}
 
-	// 5) 预检冲突 / 单侧数据不足：即使本轮没有目标结果也不能被 idle 掩盖。
-	// 只有真正观察过预检（ObservedAt 非 nil）才把 complete=false 解释为
-	// 「数据不足」；配置保存/重启后尚未完成首次预检属于「未观察」，不能
-	// 制造假异常（Build7 Step 7 启动误报同类）。已知冲突仍按持久化证据报告。
+	// 5) Current admission comes from preflight and the current feature switches.
+	// A source's last attempt can predate a recovery observed by the other source.
 	preflight := status.Preflight
 	dual := status.DNS.Enabled && status.EdgeOne.Enabled
-	if preflight.State == syncer.PreflightStateOverlap || preflight.KnownConflict {
+	if dual && (preflight.State == syncer.PreflightStateOverlap || preflight.KnownConflict) {
 		addReason(ReasonAddressOverlap)
+	} else if dual && preflight.Error != "" {
+		addReason(ReasonSourceBlocked)
 	}
-	if dual && preflight.ObservedAt != nil &&
-		(preflight.State == syncer.PreflightStateDataUnavailable || preflight.State == syncer.PreflightStateOverlap) {
-		if !preflight.DNSComplete {
+	if preflight.ObservedAt != nil {
+		if dual && !preflight.DNSComplete {
 			addReason(ReasonDNSIncomplete)
 		}
-		if !preflight.EdgeOneComplete {
+		if status.EdgeOne.Enabled && !preflight.EdgeOneComplete {
 			addReason(ReasonEdgeOneIncomplete)
 		}
 	}
 
-	// 6) 按来源最近结论；没有来源级结果时保留旧的最近一轮全局结论。
+	// 6) Preserve target failures and partial completion from the last attempt.
+	// Without source-level outcomes, keep the existing round-level fallback.
 	sourceResultSeen := false
 	if status.DNS.Enabled && status.DNS.LastOutcome != "" {
 		sourceResultSeen = true
@@ -213,12 +213,6 @@ func (c *Checker) Evaluate(ctx context.Context) Result {
 			addReason(ReasonDNSSourceFailed)
 		case syncer.SourceOutcomePartial:
 			addReason(ReasonDNSSourcePartial)
-		case syncer.SourceOutcomeBlocked:
-			if !slices.Contains(res.Reasons, ReasonAddressOverlap) {
-				addReason(ReasonSourceBlocked)
-			}
-		case syncer.SourceOutcomeIncomplete:
-			addReason(ReasonDNSIncomplete)
 		}
 	}
 	if status.EdgeOne.Enabled && status.EdgeOne.LastOutcome != "" {
@@ -228,12 +222,6 @@ func (c *Checker) Evaluate(ctx context.Context) Result {
 			addReason(ReasonEdgeOneSourceFailed)
 		case syncer.SourceOutcomePartial:
 			addReason(ReasonEdgeOneSourcePartial)
-		case syncer.SourceOutcomeBlocked:
-			if !slices.Contains(res.Reasons, ReasonAddressOverlap) {
-				addReason(ReasonSourceBlocked)
-			}
-		case syncer.SourceOutcomeIncomplete:
-			addReason(ReasonEdgeOneIncomplete)
 		}
 	}
 	if !sourceResultSeen && status.LastRound != nil {

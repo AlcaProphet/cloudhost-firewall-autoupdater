@@ -144,13 +144,17 @@ func (s *Syncer) previewEdgeOneData(state *RuntimeState) map[string]edgeOneSiteD
 		if zone == "" {
 			continue
 		}
-		data := edgeOneSiteData{site: site, transitionReadErr: transitionErr, transitionErr: transitionErr}
+		data := edgeOneSiteData{
+			site: site, transitionInput: transitions[zone],
+			transitionReadErr: transitionErr, transitionErr: transitionErr,
+		}
 		s.mu.RLock()
 		cached, ok := s.edgeCache[zone]
 		s.mu.RUnlock()
 		switch {
 		case ok && s.edgeCacheFresh(cached, site, state, s.now()):
 			data.snapshot = cached.snapshot
+			data.reused = &cached
 		case state.TEO == nil:
 			data.unavailable = "TEO 客户端未接线"
 		default:
@@ -161,25 +165,6 @@ func (s *Syncer) previewEdgeOneData(state *RuntimeState) map[string]edgeOneSiteD
 				data.snapshot = snapshot
 			}
 		}
-		row, hasRow := transitions[zone]
-		var rowPtr *config.EdgeOneTransition
-		if hasRow {
-			cp := row
-			rowPtr = &cp
-		}
-		snapshotValid := data.unavailable == "" &&
-			strings.TrimSpace(data.snapshot.ZoneID) != "" &&
-			strings.TrimSpace(data.snapshot.Current.Version) != "" &&
-			provider.OriginACLSnapshotPrefixesValid(data.snapshot)
-		var plan edgeOneTransitionPlanResult
-		if snapshotValid {
-			plan = planEdgeOneTransition(rowPtr, data.snapshot, s.now())
-		} else {
-			plan = edgeOneTransitionBackfill(rowPtr, s.now())
-		}
-		data.transition = plan.next
-		data.protected = plan.protected
-		data.transitionErr = transitionErr
 		out[zone] = data
 	}
 	return out
@@ -214,7 +199,6 @@ func (s *Syncer) previewPreflight(state *RuntimeState, dnsAddresses []DNSAddress
 		DNSComplete:     dnsComplete,
 		EdgeOneComplete: edgeComplete,
 		KnownConflict:   known,
-		Admission:       DecideAdmission(in),
 	}, errAddressConflictUnavailable
 }
 

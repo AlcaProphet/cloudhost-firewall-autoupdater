@@ -135,8 +135,10 @@ type Syncer struct {
 	edgeStatus         map[string]EdgeOneSiteStatus
 	roundCoverage      map[string]SiteCoverage
 	transitions        EdgeOneTransitionStore
+	unsavedTransitions map[string]config.EdgeOneTransition
 	confirmedMem       map[string][32]byte
 	preflight          PreflightOutcome
+	preflightErr       string
 	preflightProtected []string
 	preflightAt        time.Time
 	preflightSet       bool
@@ -236,6 +238,7 @@ func (s *Syncer) applyStateLocked(next *RuntimeState) {
 		// 预检摘要与覆盖证明属于旧配置；新状态发布后不得继续展示为当前结果。
 		s.preflightSet = false
 		s.preflight = PreflightOutcome{}
+		s.preflightErr = ""
 		s.preflightProtected = nil
 		s.roundCoverage = nil
 	}
@@ -954,6 +957,8 @@ func (s *Syncer) preflightStatusLocked(state *RuntimeState) AddressPreflightStat
 		// 单源/双关时状态由开关本身表达；旧双开预检摘要只保留已查实的
 		// 冲突证据，不得把旧 clear/overlap 状态当成当前预检结论。
 		out.KnownConflict = s.hasKnownConflict()
+		out.DNSComplete = s.preflight.DNSComplete
+		out.EdgeOneComplete = s.preflight.EdgeOneComplete
 		out.ProtectedCIDRs = append([]string{}, s.preflightProtected...)
 		if out.ProtectedCIDRs == nil {
 			out.ProtectedCIDRs = []string{}
@@ -983,6 +988,7 @@ func (s *Syncer) preflightStatusLocked(state *RuntimeState) AddressPreflightStat
 	out.DNSComplete = s.preflight.DNSComplete
 	out.EdgeOneComplete = s.preflight.EdgeOneComplete
 	out.KnownConflict = s.preflight.KnownConflict
+	out.Error = s.preflightErr
 	out.ProtectedCIDRs = append([]string{}, s.preflightProtected...)
 	if o := out.ProtectedCIDRs; o == nil {
 		out.ProtectedCIDRs = []string{}
@@ -1128,6 +1134,7 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 	if state.Config.EdgeOneEnabled {
 		dnsData = s.previewDNS(state)
 	}
+	s.finalizeEdgeOneData(state, edgeData)
 	edgePrefixes, edgeComplete := edgePrefixInputs(edgeData)
 	outcome, preflightErr := s.previewPreflight(state, dnsData.addresses, dnsData.complete, edgePrefixes, edgeComplete)
 	resp.Preflight = dryRunPreflight(outcome, transitionProtectedInputs(edgeData), preflightErr)

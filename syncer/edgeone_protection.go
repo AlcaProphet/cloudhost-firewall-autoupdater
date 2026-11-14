@@ -95,10 +95,7 @@ func edgeOneTransitionProtected(t *config.EdgeOneTransition) []netip.Prefix {
 	if strings.TrimSpace(t.BaseVersion) != "" && t.BaseVersion == t.PendingVersion {
 		return protected
 	}
-	if len(protected) == 0 {
-		return normalizeEdgeOnePrefixes(t.PendingCIDRs)
-	}
-	return protected
+	return unionEdgeOnePrefixes(protected, t.PendingCIDRs)
 }
 
 func copyTransition(t config.EdgeOneTransition) config.EdgeOneTransition {
@@ -109,6 +106,13 @@ func copyTransition(t config.EdgeOneTransition) config.EdgeOneTransition {
 
 func sameTransitionPending(t config.EdgeOneTransition, version string, prefixes []netip.Prefix) bool {
 	return t.PendingVersion == strings.TrimSpace(version) && sameEdgeOnePrefixSet(t.PendingCIDRs, prefixes)
+}
+
+// transitionIsCurrent requires the tracked version and its canonical networks.
+func transitionIsCurrent(row *config.EdgeOneTransition, snapshot provider.OriginACLSnapshot) bool {
+	return row != nil && strings.TrimSpace(snapshot.ZoneID) != "" &&
+		provider.OriginACLSnapshotPrefixesValid(snapshot) &&
+		sameTransitionPending(*row, snapshot.Current.Version, snapshot.Current.Prefixes)
 }
 
 // planEdgeOneTransition 计算一次有效快照下的过渡记录演进。
@@ -145,22 +149,15 @@ func planEdgeOneTransition(row *config.EdgeOneTransition, snapshot provider.Orig
 	}
 
 	cp := copyTransition(*row)
-	original := copyTransition(*row)
 	protected := edgeOneTransitionProtected(row)
 	releasedMode := strings.TrimSpace(cp.BaseVersion) != "" && cp.BaseVersion == cp.PendingVersion
-	if !releasedMode {
-		// 活动过渡必须始终保护待更新前缀；兼容历史记录中 protected 非空
-		// 但未包含当前 pending 的形态。
-		protected = unionEdgeOnePrefixes(protected, cp.PendingCIDRs)
-	}
-	changed := !sameEdgeOnePrefixSet(protected, edgeOneTransitionProtected(row))
+	changed := !sameEdgeOnePrefixSet(protected, row.ProtectedCIDRs)
 	reset := false
 
 	setPending := func(version string, prefixes []netip.Prefix, base string) {
 		cp.BaseVersion = base
 		cp.PendingVersion = version
 		cp.PendingCIDRs = prefixes
-		cp.ProtectedCIDRs = protected
 		cp.ConfirmationState = config.EdgeOneConfirmationNotAttempted
 		cp.ConfirmationRequestID = ""
 		reset = true
@@ -178,7 +175,6 @@ func planEdgeOneTransition(row *config.EdgeOneTransition, snapshot provider.Orig
 				cp.BaseVersion = snapshot.Current.Version
 				cp.PendingVersion = snapshot.Current.Version
 				cp.PendingCIDRs = currentPrefixes
-				cp.ProtectedCIDRs = protected
 				changed = true
 			}
 			if len(protected) == 0 {
@@ -204,15 +200,7 @@ func planEdgeOneTransition(row *config.EdgeOneTransition, snapshot provider.Orig
 				if !sameTransitionPending(cp, nextVersion, nextPrefixes) {
 					protected = unionEdgeOnePrefixes(protected, nextPrefixes)
 					setPending(nextVersion, nextPrefixes, cp.BaseVersion)
-				} else {
-					cp.ProtectedCIDRs = protected
 				}
-			} else {
-				cp.ProtectedCIDRs = protected
-			}
-			if !sameEdgeOnePrefixSet(cp.ProtectedCIDRs, protected) {
-				cp.ProtectedCIDRs = cloneEdgeOnePrefixes(protected)
-				changed = true
 			}
 		}
 	} else {
@@ -226,7 +214,6 @@ func planEdgeOneTransition(row *config.EdgeOneTransition, snapshot provider.Orig
 					cp.BaseVersion = snapshot.Current.Version
 					changed = true
 				}
-				cp.ProtectedCIDRs = protected
 			}
 		} else {
 			if cp.BaseVersion != snapshot.Current.Version {
@@ -241,15 +228,9 @@ func planEdgeOneTransition(row *config.EdgeOneTransition, snapshot provider.Orig
 	}
 
 	if !changed {
-		// 兼容 Step 10 空保护行：把 pending 回填为显式保护，确认状态不变。
-		if len(normalizeEdgeOnePrefixes(original.ProtectedCIDRs)) == 0 && len(protected) > 0 {
-			cp.ProtectedCIDRs = cloneEdgeOnePrefixes(protected)
-			changed = true
-		}
-	}
-	if !changed {
 		return edgeOneTransitionPlanResult{protected: protected}
 	}
+	cp.ProtectedCIDRs = cloneEdgeOnePrefixes(protected)
 	cp.UpdatedAt = now.UTC()
 	return edgeOneTransitionPlanResult{
 		next:              &cp,
@@ -259,14 +240,14 @@ func planEdgeOneTransition(row *config.EdgeOneTransition, snapshot provider.Orig
 	}
 }
 
-// edgeOneTransitionBackfill 在快照不可用/查询失败时只回填 Step 10 空保护。
+// edgeOneTransitionBackfill 在快照不可用时只补齐已知保护。
 func edgeOneTransitionBackfill(row *config.EdgeOneTransition, now time.Time) edgeOneTransitionPlanResult {
 	if row == nil {
 		return edgeOneTransitionPlanResult{}
 	}
 	cp := copyTransition(*row)
 	protected := edgeOneTransitionProtected(row)
-	if len(normalizeEdgeOnePrefixes(cp.ProtectedCIDRs)) == 0 && len(protected) > 0 {
+	if !sameEdgeOnePrefixSet(cp.ProtectedCIDRs, protected) {
 		cp.ProtectedCIDRs = cloneEdgeOnePrefixes(protected)
 		cp.UpdatedAt = now.UTC()
 		return edgeOneTransitionPlanResult{next: &cp, changed: true, protected: protected}

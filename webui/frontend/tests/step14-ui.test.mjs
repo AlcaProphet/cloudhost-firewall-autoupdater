@@ -263,3 +263,50 @@ test('B8S14 仪表盘未观察但已知冲突仍提示阻断', async () => {
   assert.equal(node.props.type, 'error')
   assert.match(e.inspect().text, /存在已查实地址重叠；正式同步保持保守阻断/)
 })
+
+test('B8S14 DryRun 复用执行单元并按物理目标统计新增和清理', () => {
+  const e = mount('components/DryRunResults.vue')
+  const targetKey = 'tc_cvm\u0000ap-guangzhou\u0000sg-a'
+  const change = { protocol: 'TCP', port: '443', cidr: '198.51.100.0/24' }
+  const result = { provider: 'tc_cvm(sg-a)', domains: [], edgeone_sites: [], execution_target_key: targetKey }
+  const out = e.inspect({
+    status: 'completed', warnings: [], error: '', preflight: preflight('single_source'),
+    results: [
+      { ...result, target_id: 1, edgeone_sites: ['zone-a'], to_add: [change, change], cleanup_candidates: [change, change] },
+      { ...result, target_id: 2 },
+    ],
+    executionUnits: [unit({ target_key: targetKey, target_ids: [1, 2], planned_add: 1, cleanup_candidates: [change] })],
+  })
+  assert.match(out.text, /共用物理目标/)
+  assert.match(out.text, /查看共同执行单元/)
+  assert.doesNotMatch(out.text, /正式同步将跳过此目标/)
+  for (const label of ['待新增', '清理候选']) {
+    const stat = out.nodes.find(n => n.props?.label === label)
+    assert.equal(stat?.props.value, 1, label)
+  }
+})
+
+test('B8S14 预检读库失败时两侧样本完整仍提示阻断', async () => {
+  const blocked = preflight('data_unavailable', { error: '地址冲突记录读取失败' })
+  const dry = mount('components/DryRunResults.vue').inspect({
+    status: 'completed', results: [], warnings: [], preflight: blocked, executionUnits: [], error: '',
+  })
+  assert.match(dry.text, /正式同步会阻断两侧/)
+  assert.doesNotMatch(dry.text, /单侧继续/)
+  const dash = mount('views/Dashboard.vue', dashboardRequest(blocked))
+  await dash.mounted()
+  await dash.s.fetchStatus()
+  assert.match(dash.inspect().text, /正式同步已阻断两侧/)
+  assert.doesNotMatch(dash.inspect().text, /单侧继续/)
+})
+
+test('B8S14 单源运行仅提示历史冲突', async () => {
+  const history = preflight('single_source', { known_conflict: true })
+  const dash = mount('views/Dashboard.vue', dashboardRequest(history))
+  await dash.mounted()
+  await dash.s.fetchStatus()
+  const node = dash.inspect().nodes.find(n => n.props?.['data-testid'] === 'preflight-hint')
+  assert.equal(node?.props.type, 'info')
+  assert.match(dash.inspect().text, /保留历史地址冲突记录.*重新双开后复查/)
+  assert.doesNotMatch(dash.inspect().text, /正式同步.*阻断/)
+})

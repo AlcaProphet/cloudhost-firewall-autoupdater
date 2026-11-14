@@ -231,7 +231,7 @@ func TestStep8StaleQueryResultNotCached(t *testing.T) {
 	next := fixState(t, config.CloudTCCVM, true, true, nil, nil, nil, teo)
 	s.ApplyState(next)
 	snap := fixSnapshot("zone-a", "203.0.113.0/32", true)
-	s.applyEdgeOneQueryResult(old, epoch, old.Config.EdgeOneSites[0], snap, "", time.Now(), nil, true)
+	s.applyEdgeOneQueryResult(old, epoch, old.Config.EdgeOneSites[0], snap, "", time.Now(), nil, true, nil)
 	if len(s.EdgeOneRuntimeStatus()) != 0 {
 		t.Fatalf("旧状态查询结果被写入状态: %+v", s.EdgeOneRuntimeStatus())
 	}

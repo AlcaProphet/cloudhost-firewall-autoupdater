@@ -125,8 +125,8 @@ func (s *Syncer) ConfirmEdgeOneSites(state *RuntimeState, edgeData map[string]ed
 					// unknown 必须先只读复查，不能仅凭缓存等待下一轮。
 					if state.TEO != nil {
 						if after, derr := state.TEO.DescribeOriginACL(context.Background(), zone); derr == nil {
-							s.applyEdgeOneQueryResult(state, epoch, site, after, "", after.ObservedAt, after.PlannedActiveAt, true)
-							if after.Next == nil {
+							s.applyEdgeOneQueryResult(state, epoch, site, after, "", after.ObservedAt, after.PlannedActiveAt, true, transition)
+							if transitionIsCurrent(transition, after) {
 								continue
 							}
 						}
@@ -139,7 +139,7 @@ func (s *Syncer) ConfirmEdgeOneSites(state *RuntimeState, edgeData map[string]ed
 		if !siteProofsReady(site, state.Config.Targets, s.RoundCoverage(), data.snapshot, epoch) {
 			continue
 		}
-		needRetry, err := s.confirmOneSite(state, site, data.snapshot, store, epoch)
+		needRetry, err := s.confirmOneSite(state, site, data, store, epoch)
 		if needRetry {
 			retry = true
 		}
@@ -152,7 +152,8 @@ func (s *Syncer) ConfirmEdgeOneSites(state *RuntimeState, edgeData map[string]ed
 	return retry
 }
 
-func (s *Syncer) confirmOneSite(state *RuntimeState, site config.EdgeOneSite, snapshot provider.OriginACLSnapshot, store EdgeOneTransitionStore, epoch uint64) (bool, error) {
+func (s *Syncer) confirmOneSite(state *RuntimeState, site config.EdgeOneSite, data edgeOneSiteData, store EdgeOneTransitionStore, epoch uint64) (bool, error) {
+	snapshot := data.snapshot
 	zone := strings.TrimSpace(site.ZoneID)
 	pending := *snapshot.Next
 	fingerprint := pendingFingerprint(&pending)
@@ -190,7 +191,7 @@ func (s *Syncer) confirmOneSite(state *RuntimeState, site config.EdgeOneSite, sn
 		return true, err
 	}
 	// 确认前重查也是成功查询：刷新缓存年龄/快照，供后续轮次复用。
-	s.applyEdgeOneQueryResult(state, epoch, site, recheck, "", recheck.ObservedAt, recheck.PlannedActiveAt, true)
+	s.applyEdgeOneQueryResult(state, epoch, site, recheck, "", recheck.ObservedAt, recheck.PlannedActiveAt, true, transition)
 	if recheck.Current.Version != snapshot.Current.Version ||
 		currentFingerprint(recheck.Current) != currentFingerprint(snapshot.Current) ||
 		recheck.Next == nil || recheck.Next.Version != pending.Version ||
@@ -199,21 +200,38 @@ func (s *Syncer) confirmOneSite(state *RuntimeState, site config.EdgeOneSite, sn
 		return true, nil
 	}
 
+	observation := config.EdgeOneTransition{
+		ZoneID: zone, BaseVersion: snapshot.Current.Version, PendingVersion: pending.Version,
+		PendingCIDRs: pending.Prefixes, ConfirmationState: config.EdgeOneConfirmationNotAttempted,
+	}
+	// The legacy upsert preserves explicit protection but replaces pending_cidrs.
+	// Preserve any networks still represented only by that old fingerprint.
+	needsProtectionWrite := false
+	if transition != nil && !sameTransitionPending(*transition, pending.Version, pending.Prefixes) {
+		keep := edgeOneTransitionProtected(transition)
+		if len(subtractEdgeOnePrefixes(keep, transition.ProtectedCIDRs)) > 0 {
+			if data.transitionErr != "" {
+				return true, errors.New("旧网段保护尚未保存，延后确认")
+			}
+			observation.ProtectedCIDRs = unionEdgeOnePrefixes(keep, pending.Prefixes)
+			needsProtectionWrite = true
+		}
+	}
+
 	// 先提交 unknown，TEO 客户端等完限速后再做最终准入。
 	var preparedAt time.Time
 	prepared := s.withStableConfig(func() bool {
 		if !s.canConfirmEdgeOne(state, epoch, site) {
 			return false
 		}
-		if err := store.SaveEdgeOneObservation(context.Background(), config.EdgeOneTransition{
-			ZoneID:            zone,
-			BaseVersion:       snapshot.Current.Version,
-			PendingVersion:    pending.Version,
-			PendingCIDRs:      pending.Prefixes,
-			ProtectedCIDRs:    nil,
-			ConfirmationState: config.EdgeOneConfirmationNotAttempted,
-			UpdatedAt:         time.Now().UTC(),
-		}); err != nil {
+		observation.UpdatedAt = time.Now().UTC()
+		var err error
+		if needsProtectionWrite {
+			err = store.SaveEdgeOneProtectedObservation(context.Background(), observation, true)
+		} else {
+			err = store.SaveEdgeOneObservation(context.Background(), observation)
+		}
+		if err != nil {
 			return false
 		}
 		preparedAt = time.Now().UTC()
@@ -262,12 +280,12 @@ func (s *Syncer) confirmOneSite(state *RuntimeState, site config.EdgeOneSite, sn
 		// 网络复查在稳定区外；返回后再次按代次校验。
 		after, derr := state.TEO.DescribeOriginACL(context.Background(), zone)
 		if derr == nil {
-			s.applyEdgeOneQueryResult(state, epoch, site, after, "", after.ObservedAt, after.PlannedActiveAt, true)
+			s.applyEdgeOneQueryResult(state, epoch, site, after, "", after.ObservedAt, after.PlannedActiveAt, true, &observation)
 		}
 		current := s.withCurrentEdgeConfirmation(state, epoch, func() {
 			s.setEdgeConfirmStatus(zone, fingerprint, config.EdgeOneConfirmationUnknown, "", "云端已是最新版本，未记录 accepted")
 		})
-		return current && (derr != nil || (after.Next != nil && currentFingerprint(after.Current) != currentFingerprint(pending))), nil
+		return current && (derr != nil || !transitionIsCurrent(&observation, after)), nil
 	}
 
 	retry := false

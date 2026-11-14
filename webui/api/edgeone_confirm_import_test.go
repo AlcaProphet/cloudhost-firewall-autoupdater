@@ -3,8 +3,12 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -141,6 +145,117 @@ func TestEdgeOneLateConfirmationAfterConfigImport(t *testing.T) {
 				}
 			} else if row != nil {
 				t.Fatalf("旧回包恢复了已剪枝的确认记录: %+v", row)
+			}
+		})
+	}
+}
+
+func TestEdgeOneUnsavedProtectionAcrossConfigChanges(t *testing.T) {
+	for _, operation := range []string{"retain", "remove", "reset"} {
+		t.Run(operation, func(t *testing.T) {
+			e := newTestEnv(t)
+			ctx := context.Background()
+			id := e.seedTarget(t, config.CloudTCCVM, "ap-guangzhou", "sg-protection")
+			zone := "zone-protection"
+			create := e.do(t, http.MethodPost, "/api/edgeone/sites",
+				edgeOneSiteBody(zone, []int{id}, "TCP", "443", "ipv4"))
+			if create.Code != http.StatusCreated {
+				t.Fatalf("create site: %d %s", create.Code, create.Body.String())
+			}
+			settings := e.do(t, http.MethodPut, "/api/settings", `{"dns_enabled":"false","edgeone_enabled":"true"}`)
+			if settings.Code != http.StatusOK {
+				t.Fatalf("enable EdgeOne: %d %s", settings.Code, settings.Body.String())
+			}
+			exported := e.do(t, http.MethodPost, "/api/config/export", "")
+			if exported.Code != http.StatusOK {
+				t.Fatalf("export: %d %s", exported.Code, exported.Body.String())
+			}
+			e.execRaw(t, `CREATE TRIGGER fixture_transition_failure BEFORE INSERT ON edgeone_origin_transitions
+				BEGIN SELECT RAISE(ABORT, 'fixture transition insert failure'); END`)
+
+			state := e.snapshot()
+			current := netip.MustParsePrefix("203.0.113.0/24")
+			pending := netip.MustParsePrefix("198.51.100.0/24")
+			teo := &importConfirmClient{
+				snapshot: provider.OriginACLSnapshot{
+					ZoneID: zone, Status: "online",
+					Current: provider.OriginACLVersion{Version: "v1", Prefixes: []netip.Prefix{current}},
+					Next:    &provider.OriginACLVersion{Version: "v2", Prefixes: []netip.Prefix{pending}},
+				},
+				started: make(chan struct{}),
+				release: make(chan struct{}),
+			}
+			close(teo.release)
+			state.TEO = teo
+			var rules []config.RuleInfo
+			for i, prefix := range []netip.Prefix{current, pending} {
+				rules = append(rules, config.RuleInfo{
+					Protocol: "TCP", Port: "443", CidrBlock: prefix.String(), Action: "ACCEPT",
+					Description: "[" + state.Config.EdgeOneTag + "] edgeone", PolicyIndex: strconv.Itoa(i),
+				})
+			}
+			state.Providers = []provider.Provider{importCoveredTarget{
+				id: id, snapshot: provider.RuleSnapshot{Revision: "1", Rules: rules},
+			}}
+			engine := syncer.New(e.runtime)
+			e.deps.Syncer = engine
+			engine.SetEdgeOneTransitionStore(e.store)
+			engine.SetStableConfig(e.deps.ConfigCoordinator().WithStableConfig)
+			go engine.Run()
+			t.Cleanup(func() { stopSyncerBounded(t, engine, 3*time.Second) })
+			deadline := time.Now().Add(3 * time.Second)
+			for engine.Status().EdgeOne.LastCompletedAt == nil {
+				if time.Now().After(deadline) {
+					t.Fatal("initial EdgeOne round did not complete")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			stopSyncerBounded(t, engine, 3*time.Second)
+
+			row, err := e.store.GetEdgeOneTransition(ctx, zone)
+			before := engine.EdgeOneRuntimeStatus()
+			if err != nil || row != nil || len(before) != 1 ||
+				!slices.Equal(before[0].ProtectedCIDRs, []string{pending.String()}) || before[0].TransitionError == "" {
+				t.Fatalf("fixture needs protection only in memory: %+v, row=%+v err=%v", before, row, err)
+			}
+			select {
+			case <-teo.started:
+				t.Fatal("confirmation sent without committing unknown")
+			default:
+			}
+
+			var response *httptest.ResponseRecorder
+			switch operation {
+			case "retain":
+				response = e.do(t, http.MethodPost, "/api/config/import", exported.Body.String())
+			case "remove":
+				response = e.do(t, http.MethodPost, "/api/config/import", validV4Bundle())
+			case "reset":
+				response = e.do(t, http.MethodPost, "/api/config/reset", "{}")
+			}
+			if response.Code != http.StatusOK {
+				t.Fatalf("configuration change: %d %s", response.Code, response.Body.String())
+			}
+
+			row, err = e.store.GetEdgeOneTransition(ctx, zone)
+			if err != nil || row != nil {
+				t.Fatalf("configuration change persisted runtime protection: row=%+v err=%v", row, err)
+			}
+			if len(engine.RoundCoverage()) != 0 {
+				t.Fatal("configuration change kept old coverage")
+			}
+			response = e.do(t, http.MethodGet, "/api/edgeone/status", "")
+			var status syncer.EdgeOneStatus
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &status) != nil {
+				t.Fatalf("read status: %d %s", response.Code, response.Body.String())
+			}
+			if operation == "retain" {
+				if len(status.Sites) != 1 || status.Sites[0].LastQueryAt != nil ||
+					!slices.Equal(status.Sites[0].ProtectedCIDRs, []string{pending.String()}) {
+					t.Fatalf("same-site import must retain only pending protection: %+v", status)
+				}
+			} else if len(status.Sites) != 0 || len(engine.EdgeOneRuntimeStatus()) != 0 {
+				t.Fatalf("removed site protection survived %s: %+v", operation, status)
 			}
 		})
 	}

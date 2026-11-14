@@ -162,8 +162,8 @@ func (d *Deps) applyCandidate(candidate Candidate) {
 	}
 
 	if candidate.ResetEdgeOneRuntime && d.Syncer != nil {
-		if forgetter, ok := d.Syncer.(interface{ ForgetEdgeOneRuntime() }); ok {
-			forgetter.ForgetEdgeOneRuntime()
+		if forgetter, ok := d.Syncer.(interface{ ForgetEdgeOneObservations() }); ok {
+			forgetter.ForgetEdgeOneObservations()
 		}
 	}
 

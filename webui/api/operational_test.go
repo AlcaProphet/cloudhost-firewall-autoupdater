@@ -453,6 +453,33 @@ func TestOperationalEndpointOverlapMatchesChecker(t *testing.T) {
 		t.Fatalf("必须包含重叠原因：%v", got.Reasons)
 	}
 
+	// Another source can complete a new preflight before either historical
+	// result is replaced. The HTTP response must report the current gate.
+	status.Preflight = syncer.AddressPreflightStatus{
+		State: syncer.PreflightStateClear, DNSComplete: true, EdgeOneComplete: true, ObservedAt: &now,
+	}
+	w = e.do(t, http.MethodGet, "/api/health/operational", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("recovered preflight retained the historical block: %d %s", w.Code, w.Body.String())
+	}
+
+	status.Preflight = syncer.AddressPreflightStatus{
+		State: syncer.PreflightStateDataUnavailable, DNSComplete: true, EdgeOneComplete: true,
+		ObservedAt: &now, Error: "地址冲突状态无法读取或提交",
+	}
+	w = e.do(t, http.MethodGet, "/api/health/operational", "")
+	got = decodeOperational(t, w.Body.Bytes())
+	if w.Code != http.StatusServiceUnavailable || !slices.Equal(got.Reasons, []string{health.ReasonSourceBlocked}) {
+		t.Fatalf("current storage block must produce 503: %d %s", w.Code, w.Body.String())
+	}
+
+	status.EdgeOne.Enabled = false
+	status.Preflight = syncer.AddressPreflightStatus{State: syncer.PreflightStateSingleSource, KnownConflict: true}
+	w = e.do(t, http.MethodGet, "/api/health/operational", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("single-source operation is not blocked by historical conflict: %d %s", w.Code, w.Body.String())
+	}
+
 	// 静态 /api/health 由 webui.Server 提供，不在 API Deps mux 内；
 	// 其独立回归见 webui/server_test.go。
 }

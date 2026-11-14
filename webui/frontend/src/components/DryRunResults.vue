@@ -6,7 +6,7 @@
 //   - cleanup_deferred / unsupported / conflicts 显示稳定原因文案；
 //   - 无适用规则目标只显示未调度提示，不渲染空规划表格；
 //   - 所有数组在 DTO 层恒为 []，这里只做空态展示。
-import { NCard, NDataTable, NAlert, NSpace, NStatistic, NGrid, NGi, NTag } from 'naive-ui'
+import { NCard, NDataTable, NAlert, NSpace, NStatistic, NGrid, NGi, NTag, NButton } from 'naive-ui'
 import { computed } from 'vue'
 import type { DryRunExecutionUnit, DryRunPreflight, DryRunResult, PlannedRule, RuleChange, PlanIssue, PlanMatch } from '../types'
 import { cloudLabelMap } from '../constants'
@@ -28,9 +28,26 @@ function hasTargetPlan(item: DryRunResult): boolean {
   return Boolean(item.domains?.length || item.edgeone_sites?.length)
 }
 
+const plannedTargetKeys = computed(() =>
+  new Set(props.results.filter(hasTargetPlan).map(item => item.execution_target_key)),
+)
+
+function sharedTargetKey(item: DryRunResult): string | undefined {
+  const key = item.execution_target_key
+  if (key && !hasTargetPlan(item) && plannedTargetKeys.value.has(key)) return key
+}
+
+function scrollToExecutionUnit(key: string | undefined) {
+  const id = units.value.find(unit => unit.target_key === key)?.target_ids[0]
+  document.getElementById(`dryrun-unit-${id}`)?.scrollIntoView({ block: 'start' })
+}
+
 const preflightHint = computed(() => {
   const p = props.preflight
   if (!p) return null
+  if (p.error && p.state !== 'overlap') {
+    return { type: 'error' as const, text: '全局预检未能完成；正式同步会阻断两侧' }
+  }
   switch (p.state) {
     case 'overlap': {
       const c = p.conflict
@@ -47,7 +64,12 @@ const preflightHint = computed(() => {
     case 'clear':
       return { type: 'success' as const, text: '全局预检完整，未发现地址重叠；以下仍只是预览，不会写入云端' }
     default:
-      return { type: 'info' as const, text: '仅单项来源启用，当前不做全局重叠判定' }
+      return {
+        type: 'info' as const,
+        text: p.known_conflict
+          ? '保留历史地址冲突记录；当前按已启用来源运行，重新双开后复查'
+          : '仅单项来源启用，当前不做全局重叠判定',
+      }
   }
 })
 
@@ -77,6 +99,10 @@ const stats = computed(() => {
     candidates += r.cleanup_candidates?.length || 0
     unsupported += r.unsupported?.length || 0
     if (r.error) errors++
+  }
+  if (units.value.length) {
+    toAdd = units.value.reduce((total, unit) => total + unit.planned_add, 0)
+    candidates = units.value.reduce((total, unit) => total + unit.cleanup_candidates.length, 0)
   }
   return { targets: props.results.length, desired, owned, external, toAdd, candidates, unsupported, errors }
 })
@@ -184,9 +210,9 @@ function issueText(issue: PlanIssue): string {
       </NGrid>
 
       <NSpace v-if="units.length" vertical size="large" style="margin-bottom: 16px">
-        <NCard v-for="unit in units" :key="unit.target_key" size="small" :title="`执行单元 ${unit.provider}`">
+        <NCard v-for="unit in units" :key="unit.target_key" :id="`dryrun-unit-${unit.target_ids[0]}`" size="small" :title="`执行单元 ${unit.provider}`">
           <div style="font-size: 14px; color: #888; margin-bottom: 6px">
-            物理目标 {{ unit.target_key }}；绑定本地目标 {{ unit.target_ids.join(', ') || '-' }}
+            物理目标 {{ unit.target_key }}；关联本地目标 {{ unit.target_ids.join(', ') || '-' }}
           </div>
           <div style="font-size: 14px; line-height: 1.9">
             已读规则 <b>{{ unit.rules_read }}</b>；当前规则 <b>{{ unit.current_rule_count }}</b>；
@@ -233,11 +259,16 @@ function issueText(issue: PlanIssue): string {
           <template #header-extra>
             <NTag v-if="item.domains?.length" size="small" :bordered="false">{{ item.domains.length }} 个来源域名</NTag>
             <NTag v-else-if="item.edgeone_sites?.length" size="small" :bordered="false">{{ item.edgeone_sites.length }} 个 EdgeOne 站点</NTag>
+            <NTag v-else-if="sharedTargetKey(item)" size="small" :bordered="false">共用物理目标</NTag>
             <NTag v-else type="default" size="small" :bordered="false">无适用规则</NTag>
             <NTag size="small" :bordered="false" style="margin-left: 8px">{{ resourceID(item.provider) }}</NTag>
           </template>
 
-          <NAlert v-if="!hasTargetPlan(item)" type="info" :show-icon="false">
+          <NAlert v-if="sharedTargetKey(item)" type="info" :show-icon="false">
+            此本地目标没有直接绑定，与其他本地目标共用物理目标 {{ sharedTargetKey(item) }}。
+            <NButton text type="primary" @click="scrollToExecutionUnit(sharedTargetKey(item))">查看共同执行单元</NButton>
+          </NAlert>
+          <NAlert v-else-if="!hasTargetPlan(item)" type="info" :show-icon="false">
             当前没有适用于此目标的域名规则或 EdgeOne 站点；正式同步将跳过此目标，不会读取或修改其云防火墙
           </NAlert>
 

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 
@@ -72,12 +73,14 @@ func (d *Deps) handleGetEdgeOneStatus(w http.ResponseWriter, r *http.Request) {
 			if t.ConfirmationState == config.EdgeOneConfirmationUnknown {
 				st.LastConfirmationErr = st.UnknownConfirmationDiagnostic(t)
 			}
-			// Step 11：SQLite 是保护证据的权威来源；运行态字段只作补充。
-			st.ProtectedCIDRs = prefixStrings(t.ProtectedCIDRs)
-			if len(t.ProtectedCIDRs) == 0 && t.BaseVersion != t.PendingVersion {
-				// Step 10 旧行：确认指纹仍在，但保护前缀尚未回填。
-				st.ProtectedCIDRs = prefixStrings(t.PendingCIDRs)
+			// The durable row owns confirmation. Protection can also include
+			// networks retained in memory while the store is unavailable.
+			st.ProtectedCIDRs = append(st.ProtectedCIDRs, prefixStrings(t.ProtectedCIDRs)...)
+			if t.BaseVersion != t.PendingVersion {
+				st.ProtectedCIDRs = append(st.ProtectedCIDRs, prefixStrings(t.PendingCIDRs)...)
 			}
+			slices.Sort(st.ProtectedCIDRs)
+			st.ProtectedCIDRs = slices.Compact(st.ProtectedCIDRs)
 			st.TransitionBaseVersion = t.BaseVersion
 			if t.BaseVersion != t.PendingVersion {
 				st.TransitionPendingVersion = t.PendingVersion

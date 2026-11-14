@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -49,6 +50,7 @@ type AddressPreflightStatus struct {
 	KnownConflict   bool                   `json:"known_conflict"`
 	ProtectedCIDRs  []string               `json:"protected_cidrs"`
 	ObservedAt      *time.Time             `json:"observed_at,omitempty"`
+	Error           string                 `json:"error,omitempty"`
 }
 
 // SiteTargetCoverage 是一个站点在一个物理目标上的回读证明摘要。
@@ -85,6 +87,7 @@ type EdgeOneSiteStatus struct {
 	TransitionError          string     `json:"transition_error"`
 
 	confirmationFingerprint [32]byte
+	activationFingerprint   [32]byte
 }
 
 // EdgeOneStatus 是 GET /api/edgeone/status 的响应主体。
@@ -111,8 +114,9 @@ type edgeOneSiteData struct {
 	queryFailed bool
 
 	// Step 11 过渡保护：next 是本轮内存演进结果（可能待持久化），protected 是
-	// 本轮预检/目标清理实际使用的保护集合；transitionErr 非空时 EdgeOne 输入
-	// 不完整，但若已有内存保护仍可用于证明正向重叠。
+	// 本轮预检/目标清理实际使用的保护集合。读取失败令 EdgeOne 输入不完整，
+	// 内存保护仍可用于证明正向重叠。写入失败保留内存保护并记录诊断。
+	transitionInput   edgeOneTransitionInput
 	transition        *config.EdgeOneTransition
 	protected         []netip.Prefix
 	transitionChanged bool
@@ -179,29 +183,64 @@ func (s *Syncer) edgeCacheFresh(entry edgeOneCacheEntry, site config.EdgeOneSite
 	return true
 }
 
-// edgeOneTransitionsForRound 一次性读取本机过渡记录。
-//
-// store 未接线时返回空集合且不报错（零值测试夹具/历史入口）；生产启动始终
-// 注入 Store。读取失败必须让 EdgeOne 输入不完整，不能把未知当作无保护。
-func (s *Syncer) edgeOneTransitionsForRound() (map[string]config.EdgeOneTransition, string) {
-	store := s.transitionStore()
-	if store == nil {
-		return map[string]config.EdgeOneTransition{}, ""
-	}
-	rows, err := store.ListEdgeOneTransitions(context.Background())
-	if err != nil {
-		return map[string]config.EdgeOneTransition{}, "读取过渡保护失败"
-	}
-	out := make(map[string]config.EdgeOneTransition, len(rows))
-	for _, row := range rows {
-		zone := strings.TrimSpace(row.ZoneID)
-		if zone == "" {
-			continue
+type edgeOneTransitionInput struct {
+	row     *config.EdgeOneTransition
+	unsaved bool
+}
+
+// edgeOneTransitionsForRound combines durable rows and outstanding protection in
+// the same stable section used to commit them. A read error keeps available memory
+// evidence usable for overlap while preventing EdgeOne writes.
+func (s *Syncer) edgeOneTransitionsForRound() (map[string]edgeOneTransitionInput, string) {
+	inputs := make(map[string]edgeOneTransitionInput)
+	var readErr string
+	s.withStableConfig(func() bool {
+		if store := s.transitionStore(); store != nil {
+			rows, err := store.ListEdgeOneTransitions(context.Background())
+			if err != nil {
+				readErr = "读取过渡保护失败"
+			}
+			for _, row := range rows {
+				zone := strings.TrimSpace(row.ZoneID)
+				inputs[zone] = edgeOneTransitionInput{row: &row}
+			}
 		}
-		row.ZoneID = zone
-		out[zone] = row
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for zone, pending := range s.unsavedTransitions {
+			merged := copyTransition(pending)
+			if saved := inputs[zone].row; saved != nil {
+				merged.ProtectedCIDRs = unionEdgeOnePrefixes(edgeOneTransitionProtected(&merged), edgeOneTransitionProtected(saved))
+				if sameTransitionPending(*saved, merged.PendingVersion, merged.PendingCIDRs) {
+					merged.ConfirmationState = saved.ConfirmationState
+					merged.ConfirmationRequestID = saved.ConfirmationRequestID
+				}
+			}
+			inputs[zone] = edgeOneTransitionInput{row: &merged, unsaved: true}
+		}
+		return true
+	})
+	return inputs, readErr
+}
+
+func (data *edgeOneSiteData) planTransition(now time.Time) {
+	input := data.transitionInput
+	var plan edgeOneTransitionPlanResult
+	if data.unavailable == "" && !data.queryFailed && data.transitionReadErr == "" &&
+		strings.TrimSpace(data.snapshot.ZoneID) != "" && strings.TrimSpace(data.snapshot.Current.Version) != "" &&
+		provider.OriginACLSnapshotPrefixesValid(data.snapshot) {
+		plan = planEdgeOneTransition(input.row, data.snapshot, now)
+	} else {
+		plan = edgeOneTransitionBackfill(input.row, now)
 	}
-	return out, ""
+	if input.unsaved && !plan.changed {
+		plan.next, plan.changed = input.row, true
+	}
+	data.transition = plan.next
+	data.protected = plan.protected
+	data.transitionChanged = plan.changed
+	data.transitionDelete = plan.delete
+	data.transitionReset = plan.resetConfirmation
 }
 
 // prepareEdgeOneData 为全部站点准备一份本轮只读数据；同一站点最多查询一次。
@@ -217,37 +256,11 @@ func (s *Syncer) prepareEdgeOneData(state *RuntimeState, epoch uint64, force boo
 	}
 	transitions, transitionErr := s.edgeOneTransitionsForRound()
 	finish := func(site config.EdgeOneSite, data edgeOneSiteData) {
-		zoneID := strings.TrimSpace(site.ZoneID)
-		row, hasRow := transitions[zoneID]
-		var rowPtr *config.EdgeOneTransition
-		if hasRow {
-			cp := row
-			rowPtr = &cp
-		}
-		snapshotValid := data.unavailable == "" && !data.queryFailed &&
-			strings.TrimSpace(data.snapshot.ZoneID) != "" &&
-			strings.TrimSpace(data.snapshot.Current.Version) != "" &&
-			provider.OriginACLSnapshotPrefixesValid(data.snapshot)
-		var plan edgeOneTransitionPlanResult
-		if snapshotValid {
-			plan = planEdgeOneTransition(rowPtr, data.snapshot, s.now())
-		} else {
-			// 查询失败/输入不完整时只回填 Step 10 空保护，不执行释放。
-			plan = edgeOneTransitionBackfill(rowPtr, s.now())
-		}
-		data.transition = plan.next
-		data.protected = plan.protected
-		data.transitionChanged = plan.changed
-		data.transitionDelete = plan.delete
-		data.transitionReset = plan.resetConfirmation
+		zone := strings.TrimSpace(site.ZoneID)
+		data.transitionInput = transitions[zone]
 		data.transitionErr = transitionErr
 		data.transitionReadErr = transitionErr
-		out[zoneID] = data
-		display := plan.next
-		if display == nil {
-			display = rowPtr
-		}
-		s.setEdgeSiteTransitionStatus(site, display, plan.protected, transitionErr)
+		out[zone] = data
 	}
 	for _, site := range state.Config.EdgeOneSites {
 		zoneID := strings.TrimSpace(site.ZoneID)
@@ -261,14 +274,14 @@ func (s *Syncer) prepareEdgeOneData(state *RuntimeState, epoch uint64, force boo
 		if fresh && !force {
 			data := edgeOneSiteData{site: site, snapshot: cached.snapshot, reused: &cached}
 			s.applyEdgeOneQueryResult(state, epoch, site, cached.snapshot, "",
-				cached.observedAt, cached.snapshot.PlannedActiveAt, false)
+				cached.observedAt, cached.snapshot.PlannedActiveAt, false, nil)
 			finish(site, data)
 			continue
 		}
 		if state.TEO == nil {
 			data := edgeOneSiteData{site: site, unavailable: "TEO 客户端未接线"}
 			s.applyEdgeOneQueryResult(state, epoch, site, provider.OriginACLSnapshot{},
-				"TEO 客户端未接线", time.Time{}, nil, false)
+				"TEO 客户端未接线", time.Time{}, nil, false, nil)
 			finish(site, data)
 			continue
 		}
@@ -279,13 +292,13 @@ func (s *Syncer) prepareEdgeOneData(state *RuntimeState, epoch uint64, force boo
 				// 强制查询失败但旧缓存仍在有效期内：按合同使用最后成功快照。
 				data := edgeOneSiteData{site: site, snapshot: cached.snapshot, reused: &cached, queryFailed: true}
 				s.applyEdgeOneQueryResult(state, epoch, site, cached.snapshot, reason,
-					cached.observedAt, cached.snapshot.PlannedActiveAt, false)
+					cached.observedAt, cached.snapshot.PlannedActiveAt, false, nil)
 				finish(site, data)
 				continue
 			}
 			data := edgeOneSiteData{site: site, unavailable: reason, queryFailed: true}
 			s.applyEdgeOneQueryResult(state, epoch, site, provider.OriginACLSnapshot{},
-				reason, time.Time{}, nil, false)
+				reason, time.Time{}, nil, false, nil)
 			finish(site, data)
 			continue
 		}
@@ -295,101 +308,94 @@ func (s *Syncer) prepareEdgeOneData(state *RuntimeState, epoch uint64, force boo
 		}
 		data := edgeOneSiteData{site: site, snapshot: snapshot}
 		s.applyEdgeOneQueryResult(state, epoch, site, snapshot, "",
-			observedAt, snapshot.PlannedActiveAt, true)
+			observedAt, snapshot.PlannedActiveAt, true, transitions[zoneID].row)
 		finish(site, data)
 	}
 	return out
 }
 
-// persistEdgeOneTransitions 在 EdgeOne 目标写入前尝试提交本轮保护演进。
-//
-// 成功时不改变内存结果；失败时按用户裁决 C 保留内存保护继续本轮，并记录
-// 安全诊断供状态展示与后续轮次重试。读取失败已在 prepare 阶段标记，不在
-// 这里重写或创建记录。
-func (s *Syncer) persistEdgeOneTransitions(state *RuntimeState, epoch uint64, data map[string]edgeOneSiteData) {
+// persistEdgeOneTransitions commits the planned changes before target writes.
+func (s *Syncer) persistEdgeOneTransitions(state *RuntimeState, epoch uint64, data map[string]edgeOneSiteData) bool {
 	store := s.transitionStore()
-	if store == nil {
-		return
-	}
 	zones := make([]string, 0, len(data))
 	for zone := range data {
 		zones = append(zones, zone)
 	}
 	sort.Strings(zones)
-	type failure struct {
-		zone string
-		err  error
-	}
-	failures := make([]failure, 0)
-	applied := s.withStableConfig(func() bool {
-		if state == nil || s.runtime.Snapshot() != state || s.Generation() != epoch {
+	return s.withStableConfig(func() bool {
+		if s.runtime.Snapshot() != state || s.Generation() != epoch {
 			return false
 		}
 		for _, zone := range zones {
 			item := data[zone]
-			if item.transitionReadErr != "" {
-				continue
-			}
 			var err error
-			switch {
-			case item.transitionDelete:
-				err = store.DeleteEdgeOneTransition(context.Background(), zone)
-			case item.transitionChanged && item.transition != nil:
-				err = store.SaveEdgeOneProtectedObservation(context.Background(), *item.transition, item.transitionReset)
-			default:
-				continue
+			if store != nil && item.transitionReadErr == "" {
+				switch {
+				case item.transitionDelete:
+					err = store.DeleteEdgeOneTransition(context.Background(), zone)
+				case item.transitionChanged:
+					err = store.SaveEdgeOneProtectedObservation(context.Background(), *item.transition, item.transitionReset)
+				}
+				if err != nil {
+					item.transitionErr = "写入过渡保护失败"
+					s.retainEdgeOneTransition(zone, &item)
+					slog.Warn("过渡保护写入失败，使用内存保护继续本轮", "zone", zone, "error_type", fmt.Sprintf("%T", err))
+				} else if item.transitionChanged {
+					s.mu.Lock()
+					delete(s.unsavedTransitions, zone)
+					s.mu.Unlock()
+				}
 			}
-			if err != nil {
-				item.transitionErr = "写入过渡保护失败"
-				data[zone] = item
-				s.setEdgeSiteTransitionStatus(item.site, item.transition, item.protected, item.transitionErr)
-				failures = append(failures, failure{zone: zone, err: err})
-				continue
-			}
-			item.transitionChanged = false
-			item.transitionDelete = false
-			item.transitionErr = ""
 			data[zone] = item
-			s.setEdgeSiteTransitionStatus(item.site, item.transition, item.protected, item.transitionErr)
+			display := item.transition
+			if display == nil && (!item.transitionDelete || err != nil) {
+				display = item.transitionInput.row
+			}
+			s.setEdgeSiteTransitionStatus(item.site, display, item.protected, item.transitionErr)
 		}
 		return true
 	})
-	if !applied {
-		for _, zone := range zones {
-			item := data[zone]
-			if !item.transitionChanged && !item.transitionDelete {
-				continue
-			}
-			item.transitionErr = "配置已变化，未写入过渡保护"
-			data[zone] = item
-			s.setEdgeSiteTransitionStatus(item.site, item.transition, item.protected, item.transitionErr)
-		}
-		slog.Warn("过渡保护未写入：配置已变化，使用内存保护继续本轮")
-		return
-	}
-	for _, f := range failures {
-		// 错误原文可能含 SQLite/路径细节，只记录固定阶段与站点。
-		slog.Warn("过渡保护写入失败，使用内存保护继续本轮", "zone", f.zone, "error_type", fmt.Sprintf("%T", f.err))
-	}
 }
 
-// validateReusedEdgeOneData 在预检使用前复核缓存，包含等待其他站点和 DNS 的时间。
-func (s *Syncer) validateReusedEdgeOneData(state *RuntimeState, data map[string]edgeOneSiteData) bool {
+// Keep the prior release proof pending if the write failed. Include any newly
+// observed networks so a following round can protect them even if Next disappears.
+func (s *Syncer) retainEdgeOneTransition(zone string, item *edgeOneSiteData) {
+	prior := edgeOneTransitionProtected(item.transitionInput.row)
+	keep := unionEdgeOnePrefixes(prior, item.protected)
+	row := item.transition
+	if row == nil || !sameEdgeOnePrefixSet(keep, item.protected) {
+		row = item.transitionInput.row
+	}
+	retry := copyTransition(*row)
+	retry.ProtectedCIDRs = keep
+	item.protected = keep
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.unsavedTransitions == nil {
+		s.unsavedTransitions = make(map[string]config.EdgeOneTransition)
+	}
+	s.unsavedTransitions[zone] = retry
+}
+
+// finalizeEdgeOneData checks reused snapshots after all input collection and
+// derives protection only from snapshots that can still be used.
+func (s *Syncer) finalizeEdgeOneData(state *RuntimeState, data map[string]edgeOneSiteData) bool {
 	now := s.now()
 	failed := false
 	for zone, item := range data {
 		failed = failed || item.queryFailed
 		if item.reused != nil && !s.edgeCacheFresh(*item.reused, item.site, state, now) {
 			item.unavailable = "EdgeOne 缓存已失效"
-			data[zone] = item
 		}
+		item.planTransition(now)
+		data[zone] = item
 	}
 	return failed
 }
 
 // applyEdgeOneQueryResult 在协调器稳定区内校验轮次代次后写入缓存与状态。
 // 网络查询不在稳定区内；state/epoch 不符时丢弃旧轮次结果。
-func (s *Syncer) applyEdgeOneQueryResult(state *RuntimeState, epoch uint64, site config.EdgeOneSite, snapshot provider.OriginACLSnapshot, queryErr string, queryAt time.Time, planned *time.Time, updateCache bool) {
+func (s *Syncer) applyEdgeOneQueryResult(state *RuntimeState, epoch uint64, site config.EdgeOneSite, snapshot provider.OriginACLSnapshot, queryErr string, queryAt time.Time, planned *time.Time, updateCache bool, tracked *config.EdgeOneTransition) {
 	_ = s.withStableConfig(func() bool {
 		if state == nil || s.runtime.Snapshot() != state || s.Generation() != epoch {
 			return false
@@ -397,7 +403,7 @@ func (s *Syncer) applyEdgeOneQueryResult(state *RuntimeState, epoch uint64, site
 		if updateCache && queryErr == "" {
 			s.storeEdgeOneCacheLocked(site, snapshot, queryAt, state)
 		}
-		s.setEdgeSiteQueryStatus(site, snapshot, queryErr, queryAt, planned)
+		s.setEdgeSiteQueryStatus(site, snapshot, queryErr, queryAt, planned, tracked)
 		return true
 	})
 }
@@ -509,8 +515,6 @@ func (s *Syncer) evaluatePreflight(state *RuntimeState, dns []DNSAddress, dnsCom
 				DNSComplete:     dnsComplete,
 				EdgeOneComplete: edgeComplete,
 			}
-			outcome.Admission = DecideAdmission(in)
-			outcome.State = preflightStateFor(in, false)
 			err = errors.New("地址冲突状态未接线")
 			return true
 		}
@@ -521,16 +525,6 @@ func (s *Syncer) evaluatePreflight(state *RuntimeState, dns []DNSAddress, dnsCom
 		return PreflightOutcome{State: PreflightStateDataUnavailable}, errors.New("配置已变化，放弃旧轮次预检状态写入")
 	}
 	return outcome, err
-}
-
-func preflightStateFor(in Preflight, overlap bool) PreflightState {
-	if overlap {
-		return PreflightStateOverlap
-	}
-	if in.DNSComplete && in.EdgeOneComplete {
-		return PreflightStateClear
-	}
-	return PreflightStateDataUnavailable
 }
 
 func (s *Syncer) hasKnownConflict() bool {
@@ -577,7 +571,7 @@ func safeConfirmErrorText(err error) string {
 //
 // queryAt 是实际成功查询时间（缓存命中时传缓存的观测时间），不是本轮时间；
 // planned 是该快照对应的计划切换时间，缓存命中时也必须保留。
-func (s *Syncer) setEdgeSiteQueryStatus(site config.EdgeOneSite, snapshot provider.OriginACLSnapshot, queryErr string, queryAt time.Time, planned *time.Time) {
+func (s *Syncer) setEdgeSiteQueryStatus(site config.EdgeOneSite, snapshot provider.OriginACLSnapshot, queryErr string, queryAt time.Time, planned *time.Time, tracked *config.EdgeOneTransition) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.edgeStatus == nil {
@@ -606,7 +600,19 @@ func (s *Syncer) setEdgeSiteQueryStatus(site config.EdgeOneSite, snapshot provid
 			st.PendingVersion = ""
 		}
 		st.PlannedActiveAt = copyTimePtr(planned)
-		st.ActualEffective = snapshot.Next == nil && strings.TrimSpace(snapshot.Current.Version) != ""
+		if provider.OriginACLSnapshotPrefixesValid(snapshot) {
+			current := currentFingerprint(snapshot.Current)
+			activeTransition := tracked != nil && tracked.BaseVersion != tracked.PendingVersion
+			if activeTransition && transitionIsCurrent(tracked, snapshot) {
+				st.activationFingerprint = current
+			} else if activeTransition || st.activationFingerprint != current {
+				st.activationFingerprint = [32]byte{}
+			}
+			st.ActualEffective = snapshot.Next == nil && st.activationFingerprint != ([32]byte{})
+		} else {
+			st.ActualEffective = false
+			st.activationFingerprint = [32]byte{}
+		}
 		st.ActualActiveAt = snapshot.Current.ActiveTime
 		st.ActualConfirmed = snapshot.Current.IsPlaned
 	}
@@ -706,8 +712,23 @@ func (s *Syncer) clearRoundCoverage() {
 func (s *Syncer) EdgeOneRuntimeStatus() []EdgeOneSiteStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]EdgeOneSiteStatus, 0, len(s.edgeStatus))
-	for _, st := range s.edgeStatus {
+	statuses := make(map[string]EdgeOneSiteStatus, len(s.edgeStatus))
+	for zone, st := range s.edgeStatus {
+		statuses[zone] = st
+	}
+	for zone, pending := range s.unsavedTransitions {
+		st := statuses[zone]
+		st.ZoneID = zone
+		st.ProtectedCIDRs = append(protectedEdgeOneCIDRStrings(edgeOneTransitionProtected(&pending)), st.ProtectedCIDRs...)
+		sort.Strings(st.ProtectedCIDRs)
+		st.ProtectedCIDRs = slices.Compact(st.ProtectedCIDRs)
+		if st.TransitionError == "" {
+			st.TransitionError = "过渡保护尚未保存"
+		}
+		statuses[zone] = st
+	}
+	out := make([]EdgeOneSiteStatus, 0, len(statuses))
+	for _, st := range statuses {
 		cp := st
 		cp.TargetIDs = append([]int(nil), st.TargetIDs...)
 		cp.Coverage = append([]SiteTargetCoverage(nil), st.Coverage...)
@@ -826,7 +847,6 @@ func (s *Syncer) runScheduledRound(state *RuntimeState, dnsDue, edgeDue bool) ro
 		// EdgeOne 到期（含手动/首次启用/新站点/恢复）必须实际查询；
 		// 仅 DNS 到期时允许复用仍有效的缓存。
 		edgeData = s.prepareEdgeOneData(state, epoch, edgeDue)
-		s.persistEdgeOneTransitions(state, epoch, edgeData)
 	}
 
 	dnsWrite, edgeWrite := dnsDue, edgeDue
@@ -835,12 +855,15 @@ func (s *Syncer) runScheduledRound(state *RuntimeState, dnsDue, edgeDue bool) ro
 		round := newDNSRound(state)
 		defer round.finish()
 		dnsData = s.resolveRoundDNS(state, round)
-		queryFailed := s.validateReusedEdgeOneData(state, edgeData)
+		queryFailed := s.finalizeEdgeOneData(state, edgeData)
+		if !s.persistEdgeOneTransitions(state, epoch, edgeData) {
+			return out
+		}
 		out.EdgeRetry = edgeDue && queryFailed
 		edgePrefixes, edgeComplete := edgePrefixInputs(edgeData)
 		outcome, err := s.evaluatePreflight(state, dnsData.addresses, dnsData.complete, edgePrefixes, edgeComplete)
 		out.Preflight, out.PreflightErr = outcome, err
-		s.storePreflight(state, epoch, outcome, transitionProtectedInputs(edgeData))
+		s.storePreflight(state, epoch, outcome, transitionProtectedInputs(edgeData), err)
 		if err != nil {
 			dnsWrite, edgeWrite = false, false
 		} else {
@@ -851,15 +874,19 @@ func (s *Syncer) runScheduledRound(state *RuntimeState, dnsDue, edgeDue bool) ro
 			out.EdgeRetry = true
 		}
 	} else if state.Config.EdgeOneEnabled {
-		queryFailed := s.validateReusedEdgeOneData(state, edgeData)
+		queryFailed := s.finalizeEdgeOneData(state, edgeData)
+		if !s.persistEdgeOneTransitions(state, epoch, edgeData) {
+			return out
+		}
 		out.EdgeRetry = edgeDue && queryFailed
 		edgeComplete := edgeDataComplete(edgeData)
 		out.Preflight = PreflightOutcome{
 			State:           PreflightStateSingleSource,
+			KnownConflict:   s.hasKnownConflict(),
 			EdgeOneComplete: edgeComplete,
 			Admission:       Admission{EdgeOne: edgeComplete},
 		}
-		s.storePreflight(state, epoch, out.Preflight, transitionProtectedInputs(edgeData))
+		s.storePreflight(state, epoch, out.Preflight, transitionProtectedInputs(edgeData), nil)
 		edgeWrite = edgeDue && edgeComplete
 		if edgeDue && !edgeWrite {
 			out.EdgeRetry = true
@@ -871,13 +898,21 @@ func (s *Syncer) runScheduledRound(state *RuntimeState, dnsDue, edgeDue bool) ro
 			KnownConflict: s.hasKnownConflict(),
 			Admission:     Admission{DNS: true},
 		}
-		s.storePreflight(state, epoch, out.Preflight, nil)
+		s.storePreflight(state, epoch, out.Preflight, nil, nil)
 	}
 
 	if dnsWrite || edgeWrite {
 		s.syncAllStateWithInput(state, dnsData, edgeData, dnsWrite, edgeWrite, epoch)
 		out.DNSRan = dnsWrite
 		out.EdgeRan = edgeWrite
+	}
+	if edgeDue {
+		for _, item := range edgeData {
+			if item.transitionErr != "" {
+				out.EdgeRetry = true
+				break
+			}
+		}
 	}
 	if edgeWrite {
 		if retry := s.ConfirmEdgeOneSites(state, edgeData, epoch); retry {
@@ -995,7 +1030,7 @@ func edgeDataComplete(data map[string]edgeOneSiteData) bool {
 }
 
 // storePreflight 仅在轮次捕获的状态与配置代次仍是当前值时更新只读摘要。
-func (s *Syncer) storePreflight(state *RuntimeState, epoch uint64, outcome PreflightOutcome, protected []EdgeOnePrefix) {
+func (s *Syncer) storePreflight(state *RuntimeState, epoch uint64, outcome PreflightOutcome, protected []EdgeOnePrefix, err error) {
 	_ = s.withStableConfig(func() bool {
 		if state == nil || s.runtime.Snapshot() != state || s.Generation() != epoch {
 			return false
@@ -1016,6 +1051,10 @@ func (s *Syncer) storePreflight(state *RuntimeState, epoch uint64, outcome Prefl
 		sort.Strings(values)
 		s.mu.Lock()
 		s.preflight = outcome
+		s.preflightErr = ""
+		if err != nil {
+			s.preflightErr = preflightUnavailable
+		}
 		s.preflightAt = s.now()
 		s.preflightSet = true
 		s.preflightProtected = values
@@ -1074,6 +1113,7 @@ func (s *Syncer) forgetEdgeOneSiteLocked(zone string) {
 		return
 	}
 	delete(s.edgeCache, zone)
+	delete(s.unsavedTransitions, zone)
 	delete(s.edgeStatus, zone)
 	delete(s.confirmedMem, zone)
 	for key := range s.roundCoverage {
@@ -1090,18 +1130,33 @@ func (s *Syncer) ForgetEdgeOneSite(zone string) {
 	s.mu.Unlock()
 }
 
-// ForgetEdgeOneRuntime 清除全部 EdgeOne 进程内运行状态；reset/完整导入使用。
+// ForgetEdgeOneRuntime clears all in-process EdgeOne state after a full reset.
 func (s *Syncer) ForgetEdgeOneRuntime() {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.unsavedTransitions = nil
+	s.forgetEdgeOneObservationsLocked()
+}
+
+// ForgetEdgeOneObservations clears imported runtime observations. ApplyState
+// subsequently discards unsaved protection for sites absent from the import.
+func (s *Syncer) ForgetEdgeOneObservations() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.forgetEdgeOneObservationsLocked()
+}
+
+func (s *Syncer) forgetEdgeOneObservationsLocked() {
 	s.edgeCache = nil
 	s.edgeStatus = nil
 	s.roundCoverage = nil
 	s.confirmedMem = nil
 	s.preflightSet = false
 	s.preflight = PreflightOutcome{}
+	s.preflightErr = ""
 	s.preflightAt = time.Time{}
+	s.preflightProtected = nil
 	s.edgeRetryDelay = 0
-	s.mu.Unlock()
 }
 
 // roundDNSData 是一轮双开 DNS 解析的冻结输入：目标 attempt 只复用该结果，

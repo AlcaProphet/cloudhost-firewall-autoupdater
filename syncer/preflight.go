@@ -159,3 +159,5 @@ type PreflightOutcome struct {
 	KnownConflict   bool
 	Overlap         *AddressOverlap
 }
+
+const preflightUnavailable = "地址冲突状态无法读取或提交"
