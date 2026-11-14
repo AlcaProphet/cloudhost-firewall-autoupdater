@@ -277,10 +277,15 @@ func dryRunSites(sites []config.EdgeOneSite, data map[string]edgeOneSiteData) []
 		if item.transitionReadErr != "" {
 			reasons = append(reasons, "transition_unavailable")
 		}
-		complete := item.unavailable == "" && item.transitionReadErr == "" &&
-			strings.TrimSpace(item.snapshot.ZoneID) != "" &&
-			strings.TrimSpace(item.snapshot.Current.Version) != "" &&
-			provider.OriginACLSnapshotPrefixesValid(item.snapshot)
+		// 版本号独立于完整性：查询成功但缺少地址族/过渡记录不可读时，
+		// 已知的当前/待更新版本仍应回显，不能显示成“未知”。
+		knownVersion := strings.TrimSpace(item.snapshot.ZoneID) != "" &&
+			strings.TrimSpace(item.snapshot.Current.Version) != ""
+		snapshotValid := knownVersion && provider.OriginACLSnapshotPrefixesValid(item.snapshot)
+		if item.unavailable == "" && !snapshotValid {
+			reasons = append(reasons, "snapshot_incomplete")
+		}
+		complete := item.unavailable == "" && item.transitionReadErr == "" && snapshotValid
 		if complete && !hasRequiredAddressFamilies(item.snapshot, site.AddressFamily) {
 			complete = false
 			reasons = append(reasons, "address_family_missing")
@@ -294,7 +299,7 @@ func dryRunSites(sites []config.EdgeOneSite, data map[string]edgeOneSiteData) []
 			Reasons:        reasons,
 			ProtectedCIDRs: protectedEdgeOneCIDRStrings(item.protected),
 		}
-		if complete {
+		if knownVersion {
 			entry.CurrentVersion = item.snapshot.Current.Version
 			if item.snapshot.Next != nil {
 				entry.PendingVersion = item.snapshot.Next.Version

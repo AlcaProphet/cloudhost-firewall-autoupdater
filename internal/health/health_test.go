@@ -503,4 +503,80 @@ func TestEvaluatePausedSkipsPreflightAndSourceReasons(t *testing.T) {
 	}
 }
 
+func TestEvaluateUnobservedPreflightIsNeutral(t *testing.T) {
+	// 配置发布/重启后尚未完成首次双开预检：ObservedAt=nil 是“未观察”，
+	// 不能把 complete=false 误报成两侧数据不足（Build7 Step 7 同类）。
+	now := time.Now()
+	status := baseStatus(now)
+	due := now.Add(5 * time.Minute)
+	status.DNS = syncer.SourceStatus{
+		Enabled: true, Effective: true, NextDueAt: &due, IntervalSeconds: 300,
+		LastOutcome: syncer.SourceOutcomeSuccess,
+	}
+	status.EdgeOne = syncer.SourceStatus{
+		Enabled: true, Effective: true, NextDueAt: &due, IntervalSeconds: 3600,
+		LastOutcome: syncer.SourceOutcomeSuccess,
+	}
+	status.Preflight = syncer.AddressPreflightStatus{State: syncer.PreflightStateDataUnavailable}
+	d := newHealthTestDeps()
+	d.setup(func() { d.status = status })
+	res := d.checker().Evaluate(context.Background())
+	if !res.Healthy {
+		t.Fatalf("未观察的预检不得制造数据不足异常：%+v", res)
+	}
+}
+
+func TestEvaluateKnownConflictWithoutObservationIsVisible(t *testing.T) {
+	// 尚未重新预检时，已持久化的已知冲突仍必须保持可见。
+	now := time.Now()
+	status := baseStatus(now)
+	status.Preflight = syncer.AddressPreflightStatus{
+		State: syncer.PreflightStateDataUnavailable, KnownConflict: true,
+	}
+	d := newHealthTestDeps()
+	d.setup(func() { d.status = status })
+	res := d.checker().Evaluate(context.Background())
+	if res.Healthy || !slices.Contains(res.Reasons, ReasonAddressOverlap) {
+		t.Fatalf("未观察但仍存在的已知冲突必须可见：%+v", res)
+	}
+	if slices.Contains(res.Reasons, ReasonDNSIncomplete) || slices.Contains(res.Reasons, ReasonEdgeOneIncomplete) {
+		t.Fatalf("未观察的 complete=false 不得解释为数据不足：%+v", res.Reasons)
+	}
+}
+
 func ptrTime(v time.Time) *time.Time { return &v }
+
+func TestEvaluateObservedSingleSideIncompleteStillReports(t *testing.T) {
+	// ObservedAt 非 nil 的单侧不足仍必须报告失败来源；上面的“未观察”修复
+	// 不得把真实数据不足一起静音。
+	now := time.Now()
+	status := baseStatus(now)
+	observed := now.Add(-time.Minute)
+	status.DNS = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeSuccess}
+	status.EdgeOne = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeSuccess}
+	status.Preflight = syncer.AddressPreflightStatus{
+		State: syncer.PreflightStateDataUnavailable, DNSComplete: false, EdgeOneComplete: true,
+		ObservedAt: &observed,
+	}
+	d := newHealthTestDeps()
+	d.setup(func() { d.status = status })
+	res := d.checker().Evaluate(context.Background())
+	if res.Healthy || !slices.Contains(res.Reasons, ReasonDNSIncomplete) ||
+		slices.Contains(res.Reasons, ReasonEdgeOneIncomplete) {
+		t.Fatalf("已观察单侧不足必须只标记 DNS：%+v", res.Reasons)
+	}
+}
+
+func TestEvaluateSourceOutcomePartialIsVisible(t *testing.T) {
+	now := time.Now()
+	status := baseStatus(now)
+	status.DNS = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomePartial}
+	status.EdgeOne = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeSuccess}
+	d := newHealthTestDeps()
+	d.setup(func() { d.status = status })
+	res := d.checker().Evaluate(context.Background())
+	if res.Healthy || !slices.Contains(res.Reasons, ReasonDNSSourcePartial) ||
+		slices.Contains(res.Reasons, ReasonDNSSourceFailed) {
+		t.Fatalf("来源 partial 必须独立可见：%+v", res.Reasons)
+	}
+}

@@ -2,11 +2,14 @@ package syncer
 
 import (
 	"errors"
+	"net"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/dns"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
 
@@ -122,5 +125,107 @@ func TestStep15DiagnosticsDoNotExposeSDKPayload(t *testing.T) {
 	}
 	if strings.Contains(status[0].LastQueryError, secret) || strings.Contains(s.Status().EdgeOne.LastOutcome, secret) {
 		t.Fatalf("诊断泄露 SDK/凭据载荷：%+v", status[0])
+	}
+}
+
+// TestStep15SourceOutcomeAttributedPerSource 验证双开同轮中，只有 DNS-only
+// 目标失败时 EdgeOne 来源仍为 success，不再把整轮失败复制到两侧。
+func TestStep15SourceOutcomeAttributedPerSource(t *testing.T) {
+	a := netip.MustParsePrefix("203.0.113.0/24")
+	pDNS := newProbeProvider(config.CloudAliECS, 0)
+	pDNS.createVisible = false // Add 后 S1 不可见 → 仅该目标失败
+	pEdge := newProbeProvider(config.CloudAliECS, 1, step11Rule(a.String(), "443"))
+	teo := &step10TEO{snapshots: []provider.OriginACLSnapshot{
+		step11Snapshot("v1", []string{a.String()}, "", nil),
+	}}
+
+	st := step8State(t, true, true, time.Hour, time.Hour, pDNS, nil)
+	st.Config.Targets = append(st.Config.Targets,
+		config.TargetConfig{ID: 1, CloudType: pEdge.CloudType(), Region: "ap-guangzhou", ResourceID: "sg-edge"})
+	st.Providers = []provider.Provider{pDNS, pEdge}
+	site := step8Site("zone-a")
+	site.TargetIDs = []int{1}
+	st.Config.EdgeOneSites = []config.EdgeOneSite{site}
+	st.TEO = teo
+
+	s := New(NewRuntimeManager(st))
+	s.SetConflictState(NewAddressConflictState(&step8MemConflictStore{}))
+	s.SetEdgeOneTransitionStore(newStep10Store())
+	s.sleepFn = func(time.Duration) {}
+	s.resolveHostFn = func(string) ([]dns.ResolvedIP, error) {
+		return []dns.ResolvedIP{{IP: net.ParseIP("192.0.2.10")}}, nil
+	}
+
+	out := s.runScheduledRound(st, true, true)
+	if out.Preflight.State != PreflightStateClear {
+		t.Fatalf("夹具应为无冲突完整预检：%+v", out.Preflight)
+	}
+	status := s.Status()
+	if status.DNS.LastOutcome != SourceOutcomeFailed {
+		t.Fatalf("DNS-only 目标失败应归因 DNS，got %q", status.DNS.LastOutcome)
+	}
+	if status.EdgeOne.LastOutcome != SourceOutcomeSuccess {
+		t.Fatalf("EdgeOne 目标成功不得被整轮失败污染，got %q", status.EdgeOne.LastOutcome)
+	}
+	if status.LastRound == nil || status.LastRound.Outcome != RoundFailed {
+		t.Fatalf("整轮结论仍应为 failed：%+v", status.LastRound)
+	}
+}
+
+// TestStep15SourceOutcomeEdgeFailureDoesNotPolluteDNS 验证反向归因：
+// 只有 EdgeOne-only 目标失败时 DNS 来源仍为 success。
+func TestStep15SourceOutcomeEdgeFailureDoesNotPolluteDNS(t *testing.T) {
+	a := netip.MustParsePrefix("203.0.113.0/24")
+	pDNS := newProbeProvider(config.CloudAliECS, 0, config.RuleInfo{
+		CidrBlock: "192.0.2.10/32", Protocol: "TCP", Port: "443", Action: "ACCEPT",
+		Description: "[auto-dns]", RuleID: "dns1",
+	})
+	pEdge := newProbeProvider(config.CloudAliECS, 1)
+	pEdge.createVisible = false // EdgeOne Add 后 S1 不可见 → 仅该目标失败
+	teo := &step10TEO{snapshots: []provider.OriginACLSnapshot{
+		step11Snapshot("v1", []string{a.String()}, "", nil),
+	}}
+	st := step8State(t, true, true, time.Hour, time.Hour, pDNS, nil)
+	st.Config.Targets = append(st.Config.Targets,
+		config.TargetConfig{ID: 1, CloudType: pEdge.CloudType(), Region: "ap-guangzhou", ResourceID: "sg-edge"})
+	st.Providers = []provider.Provider{pDNS, pEdge}
+	site := step8Site("zone-a")
+	site.TargetIDs = []int{1}
+	st.Config.EdgeOneSites = []config.EdgeOneSite{site}
+	st.TEO = teo
+
+	s := New(NewRuntimeManager(st))
+	s.SetConflictState(NewAddressConflictState(&step8MemConflictStore{}))
+	s.SetEdgeOneTransitionStore(newStep10Store())
+	s.sleepFn = func(time.Duration) {}
+	s.resolveHostFn = func(string) ([]dns.ResolvedIP, error) {
+		return []dns.ResolvedIP{{IP: net.ParseIP("192.0.2.10")}}, nil
+	}
+
+	out := s.runScheduledRound(st, true, true)
+	if out.Preflight.State != PreflightStateClear {
+		t.Fatalf("夹具应为无冲突完整预检：%+v", out.Preflight)
+	}
+	status := s.Status()
+	if status.DNS.LastOutcome != SourceOutcomeSuccess {
+		t.Fatalf("DNS 目标成功不得被 EdgeOne 失败污染，got %q", status.DNS.LastOutcome)
+	}
+	if status.EdgeOne.LastOutcome != SourceOutcomeFailed {
+		t.Fatalf("EdgeOne-only 目标失败应归因 EdgeOne，got %q", status.EdgeOne.LastOutcome)
+	}
+}
+
+func TestStep15MergeSourceOutcomePriority(t *testing.T) {
+	if got := mergeSourceOutcome("", SourceOutcomeSuccess); got != SourceOutcomeSuccess {
+		t.Fatalf("首个 success = %q", got)
+	}
+	if got := mergeSourceOutcome(SourceOutcomeSuccess, SourceOutcomePartial); got != SourceOutcomePartial {
+		t.Fatalf("partial 应覆盖 success = %q", got)
+	}
+	if got := mergeSourceOutcome(SourceOutcomePartial, SourceOutcomeFailed); got != SourceOutcomeFailed {
+		t.Fatalf("failed 应覆盖 partial = %q", got)
+	}
+	if got := mergeSourceOutcome(SourceOutcomeFailed, SourceOutcomeSuccess); got != SourceOutcomeFailed {
+		t.Fatalf("success 不得覆盖 failed = %q", got)
 	}
 }

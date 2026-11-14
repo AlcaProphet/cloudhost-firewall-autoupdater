@@ -840,7 +840,7 @@ func (s *Syncer) runScheduledRound(state *RuntimeState, dnsDue, edgeDue bool) ro
 		edgePrefixes, edgeComplete := edgePrefixInputs(edgeData)
 		outcome, err := s.evaluatePreflight(state, dnsData.addresses, dnsData.complete, edgePrefixes, edgeComplete)
 		out.Preflight, out.PreflightErr = outcome, err
-		s.storePreflight(state, epoch, outcome, edgePrefixes)
+		s.storePreflight(state, epoch, outcome, transitionProtectedInputs(edgeData))
 		if err != nil {
 			dnsWrite, edgeWrite = false, false
 		} else {
@@ -859,8 +859,7 @@ func (s *Syncer) runScheduledRound(state *RuntimeState, dnsDue, edgeDue bool) ro
 			EdgeOneComplete: edgeComplete,
 			Admission:       Admission{EdgeOne: edgeComplete},
 		}
-		edgePrefixes, _ := edgePrefixInputs(edgeData)
-		s.storePreflight(state, epoch, out.Preflight, edgePrefixes)
+		s.storePreflight(state, epoch, out.Preflight, transitionProtectedInputs(edgeData))
 		edgeWrite = edgeDue && edgeComplete
 		if edgeDue && !edgeWrite {
 			out.EdgeRetry = true
@@ -922,7 +921,11 @@ func (s *Syncer) sourceOutcome(state *RuntimeState, dnsSource bool, out roundDis
 			return SourceOutcomeIncomplete
 		}
 		if out.DNSRan {
-			return s.lastRoundOutcome()
+			// 来源级结论按本轮实际参与的目标汇总；没有参与目标时为 idle。
+			if value := s.sourceRoundOutcome(true); value != "" {
+				return value
+			}
+			return SourceOutcomeIdle
 		}
 		return SourceOutcomeIdle
 	}
@@ -936,18 +939,13 @@ func (s *Syncer) sourceOutcome(state *RuntimeState, dnsSource bool, out roundDis
 		return SourceOutcomeIncomplete
 	}
 	if out.EdgeRan {
-		return s.lastRoundOutcome()
-	}
-	return SourceOutcomeIdle
-}
-
-func (s *Syncer) lastRoundOutcome() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.lastRound == nil {
+		// 来源级结论按本轮实际参与的目标汇总；没有参与目标时为 idle。
+		if value := s.sourceRoundOutcome(false); value != "" {
+			return value
+		}
 		return SourceOutcomeIdle
 	}
-	return string(s.lastRound.Outcome)
+	return SourceOutcomeIdle
 }
 
 // logPreflightOutcome 只在预检状态边沿记录安全日志；持续冲突不重复刷屏。

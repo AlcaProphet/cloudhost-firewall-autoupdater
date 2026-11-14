@@ -507,11 +507,11 @@ resp, err := client.ConfirmOriginACLUpdateWithContext(ctx, req)
 }
 ```
 
-实施后 `dns`/`edgeone` 另含 `last_started_at`、`last_completed_at`、`last_outcome`、`interval_seconds`，供运行健康按来源判断；`address_preflight` 另含 `protected_cidrs`。Dry Run 在既有 `results`/`warnings` 外新增 `preflight` 与按物理目标聚合的 `execution_units`，所有数组保持非 null。
+实施后 `dns`/`edgeone` 另含 `last_started_at`、`last_completed_at`、`last_outcome`、`interval_seconds`，供运行健康按来源判断；`last_outcome` 按本轮实际参与的目标归因（共享目标失败时两侧都记失败，未参与来源为 idle）。`address_preflight` 另含 `protected_cidrs`（仅过渡保护前缀，单源也返回）与 `observed_at`（null 表示尚未观察，不能把 `complete=false` 解释为数据不足）。Dry Run 在既有 `results`/`warnings` 外新增 `preflight` 与按物理目标聚合的 `execution_units`，`results` 另含 `edgeone_sites`，所有数组保持非 null。
 
 此示例仅列本阶段新增的状态及既有总开关，现有轮次、健康和时间字段继续输出。 `address_preflight.state` 可使用 `single_source`、`clear`、`overlap`、`data_unavailable`；已查实冲突且复查数据不足时保留 `overlap`，同时附失败来源。恢复时发布一次状态变化。Dry Run 使用本次预览的判定和实际受影响目标；云端未知配额标为未知，已读快照数和预计新增数分别显示。建议只增加适配既有前端结构的字段，保持 `results`、`warnings` 等数组为空时为 `[]`。 [同步响应](syncer/syncer.go) · [前端类型](webui/frontend/src/types.ts) · [模拟测试页面](webui/frontend/src/views/RunTest.vue)
 
-日志和健康沿用现有事件与端点。健康使用来源自己的到期与结果，区分可继续的部分结果与两侧全局阻断。诊断只包含安全字段，例如 `ZoneId`、目标标识、版本、状态和 RequestId。目标明确写入数量、候选数、已清理数和残留分别统计。用本地模拟证明各入口边界，真实站点数据形状、规则配额、权限、确认后的实际时序由 Build8 Step 17 留存独立证据。 [运行健康](internal/health/health.go) · [日志入库](webui/api/logwriter.go) · [构建追踪](Build8.md#step-17)
+日志和健康沿用现有事件与端点。健康使用来源自己的到期与结果，区分可继续的部分结果与两侧全局阻断；尚未观察的预检按中性处理，已知冲突仍保持可见。诊断只包含安全字段，例如 `ZoneId`、目标标识、版本、状态和 RequestId。目标明确写入数量、候选数、已清理数和残留分别统计。用本地模拟证明各入口边界，真实站点数据形状、规则配额、权限、确认后的实际时序由 Build8 Step 17 留存独立证据。 [运行健康](internal/health/health.go) · [日志入库](webui/api/logwriter.go) · [构建追踪](Build8.md#step-17)
 
 <a name="frozen-contract"></a>
 
@@ -588,3 +588,10 @@ resp, err := client.ConfirmOriginACLUpdateWithContext(ctx, req)
 - Step 11 按用户裁决 C 接入过渡保护：旧行按 `pending_cidrs` 回填；有效查询证明待更新版成为当前且规范前缀集合完全相等才释放；释放后先重算预检保护，实际删除继续经过 S1/TAG/版本/稳定定位/S2。保护写入失败仍使用内存保护继续 EdgeOne 写入；读取失败阻断 EdgeOne。
 - Step 12 保留 Dry Run `results` 每本地目标一项，新增顶层 `preflight` 与按物理目标聚合的 `execution_units`；只读复用正式冲突判定、保护集合、EdgeOne 缓存与规划器，不写缓存/状态/冲突/过渡表，不 Create/Delete/Confirm，不发事件。
 - Step 15 为 `dns`/`edgeone` 增加 `last_started_at`、`last_completed_at`、`last_outcome`、`interval_seconds`；健康按来源自身 `next_due + health_timeout` 判断停滞，新增“地址重叠阻断”“DNS/EdgeOne 数据不足（单侧继续）”等原因。预检 overlap/known conflict 在 `total=0/idle` 时仍 unhealthy；长期冲突只在健康边沿通知一次，恢复沿用 INFO，不新增事件类型或同步日志行。
+
+**2026-11-14 核验修复补充（Step 11～15）**
+
+- 预检：`observed_at=null` 是“尚未观察”，不是“已证明数据不足”；health 只在已观察时把 `complete=false` 解释为来源数据不足，已持久化 `known_conflict` 仍单独报告。Dashboard 对未观察、单侧不足、两侧不足和重叠分别提示。
+- Step 11：`address_preflight.protected_cidrs` 只含过渡保护前缀，单源也返回；释放仍要求当前版本与规范前缀同时匹配。补充释放前缀不匹配、裁决 C 内存保护清理、过渡读取失败 DNS 继续和 A/B 共用网段回归。
+- Step 12：仅 EdgeOne 启用时 `results` 不纳入已停用 DNS 规则，不再产生伪 `dns_empty`；新增 `edgeone_sites`，前端以 DNS 规则或站点判断适用来源。站点已知版本在数据不完整时仍回显，`data_complete` 与站点完整性一致。
+- Step 15：来源级 `last_outcome` 按本轮实际参与的目标归因；单一来源目标失败不得污染另一侧，共享目标失败时两侧都记失败。

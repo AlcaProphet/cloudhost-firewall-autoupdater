@@ -320,7 +320,7 @@ func TestStep11ReleaseWithLeftoverProtectionKeepsResidual(t *testing.T) {
 	}
 }
 
-func TestStep11TransitionSQLiteRealStore(t *testing.T) {
+func TestStep11ResidualProtectionDoesNotFallBackToPending(t *testing.T) {
 	// 同一路径由 config 包的真实 SQLite 覆盖；本文件其余用例使用内存替身。
 	// 这里只做纯逻辑对照，确保 base==pending 的残留保护不会被回退为 pending。
 	row := &config.EdgeOneTransition{
@@ -450,5 +450,200 @@ func TestStep11RestartRestoresProtectionFromSQLite(t *testing.T) {
 	if err != nil || row == nil || !sameEdgeOnePrefixSet(row.ProtectedCIDRs, []netip.Prefix{b}) ||
 		row.ConfirmationState != config.EdgeOneConfirmationAccepted {
 		t.Fatalf("SQLite 恢复的记录 = %+v err=%v", row, err)
+	}
+}
+
+// TestStep11PreflightProtectedCIDRsTransitionOnly 验证 /api/sync/status 的
+// address_preflight.protected_cidrs 只包含过渡保护，而不是全部 EdgeOne 前缀；
+// 仅 EdgeOne 启用时也必须返回该保护集合。
+func TestStep11PreflightProtectedCIDRsTransitionOnly(t *testing.T) {
+	a := netip.MustParsePrefix("203.0.113.0/24")
+	b := netip.MustParsePrefix("198.51.100.0/24")
+
+	t.Run("edgeone_only", func(t *testing.T) {
+		store := newStep10Store()
+		store.rows["zone-a"] = step11Row("zone-a", "v1", "v2", []netip.Prefix{b}, []netip.Prefix{b},
+			config.EdgeOneConfirmationAccepted, "req-old")
+		p := newProbeProvider(config.CloudAliECS, 0)
+		teo := &step10TEO{snapshots: []provider.OriginACLSnapshot{
+			step11Snapshot("v1", []string{a.String()}, "", nil),
+		}}
+		st := step11State(t, false, p, []config.EdgeOneSite{step8Site("zone-a")})
+		s := step11Syncer(t, st, teo, store, nil)
+		s.runScheduledRound(st, false, true)
+		got := s.Status().Preflight.ProtectedCIDRs
+		if len(got) != 1 || got[0] != b.String() {
+			t.Fatalf("仅 EdgeOne 的保护集合 = %v，want [%s]", got, b)
+		}
+		if s.Status().Preflight.ObservedAt == nil {
+			t.Fatal("EdgeOne-only 已观察预检必须带 observed_at")
+		}
+	})
+
+	t.Run("dual", func(t *testing.T) {
+		store := newStep10Store()
+		store.rows["zone-a"] = step11Row("zone-a", "v1", "v2", []netip.Prefix{b}, []netip.Prefix{b},
+			config.EdgeOneConfirmationAccepted, "req-old")
+		p := newProbeProvider(config.CloudAliECS, 0)
+		teo := &step10TEO{snapshots: []provider.OriginACLSnapshot{
+			step11Snapshot("v1", []string{a.String()}, "", nil),
+		}}
+		st := step11State(t, true, p, []config.EdgeOneSite{step8Site("zone-a")})
+		s := step11Syncer(t, st, teo, store, map[string]string{"home.example": "192.0.2.10/32"})
+		s.runScheduledRound(st, true, true)
+		got := s.Status().Preflight.ProtectedCIDRs
+		if len(got) != 1 || got[0] != b.String() {
+			t.Fatalf("双开保护集合 = %v，want 仅 [%s]（不得包含当前/待更新全部前缀）", got, b)
+		}
+	})
+}
+
+// TestStep11ReleaseRequiresCanonicalPrefixMatch 验证“版本相同但规范前缀不一致”
+// 不能释放保护；否则只按版本匹配的回归会误删仍可能用于回源的 B。
+func TestStep11ReleaseRequiresCanonicalPrefixMatch(t *testing.T) {
+	b := netip.MustParsePrefix("198.51.100.0/24")
+	c := netip.MustParsePrefix("192.0.2.0/24")
+	store := newStep10Store()
+	store.rows["zone-a"] = step11Row("zone-a", "v1", "v2", []netip.Prefix{b}, []netip.Prefix{b},
+		config.EdgeOneConfirmationAccepted, "req-old")
+	p := newProbeProvider(config.CloudAliECS, 0, step11Rule(b.String(), "443"), step11Rule(c.String(), "443"))
+	teo := &step10TEO{snapshots: []provider.OriginACLSnapshot{
+		// 版本已变为 v2，但网段是 C，不是记录的 B；不得释放。
+		step11Snapshot("v2", []string{c.String()}, "", nil),
+	}}
+	st := step11State(t, false, p, []config.EdgeOneSite{step8Site("zone-a")})
+	s := step11Syncer(t, st, teo, store, nil)
+	s.runScheduledRound(st, false, true)
+	if _, _, deletes := p.counts(); deletes != 0 {
+		t.Fatalf("版本匹配但前缀不一致时不得删除受保护 B，deletes=%d", deletes)
+	}
+	row, ok := store.row("zone-a")
+	if !ok || row.PendingVersion != "v2" || !sameEdgeOnePrefixSet(row.ProtectedCIDRs, []netip.Prefix{b}) {
+		t.Fatalf("过渡记录不得释放：%+v ok=%v", row, ok)
+	}
+	if !p.hasRule(b.String(), "443") {
+		t.Fatal("受保护 B 必须保留")
+	}
+}
+
+// TestStep11StorageFailureStillUsesMemoryProtectionForCleanup 验证裁决 C 的
+// “持久化失败仍保留内存保护”：回填旧行保护失败时，B 仍必须移出可删集合。
+func TestStep11StorageFailureStillUsesMemoryProtectionForCleanup(t *testing.T) {
+	store := newStep10Store()
+	store.saveProtectedErr = errors.New("fixture: transition write failed")
+	a := netip.MustParsePrefix("203.0.113.0/24")
+	b := netip.MustParsePrefix("198.51.100.0/24")
+	// Step 10 旧行：pending B，但 protected 为空；plan 会回填 B 并尝试持久化。
+	store.rows["zone-a"] = step11Row("zone-a", "v1", "v2", []netip.Prefix{b}, nil,
+		config.EdgeOneConfirmationUnknown, "")
+	p := newProbeProvider(config.CloudAliECS, 0, step11Rule(a.String(), "443"), step11Rule(b.String(), "443"))
+	teo := &step10TEO{snapshots: []provider.OriginACLSnapshot{
+		step11Snapshot("v1", []string{a.String()}, "", nil),
+	}}
+	st := step11State(t, false, p, []config.EdgeOneSite{step8Site("zone-a")})
+	s := step11Syncer(t, st, teo, store, nil)
+	s.runScheduledRound(st, false, true)
+	if _, _, deletes := p.counts(); deletes != 0 {
+		t.Fatalf("保护写入失败时内存保护必须阻止删除 B，deletes=%d", deletes)
+	}
+	if !p.hasRule(b.String(), "443") {
+		t.Fatal("受保护 B 必须保留")
+	}
+	status := s.EdgeOneRuntimeStatus()
+	if len(status) != 1 || !strings.Contains(status[0].TransitionError, "写入过渡保护失败") {
+		t.Fatalf("状态必须保留写入失败诊断：%+v", status)
+	}
+}
+
+// TestStep11TransitionReadFailureKeepsDNSWrites 验证过渡表读取失败只阻断
+// EdgeOne，DNS 在自身完整且无已知冲突时仍继续。
+func TestStep11TransitionReadFailureKeepsDNSWrites(t *testing.T) {
+	store := newStep10Store()
+	store.listErr = errors.New("fixture: transition read failed")
+	p := newProbeProvider(config.CloudAliECS, 0)
+	teo := &step10TEO{snapshots: []provider.OriginACLSnapshot{
+		step11Snapshot("v1", []string{"203.0.113.0/24"}, "", nil),
+	}}
+	st := step11State(t, true, p, []config.EdgeOneSite{step8Site("zone-a")})
+	s := step11Syncer(t, st, teo, store, map[string]string{"home.example": "192.0.2.10/32"})
+	out := s.runScheduledRound(st, true, true)
+	_, creates, deletes := p.counts()
+	_, confirms := teo.counts()
+	if creates != 1 || deletes != 0 || confirms != 0 {
+		t.Fatalf("DNS 应继续而 EdgeOne 阻断：creates=%d deletes=%d confirms=%d", creates, deletes, confirms)
+	}
+	if !out.Preflight.DNSComplete || out.Preflight.EdgeOneComplete {
+		t.Fatalf("预检完整性 = dns:%v edge:%v", out.Preflight.DNSComplete, out.Preflight.EdgeOneComplete)
+	}
+	status := s.Status()
+	if status.DNS.LastOutcome != SourceOutcomeSuccess || status.EdgeOne.LastOutcome != SourceOutcomeIncomplete {
+		t.Fatalf("来源结论 = dns:%q edge:%q", status.DNS.LastOutcome, status.EdgeOne.LastOutcome)
+	}
+}
+
+// TestStep11SharedPrefixAcrossVersions 验证 A/B 共用网段在重启阻断和释放清理
+// 两个阶段都保持正确：共享前缀不进入可删集合，A 特有前缀在 B 生效后才删除。
+func TestStep11SharedPrefixAcrossVersions(t *testing.T) {
+	a := netip.MustParsePrefix("203.0.113.0/24")
+	b := netip.MustParsePrefix("198.51.100.0/24")
+	shared := netip.MustParsePrefix("192.0.2.0/24")
+	store := newStep10Store()
+	store.rows["zone-a"] = step11Row("zone-a", "v1", "v2", []netip.Prefix{b, shared},
+		[]netip.Prefix{b, shared}, config.EdgeOneConfirmationAccepted, "req-old")
+
+	// 阶段 1：Next 消失，当前仍为 A；DNS 命中共享前缀 S → 两侧阻断。
+	p1 := newProbeProvider(config.CloudAliECS, 0, step11Rule(a.String(), "443"), step11Rule(shared.String(), "443"))
+	teo1 := &step10TEO{snapshots: []provider.OriginACLSnapshot{
+		step11Snapshot("v1", []string{a.String(), shared.String()}, "", nil),
+	}}
+	st1 := step11State(t, true, p1, []config.EdgeOneSite{step8Site("zone-a")})
+	s1 := step11Syncer(t, st1, teo1, store, map[string]string{"home.example": shared.String()})
+	out := s1.runScheduledRound(st1, true, true)
+	if out.Preflight.State != PreflightStateOverlap {
+		t.Fatalf("共享前缀必须命中重叠：%+v", out.Preflight)
+	}
+	if _, creates, deletes := p1.counts(); creates != 0 || deletes != 0 {
+		t.Fatalf("阻断轮不得写入：creates=%d deletes=%d", creates, deletes)
+	}
+
+	// 阶段 2：B 成为当前且包含共享前缀 S；释放后只删除 A 特有前缀。
+	p2 := newProbeProvider(config.CloudAliECS, 0, step11Rule(a.String(), "443"),
+		step11Rule(b.String(), "443"), step11Rule(shared.String(), "443"))
+	teo2 := &step10TEO{snapshots: []provider.OriginACLSnapshot{
+		step11Snapshot("v2", []string{b.String(), shared.String()}, "", nil),
+	}}
+	st2 := step11State(t, false, p2, []config.EdgeOneSite{step8Site("zone-a")})
+	s2 := step11Syncer(t, st2, teo2, store, nil)
+	s2.runScheduledRound(st2, false, true)
+	if _, _, deletes := p2.counts(); deletes != 1 {
+		t.Fatalf("释放后应只删除 A，deletes=%d", deletes)
+	}
+	if p2.hasRule(a.String(), "443") || !p2.hasRule(b.String(), "443") || !p2.hasRule(shared.String(), "443") {
+		t.Fatalf("共享前缀/新当前前缀不得删除：%+v", p2.rules)
+	}
+	if row, ok := store.row("zone-a"); ok {
+		t.Fatalf("释放完成后应删除过渡记录：%+v", row)
+	}
+}
+
+// TestStep11LegacyUnknownEmptyProtectionBackfilled 验证 Step 10 旧行的
+// unknown 确认状态在空保护回填时保留，不被重置为 not_attempted。
+func TestStep11LegacyUnknownEmptyProtectionBackfilled(t *testing.T) {
+	store := newStep10Store()
+	a := netip.MustParsePrefix("203.0.113.0/24")
+	b := netip.MustParsePrefix("198.51.100.0/24")
+	store.rows["zone-a"] = step11Row("zone-a", "v1", "v2", []netip.Prefix{b}, nil,
+		config.EdgeOneConfirmationUnknown, "")
+	p := newProbeProvider(config.CloudAliECS, 0, step11Rule(a.String(), "443"))
+	teo := &step10TEO{snapshots: []provider.OriginACLSnapshot{
+		step11Snapshot("v1", []string{a.String()}, "", nil),
+	}}
+	st := step11State(t, false, p, []config.EdgeOneSite{step8Site("zone-a")})
+	s := step11Syncer(t, st, teo, store, nil)
+	s.runScheduledRound(st, false, true)
+	row, ok := store.row("zone-a")
+	if !ok || !sameEdgeOnePrefixSet(row.ProtectedCIDRs, []netip.Prefix{b}) ||
+		row.ConfirmationState != config.EdgeOneConfirmationUnknown || row.ConfirmationRequestID != "" {
+		t.Fatalf("unknown 旧行回填 = %+v ok=%v", row, ok)
 	}
 }

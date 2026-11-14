@@ -22,6 +22,12 @@ const props = defineProps<{
 
 const units = computed(() => props.executionUnits || [])
 
+// 目标是否有任何适用来源：DNS 规则或 EdgeOne 站点。DNS 关闭或仅 EdgeOne
+// 站点时 domains 为空，不能把它误判为「无适用规则」而隐藏真实计划。
+function hasTargetPlan(item: DryRunResult): boolean {
+  return Boolean(item.domains?.length || item.edgeone_sites?.length)
+}
+
 const preflightHint = computed(() => {
   const p = props.preflight
   if (!p) return null
@@ -32,8 +38,10 @@ const preflightHint = computed(() => {
       return { type: 'error' as const, text: `全局地址重叠，正式同步会阻断两侧${detail}` }
     }
     case 'data_unavailable': {
-      const failed = !p.dns_complete && !p.edgeone_complete ? 'DNS 与 EdgeOne'
-        : !p.dns_complete ? 'DNS' : 'EdgeOne'
+      if (!p.dns_complete && !p.edgeone_complete) {
+        return { type: 'warning' as const, text: '数据不足：DNS 与 EdgeOne 两侧输入均不完整，正式同步会阻断两侧' }
+      }
+      const failed = !p.dns_complete ? 'DNS' : 'EdgeOne'
       return { type: 'warning' as const, text: `数据不足：${failed} 侧输入不完整；完整侧按自身安全门继续（单侧继续）` }
     }
     case 'clear':
@@ -224,12 +232,13 @@ function issueText(issue: PlanIssue): string {
         >
           <template #header-extra>
             <NTag v-if="item.domains?.length" size="small" :bordered="false">{{ item.domains.length }} 个来源域名</NTag>
+            <NTag v-else-if="item.edgeone_sites?.length" size="small" :bordered="false">{{ item.edgeone_sites.length }} 个 EdgeOne 站点</NTag>
             <NTag v-else type="default" size="small" :bordered="false">无适用规则</NTag>
             <NTag size="small" :bordered="false" style="margin-left: 8px">{{ resourceID(item.provider) }}</NTag>
           </template>
 
-          <NAlert v-if="!item.domains?.length" type="info" :show-icon="false">
-            当前没有适用于此目标的域名规则；正式同步将跳过此目标，不会读取或修改其云防火墙
+          <NAlert v-if="!hasTargetPlan(item)" type="info" :show-icon="false">
+            当前没有适用于此目标的域名规则或 EdgeOne 站点；正式同步将跳过此目标，不会读取或修改其云防火墙
           </NAlert>
 
           <template v-else>
@@ -237,8 +246,11 @@ function issueText(issue: PlanIssue): string {
               {{ item.error }}
             </NAlert>
 
-            <div style="font-size: 14px; color: #888; margin-bottom: 8px">
+            <div v-if="item.domains?.length" style="font-size: 14px; color: #888; margin-bottom: 8px">
               来源域名：{{ item.domains.join(', ') }}
+            </div>
+            <div v-if="item.edgeone_sites?.length" style="font-size: 14px; color: #888; margin-bottom: 8px">
+              EdgeOne 站点：{{ item.edgeone_sites.join(', ') }}
             </div>
 
             <div style="font-size: 14px; color: #666; margin-bottom: 4px">所需功能（完整期望集）</div>

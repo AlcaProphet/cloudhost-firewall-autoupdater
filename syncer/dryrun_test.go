@@ -420,6 +420,7 @@ func assertUnscheduledDryRunResult(t *testing.T, result DryRunResult) {
 
 var dryRunResultArrayFields = []string{
 	"domains",
+	"edgeone_sites",
 	"desired",
 	"satisfied_by_owned",
 	"satisfied_by_external",

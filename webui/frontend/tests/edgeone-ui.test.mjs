@@ -176,3 +176,57 @@ test('B8S13 导入后重新挂载从 API 回显站点', async () => {
   assert.match(text, /UDP/)
   assert.match(text, /ipv6/)
 })
+
+test('B8S13 设置保存失败保留用户输入并显示后台错误', async () => {
+  const e = mount('views/Settings.vue', async (url, opts = {}) => {
+    if (url === '/api/settings' && opts.method === 'PUT') throw new Error('edgeone_interval 非法')
+    if (url === '/api/settings') return { ...settings }
+    return []
+  })
+  await e.mounted()
+  e.s.settings.value.edgeone_interval = 'not-a-duration'
+  await e.s.save()
+  assert.equal(e.s.settings.value.edgeone_interval, 'not-a-duration', '失败后必须保留输入')
+  assert.ok(e.messages.some(m => m.kind === 'error' && /edgeone_interval 非法/.test(m.text)))
+})
+
+test('B8S13 站点编辑与删除调用正确 API', async () => {
+  const requests = []
+  const e = mount('views/EdgeOne.vue', async (url, opts = {}) => {
+    requests.push([url, opts])
+    if (url === '/api/settings') return { ...settings }
+    if (url === '/api/targets') return targets
+    if (url === '/api/edgeone/sites' && (!opts.method || opts.method === 'GET')) return { sites: [site] }
+    if (url.startsWith('/api/edgeone/sites/') && opts.method === 'PUT') return site
+    if (url.startsWith('/api/edgeone/sites/') && opts.method === 'DELETE') return { message: '删除成功' }
+    return {}
+  })
+  await e.mounted()
+  e.s.openEdit(site)
+  e.s.form.ports = '8443'
+  await e.s.saveSite()
+  const put = requests.find(([url, opts]) => url === '/api/edgeone/sites/zone-a' && opts.method === 'PUT')
+  assert.ok(put, '编辑必须 PUT 原 ZoneId')
+  const body = JSON.parse(put[1].body)
+  assert.equal(body.ports, '8443')
+  assert.deepEqual(body.target_ids, [1, 2])
+  e.s.askDelete(site)
+  await e.s.confirmDelete()
+  const del = requests.find(([url, opts]) => url === '/api/edgeone/sites/zone-a' && opts.method === 'DELETE')
+  assert.ok(del, '删除必须 DELETE 原 ZoneId')
+})
+
+test('B8S13 无目标选项时站点表单不能提交', async () => {
+  const e = mount('views/EdgeOne.vue', async url => {
+    if (url === '/api/settings') return { ...settings }
+    if (url === '/api/targets') return []
+    if (url === '/api/edgeone/sites') return { sites: [] }
+    return {}
+  })
+  await e.mounted()
+  e.s.openCreate()
+  e.s.form.zone_id = 'zone-empty-options'
+  await e.s.saveSite()
+  assert.match(e.s.formError.value, /至少选择一个绑定目标/)
+  assert.equal(e.calls.filter(([url, opts]) => url === '/api/edgeone/sites' && opts?.method === 'POST').length, 0)
+})

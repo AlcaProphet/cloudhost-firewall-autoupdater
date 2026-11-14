@@ -3,8 +3,10 @@ package syncer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -303,5 +305,124 @@ func TestStep12PreviewMatchesFormalAdmission(t *testing.T) {
 			gotFormal.Admission != gotPreview.Admission {
 			t.Fatalf("正式/预览不一致：formal=%+v/%v preview=%+v/%v", gotFormal, errFormal, gotPreview, errPreview)
 		}
+	}
+}
+
+// TestStep12DryRunEdgeOneOnlyResults 验证仅 EdgeOne 启用时 results 不再
+// 把未启用的 DNS 规则带入规划（旧实现会产生伪 dns_empty）。
+func TestStep12DryRunEdgeOneOnlyResults(t *testing.T) {
+	a := netip.MustParsePrefix("203.0.113.0/24")
+	b := netip.MustParsePrefix("198.51.100.0/24")
+	p := newProbeProvider(config.CloudAliECS, 0, step11Rule(a.String(), "443"))
+	teo := &step10TEO{snapshots: []provider.OriginACLSnapshot{
+		step11Snapshot("v1", []string{a.String()}, "v2", []string{b.String()}),
+	}}
+	st := step11State(t, false, p, []config.EdgeOneSite{step8Site("zone-a")})
+	st.Config.DomainRules = []config.DomainRule{{
+		ID: 1, Host: "home.example", Protocol: "TCP", Ports: "443",
+		Action: "ACCEPT", Targets: []int{0},
+	}}
+	s := step11Syncer(t, st, teo, newStep10Store(), nil)
+	resp, err := s.DryRun()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Results) != 1 || len(resp.ExecutionUnits) != 1 {
+		t.Fatalf("results/units = %d/%d", len(resp.Results), len(resp.ExecutionUnits))
+	}
+	r := resp.Results[0]
+	if len(r.Domains) != 0 || len(r.DNSErrors) != 0 {
+		t.Fatalf("仅 EdgeOne 不得出现 DNS 规则/伪错误：domains=%v dns_errors=%+v", r.Domains, r.DNSErrors)
+	}
+	if len(r.EdgeOneSites) != 1 || r.EdgeOneSites[0] != "zone-a" || len(r.ToAdd) != 1 {
+		t.Fatalf("EdgeOne 目标结果 = sites=%v to_add=%d", r.EdgeOneSites, len(r.ToAdd))
+	}
+	if resp.ExecutionUnits[0].PlannedAdd != 1 {
+		t.Fatalf("执行单元预计新增 = %d", resp.ExecutionUnits[0].PlannedAdd)
+	}
+}
+
+// TestStep12DryRunEdgeOneOnlyNoDNSRules 验证没有 DNS 规则但存在 EdgeOne 站点
+// 时 results 仍表达真实 EdgeOne 计划，不能被 UI 当成“无适用规则”。
+func TestStep12DryRunEdgeOneOnlyNoDNSRules(t *testing.T) {
+	a := netip.MustParsePrefix("203.0.113.0/24")
+	b := netip.MustParsePrefix("198.51.100.0/24")
+	p := newProbeProvider(config.CloudAliECS, 0, step11Rule(a.String(), "443"))
+	teo := &step10TEO{snapshots: []provider.OriginACLSnapshot{
+		step11Snapshot("v1", []string{a.String()}, "v2", []string{b.String()}),
+	}}
+	st := step11State(t, false, p, []config.EdgeOneSite{step8Site("zone-a")})
+	st.Config.DomainRules = nil
+	s := step11Syncer(t, st, teo, newStep10Store(), nil)
+	resp, err := s.DryRun()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := resp.Results[0]
+	if len(r.Domains) != 0 || len(r.EdgeOneSites) != 1 || len(r.ToAdd) != 1 {
+		t.Fatalf("无 DNS 规则的 EdgeOne 目标 = domains=%v sites=%v to_add=%d", r.Domains, r.EdgeOneSites, len(r.ToAdd))
+	}
+}
+
+// TestStep12DryRunSiteVersionAndCompleteness 验证已知版本在数据不完整时仍回显，
+// 且执行单元 data_complete 与站点完整性一致（不能一边不完整一边“完整”）。
+func TestStep12DryRunSiteVersionAndCompleteness(t *testing.T) {
+	a := netip.MustParsePrefix("203.0.113.0/24")
+	p := newProbeProvider(config.CloudAliECS, 0, step11Rule(a.String(), "443"))
+	teo := &step10TEO{snapshots: []provider.OriginACLSnapshot{
+		step11Snapshot("v1", []string{a.String()}, "", nil),
+	}}
+	site := step8Site("zone-a")
+	site.AddressFamily = "ipv6" // 快照只有 IPv4
+	st := step11State(t, false, p, []config.EdgeOneSite{site})
+	s := step11Syncer(t, st, teo, newStep10Store(), nil)
+	resp, err := s.DryRun()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := resp.ExecutionUnits[0]
+	if unit.DataComplete || unit.Sites[0].DataComplete {
+		t.Fatalf("完整性矛盾：unit=%v site=%v，两者都应为不完整", unit.DataComplete, unit.Sites[0].DataComplete)
+	}
+	if unit.Sites[0].CurrentVersion != "v1" {
+		t.Fatalf("已知当前版本必须回显：%+v", unit.Sites[0])
+	}
+	if !strings.Contains(strings.Join(unit.Sites[0].Reasons, ","), "address_family_missing") {
+		t.Fatalf("缺少地址族原因：%+v", unit.Sites[0].Reasons)
+	}
+}
+
+// TestStep12DryRunIncompleteQuery 覆盖查询不完整：单元与站点均为不完整，
+// 且模拟不产生任何云写入或事件。
+func TestStep12DryRunIncompleteQuery(t *testing.T) {
+	p := newProbeProvider(config.CloudAliECS, 0)
+	teo := &step10TEO{describeFn: func() (provider.OriginACLSnapshot, error) {
+		return provider.OriginACLSnapshot{}, errors.New("fixture: describe failed")
+	}}
+	st := step11State(t, false, p, []config.EdgeOneSite{step8Site("zone-a")})
+	s := step11Syncer(t, st, teo, newStep10Store(), nil)
+	events, unsubscribe := s.bus.SubscribeChan()
+	defer unsubscribe()
+	resp, err := s.DryRun()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Preflight.EdgeOneComplete {
+		t.Fatalf("查询失败时 EdgeOne 预检必须不完整：%+v", resp.Preflight)
+	}
+	unit := resp.ExecutionUnits[0]
+	if unit.DataComplete || unit.Sites[0].DataComplete {
+		t.Fatalf("查询失败时单元/站点必须不完整：unit=%v site=%v", unit.DataComplete, unit.Sites[0].DataComplete)
+	}
+	if _, creates, deletes := p.counts(); creates != 0 || deletes != 0 {
+		t.Fatalf("模拟不得写入：creates=%d deletes=%d", creates, deletes)
+	}
+	if _, confirms := teo.counts(); confirms != 0 {
+		t.Fatalf("模拟不得确认：%d", confirms)
+	}
+	select {
+	case ev := <-events:
+		t.Fatalf("模拟不得发布事件：%s", ev.Type)
+	case <-time.After(20 * time.Millisecond):
 	}
 }

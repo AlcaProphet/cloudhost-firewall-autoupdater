@@ -19,6 +19,7 @@ const status = ref<SyncStatus>({
   process_started_at: '',
 })
 const edgeStatus = ref<EdgeOneStatus | null>(null)
+const edgeStatusError = ref('')
 const switching = ref(false) // 开关请求 loading
 const stats = ref({ targets: 0, rules: 0 })
 const showGuide = ref(false) // 首次使用引导条
@@ -54,6 +55,9 @@ async function fetchStatus() {
 const preflightHint = computed(() => {
   const p = status.value.address_preflight
   if (!p) return { type: 'info' as const, text: '全局预检状态未知（后端未返回 address_preflight）' }
+  if (p.known_conflict && p.state !== 'overlap') {
+    return { type: 'error' as const, text: '存在已查实地址重叠；正式同步保持保守阻断' }
+  }
   switch (p.state) {
     case 'overlap': {
       const c = p.conflict
@@ -61,8 +65,14 @@ const preflightHint = computed(() => {
       return { type: 'error' as const, text: `地址重叠，正式同步已阻断两侧${detail}` }
     }
     case 'data_unavailable': {
-      const failed = !p.dns_complete && !p.edgeone_complete ? 'DNS 与 EdgeOne'
-        : !p.dns_complete ? 'DNS' : 'EdgeOne'
+      // 配置保存/重启后尚未完成首次预检：这是「未观察」，不是「已证明数据不足」。
+      if (!p.observed_at && !p.dns_complete && !p.edgeone_complete) {
+        return { type: 'info' as const, text: '尚未完成首次全局预检；正式同步将按下一轮预检决定，当前不视为数据不足' }
+      }
+      if (!p.dns_complete && !p.edgeone_complete) {
+        return { type: 'warning' as const, text: '数据不足：DNS 与 EdgeOne 两侧输入均不完整，正式同步阻断两侧' }
+      }
+      const failed = !p.dns_complete ? 'DNS' : 'EdgeOne'
       return { type: 'warning' as const, text: `数据不足：${failed} 侧输入不完整；完整侧仍按自身安全门继续（单侧继续）` }
     }
     case 'clear':
@@ -153,8 +163,14 @@ async function fetchEdgeStatus() {
   const sequence = ++edgeSequence
   try {
     const data = await request<EdgeOneStatus>('/api/edgeone/status')
-    if (pageActive && sequence === edgeSequence) edgeStatus.value = data
-  } catch { /* 站点状态轮询失败保留已知记录 */ }
+    if (pageActive && sequence === edgeSequence) {
+      edgeStatus.value = data
+      edgeStatusError.value = ''
+    }
+  } catch (e: any) {
+    // 保留最近一次成功记录，但必须明确提示本次查询失败；不能显示成“暂无记录”。
+    if (pageActive && sequence === edgeSequence) edgeStatusError.value = e?.message || '站点状态读取失败'
+  }
 }
 
 // 统计概览：目标数 / 规则数（最近一轮增删直接使用同步状态快照）
@@ -316,9 +332,12 @@ onUnmounted(() => {
     </NGrid>
 
     <NCard title="EdgeOne 站点状态" style="margin-top: 16px" size="small">
+      <NAlert v-if="edgeStatusError" type="error" :show-icon="false" style="margin-bottom: 12px" data-testid="edge-status-error">
+        读取站点状态失败：{{ edgeStatusError }}<span v-if="edgeStatus">（以下为最近一次成功记录）</span>
+      </NAlert>
       <div v-if="!status.edgeone?.enabled" style="color: #888">EdgeOne 回源未启用，暂无站点运行状态。</div>
-      <div v-else-if="!edgeStatus || edgeStatus.sites.length === 0" style="color: #888">暂无站点运行状态记录。</div>
-      <div v-else>
+      <div v-else-if="!edgeStatus && !edgeStatusError" style="color: #888">暂无站点运行状态记录。</div>
+      <div v-else-if="edgeStatus">
         <div v-for="st in edgeStatus.sites" :key="st.zone_id" style="border-bottom: 1px solid #eee; padding: 8px 0">
           <div style="font-family: monospace; font-weight: 600">{{ st.zone_id }}</div>
           <div style="font-size: 14px; line-height: 1.8">
@@ -331,6 +350,7 @@ onUnmounted(() => {
             <span v-if="st.last_query_error">；查询错误：{{ st.last_query_error }}</span>
           </div>
         </div>
+        <div v-if="edgeStatus.sites.length === 0" style="color: #888">暂无站点运行状态记录。</div>
       </div>
     </NCard>
   </div>

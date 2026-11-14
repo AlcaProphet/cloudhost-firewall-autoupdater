@@ -213,6 +213,9 @@ export interface DryRunResult {
   execution_target_key: string
   provider: string
   domains: string[]
+  // EdgeOneSites 是本目标绑定的 EdgeOne ZoneId；DNS 关闭或目标只有 EdgeOne
+  // 站点时 domains 为空，不能据此判定「无适用规则」。
+  edgeone_sites: string[]
   desired: PlannedRule[]
   satisfied_by_owned: PlanMatch[]
   satisfied_by_external: PlanMatch[]

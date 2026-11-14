@@ -174,3 +174,92 @@ test('B8S14 总暂停时立即同步禁用，模拟页仍可独立执行', async
   await runTest.s.runDryRun()
   assert.equal(runTest.calls.filter(([url]) => url === '/api/sync/dryrun').length, 1)
 })
+
+test('B8S14 仪表盘预检两侧均不足时阻断两侧', async () => {
+  const e = mount('views/Dashboard.vue', dashboardRequest({
+    state: 'data_unavailable', dns_complete: false, edgeone_complete: false,
+    known_conflict: false, protected_cidrs: [], observed_at: '2026-11-14T00:01:00Z',
+  }))
+  await e.mounted()
+  await e.s.fetchStatus()
+  const node = e.inspect().nodes.find(n => n.props?.['data-testid'] === 'preflight-hint')
+  assert.ok(node)
+  assert.equal(node.props.type, 'warning')
+  assert.match(e.inspect().text, /两侧输入均不完整.*阻断两侧/)
+  assert.doesNotMatch(e.inspect().text, /单侧继续/)
+})
+
+test('B8S14 仪表盘未观察预检不误报数据不足', async () => {
+  const e = mount('views/Dashboard.vue', dashboardRequest({
+    state: 'data_unavailable', dns_complete: false, edgeone_complete: false,
+    known_conflict: false, protected_cidrs: [],
+  }))
+  await e.mounted()
+  await e.s.fetchStatus()
+  const node = e.inspect().nodes.find(n => n.props?.['data-testid'] === 'preflight-hint')
+  assert.ok(node)
+  assert.equal(node.props.type, 'info')
+  assert.match(e.inspect().text, /尚未完成首次全局预检/)
+  assert.doesNotMatch(e.inspect().text, /数据不足：/)
+})
+
+test('B8S14 仪表盘站点状态读取失败明确提示，不冒充暂无记录', async () => {
+  const e = mount('views/Dashboard.vue', async url => {
+    if (url === '/api/sync/status') return baseStatus({})
+    if (url === '/api/edgeone/status') throw new Error('fixture status failed')
+    return []
+  })
+  await e.mounted()
+  await e.s.fetchStatus()
+  await e.s.fetchEdgeStatus()
+  const node = e.inspect().nodes.find(n => n.props?.['data-testid'] === 'edge-status-error')
+  assert.ok(node, '必须渲染站点状态错误提示')
+  assert.match(e.inspect().text, /读取站点状态失败：fixture status failed/)
+  assert.doesNotMatch(e.inspect().text, /暂无站点运行状态记录/)
+})
+
+test('B8S14 DryRun 双侧不足提示阻断两侧', () => {
+  const e = mount('components/DryRunResults.vue')
+  const out = e.inspect({
+    status: 'completed', results: [], warnings: [],
+    preflight: preflight('data_unavailable', { dns_complete: false, edgeone_complete: false }),
+    executionUnits: [], error: '',
+  })
+  const alert = out.nodes.find(n => n.props?.['data-testid'] === 'dryrun-preflight')
+  assert.ok(alert)
+  assert.match(out.text, /两侧输入均不完整.*阻断两侧/)
+  assert.doesNotMatch(out.text, /单侧继续/)
+})
+
+test('B8S14 DryRun 仅 EdgeOne 站点目标显示真实计划，不冒充无适用规则', () => {
+  const e = mount('components/DryRunResults.vue')
+  const result = {
+    target_id: 1, execution_target_key: 'tc_cvm\u0000ap-guangzhou\u0000sg-a',
+    provider: 'tc_cvm(sg-a)', domains: [], edgeone_sites: ['zone-a'],
+    desired: [], satisfied_by_owned: [], satisfied_by_external: [],
+    to_add: [{ protocol: 'TCP', port: '443', action: 'ACCEPT', cidr: '198.51.100.0/24', desc: '[edgeone]' }],
+    cleanup_candidates: [], cleanup_deferred: [], dns_errors: [], unsupported: [], conflicts: [],
+    coverage_ready: false, error: '',
+  }
+  const out = e.inspect({
+    status: 'completed', results: [result], warnings: [],
+    preflight: preflight('single_source'), executionUnits: [], error: '',
+  })
+  assert.match(out.text, /EdgeOne 站点：zone-a/)
+  assert.match(out.text, /待新增/)
+  assert.doesNotMatch(out.text, /无适用规则/)
+  assert.doesNotMatch(out.text, /正式同步将跳过此目标/)
+})
+
+test('B8S14 仪表盘未观察但已知冲突仍提示阻断', async () => {
+  const e = mount('views/Dashboard.vue', dashboardRequest({
+    state: 'data_unavailable', dns_complete: false, edgeone_complete: false,
+    known_conflict: true, protected_cidrs: [],
+  }))
+  await e.mounted()
+  await e.s.fetchStatus()
+  const node = e.inspect().nodes.find(n => n.props?.['data-testid'] === 'preflight-hint')
+  assert.ok(node)
+  assert.equal(node.props.type, 'error')
+  assert.match(e.inspect().text, /存在已查实地址重叠；正式同步保持保守阻断/)
+})
