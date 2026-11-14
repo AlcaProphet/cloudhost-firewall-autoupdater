@@ -5,6 +5,7 @@ import { createRequire } from 'node:module'
 import { deferred, mount } from './helpers/compiled-component.mjs'
 const require = createRequire(new URL('../package.json', import.meta.url))
 const vue = require('vue')
+const { createRouter, createMemoryHistory } = require('vue-router')
 
 const settings = {
   dns_enabled: 'true', edgeone_enabled: 'false', tag: 'auto-ddns', interval: '5m',
@@ -37,6 +38,26 @@ test('B8S13 侧栏在域名规则后新增 EdgeOne，深链与历史导航跟随
   assert.equal(app.inspect().nodes.find(n => n.type?.name === 'NMenu').props.value, '/rules')
   route.path = '/edgeone'
   assert.equal(app.inspect().nodes.find(n => n.type?.name === 'NMenu').props.value, '/edgeone')
+})
+
+test('B8S13 真实内存路由深链与历史导航驱动菜单高亮', async () => {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: ['/', '/targets', '/rules', '/edgeone', '/settings', '/logs', '/dry-run', '/alerts']
+      .map(path => ({ path, component: { template: '<div />' } })),
+  })
+  await router.push('/edgeone')
+  await router.isReady()
+  const app = mount('App.vue', async () => ({}), { vueRouter: router })
+  const menu = () => app.inspect().nodes.find(n => n.type?.name === 'NMenu')
+  assert.equal(menu().props.value, '/edgeone')
+  await router.push('/rules')
+  await vue.nextTick()
+  assert.equal(menu().props.value, '/rules')
+  router.back()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  await vue.nextTick()
+  assert.equal(menu().props.value, '/edgeone')
 })
 
 test('B8S13 设置页提交 DNS 开关、两个 TAG 与 EdgeOne 间隔，不碰总暂停', async () => {

@@ -38,8 +38,10 @@ const (
 	ReasonAddressOverlap = "地址重叠阻断"
 	// ReasonDNSIncomplete DNS 侧数据不足；另一侧仍可继续。
 	ReasonDNSIncomplete = "DNS 数据不足（单侧继续）"
-	// ReasonEdgeOneIncomplete EdgeOne 侧数据不足；另一侧仍可继续。
+	// ReasonEdgeOneIncomplete 双开时 EdgeOne 侧数据不足；DNS 侧仍可继续。
 	ReasonEdgeOneIncomplete = "EdgeOne 数据不足（单侧继续）"
+	// ReasonEdgeOneIncompleteSingle 仅 EdgeOne 启用且其自身数据不足；没有可继续的另一侧。
+	ReasonEdgeOneIncompleteSingle = "EdgeOne 数据不足（来源已阻断）"
 	// ReasonDNSSourceFailed / ReasonDNSSourcePartial DNS 来源最近结果。
 	ReasonDNSSourceFailed  = "DNS 同步失败"
 	ReasonDNSSourcePartial = "DNS 同步部分完成"
@@ -199,7 +201,11 @@ func (c *Checker) Evaluate(ctx context.Context) Result {
 			addReason(ReasonDNSIncomplete)
 		}
 		if status.EdgeOne.Enabled && !preflight.EdgeOneComplete {
-			addReason(ReasonEdgeOneIncomplete)
+			if dual {
+				addReason(ReasonEdgeOneIncomplete)
+			} else {
+				addReason(ReasonEdgeOneIncompleteSingle)
+			}
 		}
 	}
 

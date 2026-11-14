@@ -215,6 +215,28 @@ func TestStep15SourceOutcomeEdgeFailureDoesNotPolluteDNS(t *testing.T) {
 	}
 }
 
+// TestStep15SourceOutcomePartialAttributed 用真实目标链（SWAS 不支持 DROP 动作）
+// 产生 TargetPartial，证明来源级 last_outcome 能实际落到 partial，而不是只有
+// mergeSourceOutcome 纯函数或 health 合成夹具。
+func TestStep15SourceOutcomePartialAttributed(t *testing.T) {
+	p := newProbeProvider(config.CloudAliSWAS, 0)
+	st := step8State(t, true, false, time.Hour, time.Hour, p, nil)
+	st.Config.DomainRules = []config.DomainRule{
+		{ID: 1, Host: "home.example", Protocol: "TCP", Ports: "443", Action: "ACCEPT", Targets: []int{0}},
+		{ID: 2, Host: "home.example", Protocol: "TCP", Ports: "80", Action: "DROP", Targets: []int{0}},
+	}
+	s := step11Syncer(t, st, nil, nil, map[string]string{"home.example": "1.1.1.1/32"})
+	s.runScheduledRound(st, true, false)
+
+	status := s.Status()
+	if status.DNS.LastOutcome != SourceOutcomePartial {
+		t.Fatalf("DNS 来源结果 = %q，want partial", status.DNS.LastOutcome)
+	}
+	if status.LastRound == nil || status.LastRound.Outcome != RoundPartial || status.LastRound.Skipped != 1 {
+		t.Fatalf("整轮结果 = %+v，want partial/skipped=1", status.LastRound)
+	}
+}
+
 func TestStep15MergeSourceOutcomePriority(t *testing.T) {
 	if got := mergeSourceOutcome("", SourceOutcomeSuccess); got != SourceOutcomeSuccess {
 		t.Fatalf("首个 success = %q", got)

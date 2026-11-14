@@ -569,6 +569,48 @@ func TestEvaluateObservedSingleSideIncompleteStillReports(t *testing.T) {
 	}
 }
 
+func TestEvaluateSingleSourceEdgeOneIncompleteUsesBlockedReason(t *testing.T) {
+	// 仅 EdgeOne 启用时没有 DNS 侧可继续；不能用「单侧继续」文案。
+	now := time.Now()
+	status := baseStatus(now)
+	status.DNS = syncer.SourceStatus{Enabled: false, Effective: false}
+	status.EdgeOne = syncer.SourceStatus{Enabled: true, Effective: true, IntervalSeconds: 3600}
+	due := now.Add(time.Hour)
+	status.EdgeOne.NextDueAt = &due
+	status.EdgeOne.LastOutcome = syncer.SourceOutcomeIncomplete
+	status.Preflight = syncer.AddressPreflightStatus{
+		State: syncer.PreflightStateSingleSource, EdgeOneComplete: false, ObservedAt: &now,
+	}
+	d := newHealthTestDeps()
+	d.setup(func() { d.status = status })
+	res := d.checker().Evaluate(context.Background())
+	if res.Healthy || !slices.Contains(res.Reasons, ReasonEdgeOneIncompleteSingle) {
+		t.Fatalf("单源 EdgeOne 不完整必须使用来源阻断原因：%+v", res.Reasons)
+	}
+	if slices.Contains(res.Reasons, ReasonEdgeOneIncomplete) {
+		t.Fatalf("单源 EdgeOne 不完整不得使用「单侧继续」：%+v", res.Reasons)
+	}
+}
+
+func TestEvaluateDualEdgeOneIncompleteUsesSingleSideReason(t *testing.T) {
+	now := time.Now()
+	status := baseStatus(now)
+	status.DNS = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeSuccess, IntervalSeconds: 300}
+	status.EdgeOne = syncer.SourceStatus{Enabled: true, Effective: true, LastOutcome: syncer.SourceOutcomeIncomplete, IntervalSeconds: 3600}
+	status.Preflight = syncer.AddressPreflightStatus{
+		State: syncer.PreflightStateDataUnavailable, DNSComplete: true, EdgeOneComplete: false, ObservedAt: &now,
+	}
+	d := newHealthTestDeps()
+	d.setup(func() { d.status = status })
+	res := d.checker().Evaluate(context.Background())
+	if res.Healthy || !slices.Contains(res.Reasons, ReasonEdgeOneIncomplete) {
+		t.Fatalf("双开 EdgeOne 不完整必须保留单侧继续原因：%+v", res.Reasons)
+	}
+	if slices.Contains(res.Reasons, ReasonEdgeOneIncompleteSingle) {
+		t.Fatalf("双开 EdgeOne 不完整不得使用来源阻断原因：%+v", res.Reasons)
+	}
+}
+
 func TestEvaluateSourceOutcomePartialIsVisible(t *testing.T) {
 	now := time.Now()
 	status := baseStatus(now)

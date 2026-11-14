@@ -587,7 +587,7 @@ resp, err := client.ConfirmOriginACLUpdateWithContext(ctx, req)
 
 - Step 11 按用户裁决 C 接入过渡保护：旧行按 `pending_cidrs` 回填；有效查询证明待更新版成为当前且规范前缀集合完全相等才释放；释放后先重算预检保护，实际删除继续经过 S1/TAG/版本/稳定定位/S2。保护写入失败仍使用内存保护继续 EdgeOne 写入；读取失败阻断 EdgeOne。
 - Step 12 保留 Dry Run `results` 每本地目标一项，新增顶层 `preflight` 与按物理目标聚合的 `execution_units`；只读复用正式冲突判定、保护集合、EdgeOne 缓存与规划器，不写缓存/状态/冲突/过渡表，不 Create/Delete/Confirm，不发事件。
-- Step 15 为 `dns`/`edgeone` 增加 `last_started_at`、`last_completed_at`、`last_outcome`、`interval_seconds`；健康按来源自身 `next_due + health_timeout` 判断停滞，新增“地址重叠阻断”“DNS/EdgeOne 数据不足（单侧继续）”等原因。双开下预检 overlap/known conflict 在 `total=0/idle` 时仍 unhealthy；长期冲突只在健康边沿通知一次，恢复沿用 INFO，不新增事件类型或同步日志行。
+- Step 15 为 `dns`/`edgeone` 增加 `last_started_at`、`last_completed_at`、`last_outcome`、`interval_seconds`；健康按来源自身 `next_due + health_timeout` 判断停滞，新增“地址重叠阻断”“DNS/EdgeOne 数据不足（单侧继续）”“EdgeOne 数据不足（来源已阻断）”等原因。双开下预检 overlap/known conflict 在 `total=0/idle` 时仍 unhealthy；长期冲突只在健康边沿通知一次，恢复沿用 INFO，不新增事件类型或同步日志行。
 
 **2026-11-14 核验修复补充（Step 11～15）**
 
@@ -596,9 +596,16 @@ resp, err := client.ConfirmOriginACLUpdateWithContext(ctx, req)
 - Step 12：仅 EdgeOne 启用时 `results` 不纳入已停用 DNS 规则，不再产生伪 `dns_empty`；新增 `edgeone_sites`，前端以 DNS 规则或站点判断适用来源。站点已知版本在数据不完整时仍回显，`data_complete` 与站点完整性一致。
 - Step 15：来源级 `last_outcome` 按本轮实际参与的目标归因；单一来源目标失败不得污染另一侧，共享目标失败时两侧都记失败。
 
-**2026-11-14 二次核验修复（Step 11～15）**
+**2026-11-14 二次核验修复（Step 11～15，提交 `e94c8fc`）**
+
+> 提交标题按实施批次称「三次核验修复」，本节按核验轮次称「二次核验修复」。
 
 - 确认新指纹前，旧待更新网段须已纳入明确的持久化保护集合，或由原 SQLite 记录继续保护。若替换会覆盖唯一持久化证据且补写失败，延后确认。存储恢复后按正常目标回读、确认前重查和 `unknown` 前置提交重新准入。
 - 有效查询的当前版本和规范网段同时匹配被追踪的待更新指纹，页面才显示该更新已生效。仅 `Next` 消失时继续展示追踪版本和原确认结论。`IsPlaned` 记录在 `actual_confirmed`，表示当前版本生效前是否完成确认。 [腾讯云 CurrentOriginACL](https://cloud.tencent.com/document/product/1552/80721#CurrentOriginACL)
 - 模拟和正式预检复用包含未落库证据的过渡保护计算。模拟保留每个本地目标的实际绑定与结果卡，未直接绑定的别名通过 `execution_target_key` 关联共同执行单元。新增、容量和清理统计以物理执行单元为准。
 - 双开时冲突存储读写失败会阻断两侧，`address_preflight.error` 与模拟 `preflight.error` 提供安全文案；页面从后端结果判断是否提示单侧继续。最新预检与当前开关决定运行健康中的预检阻断，尚未到期来源的 `last_outcome` 仍描述其最近一次尝试。单源运行仅提示历史冲突，双开后重新判定。目标失败、部分完成及调度停滞独立计算。
+
+**2026-11-14 Issue10 复核修复（Step 11～15，单提交）**
+
+- 健康：仅 EdgeOne 启用且其自身输入不完整时使用“EdgeOne 数据不足（来源已阻断）”；双开仍使用“EdgeOne 数据不足（单侧继续）”。健康仍为 unhealthy，原因为可读语义修正，不改变写入准入。
+- 证据：补充真实目标链 `TargetPartial` 的来源级结果回归、确认成功/未知/保存失败的日志捕获、Step 14 `disabled` 值断言与卸载清理、Step 13 真实 `createRouter` + memory history 的深链/历史回归。生产预检、写入、确认和调度逻辑不变。

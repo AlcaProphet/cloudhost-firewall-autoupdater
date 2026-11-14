@@ -21,7 +21,14 @@ export function mount(path, request = async () => ({}), options = {}) {
   const observedRequest = (...args) => { calls.push(args); return request(...args) }
   const dependencies = name => {
     if (name === 'vue') return { ...vue, onMounted: fn => mounted.push(fn), onUnmounted: fn => unmounted.push(fn), resolveComponent: name => ({ name }) }
-    if (name === 'vue-router') return { useRoute: () => options.route || vue.reactive({ path: '/' }), useRouter: () => options.router || { push() {} } }
+    if (name === 'vue-router') {
+      if (options.vueRouter) {
+        const route = vue.reactive({ path: options.vueRouter.currentRoute.value.path })
+        options.vueRouter.afterEach(to => { route.path = to.path })
+        return { useRoute: () => route, useRouter: () => options.vueRouter }
+      }
+      return { useRoute: () => options.route || vue.reactive({ path: '/' }), useRouter: () => options.router || { push() {} } }
+    }
     if (name === 'naive-ui') return new Proxy({
       useThemeVars: () => vue.ref({}),
       useMessage: () => Object.fromEntries(['error', 'success', 'info', 'warning'].map(kind => [kind, text => messages.push({ kind, text })])),

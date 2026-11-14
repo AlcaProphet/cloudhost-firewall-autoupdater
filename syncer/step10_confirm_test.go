@@ -1,9 +1,11 @@
 package syncer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"sort"
 	"strings"
@@ -399,6 +401,71 @@ func TestStep10TimeoutOnlyRechecks(t *testing.T) {
 	if describes, confirms := teo.counts(); describes != 4 || confirms != 1 {
 		t.Fatalf("新指纹已有 unknown 时只读复查，describe=%d confirm=%d", describes, confirms)
 	}
+}
+
+func captureConfirmationLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return &buf
+}
+
+// TestStep10ConfirmationLogs 断言确认成功、结果未知和 accepted 保存失败
+// 三条路径的日志只包含固定文案与安全字段，用于补齐 Step 15 的日志证据。
+func TestStep10ConfirmationLogs(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		p := newProbeProvider(config.CloudTCCVM, 0)
+		teo := &step10TEO{}
+		st := step10State(t, p, teo)
+		store := newStep10Store()
+		s := New(NewRuntimeManager(st))
+		s.SetEdgeOneTransitionStore(store)
+		s.storeSiteProofs(step10Proofs(t, s, st))
+		buf := captureConfirmationLogs(t)
+		s.ConfirmEdgeOneSites(st, map[string]edgeOneSiteData{"zone-a": {site: st.Config.EdgeOneSites[0], snapshot: step10Snapshot()}}, s.Generation())
+		got := buf.String()
+		if !strings.Contains(got, "EdgeOne 站点确认成功") || !strings.Contains(got, "request_id=req-confirm") {
+			t.Fatalf("成功日志缺少固定字段：%s", got)
+		}
+	})
+
+	t.Run("unknown", func(t *testing.T) {
+		p := newProbeProvider(config.CloudTCCVM, 0)
+		teo := &step10TEO{confirmErr: &provider.TEOError{Kind: provider.TEOErrorTimeout, ZoneID: "zone-a", Message: "超时"}}
+		st := step10State(t, p, teo)
+		store := newStep10Store()
+		s := New(NewRuntimeManager(st))
+		s.SetEdgeOneTransitionStore(store)
+		s.storeSiteProofs(step10Proofs(t, s, st))
+		buf := captureConfirmationLogs(t)
+		s.ConfirmEdgeOneSites(st, map[string]edgeOneSiteData{"zone-a": {site: st.Config.EdgeOneSites[0], snapshot: step10Snapshot()}}, s.Generation())
+		got := buf.String()
+		if !strings.Contains(got, "EdgeOne 站点确认结果未知") {
+			t.Fatalf("未知日志缺失：%s", got)
+		}
+		if strings.Contains(got, "超时") {
+			t.Fatalf("日志不得回显底层错误原文：%s", got)
+		}
+	})
+
+	t.Run("accepted_save_failure", func(t *testing.T) {
+		p := newProbeProvider(config.CloudTCCVM, 0)
+		teo := &step10TEO{}
+		st := step10State(t, p, teo)
+		store := newStep10Store()
+		store.failAccepted = true
+		s := New(NewRuntimeManager(st))
+		s.SetEdgeOneTransitionStore(store)
+		s.storeSiteProofs(step10Proofs(t, s, st))
+		buf := captureConfirmationLogs(t)
+		s.ConfirmEdgeOneSites(st, map[string]edgeOneSiteData{"zone-a": {site: st.Config.EdgeOneSites[0], snapshot: step10Snapshot()}}, s.Generation())
+		got := buf.String()
+		if !strings.Contains(got, "EdgeOne 站点确认成功但状态保存失败") {
+			t.Fatalf("accepted 保存失败日志缺失：%s", got)
+		}
+	})
 }
 
 func TestStep10DNSFailureStillConfirmsCompleteEdgeOne(t *testing.T) {

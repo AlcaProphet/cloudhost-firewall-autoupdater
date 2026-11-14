@@ -168,11 +168,31 @@ test('B8S14 总暂停时立即同步禁用，模拟页仍可独立执行', async
   await e.s.fetchStatus()
   const buttons = e.inspect().nodes.filter(n => n.type?.name === 'NButton')
   assert.ok(e.inspect().text.includes('立即同步'), '必须渲染立即同步按钮')
-  assert.ok(buttons.some(n => n.props && 'disabled' in n.props), '总暂停时正式触发必须禁用')
+  assert.ok(buttons.some(n => n.props?.disabled === '' || n.props?.disabled === true), '总暂停时正式触发必须禁用')
   const runTest = mount('views/RunTest.vue', async () => ({ results: [], warnings: [], preflight: preflight('single_source'), execution_units: [] }))
   await runTest.mounted()
   await runTest.s.runDryRun()
   assert.equal(runTest.calls.filter(([url]) => url === '/api/sync/dryrun').length, 1)
+})
+
+test('B8S14 仪表盘卸载后清理轮询并忽略晚到响应', async () => {
+  let hold = false
+  const late = deferred()
+  const e = mount('views/Dashboard.vue', async url => {
+    if (url === '/api/sync/status') return hold ? late.promise : baseStatus({})
+    if (url === '/api/edgeone/status') return { enabled: true, effective: true, next_due_at: null, sites: [] }
+    if (url === '/api/targets' || url === '/api/rules') return []
+    return {}
+  })
+  await e.mounted()
+  assert.equal(e.intervals.size, 1, '挂载后应有轮询定时器')
+  hold = true
+  const pending = e.s.fetchStatus()
+  e.unmount()
+  assert.equal(e.intervals.size, 0, '卸载后必须清理轮询定时器')
+  late.resolve(baseStatus({ last_sync: '2099-01-01T00:00:00Z' }))
+  await pending
+  assert.equal(e.s.status.value.last_sync, null, '卸载后的晚到响应不得更新状态')
 })
 
 test('B8S14 仪表盘预检两侧均不足时阻断两侧', async () => {
