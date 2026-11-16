@@ -54,12 +54,12 @@
 - [x] [Step 13 全局设置和 EdgeOne 页面](#step-13)
 - [x] [Step 14 模拟测试与仪表盘界面](#step-14)
 - [x] [Step 15 运行健康与日志](#step-15)
-- [ ] [Step 16 本地端到端验收](#step-16)
+- [x] [Step 16 本地端到端验收](#step-16)
 - [ ] [Step 17 真实云验收与发布证据](#step-17)
 
-### 当前进度（2026-11-14）
+### 当前进度（2026-11-15）
 
-Step 0～7 的实施及核验提交见 `cbec01b`、`1bcfbaa`、`14642a6`、`9df4e19`、`8efbda8`。Step 8～10 在 `beta` 的实施基线为 `76241cc`，首次独立核验修复为 `2c4653d`。合并前复核修复为 `29ca91a`，二次独立核验修复为 `470f170`。本轮以 `beta / 470f170a89f4ba0244111daa6e53e210a6ae7f56` 为基线，完成 Step 11～15 的本地实施、验证与证据回填；Step 0～15 达到本地阶段判据，共 16/18 步。Step 16～17 待执行；完整浏览器矩阵、真实云、Linux/Docker、远端 CI 与发布证据见对应阶段。Step 11～15 实施提交为 `b3ccb6b`，首轮核验修复为 `ee20e08`，二次核验修复已提交为 `e94c8fc`（23 个文件；本地 `beta` 相对 `origin/beta` ahead 1，尚未推送）。提交标题按实施批次称「三次核验修复」，本文件按核验轮次称「二次核验修复」。复核问题与修复方案见 [Issue10.md](Issue10.md)。
+Step 0～7 的实施及核验提交见 `cbec01b`、`1bcfbaa`、`14642a6`、`9df4e19`、`8efbda8`。Step 8～10 在 `beta` 的实施基线为 `76241cc`，首次独立核验修复为 `2c4653d`。合并前复核修复为 `29ca91a`，二次独立核验修复为 `470f170`。本轮以 `beta / 470f170a89f4ba0244111daa6e53e210a6ae7f56` 为基线，完成 Step 11～15 的本地实施、验证与证据回填；Step 0～15 达到本地阶段判据，共 16/18 步。2026-11-15 在干净 `beta / 5fc04ee` 上完成 Step 16 本地端到端验收，Step 0～16 达到本地阶段判据，共 17/18 步；Step 17 的真实云、Linux/Docker、远端 CI 与发布证据待执行。Step 11～15 实施提交为 `b3ccb6b`，首轮核验修复为 `ee20e08`，二次核验修复已提交为 `e94c8fc`（23 个文件；本地 `beta` 相对 `origin/beta` ahead 1，尚未推送）。提交标题按实施批次称「三次核验修复」，本文件按核验轮次称「二次核验修复」。复核问题与修复方案见 [Issue10.md](Issue10.md)。Step 16 的本轮改动仍在工作树，未提交、未推送。
 
 <a name="step-0"></a>
 
@@ -840,12 +840,76 @@ git diff --check
 
 **Checklist**
 
-- [ ] 验证新库和旧库启动、站点绑定、间隔热更新、v3 导入/v4 往返、只读模拟和真实二进制进程行为。
-- [ ] 跨目标重叠时两侧云写入与确认均为零。已知冲突重启后保留，查实解除后自动恢复；无已知冲突时验证失败侧停止、正常侧继续。
-- [ ] 验证一站多目标的全部回读、版本重查、自动确认、实际生效后清理，以及 DNS 单独运行的现有回归。
-- [ ] 运行受影响包定向 race、`make all`、适用的依赖审计及 `git diff --check`，记录 Go/Node 版本、真实二进制和浏览器结果。
+- [x] 验证新库和旧库启动、站点绑定、间隔热更新、v3 导入/v4 往返、只读模拟和真实二进制进程行为。
+- [x] 跨目标重叠时两侧云写入与确认均为零。已知冲突重启后保留，查实解除后自动恢复；无已知冲突时验证失败侧停止、正常侧继续。
+- [x] 验证一站多目标的全部回读、版本重查、自动确认、实际生效后清理，以及 DNS 单独运行的现有回归。
+- [x] 运行受影响包定向 race、`make all`、适用的依赖审计及 `git diff --check`，记录 Go/Node 版本、真实二进制和浏览器结果。
 
 **已具备的基线证据**　Step 1～15 工作树已通过 `make all`、12 个 Go 包的非缓存 race 回归及 174 项前端行为测试。现有真实进程回归覆盖空库启动、SIGTERM 退出和 v4 跨 SQLite 实例往返（含站点绑定重映射）。这些结果可作为接线前的对照。待完整功能接入后，以同一进程验证双功能调度、冲突与重启恢复、模拟、确认和清理，完成浏览器验证、依赖审计及最终全量门禁。 [阶段修复证据](#step-1-7-review-fixes) · [进程级测试](main_test.go)
+
+**本地实施与证据（2026-11-15）**
+
+基线为干净的 `beta / 5fc04ee2e248f96b680b9189d318715d58432e19`（`origin/beta` 同提交）。本步改动保留在工作树，未提交、未推送、未打 tag。环境：macOS 15.8.1 arm64、Go `1.27.3`、Node `v26.7.0`、npm `11.19.0`、Chrome `157.0.8103.78`、sqlite3 `3.43.2`。
+
+**进程夹具与接线**　现有进程夹具无法把硬编码的 TEO/Lighthouse 端点指向回环替身。本轮采用链接期覆盖：`provider/teo.go` 与 `provider/tc_lighthouse.go` 的端点/协议改为带生产默认值的包级变量；测试构建用 `go build -ldflags "-X ..."` 指向本地 HTTP 替身。生产 `make all`、Docker 和发布构建不带该参数，默认值由 [provider 默认值回归](provider/tc_lighthouse_endpoint_test.go) 与既有 TEO 默认值回归保护；未新增部署环境变量、运行时 setter 或生产测试代码。
+
+新增夹具：[build8_step16_fixture_test.go](build8_step16_fixture_test.go)（假 DNS/TEO/Lighthouse、真实二进制启停、SQLite/API 查询）、[build8_step16_process_test.go](build8_step16_process_test.go)（P1～P11 场景）、[build8_step16_browser_test.go](build8_step16_browser_test.go) 与 [testdata/step16/browser.mjs](testdata/step16/browser.mjs)（Chrome CDP）。`step16` 构建标签不进入默认 `go test ./...`、`make all`、CI 或发布。另有 [syncer/step16_formal_entry_test.go](syncer/step16_formal_entry_test.go) 补正式入口冲突表读取失败计数。
+
+**定向故障链**（均 `-race -count=1`，退出码 0）
+
+| 命令 | 结果 | 关键断言 |
+|---|---|---|
+| `go test ./syncer -run 'TestAddressConflictState(SQLiteAutoRecoverySequence\|ReadFailureBlocksBoth\|RetainsOverlapAcrossReadFailures)$' -race -count=1 -v` | `ok syncer 11.587s` | 首次保存被真实 SQLite 写锁拒绝时 DNS/Edge 写入 0、确认 0；下一轮 DNS 不足仍 0；保存成功后重启恢复；解除提交失败仍阻断；解除成功后 DNS=1、Edge=1、确认=1。读失败轮 `gets=2/saves=0/clears=0`，恢复后保存 1 次；仅重试读取。 |
+| `go test ./syncer -run '^TestStep8ConflictStoreFailureBlocksAndRecovers$' -race -count=1 -v` | `ok syncer 1.314s` | 正式 `Run` 保存失败时目标快照/写入 0；保存恢复后执行目标并清除冲突。 |
+| `go test ./syncer -run '^TestStep16ConflictReadFailureFormalEntry$' -race -count=1 -v` | `ok syncer 1.309s` | 冲突表读取失败时正式入口目标快照/写入 0；DNS 不足轮零写入并保存内存证据；完整无重叠且解除成功后恢复目标。 |
+| `go test ./syncer -run '^(TestStep12DryRunExecutionUnitMatchesFormalProtectedPlan\|TestStep12DryRunNoFormalSideEffects\|TestStep11ProtectedPrefixDefersCleanup\|TestStep11SharedPrefixAcrossVersions\|TestStep10HappyPathAndCrossRoundDedupe\|TestStep10AcceptedFingerprintSurvivesRestart)$' -race -count=1 -v` | `ok syncer 1.383s` | 正式/模拟共用保护与规划；模拟零正式副作用；受保护前缀延后清理；共享网段保留；同指纹跨轮/重启确认一次。 |
+| `go test ./provider -run '^(TestEdgeOnePlanProtected\|TestEdgeOnePlanDualTag)' -race -count=1 -v` | `ok provider 1.278s` | 受保护候选移出可删集合、包含关系保守判定、双 TAG 共享/单源冲突。 |
+
+**真实二进制端到端**　`go test -tags step16 -run '^TestStep16' -v -count=1 .` → 退出码 0，`ok . 181.469s`。计数缩写：`TD`=TEO Describe；`LD/LC/LX`=Lighthouse Describe/Create/Delete；`CF`=TEO Confirm。
+
+| 场景 | 入口 / 临时夹具 | 实际动作计数与 SQLite/API 结果 |
+|---|---|---|
+| 新库、旧库迁移 | 空目录；仅 `settings` 表的旧库 | 云调用全 0。新库 `tag=auto-ddns`；旧库 `tag=auto-dns`，重启 `user_version` 不变；两者 `SIGTERM` 退出码 0、端口关闭、pidfile 释放。 |
+| 间隔热更新 | 设置 API；双开 + 1 站点/1 规则 | 72h→36h 只重排 EdgeOne `next_due_at`，DNS 到期不变；再次保存 `36h` 两者计时均不变；保存间隔本身零云调用。 |
+| v3 导入、v4 往返 | 独立来源/目标临时库；进程级导出导入 | 云调用 0。v4 重映射为 2 目标、1 站点、2 个 `target_ids`；v3 导入后站点 0、`edgeone_enabled=false`、`dns_enabled=true`，DNS TAG/间隔保留。 |
+| 跨目标重叠：恢复/手动/定时/重启 | DNS 规则绑目标 B、站点绑目标 A；DNS 命中 `203.0.113.0/24` | 恢复轮 `TD=1/CF=0`、LH `0/0/0`；手动轮 `TD=2/CF=0`、LH 全 0；定时轮复用有效 Edge 缓存 `TD=2/CF=0`、LH 全 0；重启启动轮 `TD=3/CF=0`、LH 全 0。冲突表 1 行（`203.0.113.7` 落入 `203.0.113.0/24`），健康 503 “地址重叠阻断”。 |
+| 查实解除 | 同一库；DNS 改 `192.0.2.10`、TEO 改 `198.51.100.0/24` | 手动轮 `TD=4/CF=0`；Lighthouse 每实例 `LC=1`，合计新增 2、删除 0；冲突行清除，预检 `clear`，健康 200。 |
+| 一站两目标确认 | 站点绑两实例，TEO 当前 `v1`/待更新 `v2`；确认替身阻塞 | 首轮 `TD=2`、每实例 `LD=2/LC=1/LX=0`、`CF=1`；先观察到 `unknown`（无 RequestId），释放后 `accepted` + `request_id=req-teo-confirm-zone-confirm-1`；`sync_logs` 2 行各 `Added=2`，合计等于 RoundSummary `added=4`；站点覆盖 2/2 完整；健康 200。 |
+| 同指纹跨轮/重启 | 同一 DB 连续轮次与重启 | 第二轮 `TD=3/CF=1`、每实例 `LD=4/LC=1`；重启启动轮 `TD=4/CF=1`、accepted RequestId 保留；确认不重发。 |
+| 撤证/版本/网段反向 | 三个独立进程场景 | 一个目标 S1 缺项：`TD=1/CF=0`，轮次 failed；确认前版本变 `v3`：`TD=2/CF=0`；同版本网段变化：`TD=2/CF=0`；三例均无 accepted。 |
+| 结果未知只读 | 确认替身返回 500；同 DB 续轮/重启 | 首轮 `TD=2/CF=1`，SQLite `unknown`、无 RequestId；下一轮 `TD=4/CF=1`；重启启动轮 `TD=6/CF=1`；始终只读复查。 |
+| 保护与生效清理 | 确认后重启只看到当前 `v1`，DNS 命中待更新 `v2` 保护网段；随后 `v2` 成为当前 | 保护轮：新增 TEO 1 次、LH 全 0、CF 0，过渡 `pending=v2` 且保护集合非空。生效轮：每实例 `LD=3/LC=0/LX=1`、CF 0；删除仅 A `203.0.113.0/24`，保留 B `198.51.100.0/24` 与共享 `192.0.2.0/24`；`sync_logs` 最新两行各 `Deleted=1`；站点 `actual_effective=true`、当前 `v2`、无待更新。过渡记录清除。 |
+| Dry Run 只读 | 暂停状态；同一站点/规则 | DryRun `results=2`、`execution_units=2`、预检 `clear`；`LC/LX/CF` 不变；TEO/LH 只读查询增加；冲突/过渡/`sync_logs` 行数、`next_due_at`、EdgeOne 来源状态与站点查询时间/RequestId 均不变，站点状态条数不变；暂停 trigger=409，DryRun=200；恢复正式轮 `added=2` 与 execution units `planned_add` 合计一致，清理 0。正式事件与 DNS 熔断零副作用由 `TestStep12DryRunNoFormalSideEffects` 补充断言。 |
+| DNS-only | 仅 DNS 启用、1 目标/1 规则 | TEO `0/0`；Lighthouse `LD=2/LC=1/LX=0`；轮次 success。 |
+| EdgeOne 不足、DNS 继续 | 双开；TEO 查询不完整；DNS 完整 | `TD=1/CF=0`；Edge 目标 LH 全 0；DNS 目标 `LC=1`；Edge 来源 `last_outcome=incomplete`、DNS=`success`；健康 503 且原因含“单侧继续”。 |
+| DNS 失败、EdgeOne 完整 | 双开；本地 DNS NXDOMAIN；TEO 完整 | `TD=2/CF=1`；每实例 `LD=2/LC=1/LX=0`；DNS 来源 `incomplete`、EdgeOne=`success`。 |
+| SIGTERM 在途 | 两目标轮次进行中发送 SIGTERM | 退出码 0，耗时 `5.014s`；端口关闭、pidfile 释放；未产生第二个正式轮。 |
+
+**实际浏览器**　Chrome `157.0.8103.78` headless + CDP，打开真实二进制 WebUI；两次运行分别 `ok .`（UI 13.53s、Edge 47.58s）。结果单独记录：
+
+| 场景 | 浏览器断言 |
+|---|---|
+| UI 路由/设置 | `#/edgeone` 深链标题与侧栏高亮；后退/前进菜单跟随；设置页回显 `auto-ddns`、`edgeone`、`72h`、`5m`、本地 DNS 地址，DNS 同步开关为开启；EdgeOne 页模块开关显示“已启用”并显示两个物理目标标签。 |
+| 导入刷新/暂停/模拟 | 通过进程 API 导入 v4 并刷新后，站点端口变为 `8443` 且两个目标绑定保留；仪表盘暂停/恢复；暂停时“立即同步”disabled；模拟页执行成功，预检文案为“全局预检完整，未发现地址重叠”，并显示过渡保护 `198.51.100.0/24`。 |
+| 冲突/恢复/单侧 | 仪表盘显示“地址重叠，正式同步已阻断两侧”或保守阻断文案且 `/api/health/operational`=503；解除后显示“全局预检完整”且健康 200；EdgeOne 缓存过期后查询不完整显示“单侧继续”，健康 503，来源结果 `incomplete`。 |
+| 确认状态 | 确认阻塞时 EdgeOne 页显示“结果未知”；释放后刷新显示“已确认，等待生效”；`v2` 生效并网段匹配后显示“已生效”。 |
+| 其他 | 同步日志页可打开并显示历史记录；CDP 全页截图位于 `/tmp/fwalizer-step16-ui-*.png` 与 `/tmp/fwalizer-step16-edge-*.png`（本轮本地证据，未写入仓库）。 |
+
+**门禁**（macOS 15.8.1 arm64；Go 1.27.3；Node v26.7.0；npm 11.19.0；Chrome 157.0.8103.78）
+
+| 命令 | 退出码 / 耗时 | 结果与缓存 |
+|---|---|---|
+| `go test ./config ./provider ./syncer ./webui/api ./internal/health -race -count=1` | 0 / `44.78s` | 5 包实际执行：config 34.584s、provider 8.046s、syncer 30.680s、webui/api 40.986s、health 44.008s；`-count=1` 无测试结果缓存。 |
+| `make all`（`npm_config_cache=/tmp/fw-npm-cache`） | 0 / `22.37s` | 真实 `npm ci` + `vue-tsc` + Vite 构建；前端行为测试 **188/188**；`go vet` 通过；Go 12 包中 provider 8.071s 实际执行，其余 11 包命中测试缓存；`go build -o fwalizer .` 成功。门禁前同命令的首次运行 `62.80s`，其中 6 包实际执行、6 包缓存，保留作未缓存对照。 |
+| `npm --prefix webui/frontend audit` | 0 / `1.85s` | `found 0 vulnerabilities`。 |
+| `npm --prefix webui/frontend audit --omit=dev` | 0 / `2.13s` | `found 0 vulnerabilities`。 |
+| `git diff --check` | 0 / 无输出 | 见下方收口记录；新增文件另做空白检查。 |
+
+补充实际执行数（同五包，独立 `-json` 复核）：`go test -json ./config ./provider ./syncer ./webui/api ./internal/health -race -count=1` 退出码 0、`44.86s`，5 包中顶层 run=915/pass=918、子测试 run/pass=2195/2195、`fail=0`、`skip=2`；两项 skip 是 `TestStorePermissionsChild`/`TestStorePermissionsCrashChild` 的“仅子进程执行”父用例，不是缺测。该次 JSON 复核与上表非 JSON 门禁分别记录，不把构建缓存命中写成实际执行。
+
+**Checklist 收口**：新库/旧库、站点绑定、间隔热更新、v3/v4、Dry Run 和真实进程行为均已覆盖；手动与定时重叠均零云写入/零确认，已知冲突重启保留并在完整解除后恢复，两种单侧失败有正/反向对照；一站两目标的回读、版本重查、unknown→accepted、跨轮/重启去重、保护释放和生效后清理均已实测；门禁、真实二进制和实际浏览器结果分别记录。
+
+**边界与待验项**　本轮使用回环 HTTP 假云服务，未访问真实腾讯云/DNS 上游，不证明真实 TLS、真实 TEO 确认/生效、真实配额或真实待更新窗口；这些留 Step 17。测试二进制由同一提交经链接期端点覆盖构建，不是发布镜像；生产默认端点和三变量部署接口未改变。Linux/Docker/compose、远端 CI/GHCR、发布 tag/镜像未执行。浏览器导入通过进程 API + 刷新完成，未操作系统文件选择器；DNS 熔断零副作用由 `TestStep12DryRunNoFormalSideEffects` 的进程内测试补充，运行健康/来源结论已与同一轮 API/SQLite 对齐。未发现需回写生产代码的本步缺陷。
 
 <a name="step-17"></a>
 

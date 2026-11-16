@@ -25,6 +25,15 @@ type TCLighthouse struct {
 	targetIndex int
 }
 
+// tcLighthouseEndpoint / tcLighthouseScheme 是生产 Lighthouse 端点与协议。
+//
+// 默认值保持原硬编码行为；scheme 留空表示使用 SDK 默认 HTTPS。
+// 可链接期覆盖仅用于本地端到端验收夹具，不新增部署环境变量。
+var (
+	tcLighthouseEndpoint = "lighthouse.tencentcloudapi.com"
+	tcLighthouseScheme   = ""
+)
+
 func newTCLighthouse(cfg config.TargetConfig, dbID int, pool *ClientPool) (Provider, error) {
 	// 凭据只来自 pool 持有的不可变 Credentials，不再读取任何包级全局值
 	creds := pool.Credentials()
@@ -36,7 +45,10 @@ func newTCLighthouse(cfg config.TargetConfig, dbID int, pool *ClientPool) (Provi
 			creds.TencentSecretKey,
 		)
 		cpf := profile.NewClientProfile()
-		cpf.HttpProfile.Endpoint = "lighthouse.tencentcloudapi.com"
+		cpf.HttpProfile.Endpoint = tcLighthouseEndpoint
+		if tcLighthouseScheme != "" {
+			cpf.HttpProfile.Scheme = tcLighthouseScheme
+		}
 		return lighthouse.NewClient(credential, cfg.Region, cpf)
 	})
 	if err != nil {

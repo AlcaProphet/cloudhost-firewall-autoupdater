@@ -29,15 +29,20 @@ import (
 //   - 同一站点的查询结果是一个纯值，调用方应复用它服务于全部绑定目标。
 
 const (
-	// teoDefaultEndpoint 腾讯云 EdgeOne 中国站 API Endpoint。
-	teoDefaultEndpoint = "teo.tencentcloudapi.com"
-	// teoDefaultScheme 生产固定 HTTPS；测试可注入 HTTP 以使用 httptest。
-	teoDefaultScheme = "HTTPS"
 	// teoDefaultRequestBudget 单次 Describe 的本地 context 预算。
 	// 与既有腾讯云 SDK 60 秒 HTTP 超时分离，作为查询层的更短上限。
 	teoDefaultRequestBudget = 30 * time.Second
 	// teoDefaultMinInterval 查询/确认共享的站点级最小请求间隔（20 次/秒）。
 	teoDefaultMinInterval = 50 * time.Millisecond
+)
+
+// teoDefaultEndpoint / teoDefaultScheme 是生产 TEO 端点与协议。
+//
+// 保持可链接期覆盖仅为本地端到端验收夹具：生产默认值不变，测试构建可经
+// `-ldflags -X` 指向回环 HTTP 替身；不新增部署环境变量或运行时可写入口。
+var (
+	teoDefaultEndpoint = "teo.tencentcloudapi.com"
+	teoDefaultScheme   = "HTTPS"
 )
 
 // TEOErrorKind 是 TEO 只读查询的安全错误分类。

@@ -13,6 +13,8 @@
 
 > **Build8 Step 11～15 本地实施（2026-11-14）。** 实施提交为 `b3ccb6b`，首轮核验修复为 `ee20e08`，二次核验修复已提交为 `e94c8fc`（23 个文件；提交标题按实施批次称「三次核验修复」，本文按核验轮次称「二次核验修复」）。本轮从干净的 `beta / ee20e08` 实施二次核验修复，覆盖跨轮过渡保护、旧确认指纹保护、缓存过期、共享目标模拟、站点生效取证及预检健康恢复。修复和本地证据见 [Build8](Build8.md#step-11-15-second-review-fixes)，复核问题与修复方案见 [Issue10.md](Issue10.md)，Step 16～17 待执行。
 
+> **Build8 Step 16 本地端到端验收（2026-11-15）。** 在干净的 `beta / 5fc04ee` 上使用真实二进制、链接期回环 TEO/Lighthouse 替身、临时 SQLite 与 Chrome 157 CDP 完成 Step 16。本地计数、SQLite/API、浏览器和门禁证据见 [Build8 Step 16](Build8.md#step-16)。生产默认端点与三变量部署接口不变；`step16` 夹具不进入默认门禁/CI。Step 17 真实云、Linux/Docker、远端 CI 与发布待执行；本轮改动未提交、未推送。
+
 > **I9-R01 后续修复（2026-11-02，用户选择并授权 A）：** 实施前 `main / d50daa5b9e619e70a7818349dcc6039bd125199f`，工作树/暂存区干净。唯一生产文件为 `provider/ali_swas.go`；每次规则快照独立创建 SDK 与 HTTP client，避免共享 Headers 和 dara 默认 HTTP 池 Timeout 竞争，分页内复用连接并统一收尾。保留原单请求超时与 100 页限制，不新增 120 秒总预算。正式回归见 `provider/swas_concurrency_test.go` 与 `syncer/swas_concurrency_test.go`；实施证据、验证范围和发布边界统一见 [Issue9 I9-R01](HistoryDocs/Issue9.md#i9-r01)。本轮未部署、提交或推送。
 
 > **I9-R03 后续修复（2026-11-02，用户选择 A）：** 实施前 `main / 590a7d6eaf0f471f5eb8c2dc849efd0362619018`，工作树/暂存区干净。唯一生产变更为 `config/store.go` 的历史空串分支返回 `[]int{}`，使正式规则 API 输出 `targets:[]`；保持空数组适用于全部目标和损坏值拒绝合同，不改前端生产代码、不迁移或自动改写存量数据。研究取舍、正式回归、实际验证及未发布边界见 [Issue9 I9-R03](HistoryDocs/Issue9.md#i9-r03)。
@@ -383,6 +385,7 @@
 
 ### 本地开发与构建入口（I8-03 / Q-05，2026-10-08 裁决 A）
 
+- Build8 Step 16 进程验收接线（2026-11-15）：TEO/Lighthouse 端点/协议是带生产默认值的包级变量；仅允许测试构建通过 `go build -ldflags "-X ..."` 指向回环替身，生产 `make all`、Docker 与发布构建不得传入覆盖，不新增部署环境变量或运行时 setter。`-tags step16` 的进程/浏览器夹具不进入默认 `go test ./...`、Make、CI 或发布。
 - `make test`、`make vet`、`make build` 必须共享 `.PHONY frontend` 前置，先成功执行真实 `npm ci && npm run build` 再运行 Go 命令；前端失败时不得执行消费者，不以占位 dist、目录存在或旧 index.html 绕过构建。
 - 完整本地核验推荐一次 `make all`；同一次 Make 调用共享一次前端构建，分别调用会分别重建。`make -j4 all` 允许前端完成后的 Go 检查/测试/构建并行，任一失败返回非零，不承诺其他并行任务从未运行或多个独立 Make 进程互斥。
 - 裸 Go 命令使用已准备好的真实 dist，不自动生成前端；前端源码/配置/锁文件变化后重新构建。默认无参数 `make` 仍只构建前端，不引入增量缓存或新的 Make 版本要求。
