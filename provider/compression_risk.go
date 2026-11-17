@@ -2,162 +2,139 @@ package provider
 
 import (
 	"net/netip"
-	"sort"
 	"strings"
 
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/tag"
 )
 
-// computeCompressionRisk 按协议端口分别求当前 EdgeOne TAG 允许集合与计划新增的并集，
-// 减去该端口由站点精确授权的地址，最后跨端口并集去重。
-//
-// 手工/其他 TAG 规则不进入 grant，因此不会抵扣额度；旧压缩残留仍属于 EdgeOne TAG，
-// 会自然计入额外地址。全端口规则按“所有授权端口集合的交集”扣除，避免漏算只在一个
-// 端口合法的地址。
-func computeCompressionRisk(in LighthouseCompressionInput, groups []compressionAuthGroup, rep CompressionRepresentation) CompressionRisk {
-	out := CompressionRisk{Limit: in.Config.ExtraIPv4Limit, Complete: true}
-	authorized := make(map[string]ipv4Set)
-	protocols := make(map[string]bool)
+type compressionRiskPart struct {
+	ports      compressionPortSpan
+	authorized ipv4Set
+	oldExtra   ipv4Set
+}
+
+type compressionRiskModel struct {
+	byProtocol    map[string][]compressionRiskPart
+	oldExtra      ipv4Set
+	manualIgnored bool
+}
+
+// buildCompressionRiskModel 在精确授权、过渡保护和 S0 TAG 行的端点切分。
+func buildCompressionRiskModel(in LighthouseCompressionInput, groups []compressionAuthGroup) compressionRiskModel {
+	model := compressionRiskModel{byProtocol: make(map[string][]compressionRiskPart)}
+	authorized := make(map[string][]compressionGrant)
+	oldGrants := make(map[string][]compressionGrant)
 	for _, group := range groups {
-		set := ipv4SetFromPrefixes(group.Prefixes)
-		for _, key := range group.Keys {
-			authorized[key.String()] = authorized[key.String()].union(set)
-			protocols[key.Protocol] = true
+		for _, port := range group.ports {
+			for _, span := range port.spans {
+				authorized[port.protocol] = append(authorized[port.protocol], compressionGrant{span, group.addresses})
+			}
 		}
 	}
-	keys := make([]string, 0, len(authorized))
-	for key := range authorized {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	existingRisk, existingPerPort := compressionRiskForRules(in.Snapshot.Rules, authorized, keys, in.EdgeOneTag, true)
-	planned := make([]configRuleLike, 0, len(rep.Rows))
-	for _, row := range rep.Rows {
-		planned = append(planned, configRuleLike{
-			Protocol: row.Protocol, Port: row.Port, CidrBlock: row.CIDR, Action: row.Action,
-		})
-	}
-	total, perPort := compressionRiskForRuleLikes(planned, authorized, keys)
-	total = total.union(existingRisk)
-	for key, set := range existingPerPort {
-		perPort[key] = perPort[key].union(set)
-	}
-
-	out.ExtraIPv4 = total.count()
-	out.MaxExtraRun = total.maxRun()
-	out.OldResidue = existingRisk.count()
-	out.PerPort = make([]CompressionPortRisk, 0, len(keys))
-	for _, key := range keys {
-		parts := strings.SplitN(key, "|", 2)
-		if len(parts) != 2 {
+	for _, protected := range in.Protected {
+		prefix, err := netip.ParsePrefix(protected.Prefix)
+		if err != nil {
 			continue
 		}
-		set := perPort[key]
-		out.PerPort = append(out.PerPort, CompressionPortRisk{
-			Protocol: parts[0], Port: parts[1],
-			ExtraIPv4: set.count(), MaxExtraRun: set.maxRun(), Ranges: ipv4RangeStrings(set),
-		})
+		addresses := ipv4SetFromPrefixes([]netip.Prefix{prefix})
+		ports, _ := compressionPortSpans(protected.PortItem)
+		for _, protocol := range compressionProtocols(protected.Protocol) {
+			for _, span := range ports {
+				authorized[protocol] = append(authorized[protocol], compressionGrant{span, addresses})
+			}
+		}
 	}
 	for _, rule := range in.Snapshot.Rules {
-		if strings.EqualFold(strings.TrimSpace(rule.Action), "ACCEPT") && !tag.IsOwned(rule.Description, in.EdgeOneTag) {
-			out.ManualIgnored = true
-			break
-		}
-	}
-	return out
-}
-
-type configRuleLike struct {
-	Protocol  string
-	Port      string
-	CidrBlock string
-	Action    string
-}
-
-func compressionRiskForRules(rules []config.RuleInfo, authorized map[string]ipv4Set, keys []string, edgeTag string, requireOwned bool) (ipv4Set, map[string]ipv4Set) {
-	out := make([]configRuleLike, 0, len(rules))
-	for _, rule := range rules {
-		if requireOwned && !tag.IsOwned(rule.Description, edgeTag) {
-			continue
-		}
 		if !strings.EqualFold(strings.TrimSpace(rule.Action), "ACCEPT") {
 			continue
 		}
-		out = append(out, configRuleLike{Protocol: rule.Protocol, Port: rule.Port, CidrBlock: rule.CidrBlock, Action: rule.Action})
+		if !tag.IsOwned(rule.Description, in.EdgeOneTag) {
+			model.manualIgnored = true
+			continue
+		}
+		addresses, ports := compressionRuleGrant(rule)
+		if len(addresses) == 0 {
+			continue
+		}
+		for _, protocol := range compressionProtocols(rule.Protocol) {
+			for _, span := range ports {
+				oldGrants[protocol] = append(oldGrants[protocol], compressionGrant{span, addresses})
+			}
+		}
 	}
-	return compressionRiskForRuleLikes(out, authorized, keys)
+	for _, protocol := range []string{"TCP", "UDP"} {
+		allowed := authorized[protocol]
+		old := oldGrants[protocol]
+		spans := make([]compressionPortSpan, 0, len(allowed)+len(old))
+		for _, grant := range allowed {
+			spans = append(spans, grant.ports)
+		}
+		for _, grant := range old {
+			spans = append(spans, grant.ports)
+		}
+		for _, span := range splitCompressionPorts(spans) {
+			part := compressionRiskPart{ports: span, authorized: compressionAddressesAtPort(allowed, span)}
+			oldSet := compressionAddressesAtPort(old, span)
+			if len(oldSet) == 0 && len(part.authorized) == 0 {
+				continue
+			}
+			part.oldExtra = oldSet.subtract(part.authorized)
+			model.oldExtra = model.oldExtra.union(part.oldExtra)
+			model.byProtocol[protocol] = append(model.byProtocol[protocol], part)
+		}
+	}
+	return model
 }
 
-func compressionRiskForRuleLikes(rules []configRuleLike, authorized map[string]ipv4Set, keys []string) (ipv4Set, map[string]ipv4Set) {
-	perPort := make(map[string]ipv4Set)
-	var total ipv4Set
-	for _, rule := range rules {
-		prefix, err := netip.ParsePrefix(strings.TrimSpace(rule.CidrBlock))
-		if err != nil || !prefix.Addr().Is4() {
-			continue
+func compressionAddressesAtPort(grants []compressionGrant, span compressionPortSpan) ipv4Set {
+	var addresses ipv4Set
+	for _, grant := range grants {
+		if grant.ports.overlaps(span) {
+			addresses = append(addresses, grant.addresses...)
 		}
-		prefix = prefix.Masked()
-		ruleSet := ipv4SetFromPrefixes([]netip.Prefix{prefix})
-		proto := strings.ToUpper(strings.TrimSpace(rule.Protocol))
-		if proto == "ICMP" || proto == "ICMPV6" || proto == "" {
-			continue
-		}
-		hasUnconfiguredPort := false
-		for _, item := range strings.Split(rule.Port, ",") {
-			item = strings.TrimSpace(item)
-			if item == "" {
-				continue
-			}
-			if portItemIsFull(item) {
-				continue
-			}
-			matched := false
-			for _, key := range keys {
-				parts := strings.SplitN(key, "|", 2)
-				if len(parts) != 2 || !protocolMatches(proto, parts[0]) {
-					continue
-				}
-				if portExpressionOverlaps(item, parts[1]) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				hasUnconfiguredPort = true
+	}
+	return addresses.normalize()
+}
+
+func (model compressionRiskModel) candidateExtra(port compressionWirePort, addresses ipv4Set) ipv4Set {
+	var extra ipv4Set
+	for _, part := range model.byProtocol[port.protocol] {
+		for _, span := range port.spans {
+			if span.overlaps(part.ports) {
+				extra = extra.union(addresses.subtract(part.authorized))
 				break
 			}
 		}
-		for _, key := range keys {
-			parts := strings.SplitN(key, "|", 2)
-			if len(parts) != 2 || !protocolMatches(proto, parts[0]) {
-				continue
-			}
-			if !portExpressionOverlaps(rule.Port, parts[1]) {
-				continue
-			}
-			perPort[key] = perPort[key].union(ruleSet.subtract(authorized[key]))
-		}
-		if hasUnconfiguredPort {
-			total = total.union(ruleSet)
-		}
 	}
-	for _, set := range perPort {
-		total = total.union(set)
-	}
-	return total, perPort
+	return extra
 }
 
-func protocolMatches(ruleProto, authProto string) bool {
-	ruleProto = strings.ToUpper(strings.TrimSpace(ruleProto))
-	authProto = strings.ToUpper(strings.TrimSpace(authProto))
-	switch ruleProto {
-	case "ALL", "TCP+UDP":
-		return authProto == "TCP" || authProto == "UDP"
-	case "TCP", "UDP":
-		return ruleProto == authProto
-	default:
-		return false
+// summarize 先逐协议端口扣除授权，再跨端口对额外 IPv4 去重。
+func (model compressionRiskModel) summarize(limit int64, rep CompressionRepresentation) CompressionRisk {
+	out := CompressionRisk{
+		Limit: limit, Complete: true, ManualIgnored: model.manualIgnored,
+		OldResidue: model.oldExtra.count(), PerPort: []CompressionPortRisk{},
 	}
+	planned := make(map[string][]compressionGrant)
+	for _, row := range rep.Rows {
+		prefix := netip.MustParsePrefix(row.CIDR)
+		ports, _ := compressionPortSpans(row.Port)
+		for _, port := range ports {
+			planned[row.Protocol] = append(planned[row.Protocol], compressionGrant{port, ipv4SetFromPrefixes([]netip.Prefix{prefix})})
+		}
+	}
+	var total ipv4Set
+	for _, protocol := range []string{"TCP", "UDP"} {
+		for _, part := range model.byProtocol[protocol] {
+			extra := compressionAddressesAtPort(planned[protocol], part.ports).subtract(part.authorized).union(part.oldExtra)
+			total = total.union(extra)
+			out.PerPort = append(out.PerPort, CompressionPortRisk{
+				Protocol: protocol, Port: part.ports.String(), ExtraIPv4: extra.count(),
+				MaxExtraRun: extra.maxRun(), Ranges: ipv4RangeStrings(extra),
+			})
+		}
+	}
+	out.ExtraIPv4 = total.count()
+	out.MaxExtraRun = total.maxRun()
+	return out
 }

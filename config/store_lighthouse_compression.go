@@ -57,6 +57,11 @@ func (s *Store) LoadLighthouseCompressionSettings() ([]LighthouseCompression, er
 	return loadLighthouseCompressionSettings(context.Background(), s.db)
 }
 
+// LoadLighthouseCompressionSettingsTx 读取本次导入将替换的实例设置。
+func (s *Store) LoadLighthouseCompressionSettingsTx(ctx context.Context, tx *sql.Tx) ([]LighthouseCompression, error) {
+	return loadLighthouseCompressionSettings(ctx, tx)
+}
+
 // loadLighthouseCompressionState 读取指定实例的持久化运行观察；不存在返回 found=false。
 func loadLighthouseCompressionState(ctx context.Context, q DBTX, c LighthouseCompression) (LighthouseCompressionState, bool, error) {
 	var state LighthouseCompressionState
@@ -134,6 +139,35 @@ func (s *Store) DeleteLighthouseCompressionStateTx(ctx context.Context, tx *sql.
 		DELETE FROM lighthouse_compression_state
 		WHERE cloud_type = ? AND region = ? AND resource_id = ?`,
 		string(c.CloudType), c.Region, c.ResourceID)
+	return err
+}
+
+// MarkLighthouseCompressionDisabledTx 建立退出复查，已有复查保留其原因和时间。
+func (s *Store) MarkLighthouseCompressionDisabledTx(ctx context.Context, tx *sql.Tx, c LighthouseCompression) error {
+	state, _, err := loadLighthouseCompressionState(ctx, tx, c)
+	if err != nil || state.PendingReview {
+		return err
+	}
+	return s.SaveLighthouseCompressionStateTx(ctx, tx, LighthouseCompressionState{
+		CloudType: c.CloudType, Region: c.Region, ResourceID: c.ResourceID,
+		PendingReview: true, PendingReason: "disabled",
+		PendingSince: time.Now().UTC().Format(lighthouseCompressionTimeLayout),
+	})
+}
+
+// PruneLighthouseCompressionStatesTx 清除导入后已移除或重新开启的实例观察。
+func (s *Store) PruneLighthouseCompressionStatesTx(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
+		DELETE FROM lighthouse_compression_state AS state
+		WHERE NOT EXISTS (
+			SELECT 1 FROM targets AS target
+			WHERE (target.cloud_type, target.region, target.resource_id) =
+			      (state.cloud_type, state.region, state.resource_id)
+		) OR EXISTS (
+			SELECT 1 FROM lighthouse_compression_settings AS settings
+			WHERE (settings.cloud_type, settings.region, settings.resource_id) =
+			      (state.cloud_type, state.region, state.resource_id) AND settings.enabled = 1
+		)`)
 	return err
 }
 

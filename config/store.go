@@ -1692,15 +1692,14 @@ func (s *Store) ClearScannedResourcesTx(ctx context.Context, tx *sql.Tx) error {
 }
 
 // DeleteImportOwnedTablesTx 按依赖顺序清空导入覆盖的业务表（Build6 §12.12 固定顺序，
-// Build8 Step 3 加入站点与绑定，Build9 Step 1 加入实例级压缩配置与观察）：
-// lighthouse_compression_state → lighthouse_compression_settings → edgeone_site_targets
+// Build8 Step 3 加入站点与绑定，Build9 Step 1 加入实例级压缩配置）：
+// lighthouse_compression_settings → edgeone_site_targets
 // → edgeone_sites → rules → targets → settings → alert_email → alert_webhook
 // → alert_policy → uptime_kuma_push。
 //
-// 即使当前 Schema 没有外键，也按依赖顺序实现；不触碰 sync_logs 与 sqlite_sequence。
+// 压缩待复查由导入完成目标重建后按物理身份处理。
 func (s *Store) DeleteImportOwnedTablesTx(ctx context.Context, tx *sql.Tx) error {
 	stmts := []string{
-		"DELETE FROM lighthouse_compression_state",
 		"DELETE FROM lighthouse_compression_settings",
 		"DELETE FROM edgeone_site_targets",
 		"DELETE FROM edgeone_sites",

@@ -177,3 +177,122 @@ func TestBuild9S1V3V4ImportDefaultsOff(t *testing.T) {
 		})
 	}
 }
+
+func TestBuild9S1ImportReconcilesCompressionReview(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		version    int
+		omit       bool
+		wasPending bool
+		enable     bool
+		remove     bool
+		fail       bool
+	}{
+		{name: "v3 default off", version: 3},
+		{name: "v4 default off", version: 4},
+		{name: "v5 omitted instance", version: 5, omit: true},
+		{name: "v5 explicit off", version: 5},
+		{name: "retain pending timestamp without saved settings", version: 5, omit: true, wasPending: true},
+		{name: "reenabled", version: 5, wasPending: true, enable: true},
+		{name: "removed", version: 5, wasPending: true, remove: true},
+		{name: "state insert rolls back", version: 5, omit: true, fail: true},
+		{name: "state delete rolls back", version: 5, wasPending: true, enable: true, fail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			id := e.seedTarget(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-a")
+			alias := e.seedTarget(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-a")
+			if w := e.do(t, http.MethodPut, compressionPath(id), `{"enabled":true,"extra_ipv4_allow":9}`); w.Code != http.StatusOK {
+				t.Fatalf("开启压缩失败: %s", w.Body)
+			}
+			if tc.wasPending {
+				if w := e.do(t, http.MethodPut, compressionPath(alias), `{"enabled":false,"extra_ipv4_allow":9}`); w.Code != http.StatusOK {
+					t.Fatalf("关闭压缩失败: %s", w.Body)
+				}
+				if tc.omit {
+					e.execRaw(t, "DELETE FROM lighthouse_compression_settings")
+				}
+			}
+			before := getCompression(t, e, id)
+			beforeApply := e.applyCount()
+			key := config.LighthouseCompression{CloudType: config.CloudTCLighthouse, Region: "ap-guangzhou", ResourceID: "lhins-a"}
+
+			w := e.do(t, http.MethodPost, "/api/config/export", "")
+			var body map[string]any
+			if w.Code != http.StatusOK {
+				t.Fatalf("导出失败: %s", w.Body)
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if tc.version == 3 {
+				targets, err := json.Marshal(body["targets"])
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = nil
+				if err := json.Unmarshal([]byte(bundleWith(string(targets), `[]`)), &body); err != nil {
+					t.Fatal(err)
+				}
+			}
+			body["version"] = tc.version
+			switch {
+			case tc.version < 5:
+				delete(body, "lighthouse_compression")
+			case tc.remove:
+				body["targets"], body["lighthouse_compression"] = []any{}, []any{}
+			case tc.omit:
+				body["lighthouse_compression"] = []any{}
+			default:
+				key.Enabled, key.ExtraIPv4Allow = tc.enable, 9
+				body["lighthouse_compression"] = []config.LighthouseCompression{key}
+			}
+			if tc.fail {
+				if tc.wasPending {
+					e.execRaw(t, `CREATE TRIGGER fail_review BEFORE DELETE ON lighthouse_compression_state BEGIN SELECT RAISE(ABORT, 'fixture'); END;`)
+				} else {
+					e.execRaw(t, `CREATE TRIGGER fail_review BEFORE INSERT ON lighthouse_compression_state BEGIN SELECT RAISE(ABORT, 'fixture'); END;`)
+				}
+			}
+			w = e.do(t, http.MethodPost, "/api/config/import", mustJSON(t, body))
+			if tc.fail {
+				if w.Code != http.StatusInternalServerError || e.applyCount() != beforeApply {
+					t.Fatalf("失败导入: status=%d apply=%d", w.Code, e.applyCount())
+				}
+				got := getCompression(t, e, id)
+				if got.Enabled != before.Enabled || got.ExtraIPv4Allow != before.ExtraIPv4Allow ||
+					got.PendingReview != before.PendingReview || got.PendingSince != before.PendingSince ||
+					len(got.TargetIDs) != 2 {
+					t.Fatalf("失败导入改变了旧实例状态: before=%+v got=%+v", before, got)
+				}
+				return
+			}
+			if w.Code != http.StatusOK || e.applyCount() != beforeApply+1 {
+				t.Fatalf("导入失败: status=%d body=%s apply=%d", w.Code, w.Body, e.applyCount())
+			}
+			state, found, err := e.store.LoadLighthouseCompressionState(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.remove || tc.enable {
+				if found {
+					t.Fatalf("移除或开启实例后仍有待复查: %+v", state)
+				}
+				return
+			}
+			targets, err := e.store.GetTargets()
+			if err != nil || len(targets) != 2 || targets[0].ID == id || targets[1].ID == alias {
+				t.Fatalf("导入需要重建两个别名: %v err=%v", targets, err)
+			}
+			for _, target := range targets {
+				got := getCompression(t, e, target.ID)
+				if got.Enabled || !got.PendingReview || got.PendingSince == "" || !found || state.PendingReason != "disabled" {
+					t.Fatalf("导入后待复查错误: response=%+v state=%+v", got, state)
+				}
+				if tc.wasPending && got.PendingSince != before.PendingSince {
+					t.Fatalf("复查时间被替换: %q -> %q", before.PendingSince, got.PendingSince)
+				}
+			}
+		})
+	}
+}

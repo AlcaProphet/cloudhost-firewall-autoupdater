@@ -2,137 +2,114 @@ package provider
 
 import (
 	"context"
-	"fmt"
 	"net/netip"
 	"sort"
 	"strings"
 )
 
-// coverOptionsForGroup 生成一个授权组的无损 + 贪心有损覆盖选项。
-//
-// 每个选项保存覆盖前缀、相对无损集合的额外地址和行数；有损只减少物理行数，
-// 不改变原始授权。贪心按“合并后新增额外地址最少”选择兄弟对，保证确定性。
-func coverOptionsForGroup(group compressionAuthGroup, maxOptions int) ([]compressionCoverOption, bool) {
-	if maxOptions <= 0 {
-		maxOptions = 128
+type compressionCoverOption struct {
+	rows    []CompressionRow
+	extra   ipv4Set
+	adds    int
+	current int
+}
+
+type compressionCoverTree struct {
+	option      *compressionCoverOption
+	left, right *compressionCoverTree
+	cost        []uint64
+}
+
+type compressionSearchBudget struct {
+	ctx       context.Context
+	remaining int
+	blocker   *CompressionBlocker
+}
+
+func (b *compressionSearchBudget) take() bool {
+	if b.blocker != nil {
+		return false
 	}
-	required := mergeIPv4PrefixesExact(group.Prefixes)
-	requiredSet := ipv4SetFromPrefixes(required)
-	units, ok := groupPortUnits(group)
-	if !ok {
-		return nil, false
+	switch {
+	case b.ctx != nil && b.ctx.Err() != nil:
+		b.blocker = &CompressionBlocker{Code: CompressionBlockedCanceled, Message: "规划被取消"}
+	case b.remaining == 0:
+		b.blocker = &CompressionBlocker{Code: CompressionBlockedIncomplete, Message: "候选生成或联合搜索超过状态上限"}
+	default:
+		b.remaining--
+		return true
 	}
-	current := append([]netip.Prefix(nil), required...)
-	options := make([]compressionCoverOption, 0, maxOptions)
-	options = append(options, compressionCoverOption{
-		Rows: units * len(current), Cover: append([]netip.Prefix(nil), current...), Extra: nil, Key: compressionCoverKey(current),
-	})
-	for len(current) > 1 && len(options) < maxOptions {
-		type pair struct {
-			a, b   netip.Prefix
-			parent netip.Prefix
-			extra  uint64
-			key    string
+	return false
+}
+
+// buildCoverTree 保留风险额度内的父前缀与子树表示，包括可复用的更宽 S0 行。
+func (p compressionPlanner) buildCoverTree(group compressionAuthGroup, prefix netip.Prefix, required []netip.Prefix,
+	budget *compressionSearchBudget, rowBudget int, rejections map[string]bool,
+) *compressionCoverTree {
+	if !budget.take() {
+		return nil
+	}
+	var left, right *compressionCoverTree
+	leaf := len(required) == 1 && prefix == required[0]
+	if !leaf {
+		childBits := prefix.Bits() + 1
+		leftPrefix := netip.PrefixFrom(prefix.Addr(), childBits)
+		rightPrefix, _ := siblingPrefix(leftPrefix)
+		split := sort.Search(len(required), func(i int) bool { return !leftPrefix.Contains(required[i].Addr()) })
+		if split > 0 {
+			left = p.buildCoverTree(group, leftPrefix, required[:split], budget, rowBudget, rejections)
 		}
-		var best *pair
-		for i := 0; i < len(current); i++ {
-			for j := i + 1; j < len(current); j++ {
-				parent, ok := coveringPrefix(current[i], current[j])
-				if !ok {
-					continue
+		if split < len(required) {
+			right = p.buildCoverTree(group, rightPrefix, required[split:], budget, rowBudget, rejections)
+		}
+		if budget.blocker != nil {
+			return nil
+		}
+	}
+	tree := &compressionCoverTree{left: left, right: right}
+	unary := !leaf && (left == nil || right == nil)
+	if leaf || !group.exactOnly {
+		rows := p.rows(group, prefix)
+		option := &compressionCoverOption{rows: rows}
+		for _, row := range rows {
+			if row.Reused {
+				continue
+			}
+			option.adds++
+			if !row.ServesNext || row.ServesCurrent {
+				option.current++
+			}
+		}
+		if p.hitsDrop(rows) {
+			rejections[CompressionBlockedOppositeAction] = true
+		} else if option.adds <= rowBudget {
+			if !leaf {
+				addresses := ipv4SetFromPrefixes([]netip.Prefix{prefix})
+				for _, port := range group.ports {
+					option.extra = option.extra.union(p.risk.candidateExtra(port, addresses))
 				}
-				extra := ipv4SetFromPrefixes([]netip.Prefix{parent}).subtract(requiredSet).count()
-				candidate := pair{a: current[i], b: current[j], parent: parent, extra: extra, key: parent.String()}
-				if best == nil || candidate.extra < best.extra || (candidate.extra == best.extra && candidate.key < best.key) {
-					copyCandidate := candidate
-					best = &copyCandidate
-				}
+			}
+			if p.hitsDNS(option.extra) {
+				rejections[CompressionBlockedDNSHit] = true
+			} else if p.risk.oldExtra.union(option.extra).count() <= uint64(p.in.Config.ExtraIPv4Limit) {
+				tree.option = option
 			}
 		}
-		if best == nil {
-			break
-		}
-		next := make([]netip.Prefix, 0, len(current))
-		for _, q := range current {
-			if best.parent.Contains(q.Addr()) && q.Bits() >= best.parent.Bits() {
-				continue
-			}
-			next = append(next, q)
-		}
-		next = append(next, best.parent)
-		sort.SliceStable(next, func(i, j int) bool { return next[i].String() < next[j].String() })
-		current = next
-		extra := ipv4SetFromPrefixes(current).subtract(requiredSet)
-		options = append(options, compressionCoverOption{
-			Rows: units * len(current), Cover: append([]netip.Prefix(nil), current...),
-			Extra: extra, Key: compressionCoverKey(current),
-		})
 	}
-	return options, true
+	if tree.option == nil && unary {
+		if left == nil {
+			return right
+		}
+		return left
+	}
+	tree.cost = coverTreeCosts(tree, p.risk.oldExtra, rowBudget)
+	return tree
 }
 
-func groupPortUnits(group compressionAuthGroup) (int, bool) {
-	byProtocol := make(map[string][]string)
-	for _, key := range group.Keys {
-		byProtocol[key.Protocol] = append(byProtocol[key.Protocol], key.Port)
-	}
-	total := 0
-	for _, items := range byProtocol {
-		exprs, ok := portExpressions(items)
-		if !ok {
-			return 0, false
-		}
-		total += len(exprs)
-	}
-	if total == 0 {
-		return 0, false
-	}
-	return total, true
-}
-
-func compressionCoverKey(prefixes []netip.Prefix) string {
-	parts := make([]string, len(prefixes))
-	for i, p := range prefixes {
-		parts[i] = p.Masked().String()
-	}
-	sort.Strings(parts)
-	return strings.Join(parts, ",")
-}
-
-// compressionExistingRisk 返回当前 S0 中 EdgeOne TAG 已存在的额外放行集合。
-func compressionExistingRisk(in LighthouseCompressionInput, groups []compressionAuthGroup) ipv4Set {
-	authorized := make(map[string]ipv4Set)
-	var keys []string
-	for _, group := range groups {
-		set := ipv4SetFromPrefixes(group.Prefixes)
-		for _, key := range group.Keys {
-			authorized[key.String()] = authorized[key.String()].union(set)
-			keys = append(keys, key.String())
-		}
-	}
-	set, _ := compressionRiskForRules(in.Snapshot.Rules, authorized, keys, in.EdgeOneTag, true)
-	return set
-}
-
-func optionHitsDrop(in LighthouseCompressionInput, group compressionAuthGroup, option compressionCoverOption) bool {
-	coverSet := ipv4SetFromPrefixes(option.Cover)
-	for _, rule := range in.Snapshot.Rules {
-		if !strings.EqualFold(strings.TrimSpace(rule.Action), "DROP") {
-			continue
-		}
-		prefix, err := netip.ParsePrefix(strings.TrimSpace(rule.CidrBlock))
-		if err != nil || !prefix.Addr().Is4() {
-			continue
-		}
-		proto := strings.ToUpper(strings.TrimSpace(rule.Protocol))
-		for _, key := range group.Keys {
-			if !protocolMatches(proto, key.Protocol) {
-				continue
-			}
-			if !portExpressionOverlaps(rule.Port, key.Port) {
-				continue
-			}
-			if coverSet.intersectsPrefix(prefix) || option.Extra.intersectsPrefix(prefix) {
+func (p compressionPlanner) hitsDNS(extra ipv4Set) bool {
+	if p.in.DNSEnabled {
+		for _, addr := range p.in.DNSAddresses {
+			if extra.containsAddr(addr.Unmap()) {
 				return true
 			}
 		}
@@ -140,95 +117,64 @@ func optionHitsDrop(in LighthouseCompressionInput, group compressionAuthGroup, o
 	return false
 }
 
-func optionHitsDNS(in LighthouseCompressionInput, option compressionCoverOption) bool {
-	if !in.DNSComplete {
-		return false
+func (p compressionPlanner) planLossy(ctx context.Context, groups []compressionAuthGroup) (
+	*CompressionRepresentation, CompressionCapacity, bool, []CompressionBlocker,
+) {
+	if p.in.DNSEnabled && !p.in.DNSComplete {
+		return nil, CompressionCapacity{}, false, []CompressionBlocker{{
+			Code: CompressionBlockedDNSIncomplete, Message: "DNS 数据不完整，不能使用有损扩张",
+		}}
 	}
-	for _, addr := range in.DNSAddresses {
-		if option.Extra.containsAddr(addr) {
-			return true
-		}
+	maxStates := p.in.MaxStates
+	if maxStates <= 0 {
+		maxStates = 200000
 	}
-	return false
-}
-
-// planLossyCompression 生成并联合选择有损覆盖；返回 incomplete 表示搜索上限阻断。
-func planLossyCompression(ctx context.Context, in LighthouseCompressionInput, groups []compressionAuthGroup) (*CompressionRepresentation, bool, []CompressionBlocker) {
-	var blockers []CompressionBlocker
-	optionsByGroup := make([][]compressionCoverOption, 0, len(groups))
+	budget := compressionSearchBudget{ctx: ctx, remaining: maxStates}
+	baseRows := len(p.in.Snapshot.Rules) + p.in.OtherNewRows
+	normalBudget := max(0, compressionNormalCap-baseRows)
+	rowBudget := normalBudget
+	if p.pending && p.in.AssessCleanup != nil && strings.TrimSpace(p.in.PendingFingerprint) != "" {
+		rowBudget = max(0, compressionHardCap-baseRows)
+	}
+	var roots []*compressionCoverTree
+	rejections := make(map[string]bool)
 	for _, group := range groups {
-		for _, key := range group.Keys {
-			if portItemIsFull(key.Port) {
-				blockers = append(blockers, CompressionBlocker{
-					Code: CompressionBlockedLossyForbidden, Message: "全端口配置不进入有损扩张",
-					Protocol: key.Protocol, Port: key.Port,
-				})
-				return nil, false, blockers
-			}
+		root := p.buildCoverTree(group, netip.PrefixFrom(netip.IPv4Unspecified(), 0), group.prefixes, &budget, rowBudget, rejections)
+		if budget.blocker != nil {
+			return nil, CompressionCapacity{}, true, []CompressionBlocker{*budget.blocker}
 		}
-		options, ok := coverOptionsForGroup(group, 512)
-		if !ok {
-			blockers = append(blockers, CompressionBlocker{Code: CompressionBlockedInvalidPort, Message: "无法生成端口表达式"})
-			return nil, false, blockers
-		}
-		// 选项的 Rows 表示“实际新增行”：S0 中精确存在的压缩行已经占用预算，
-		// 不能在选择时再次计入新增名额。
-		for i := range options {
-			rep, built, _ := buildCompressionRepresentation(in, []compressionAuthGroup{group}, [][]netip.Prefix{options[i].Cover})
-			if built {
-				options[i].Rows = len(rep.AddRows)
-			}
-		}
-		filtered := make([]compressionCoverOption, 0, len(options))
-		for _, option := range options {
-			if option.Extra.count() > uint64(in.Config.ExtraIPv4Limit) {
-				continue
-			}
-			if optionHitsDNS(in, option) {
-				continue
-			}
-			if optionHitsDrop(in, group, option) {
-				continue
-			}
-			filtered = append(filtered, option)
-		}
-		if len(filtered) == 0 {
-			blockers = append(blockers, CompressionBlocker{
-				Code: CompressionBlockedNoCandidate, Message: "该授权组没有满足 DNS/相反动作/额度的候选",
-			})
-			return nil, false, blockers
-		}
-		optionsByGroup = append(optionsByGroup, filtered)
+		roots = append(roots, root)
 	}
-	if in.DNSEnabled && !in.DNSComplete {
-		blockers = append(blockers, CompressionBlocker{Code: CompressionBlockedDNSIncomplete, Message: "DNS 数据不完整，不能使用有损扩张"})
-		return nil, false, blockers
+	search := compressionCoverSearch{
+		planner: p, budget: &budget, roots: roots, rowBudget: rowBudget,
+		normalBudget: normalBudget, limit: uint64(p.in.Config.ExtraIPv4Limit),
 	}
-	baseRisk := compressionExistingRisk(in, groups)
-	rowBudget := maxInt(0, compressionNormalCap-len(in.Snapshot.Rules)-in.OtherNewRows)
-	if in.HasPendingVersion {
-		rowBudget = maxInt(0, compressionHardCap-len(in.Snapshot.Rules)-in.OtherNewRows)
-	}
-	selection, ok, incomplete := selectCompressionOptions(optionsByGroup, rowBudget, uint64(in.Config.ExtraIPv4Limit), baseRisk, in.MaxStates)
-	if incomplete {
-		return nil, true, []CompressionBlocker{{Code: CompressionBlockedIncomplete, Message: "有损候选搜索超过上限，按证据不足阻断"}}
-	}
-	if !ok {
-		return nil, false, []CompressionBlocker{{Code: CompressionBlockedNoCandidate, Message: "没有满足容量与风险额度的有损候选"}}
+	search.run()
+	if budget.blocker != nil {
+		return nil, CompressionCapacity{}, true, []CompressionBlocker{*budget.blocker}
 	}
 	if ctx != nil && ctx.Err() != nil {
-		return nil, true, []CompressionBlocker{{Code: CompressionBlockedCanceled, Message: "规划被取消"}}
+		return nil, CompressionCapacity{}, true, []CompressionBlocker{{
+			Code: CompressionBlockedCanceled, Message: "规划被取消",
+		}}
 	}
-	covers := make([][]netip.Prefix, len(groups))
-	for i, option := range selection.chosen {
-		if i >= len(covers) {
+	if search.best.rep != nil {
+		return search.best.rep, search.best.capacity, false, nil
+	}
+	blockers := []CompressionBlocker{{
+		Code: CompressionBlockedNoCandidate, Message: "没有满足容量与风险额度的压缩候选",
+	}}
+	if rejections[CompressionBlockedOppositeAction] {
+		blockers = append(blockers, compressionOppositeAction)
+	}
+	if rejections[CompressionBlockedDNSHit] {
+		blockers = append(blockers, CompressionBlocker{Code: CompressionBlockedDNSHit, Message: "有损候选的额外放行范围包含 DNS 地址"})
+	}
+	for _, group := range groups {
+		if group.exactOnly {
+			blockers = append(blockers, CompressionBlocker{Code: CompressionBlockedLossyForbidden, Message: "全端口授权组只允许无损表示"})
 			break
 		}
-		covers[i] = option.Cover
 	}
-	rep, built, perr := buildCompressionRepresentation(in, groups, covers)
-	if !built {
-		return nil, false, []CompressionBlocker{{Code: CompressionBlockedNoCandidate, Message: fmt.Sprintf("有损表示构造失败: %s", perr)}}
-	}
-	return &rep, false, nil
+	return nil, CompressionCapacity{}, false, blockers
 }

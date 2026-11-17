@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
-	"time"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
@@ -167,14 +166,7 @@ func (d *Deps) handlePutLighthouseCompression(w http.ResponseWriter, r *http.Req
 				return derr
 			}
 		case transitionToDisabled:
-			if serr := d.Store.SaveLighthouseCompressionStateTx(ctx, tx, config.LighthouseCompressionState{
-				CloudType:     next.CloudType,
-				Region:        next.Region,
-				ResourceID:    next.ResourceID,
-				PendingReview: true,
-				PendingReason: "disabled",
-				PendingSince:  time.Now().UTC().Format(time.RFC3339Nano),
-			}); serr != nil {
+			if serr := d.Store.MarkLighthouseCompressionDisabledTx(ctx, tx, next); serr != nil {
 				return serr
 			}
 		}

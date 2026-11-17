@@ -2,7 +2,9 @@ package provider
 
 import (
 	"fmt"
+	"math/bits"
 	"net/netip"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -109,33 +111,6 @@ func (s ipv4Set) subtract(other ipv4Set) ipv4Set {
 	return out.normalize()
 }
 
-func (s ipv4Set) intersect(other ipv4Set) ipv4Set {
-	other = other.normalize()
-	out := make(ipv4Set, 0)
-	for _, a := range s {
-		for _, b := range other {
-			if b.End < a.Start {
-				continue
-			}
-			if b.Start > a.End {
-				break
-			}
-			start := a.Start
-			if b.Start > start {
-				start = b.Start
-			}
-			end := a.End
-			if b.End < end {
-				end = b.End
-			}
-			if start <= end {
-				out = append(out, ipv4Range{Start: start, End: end})
-			}
-		}
-	}
-	return out.normalize()
-}
-
 func (s ipv4Set) count() uint64 {
 	var n uint64
 	for _, r := range s {
@@ -180,92 +155,6 @@ func (s ipv4Set) equal(other ipv4Set) bool {
 	return true
 }
 
-// mergeIPv4PrefixesExact 返回与输入地址集严格相等的极小 CIDR 集合。
-//
-// 只接受 IPv4；先去掉被更大前缀覆盖的项，再不断合并兄弟节点。结果排序稳定。
-func mergeIPv4PrefixesExact(prefixes []netip.Prefix) []netip.Prefix {
-	seen := make(map[netip.Prefix]bool, len(prefixes))
-	unique := make([]netip.Prefix, 0, len(prefixes))
-	for _, p := range prefixes {
-		if !p.IsValid() || !p.Addr().Is4() {
-			continue
-		}
-		p = p.Masked()
-		if seen[p] {
-			continue
-		}
-		seen[p] = true
-		unique = append(unique, p)
-	}
-	sort.SliceStable(unique, func(i, j int) bool {
-		if unique[i].Addr() != unique[j].Addr() {
-			return unique[i].Addr().Less(unique[j].Addr())
-		}
-		return unique[i].Bits() < unique[j].Bits()
-	})
-	// 去掉被前面更大前缀覆盖的项。
-	kept := make([]netip.Prefix, 0, len(unique))
-	for _, p := range unique {
-		covered := false
-		for _, k := range kept {
-			if k.Bits() <= p.Bits() && k.Contains(p.Addr()) {
-				covered = true
-				break
-			}
-		}
-		if !covered {
-			kept = append(kept, p)
-		}
-	}
-
-	set := make(map[netip.Prefix]bool, len(kept))
-	for _, p := range kept {
-		set[p] = true
-	}
-	for {
-		merged := false
-		keys := make([]netip.Prefix, 0, len(set))
-		for p := range set {
-			keys = append(keys, p)
-		}
-		sort.SliceStable(keys, func(i, j int) bool {
-			if keys[i].Addr() != keys[j].Addr() {
-				return keys[i].Addr().Less(keys[j].Addr())
-			}
-			return keys[i].Bits() < keys[j].Bits()
-		})
-		for _, p := range keys {
-			if !set[p] || p.Bits() == 0 {
-				continue
-			}
-			sibling, ok := siblingPrefix(p)
-			if !ok || !set[sibling] {
-				continue
-			}
-			delete(set, p)
-			delete(set, sibling)
-			parent := netip.PrefixFrom(p.Addr(), p.Bits()-1).Masked()
-			set[parent] = true
-			merged = true
-			break
-		}
-		if !merged {
-			break
-		}
-	}
-	out := make([]netip.Prefix, 0, len(set))
-	for p := range set {
-		out = append(out, p)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Addr() != out[j].Addr() {
-			return out[i].Addr().Less(out[j].Addr())
-		}
-		return out[i].Bits() < out[j].Bits()
-	})
-	return out
-}
-
 func siblingPrefix(p netip.Prefix) (netip.Prefix, bool) {
 	if !p.IsValid() || !p.Addr().Is4() || p.Bits() == 0 {
 		return netip.Prefix{}, false
@@ -278,35 +167,75 @@ func siblingPrefix(p netip.Prefix) (netip.Prefix, bool) {
 	return netip.PrefixFrom(netip.AddrFrom4(a), p.Bits()).Masked(), true
 }
 
-// portItemIsFull 判断单个端口项是否代表全端口。
-func portItemIsFull(item string) bool {
-	s := strings.ToUpper(strings.TrimSpace(item))
-	return s == "ALL" || s == "1-65535" || s == "-1/-1"
+// compressionPortSpan 表示 TCP/UDP 闭区间；端点切分后可独立计算授权与风险。
+type compressionPortSpan struct {
+	first, last int
 }
 
-// parsePortItem 把一个端口项拆成单端口或闭区间。
-func parsePortItem(item string) (start, end int, isRange bool, ok bool) {
-	s := strings.TrimSpace(item)
-	if s == "" || strings.EqualFold(s, "ALL") {
-		return 0, 0, false, false
+var allCompressionPorts = compressionPortSpan{1, 65535}
+
+func (s compressionPortSpan) String() string {
+	if s.first == s.last {
+		return strconv.Itoa(s.first)
 	}
-	if strings.Contains(s, "-") {
-		parts := strings.SplitN(s, "-", 2)
-		a, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
-		b, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
-		if err1 != nil || err2 != nil || a < 1 || b > 65535 || a > b {
-			return 0, 0, false, false
+	return fmt.Sprintf("%d-%d", s.first, s.last)
+}
+
+func (s compressionPortSpan) overlaps(other compressionPortSpan) bool {
+	return s.first <= other.last && other.first <= s.last
+}
+
+func compressionPortSpans(expr string) ([]compressionPortSpan, bool) {
+	var spans []compressionPortSpan
+	for _, item := range strings.Split(strings.TrimSpace(expr), ",") {
+		item = strings.TrimSpace(item)
+		if strings.EqualFold(item, "ALL") || item == "-1/-1" {
+			spans = append(spans, allCompressionPorts)
+			continue
 		}
-		if a == 1 && b == 65535 {
-			return 0, 0, false, false
+		start, end, isRange := strings.Cut(item, "-")
+		first, err := strconv.Atoi(strings.TrimSpace(start))
+		if err != nil || first < 1 || first > 65535 {
+			return nil, false
 		}
-		return a, b, true, true
+		last := first
+		if isRange {
+			last, err = strconv.Atoi(strings.TrimSpace(end))
+			if err != nil || last < first || last > 65535 {
+				return nil, false
+			}
+		}
+		spans = append(spans, compressionPortSpan{first, last})
 	}
-	n, err := strconv.Atoi(s)
-	if err != nil || n < 1 || n > 65535 {
-		return 0, 0, false, false
+	return spans, true
+}
+
+// splitCompressionPorts 只在输入端口的首尾切分，区间内部的授权和放行保持相同。
+func splitCompressionPorts(spans []compressionPortSpan) []compressionPortSpan {
+	edges := make([]int, 0, len(spans)*2)
+	for _, span := range spans {
+		edges = append(edges, span.first, span.last+1)
 	}
-	return n, n, false, true
+	slices.Sort(edges)
+	edges = slices.Compact(edges)
+	var parts []compressionPortSpan
+	for i := 1; i < len(edges); i++ {
+		parts = append(parts, compressionPortSpan{edges[i-1], edges[i] - 1})
+	}
+	return parts
+}
+
+func compressionPortsFull(spans []compressionPortSpan) bool {
+	end := 0
+	ordered := slices.Clone(spans)
+	slices.SortFunc(ordered, func(a, b compressionPortSpan) int { return a.first - b.first })
+	for _, span := range ordered {
+		if span.first > end+1 {
+			return false
+		}
+		end = max(end, span.last)
+	}
+	return end == allCompressionPorts.last
 }
 
 // portExpressions 把同一协议、同一授权集合的端口项装箱为 Lighthouse Port 表达式。
@@ -314,33 +243,19 @@ func parsePortItem(item string) (start, end int, isRange bool, ok bool) {
 // 离散单端口按数值升序装入逗号串（每个表达式 ≤64 字符）；范围保持为独立表达式，
 // 重叠/相邻范围可无损合并。不把 range 与 discrete 混在同一字段，避免依赖官方
 // “离散端口或范围”措辞的未验证混合语义。
-func portExpressions(items []string) ([]string, bool) {
-	full := false
-	singles := make([]int, 0, len(items))
-	ranges := make([][2]int, 0, len(items))
-	seenSingle := make(map[int]bool)
-	for _, item := range items {
-		if portItemIsFull(item) {
-			full = true
-			continue
-		}
-		start, end, isRange, ok := parsePortItem(item)
-		if !ok {
-			return nil, false
-		}
-		if isRange {
-			ranges = append(ranges, [2]int{start, end})
-			continue
-		}
-		if !seenSingle[start] {
-			seenSingle[start] = true
-			singles = append(singles, start)
+func portExpressions(spans []compressionPortSpan, rangedParts map[compressionPortSpan]bool) []string {
+	if compressionPortsFull(spans) {
+		return []string{"ALL"}
+	}
+	var singles []int
+	var ranges [][2]int
+	for _, span := range spans {
+		if !rangedParts[span] && span.first == span.last {
+			singles = append(singles, span.first)
+		} else {
+			ranges = append(ranges, [2]int{span.first, span.last})
 		}
 	}
-	if full {
-		return []string{"ALL"}, true
-	}
-	sort.Ints(singles)
 	sort.SliceStable(ranges, func(i, j int) bool {
 		if ranges[i][0] != ranges[j][0] {
 			return ranges[i][0] < ranges[j][0]
@@ -357,22 +272,13 @@ func portExpressions(items []string) ([]string, bool) {
 			mergedRanges[len(mergedRanges)-1][1] = r[1]
 		}
 	}
-	// 单端口若已被范围覆盖，删除冗余项，避免同一授权生成两条重叠物理行。
-	filteredSingles := singles[:0]
-	for _, port := range singles {
-		covered := false
-		for _, r := range mergedRanges {
-			if port >= r[0] && port <= r[1] {
-				covered = true
-				break
-			}
-		}
-		if !covered {
-			filteredSingles = append(filteredSingles, port)
+	expressions := make([]string, 0, len(mergedRanges)+1)
+	for _, r := range mergedRanges {
+		if r[0] == r[1] {
+			singles = append(singles, r[0])
 		}
 	}
-	singles = filteredSingles
-	expressions := make([]string, 0, len(mergedRanges)+1)
+	sort.Ints(singles)
 	current := ""
 	for _, port := range singles {
 		part := strconv.Itoa(port)
@@ -390,7 +296,9 @@ func portExpressions(items []string) ([]string, bool) {
 		expressions = append(expressions, current)
 	}
 	for _, r := range mergedRanges {
-		expressions = append(expressions, fmt.Sprintf("%d-%d", r[0], r[1]))
+		if r[0] != r[1] {
+			expressions = append(expressions, fmt.Sprintf("%d-%d", r[0], r[1]))
+		}
 	}
 	sort.SliceStable(expressions, func(i, j int) bool {
 		si, sj := firstPortNumber(expressions[i]), firstPortNumber(expressions[j])
@@ -399,7 +307,7 @@ func portExpressions(items []string) ([]string, bool) {
 		}
 		return expressions[i] < expressions[j]
 	})
-	return expressions, true
+	return expressions
 }
 
 func firstPortNumber(expr string) int {
@@ -414,70 +322,18 @@ func firstPortNumber(expr string) int {
 	return n
 }
 
-// portExpressionCovers 判断表达式是否完整覆盖一个授权端口项，且不引入该项之外的端口。
-// 该函数用于 witness 校验；规划器生成的表达式按同一授权集合装箱，正常应恒为 true。
-func portExpressionCovers(expr, item string) bool {
-	expr = strings.TrimSpace(expr)
-	item = strings.TrimSpace(item)
-	if portItemIsFull(item) {
-		return portItemIsFull(expr)
-	}
-	start, end, isRange, ok := parsePortItem(item)
-	if !ok {
-		return false
-	}
-	if strings.EqualFold(expr, "ALL") {
-		return true
-	}
-	for _, part := range strings.Split(expr, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		es, ee, eRange, eok := parsePortItem(part)
-		if !eok {
-			continue
-		}
-		if !isRange && !eRange && es == start && ee == end {
-			return true
-		}
-		if isRange && eRange && es <= start && ee >= end {
-			return true
+// ipv4SetPrefixes 将已归并的地址区间转换为最小等价 CIDR 集合。
+func ipv4SetPrefixes(set ipv4Set) []netip.Prefix {
+	var out []netip.Prefix
+	for _, span := range set {
+		for first := span.Start; first <= span.End; {
+			sizeBits := min(bits.TrailingZeros64(first), bits.Len64(span.End-first+1)-1)
+			addr := netip.AddrFrom4([4]byte{byte(first >> 24), byte(first >> 16), byte(first >> 8), byte(first)})
+			out = append(out, netip.PrefixFrom(addr, 32-sizeBits))
+			first += uint64(1) << sizeBits
 		}
 	}
-	return false
-}
-
-func portExpressionOverlaps(expr, item string) bool {
-	expr = strings.TrimSpace(expr)
-	item = strings.TrimSpace(item)
-	if portItemIsFull(expr) || portItemIsFull(item) {
-		return true
-	}
-	s, e, _, ok := parsePortItem(item)
-	if !ok {
-		return false
-	}
-	for _, part := range strings.Split(expr, ",") {
-		ps, pe, _, pok := parsePortItem(strings.TrimSpace(part))
-		if pok && ps <= e && pe >= s {
-			return true
-		}
-	}
-	return false
-}
-
-func (s ipv4Set) intersectsPrefix(p netip.Prefix) bool {
-	r, ok := prefixIPv4Range(p)
-	if !ok {
-		return false
-	}
-	for _, item := range s {
-		if item.Start <= r.End && item.End >= r.Start {
-			return true
-		}
-	}
-	return false
+	return out
 }
 
 func ipv4AddrString(v uint64) string {
@@ -505,39 +361,4 @@ func (s ipv4Set) containsAddr(addr netip.Addr) bool {
 		}
 	}
 	return false
-}
-
-func (s ipv4Set) isSubset(other ipv4Set) bool {
-	return len(s.subtract(other)) == 0
-}
-
-// coveringPrefix 返回同时覆盖 a、b 的最小 CIDR 前缀（最长公共前缀）。
-func coveringPrefix(a, b netip.Prefix) (netip.Prefix, bool) {
-	a, b = a.Masked(), b.Masked()
-	if !a.IsValid() || !b.IsValid() || !a.Addr().Is4() || !b.Addr().Is4() {
-		return netip.Prefix{}, false
-	}
-	ab, bb := a.Addr().As4(), b.Addr().As4()
-	bits := 0
-	for i := 0; i < 4; i++ {
-		x := ab[i] ^ bb[i]
-		if x == 0 {
-			bits += 8
-			continue
-		}
-		for mask := byte(0x80); mask != 0; mask >>= 1 {
-			if x&mask != 0 {
-				break
-			}
-			bits++
-		}
-		break
-	}
-	if bits > a.Bits() {
-		bits = a.Bits()
-	}
-	if bits > b.Bits() {
-		bits = b.Bits()
-	}
-	return netip.PrefixFrom(a.Addr(), bits).Masked(), true
 }

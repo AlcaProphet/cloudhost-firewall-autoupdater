@@ -1,135 +1,207 @@
 package provider
 
 import (
+	"math"
 	"net/netip"
-	"sort"
+	"slices"
 	"strings"
 )
 
-// compressionCoverOption 是一个授权组的物理行覆盖选项。
-type compressionCoverOption struct {
-	Rows  int
-	Cover []netip.Prefix
-	Extra ipv4Set
-	Key   string
+// 同组前缀不相交，所以扣除 S0 残留后的风险在子树间可加。
+// 此 DP 只用作风险下界，同条数但额外地址集、复用行或清理条件不同的候选仍分别搜索。
+const noCoverCost uint64 = math.MaxUint64
+
+func coverTreeCosts(tree *compressionCoverTree, oldExtra ipv4Set, limit int) []uint64 {
+	var cost []uint64
+	switch {
+	case tree.left != nil && tree.right != nil:
+		cost = combineCoverCosts(tree.left.cost, tree.right.cost, limit)
+	case tree.left != nil:
+		cost = slices.Clone(tree.left.cost)
+	case tree.right != nil:
+		cost = slices.Clone(tree.right.cost)
+	}
+	if option := tree.option; option != nil {
+		for len(cost) <= option.adds {
+			cost = append(cost, noCoverCost)
+		}
+		cost[option.adds] = min(cost[option.adds], option.extra.subtract(oldExtra).count())
+	}
+	return cost
 }
 
-// pruneCompressionOptions 只删除全局安全的被支配项：
-// A.Rows <= B.Rows 且 A.Extra ⊆ B.Extra 时，B 不可能在任何组合中胜出。
-//
-// 不能仅按 Rows 或单组 Extra 数量裁剪；不同 Extra 集合可能在联合选择中重叠。
-func pruneCompressionOptions(options []compressionCoverOption) []compressionCoverOption {
-	out := make([]compressionCoverOption, 0, len(options))
-	for i, candidate := range options {
-		dominated := false
-		for j, other := range options {
-			if i == j {
-				continue
-			}
-			if other.Rows <= candidate.Rows && other.Extra.isSubset(candidate.Extra) {
-				// 完全相同的 rows/extra 时保留字典序更小的一项，避免重复。
-				if other.Rows == candidate.Rows && candidate.Extra.equal(other.Extra) {
-					if other.Key < candidate.Key {
-						dominated = true
-						break
-					}
-					continue
-				}
-				dominated = true
-				break
-			}
+func combineCoverCosts(a, b []uint64, limit int) []uint64 {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+	out := make([]uint64, min(limit+1, len(a)+len(b)-1))
+	for i := range out {
+		out[i] = noCoverCost
+	}
+	for i, left := range a {
+		if left == noCoverCost {
+			continue
 		}
-		if !dominated {
-			out = append(out, candidate)
+		for j, right := range b[:min(len(b), max(0, len(out)-i))] {
+			if right != noCoverCost {
+				out[i+j] = min(out[i+j], left+right)
+			}
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Rows != out[j].Rows {
-			return out[i].Rows < out[j].Rows
-		}
-		return out[i].Key < out[j].Key
-	})
 	return out
 }
 
-type compressionSelection struct {
-	chosen []compressionCoverOption
-	risk   ipv4Set
-	rows   int
-	key    string
+func minCoverCost(cost []uint64, rowBudget int) uint64 {
+	if rowBudget < 0 || len(cost) == 0 {
+		return noCoverCost
+	}
+	return slices.Min(cost[:min(len(cost), rowBudget+1)])
 }
 
-// selectCompressionOptions 为每个授权组选择一个覆盖选项，满足总行数与风险上限。
-//
-// 小规模穷举；超过 maxStates 个递归状态时返回 incomplete=true，由调用方按
-// “证据不足”阻断，绝不返回部分计划。
-func selectCompressionOptions(groups [][]compressionCoverOption, rowBudget int, riskLimit uint64, baseRisk ipv4Set, maxStates int) (compressionSelection, bool, bool) {
-	if maxStates <= 0 {
-		maxStates = 200000
-	}
-	pruned := make([][]compressionCoverOption, len(groups))
-	for i, group := range groups {
-		pruned[i] = pruneCompressionOptions(group)
-		if len(pruned[i]) == 0 {
-			return compressionSelection{}, false, false
-		}
-	}
-	var best *compressionSelection
-	states := 0
-	incomplete := false
-	var walk func(index, rows int, risk ipv4Set, chosen []compressionCoverOption)
-	walk = func(index, rows int, risk ipv4Set, chosen []compressionCoverOption) {
-		if incomplete {
-			return
-		}
-		states++
-		if states > maxStates {
-			incomplete = true
-			return
-		}
-		if rows > rowBudget || risk.count() > riskLimit {
-			return
-		}
-		if index == len(pruned) {
-			keyParts := make([]string, len(chosen))
-			for i := range chosen {
-				keyParts[i] = chosen[i].Key
-			}
-			candidate := compressionSelection{
-				chosen: append([]compressionCoverOption(nil), chosen...),
-				risk:   risk,
-				rows:   rows,
-				key:    strings.Join(keyParts, "\x00"),
-			}
-			if best == nil || betterSelection(candidate, *best) {
-				best = &candidate
-			}
-			return
-		}
-		for _, option := range pruned[index] {
-			nextRisk := risk.union(option.Extra)
-			walk(index+1, rows+option.Rows, nextRisk, append(chosen, option))
-		}
-	}
-	walk(0, 0, baseRisk, nil)
-	if incomplete {
-		return compressionSelection{}, false, true
-	}
-	if best == nil {
-		return compressionSelection{}, false, false
-	}
-	return *best, true, false
+type compressionCoverTask struct {
+	tree *compressionCoverTree
+	next *compressionCoverTask
+	cost []uint64
 }
 
-func betterSelection(a, b compressionSelection) bool {
-	if a.risk.count() != b.risk.count() {
-		return a.risk.count() < b.risk.count()
+func pushCoverTask(tree *compressionCoverTree, next *compressionCoverTask, limit int) *compressionCoverTask {
+	if tree == nil {
+		return next
 	}
-	if a.risk.maxRun() != b.risk.maxRun() {
-		return a.risk.maxRun() < b.risk.maxRun()
+	task := &compressionCoverTask{tree: tree, next: next, cost: tree.cost}
+	if next != nil {
+		task.cost = combineCoverCosts(tree.cost, next.cost, limit)
 	}
-	if a.rows != b.rows {
-		return a.rows < b.rows
+	return task
+}
+
+type compressionCoverResult struct {
+	rep      *CompressionRepresentation
+	capacity CompressionCapacity
+	risk     uint64
+	maxRun   uint64
+	key      string
+}
+
+type compressionCoverSearch struct {
+	planner      compressionPlanner
+	budget       *compressionSearchBudget
+	roots        []*compressionCoverTree
+	rowBudget    int
+	normalBudget int
+	limit        uint64
+	remainingMin []int
+	best         compressionCoverResult
+}
+
+// run 先扣除后续各组的最少新增行。跨组风险按实际并集计算；只有当前组
+// 的下界可与该组已选前缀相加，避免把跨组重叠的额外地址计两次而误剪。
+func (s *compressionCoverSearch) run() {
+	s.remainingMin = make([]int, len(s.roots)+1)
+	for i := len(s.roots) - 1; i >= 0; i-- {
+		minimum := slices.IndexFunc(s.roots[i].cost, func(cost uint64) bool { return cost != noCoverCost })
+		if minimum < 0 {
+			return
+		}
+		s.remainingMin[i] = minimum + s.remainingMin[i+1]
 	}
-	return a.key < b.key
+	start := pushCoverTask(s.roots[0], nil, s.rowBudget)
+	s.walk(0, start, 0, 0, nil, nil, nil)
+}
+
+func (s *compressionCoverSearch) walk(group int, task *compressionCoverTask, adds, current int, risk, groupExtra ipv4Set, rows []CompressionRow) {
+	if !s.budget.take() {
+		return
+	}
+	baseRisk := s.planner.risk.oldExtra
+	total := baseRisk.union(risk)
+	limit := s.limit
+	if s.best.rep != nil {
+		limit = min(limit, s.best.risk)
+	}
+	if total.count() > limit || adds+s.remainingMin[group+1] > s.rowBudget || current > s.normalBudget {
+		return
+	}
+	if task == nil {
+		if group+1 < len(s.roots) {
+			next := pushCoverTask(s.roots[group+1], nil, s.rowBudget-adds)
+			s.walk(group+1, next, adds, current, risk, nil, rows)
+			return
+		}
+		s.consider(rows, total, adds)
+		return
+	}
+
+	available := s.rowBudget - adds - s.remainingMin[group+1]
+	extraSoFar := baseRisk.union(groupExtra).count()
+	lowerBound := minCoverCost(task.cost, available)
+	if lowerBound == noCoverCost || extraSoFar+lowerBound > limit {
+		return
+	}
+	tree := task.tree
+	var next *compressionCoverTask
+	if tree.left != nil || tree.right != nil {
+		next = pushCoverTask(tree.right, task.next, available)
+		next = pushCoverTask(tree.left, next, available)
+	}
+	take := func() {
+		if option := tree.option; option != nil && option.adds <= available {
+			s.walk(group, task.next, adds+option.adds, current+option.current,
+				risk.union(option.extra), groupExtra.union(option.extra), append(rows, option.rows...))
+		}
+	}
+	// 优先访问风险下界更低的分支，尽早取得可用于剪枝的可行解。
+	if tree.option != nil && next != nil {
+		childCost := minCoverCost(next.cost, available)
+		parentCost := tree.option.extra.subtract(baseRisk).count()
+		if task.next != nil {
+			tail := minCoverCost(task.next.cost, available-tree.option.adds)
+			if tail == noCoverCost {
+				parentCost = noCoverCost
+			} else {
+				parentCost += tail
+			}
+		}
+		if childCost < parentCost {
+			s.walk(group, next, adds, current, risk, groupExtra, rows)
+			take()
+			return
+		}
+	}
+	take()
+	if next != nil {
+		s.walk(group, next, adds, current, risk, groupExtra, rows)
+	}
+}
+
+func (s *compressionCoverSearch) consider(rows []CompressionRow, risk ipv4Set, adds int) {
+	count, maxRun := risk.count(), risk.maxRun()
+	best := s.best
+	if best.rep != nil && (count > best.risk ||
+		count == best.risk && (maxRun > best.maxRun || maxRun == best.maxRun && adds > len(best.rep.AddRows))) {
+		return
+	}
+	rep := s.planner.representation(rows)
+	capacity := s.planner.capacity(rep)
+	if capacity.Mode == CompressionModeBlocked {
+		return
+	}
+	parts := make([]string, 0, len(rep.Rows))
+	for _, row := range rep.Rows {
+		parts = append(parts, row.CIDR+"|"+row.Protocol+"|"+row.Port)
+	}
+	slices.Sort(parts)
+	key := strings.Join(parts, "\x00")
+	if best.rep != nil && count == best.risk && maxRun == best.maxRun && adds == len(best.rep.AddRows) && key >= best.key {
+		return
+	}
+	s.best = compressionCoverResult{rep: &rep, capacity: capacity, risk: count, maxRun: maxRun, key: key}
+}
+
+func compressionCoverKey(prefixes []netip.Prefix) string {
+	parts := make([]string, len(prefixes))
+	for i, prefix := range prefixes {
+		parts[i] = prefix.String()
+	}
+	return strings.Join(parts, ",")
 }

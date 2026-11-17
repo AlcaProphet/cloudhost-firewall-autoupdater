@@ -127,6 +127,10 @@ func (d *Deps) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 	// 完整导入使用 MutateImport：候选状态 BreakerReset，清空原 DNS 熔断失败计数
 	// （Build6 §12.3 第 7 条、Issue6 A8）。
 	err = d.coordinator().MutateImport(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		previousCompression, err := d.Store.LoadLighthouseCompressionSettingsTx(ctx, tx)
+		if err != nil {
+			return fmt.Errorf("读取旧 Lighthouse 压缩配置失败: %w", err)
+		}
 		// 1) 按依赖顺序清空被覆盖的业务表（绑定 → 站点 → rules → targets → settings → 告警）
 		if derr := d.Store.DeleteImportOwnedTablesTx(ctx, tx); derr != nil {
 			return fmt.Errorf("清空旧配置失败: %w", derr)
@@ -134,16 +138,21 @@ func (d *Deps) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 
 		// 2) 插入目标并通过 LastInsertId 建立 export_id → 新数据库 ID 映射
 		idMap := make(map[int]int64, len(bundle.Targets))
+		lighthouseEnabled := make(map[string]bool)
 		for _, t := range bundle.Targets {
-			newID, ierr := d.Store.AddTargetTx(ctx, tx, config.TargetConfig{
+			target := config.TargetConfig{
 				CloudType:  config.CloudType(t.CloudType),
 				Region:     t.Region,
 				ResourceID: t.ResourceID,
-			})
+			}
+			newID, ierr := d.Store.AddTargetTx(ctx, tx, target)
 			if ierr != nil {
 				return fmt.Errorf("导入目标失败: %w", ierr)
 			}
 			idMap[t.ExportID] = newID
+			if target.CloudType == config.CloudTCLighthouse {
+				lighthouseEnabled[config.TargetIdentity(target)] = false
+			}
 		}
 
 		// 2b) 实例级压缩配置以物理身份直接落库，不需要 export_id 映射；
@@ -151,6 +160,18 @@ func (d *Deps) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 		for _, compression := range bundle.LighthouseCompression {
 			if cerr := d.Store.SaveLighthouseCompressionTx(ctx, tx, compression); cerr != nil {
 				return fmt.Errorf("导入 Lighthouse 压缩配置失败: %w", cerr)
+			}
+			lighthouseEnabled[compression.Identity()] = compression.Enabled
+		}
+		if err := d.Store.PruneLighthouseCompressionStatesTx(ctx, tx); err != nil {
+			return fmt.Errorf("清理 Lighthouse 复查状态失败: %w", err)
+		}
+		for _, previous := range previousCompression {
+			enabled, retained := lighthouseEnabled[previous.Identity()]
+			if previous.Enabled && retained && !enabled {
+				if err := d.Store.MarkLighthouseCompressionDisabledTx(ctx, tx, previous); err != nil {
+					return fmt.Errorf("保存 Lighthouse 复查状态失败: %w", err)
+				}
 			}
 		}
 
