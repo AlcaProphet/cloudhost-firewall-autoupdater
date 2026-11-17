@@ -1,6 +1,6 @@
 //go:build step16
 
-package main
+package process
 
 import (
 	"context"
@@ -694,6 +694,7 @@ func buildStep16Binary(t *testing.T, teoAddr, lhAddr string) string {
 		"-X", step16ModulePath + "/provider.tcLighthouseScheme=http",
 	}, " ")
 	cmd := exec.Command("go", "build", "-ldflags", ldflags, "-o", out, ".")
+	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

@@ -1,6 +1,6 @@
 //go:build step16
 
-package main
+package process
 
 import (
 	"bytes"
@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -240,11 +239,7 @@ func step16ImportV4WithPorts(base, ports string) (int, string, error) {
 
 func runStep16Browser(t *testing.T, scenario, appURL, controlURL string) {
 	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("无法定位浏览器夹具")
-	}
-	script := filepath.Join(filepath.Dir(file), "testdata", "step16", "browser.mjs")
+	script := filepath.Join("testdata", "step16", "browser.mjs")
 	if _, err := os.Stat(script); err != nil {
 		t.Fatalf("浏览器脚本缺失: %v", err)
 	}

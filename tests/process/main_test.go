@@ -1,4 +1,4 @@
-package main
+package process
 
 import (
 	"bufio"
@@ -67,6 +67,9 @@ func addRuleForTest(t *testing.T, s *config.Store, r config.DomainRule) {
 	})
 }
 
+// go test 从当前测试包目录运行。
+const repoRoot = "../.."
+
 // testBinary 由 TestMain 构建一次，供所有进程级用例复用。
 var testBinary string
 
@@ -78,6 +81,7 @@ func TestMain(m *testing.M) {
 	}
 	testBinary = filepath.Join(dir, "fwalizer-test")
 	build := exec.Command("go", "build", "-o", testBinary, ".")
+	build.Dir = repoRoot
 	build.Stdout = os.Stdout
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {

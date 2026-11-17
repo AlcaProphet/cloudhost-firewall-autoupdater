@@ -1,7 +1,7 @@
 // Build8 Step 16 实际浏览器验收（Chrome DevTools Protocol）。
 //
 // 用法：node browser.mjs <ui|edge> <appBaseURL> <controlBaseURL>
-// 该脚本不进入 npm test / Make / CI；由 `go test -tags step16` 启动。
+// 由 `go test -tags=step16 ./tests/process` 启动。
 import { spawn } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

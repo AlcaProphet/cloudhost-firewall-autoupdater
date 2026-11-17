@@ -46,9 +46,15 @@ if [ ! -f "$READY" ]; then
     printf '%s\n' 'go-before-frontend' >> "$TRACE"
     exit 19
 fi
-if [ "$1" = test ] && [ ! -f "$TEST_READY" ]; then
-    printf '%s\n' 'go-before-frontend-test' >> "$TRACE"
-    exit 19
+if [ "$1" = test ]; then
+    if [ ! -f "$TEST_READY" ]; then
+        printf '%s\n' 'go-before-frontend-test' >> "$TRACE"
+        exit 19
+    fi
+    case " $* " in
+        *' -count=1 '*) ;;
+        *) printf '%s\n' 'go-test-cache-enabled' >> "$TRACE"; exit 21 ;;
+    esac
 fi
 if [ "$FAIL_STAGE" = "$1" ]; then exit 23; fi
 case "$1" in test|vet|build) ;; *) exit 29 ;; esac
@@ -100,8 +106,9 @@ run_case() {
         $0 == "npm test" { behavior++ }
         $1 == "go" { go++; called[$2]++ }
         $0 ~ /^go-before-frontend/ { early++ }
+        $0 == "go-test-cache-enabled" { cache_enabled++ }
         END {
-            if (ci != 1 || early) exit 1
+            if (ci != 1 || early || cache_enabled) exit 1
             if (frontend != (failure == "ci" ? 0 : 1)) exit 1
             if (behavior != ((failure == "ci" || failure == "frontend-build") ? 0 : expected_behavior)) exit 1
             if (expected_go >= 0 && go != expected_go) exit 1

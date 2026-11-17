@@ -818,7 +818,16 @@ Step 11～15 实施批次已提交为 `b3ccb6b`。随后独立核验以只读方
 
 依赖 Step 15 及前置 Step。使用正式入口、本地模拟 TEO 与 Provider、临时 SQLite 和浏览器完成验收。
 
-**执行材料**　临时 SQLite、模拟 DNS 和 TEO、假 Provider、真实 FWAlizer 进程、前端浏览器入口。复用进程级 `TestMain`、`TestNoArgsStartsWebUIWithEmptyDatabase` 和 `TestProcessConfigExportImportRoundTrip` 的隔离方式。 [进程夹具](main_test.go) · [Make 入口](Makefile)
+**执行材料**　临时 SQLite、模拟 DNS 和 TEO、假 Provider、真实 FWAlizer 进程、前端浏览器入口。复用进程级 `TestMain`、`TestNoArgsStartsWebUIWithEmptyDatabase` 和 `TestProcessConfigExportImportRoundTrip` 的隔离方式。 [进程夹具](tests/process/main_test.go) · [Make 入口](Makefile)
+
+从仓库根目录运行默认进程回归或 Step 16 专项。裸 Go 命令需要已构建的前端产物。
+
+```bash
+go test -race -count=1 ./tests/process
+go test -tags=step16 -run '^TestStep16' -v -count=1 -timeout=10m ./tests/process
+```
+
+在 VS Code 中编辑专项夹具时，可在本地工作区设置的 `gopls.buildFlags` 中加入 `-tags=step16`。
 
 **执行顺序**
 
@@ -847,7 +856,7 @@ git diff --check
 - [x] 验证一站多目标的全部回读、版本重查、自动确认、实际生效后清理，以及 DNS 单独运行的现有回归。
 - [x] 运行受影响包定向 race、`make all`、适用的依赖审计及 `git diff --check`，记录 Go/Node 版本、真实二进制和浏览器结果。
 
-**已具备的基线证据**　Step 1～15 工作树已通过 `make all`、12 个 Go 包的非缓存 race 回归及 174 项前端行为测试。现有真实进程回归覆盖空库启动、SIGTERM 退出和 v4 跨 SQLite 实例往返（含站点绑定重映射）。这些结果可作为接线前的对照。待完整功能接入后，以同一进程验证双功能调度、冲突与重启恢复、模拟、确认和清理，完成浏览器验证、依赖审计及最终全量门禁。 [阶段修复证据](#step-1-7-review-fixes) · [进程级测试](main_test.go)
+**已具备的基线证据**　Step 1～15 工作树已通过 `make all`、12 个 Go 包的非缓存 race 回归及 174 项前端行为测试。现有真实进程回归覆盖空库启动、SIGTERM 退出和 v4 跨 SQLite 实例往返（含站点绑定重映射）。这些结果可作为接线前的对照。待完整功能接入后，以同一进程验证双功能调度、冲突与重启恢复、模拟、确认和清理，完成浏览器验证、依赖审计及最终全量门禁。 [阶段修复证据](#step-1-7-review-fixes) · [进程级测试](tests/process/main_test.go)
 
 **本地实施与证据（2026-11-15）**
 
@@ -855,7 +864,7 @@ git diff --check
 
 **进程夹具与接线**　现有进程夹具无法把硬编码的 TEO/Lighthouse 端点指向回环替身。本轮采用链接期覆盖：`provider/teo.go` 与 `provider/tc_lighthouse.go` 的端点/协议改为带生产默认值的包级变量；测试构建用 `go build -ldflags "-X ..."` 指向本地 HTTP 替身。生产 `make all`、Docker 和发布构建不带该参数，默认值由 [provider 默认值回归](provider/tc_lighthouse_endpoint_test.go) 与既有 TEO 默认值回归保护；未新增部署环境变量、运行时 setter 或生产测试代码。
 
-新增夹具：[build8_step16_fixture_test.go](build8_step16_fixture_test.go)（假 DNS/TEO/Lighthouse、真实二进制启停、SQLite/API 查询）、[build8_step16_process_test.go](build8_step16_process_test.go)（P1～P11 场景）、[build8_step16_browser_test.go](build8_step16_browser_test.go) 与 [testdata/step16/browser.mjs](testdata/step16/browser.mjs)（Chrome CDP）。`step16` 构建标签不进入默认 `go test ./...`、`make all`、CI 或发布。另有 [syncer/step16_formal_entry_test.go](syncer/step16_formal_entry_test.go) 补正式入口冲突表读取失败计数。
+夹具现位于 [tests/process](tests/process/) 下，包含[假 DNS/TEO/Lighthouse、真实二进制及 SQLite/API 夹具](tests/process/build8_step16_fixture_test.go)、[P1～P11 场景](tests/process/build8_step16_process_test.go)、[浏览器回归](tests/process/build8_step16_browser_test.go)与 [Chrome CDP 脚本](tests/process/testdata/step16/browser.mjs)。`step16` 构建标签不进入默认 `go test ./...`、`make all`、CI 或发布。另有 [syncer/step16_formal_entry_test.go](syncer/step16_formal_entry_test.go) 补正式入口冲突表读取失败计数。
 
 **定向故障链**（均 `-race -count=1`，退出码 0）
 
@@ -867,7 +876,7 @@ git diff --check
 | `go test ./syncer -run '^(TestStep12DryRunExecutionUnitMatchesFormalProtectedPlan\|TestStep12DryRunNoFormalSideEffects\|TestStep11ProtectedPrefixDefersCleanup\|TestStep11SharedPrefixAcrossVersions\|TestStep10HappyPathAndCrossRoundDedupe\|TestStep10AcceptedFingerprintSurvivesRestart)$' -race -count=1 -v` | `ok syncer 1.383s` | 正式/模拟共用保护与规划；模拟零正式副作用；受保护前缀延后清理；共享网段保留；同指纹跨轮/重启确认一次。 |
 | `go test ./provider -run '^(TestEdgeOnePlanProtected\|TestEdgeOnePlanDualTag)' -race -count=1 -v` | `ok provider 1.278s` | 受保护候选移出可删集合、包含关系保守判定、双 TAG 共享/单源冲突。 |
 
-**真实二进制端到端**　`go test -tags step16 -run '^TestStep16' -v -count=1 .` → 退出码 0，`ok . 181.469s`。计数缩写：`TD`=TEO Describe；`LD/LC/LX`=Lighthouse Describe/Create/Delete；`CF`=TEO Confirm。
+**真实二进制端到端**　迁移前从根包运行 `go test -tags step16 -run '^TestStep16' -v -count=1 .` → 退出码 0，`ok . 181.469s`。计数缩写：`TD`=TEO Describe；`LD/LC/LX`=Lighthouse Describe/Create/Delete；`CF`=TEO Confirm。
 
 | 场景 | 入口 / 临时夹具 | 实际动作计数与 SQLite/API 结果 |
 |---|---|---|
@@ -919,7 +928,7 @@ git diff --check
 - DNS-only 对整个回环 TEO 请求日志断言零调用，涵盖任意 `ZoneId`。Lighthouse 的两次规则查询、一次新增及零删除断言继续执行。冲突表读取失败的正式入口和状态层证据已回填验收矩阵。
 - 两条受影响正式进程用例以 `-count=3` 重复执行均通过（`92.574s`）；冲突状态层与正式入口的 5 个定向 race 用例通过（`11.710s`）。临时 overlay 反向对照中，保留重叠输入导致定时恢复断言超时，向任意其他站点发出回环 TEO 请求触发 DNS-only 断言。两例均按预期失败。
 
-完整专项 `go test -tags step16 -run '^TestStep16' -v -count=1 -timeout=10m .` 退出码 0（`184.515s`），12 个顶层用例含两组 Chrome 场景均通过，无跳过。`gofmt -l` 与 `git diff --check` 无输出。本轮仅测试和台账改动，保留在工作树。
+迁移前从根包运行完整专项 `go test -tags step16 -run '^TestStep16' -v -count=1 -timeout=10m .`，退出码 0（`184.515s`），12 个顶层用例含两组 Chrome 场景均通过，无跳过。`gofmt -l` 与 `git diff --check` 无输出。本轮测试和台账改动随后提交为 `f0583e9`。
 
 <a name="step-17"></a>
 

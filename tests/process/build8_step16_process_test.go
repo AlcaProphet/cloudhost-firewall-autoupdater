@@ -1,6 +1,6 @@
 //go:build step16
 
-package main
+package process
 
 import (
 	"database/sql"

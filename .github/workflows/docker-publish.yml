@@ -87,7 +87,7 @@ jobs:
       - name: 运行测试
         # 步骤预算包含编译与所有包；-timeout 仅限制每个包的测试二进制。
         timeout-minutes: 15
-        run: go test -race -v -timeout=5m ./...
+        run: go test -race -v -count=1 -timeout=5m ./...
 
       - name: 设置 Docker Buildx
         uses: docker/setup-buildx-action@v4

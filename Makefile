@@ -10,7 +10,7 @@ frontend-test: frontend
 	cd webui/frontend && npm test
 
 test: frontend-test
-	go test ./... -race -v
+	go test -race -v -count=1 ./...
 
 vet: frontend
 	go vet ./...
