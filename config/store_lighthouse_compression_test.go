@@ -153,3 +153,27 @@ func TestBuild9S1MigrationFailureLeavesNoCompressionTables(t *testing.T) {
 		t.Fatalf("迁移失败不得提交 user_version: %d", got)
 	}
 }
+
+func TestBuild9S3CompressionStateNonTxRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "step3-state.db")
+	store := openStoreAt(t, path)
+	item := LighthouseCompression{CloudType: CloudTCLighthouse, Region: "gz", ResourceID: "lhins-step3"}
+	state := LighthouseCompressionState{
+		CloudType: CloudTCLighthouse, Region: "gz", ResourceID: "lhins-step3",
+		PendingReview: true, PendingReason: "disabled", PendingSince: "2026-11-17T00:00:00Z",
+	}
+	if err := store.SaveLighthouseCompressionState(state); err != nil {
+		t.Fatalf("保存运行观察失败: %v", err)
+	}
+	got, found, err := store.LoadLighthouseCompressionState(item)
+	if err != nil || !found || !got.PendingReview || got.PendingReason != "disabled" {
+		t.Fatalf("读取运行观察 = %+v found=%v err=%v", got, found, err)
+	}
+	if err := store.DeleteLighthouseCompressionState(item); err != nil {
+		t.Fatalf("删除运行观察失败: %v", err)
+	}
+	if _, found, err := store.LoadLighthouseCompressionState(item); err != nil || found {
+		t.Fatalf("删除后仍可见: found=%v err=%v", found, err)
+	}
+	closeStore(t, store)
+}

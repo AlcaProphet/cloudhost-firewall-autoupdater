@@ -173,6 +173,7 @@ func runWebUI(deploy config.DeploymentConfig, stderr io.Writer) int {
 	conflictState := syncer.NewAddressConflictState(store)
 	s.SetConflictState(conflictState)
 	s.SetEdgeOneTransitionStore(store)
+	s.SetLighthouseCompressionStore(store)
 	if err := conflictState.Load(context.Background()); err != nil {
 		slog.Warn("加载地址冲突状态失败，正式双开轮将保守阻断直到可读", "error", err)
 	}

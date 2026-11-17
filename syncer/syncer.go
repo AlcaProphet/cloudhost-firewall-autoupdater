@@ -135,6 +135,7 @@ type Syncer struct {
 	edgeStatus         map[string]EdgeOneSiteStatus
 	roundCoverage      map[string]SiteCoverage
 	transitions        EdgeOneTransitionStore
+	compressionStore   LighthouseCompressionStore
 	unsavedTransitions map[string]config.EdgeOneTransition
 	confirmedMem       map[string][32]byte
 	preflight          PreflightOutcome
@@ -1147,6 +1148,21 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 	for _, group := range groups {
 		targetRules, targetSites := group.rules, group.sites
 		limit, limitSource := dryRunLimit(group.primary.CloudType())
+		dryRoundDNS := &roundDNSData{
+			resolved: dnsData.resolved, errors: dnsData.errors,
+			addresses: dnsData.addresses, complete: dnsData.complete,
+		}
+		dryExec := targetExecution{
+			identity: group.identity, provider: group.primary, rules: targetRules, targetIDs: group.targetIDs,
+			dnsData: dryRoundDNS, edgeData: edgeData, edgeSites: targetSites,
+		}
+		cctx := s.compressionContextFor(state, dryExec)
+		baseSites := targetSites
+		baseSiteInputs := edgeOneInputsForPreview(targetSites, edgeData)
+		if cctx != nil {
+			baseSites = cctx.BaseSites
+			baseSiteInputs = edgeOneInputsForPreview(baseSites, edgeData)
+		}
 		if len(targetRules) == 0 && len(targetSites) == 0 {
 			for _, id := range group.targetIDs {
 				rules := dryRunTargetRules(state, id)
@@ -1161,6 +1177,7 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 				Limit: limit, LimitSource: limitSource, DataComplete: true,
 				Conflicts: []provider.PlanIssue{}, CleanupCandidates: []provider.RuleChange{},
 				CleanupDeletable: []provider.RuleChange{}, CleanupProtected: []provider.RuleChange{},
+				Compression: cctx.dryRunUnknown(),
 			})
 			continue
 		}
@@ -1202,6 +1219,7 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 				CleanupCandidates: []provider.RuleChange{},
 				CleanupDeletable:  []provider.RuleChange{},
 				CleanupProtected:  []provider.RuleChange{},
+				Compression:       cctx.dryRunUnknown(),
 				Error:             "云快照读取失败",
 			})
 			continue
@@ -1210,12 +1228,13 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 		for _, id := range group.targetIDs {
 			rules := dryRunTargetRules(state, id)
 			sites := localTargetSites(targetSites, id)
+			planSites := localTargetSites(baseSites, id)
 			resolved, dnsErrors := subsetDNSData(dnsData, rules)
 			if !state.Config.EdgeOneEnabled {
 				resolved, dnsErrors = resolvedByID[id], errorsByID[id]
 			}
-			protected := protectedPrefixesForSites(sites, edgeData)
-			protectedUnknown := protectedUnknownForSites(sites, edgeData)
+			protected := protectedPrefixesForSites(planSites, edgeData)
+			protectedUnknown := protectedUnknownForSites(planSites, edgeData)
 			tag := ""
 			if len(sites) > 0 {
 				tag = state.Config.EdgeOneTag
@@ -1227,7 +1246,7 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 				EdgeOneTag:        tag,
 				CoverageOnlyTag:   coverageOnlyTagForState(state),
 				Rules:             rules,
-				EdgeOneSites:      edgeOneInputsForPreview(sites, edgeData),
+				EdgeOneSites:      edgeOneInputsForPreview(planSites, edgeData),
 				Resolved:          resolved,
 				DNSErrors:         dnsErrors,
 				Snapshot:          snapshot,
@@ -1252,8 +1271,8 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 				}
 			}
 		}
-		protected := protectedPrefixesForSites(targetSites, edgeData)
-		protectedUnknown := protectedUnknownForSites(targetSites, edgeData)
+		protected := protectedPrefixesForSites(baseSites, edgeData)
+		protectedUnknown := protectedUnknownForSites(baseSites, edgeData)
 		tag := ""
 		if len(targetSites) > 0 {
 			tag = state.Config.EdgeOneTag
@@ -1265,14 +1284,37 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 			EdgeOneTag:        tag,
 			CoverageOnlyTag:   coverageOnlyTagForState(state),
 			Rules:             targetRules,
-			EdgeOneSites:      edgeOneInputsForPreview(targetSites, edgeData),
+			EdgeOneSites:      baseSiteInputs,
 			Resolved:          resolved,
 			DNSErrors:         dnsErrors,
 			Snapshot:          snapshot,
 			ProtectedPrefixes: protected,
 			ProtectedUnknown:  protectedUnknown,
 		})
+		baseAddLimit := -1
+		baseAddCount := len(plan.ToAdd)
+		if cctx != nil {
+			baseAddLimit = cctx.baseAddLimit(len(snapshot.Rules))
+			if baseAddLimit >= 0 && baseAddCount > baseAddLimit {
+				baseAddCount = baseAddLimit
+			}
+			s.buildCompressionPlan(state, dryExec, cctx, snapshot, baseAddCount)
+		}
+		compressionAdds := 0
+		if cctx != nil {
+			compressionAdds = len(cctx.compressionAddActions())
+		}
+		plannedAdd := baseAddCount + compressionAdds
+		coverageReady := plan.CoverageReady
+		if cctx != nil && cctx.Enabled {
+			coverageReady = (plan.CoverageReady || len(plan.Desired) == 0) && cctx.Selected != nil
+		}
 		dataComplete := desiredInputComplete(targetRules, resolved, dnsErrors) && edgePreviewComplete(targetSites, edgeData)
+		if cctx != nil && cctx.StateErr != "" {
+			dataComplete = false
+		}
+		cleanupCandidates := dryRunCompressionAwareRules(plan.CleanupCandidates, cctx)
+		cleanupDeletable := dryRunCompressionAwareRules(plan.CleanupDeletable, cctx)
 		unit := DryRunExecutionUnit{
 			TargetKey:         group.identity,
 			TargetIDs:         append([]int(nil), group.targetIDs...),
@@ -1281,18 +1323,26 @@ func (s *Syncer) DryRun() (DryRunResponse, error) {
 			ProtectedCIDRs:    protectedEdgeOneCIDRStrings(protected),
 			RulesRead:         len(snapshot.Rules),
 			CurrentRuleCount:  len(snapshot.Rules),
-			PlannedAdd:        len(plan.ToAdd),
-			TransitionPeak:    len(snapshot.Rules) + len(plan.ToAdd),
+			PlannedAdd:        plannedAdd,
+			TransitionPeak:    len(snapshot.Rules) + plannedAdd,
 			Limit:             limit,
 			LimitSource:       limitSource,
-			CoverageReady:     plan.CoverageReady,
+			CoverageReady:     coverageReady,
 			DataComplete:      dataComplete,
 			Conflicts:         plan.Conflicts,
-			CleanupCandidates: dryRunRuleChanges(plan.CleanupCandidates),
-			CleanupDeletable:  dryRunRuleChanges(plan.CleanupDeletable),
+			CleanupCandidates: dryRunRuleChanges(cleanupCandidates),
+			CleanupDeletable:  dryRunRuleChanges(cleanupDeletable),
 			CleanupProtected:  dryRunProtectedCleanup(plan, tag, protected, protectedUnknown),
+			Compression:       s.dryRunCompressionForUnit(state, dryExec, snapshot, plan, cctx, baseAddCount, baseAddLimit),
+		}
+		if cctx != nil {
+			unit.Compression.ResidualRows = len(dryRunCompressionCandidates(snapshot, cctx, cctx.EdgeOneTag))
+			unit.CleanupCandidates = append(unit.CleanupCandidates, dryRunCompressionCandidates(snapshot, cctx, cctx.EdgeOneTag)...)
 		}
 		if limit != nil && unit.TransitionPeak > *limit {
+			unit.LimitExceeded = true
+		}
+		if cctx != nil && unit.Compression.Applicable && unit.Compression.Peak != nil && *unit.Compression.Peak > 100 {
 			unit.LimitExceeded = true
 		}
 		resp.ExecutionUnits = append(resp.ExecutionUnits, unit)

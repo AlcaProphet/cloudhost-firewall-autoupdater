@@ -113,6 +113,20 @@ func (s *Store) SaveLighthouseCompressionTx(ctx context.Context, tx *sql.Tx, c L
 	return nil
 }
 
+// SaveLighthouseCompressionState 保存运行观察（非事务路径，供同步引擎收口使用）。
+func (s *Store) SaveLighthouseCompressionState(state LighthouseCompressionState) error {
+	return s.WithTransactionContext(context.Background(), func(tx *sql.Tx) error {
+		return s.SaveLighthouseCompressionStateTx(context.Background(), tx, state)
+	})
+}
+
+// DeleteLighthouseCompressionState 删除运行观察（非事务路径）。
+func (s *Store) DeleteLighthouseCompressionState(c LighthouseCompression) error {
+	return s.WithTransactionContext(context.Background(), func(tx *sql.Tx) error {
+		return s.DeleteLighthouseCompressionStateTx(context.Background(), tx, c)
+	})
+}
+
 // SaveLighthouseCompressionStateTx 在事务内 upsert 运行观察。
 func (s *Store) SaveLighthouseCompressionStateTx(ctx context.Context, tx *sql.Tx, state LighthouseCompressionState) error {
 	now := time.Now().UTC().Format(lighthouseCompressionTimeLayout)

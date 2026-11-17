@@ -45,6 +45,7 @@ type targetResult struct {
 	targetID               int
 	targetIDs              []int
 	siteProofs             map[string]SiteCoverage
+	compressionData        map[string]any
 	provider               string
 	domains                []string
 	outcome                TargetOutcome
@@ -72,11 +73,15 @@ func (e *retryableCleanupError) Unwrap() error { return e.err }
 // cleanupResult 是一次清理尝试对外需要的最小结果：实际确认删除数与最终残留数。
 // Resolved 只属于 Provider 删除响应的中间语义，不再泄漏给调用方间接推导 S2 状态。
 type cleanupResult struct {
-	deleted    int
-	deferred   int
-	basis      string
-	deferredAt time.Time
-	plan       *provider.TargetPlan
+	deleted       int
+	deferred      int
+	candidates    int
+	basis         string
+	deferredAt    time.Time
+	plan          *provider.TargetPlan
+	compression   *provider.CompressionReadback
+	finalSnapshot provider.RuleSnapshot
+	coverage      provider.CompressionCoverage
 }
 
 // targetExecution 是一个物理目标的单次写入执行输入。本地别名已合并；
@@ -227,6 +232,13 @@ func (s *Syncer) runTargetAttemptExec(
 	// 3) Plan(S0)
 	protectedPrefixes := protectedPrefixesForExec(exec)
 	protectedUnknown := protectedUnknownForExec(exec)
+	cctx := s.compressionContextFor(state, exec)
+	baseSites := exec.edgeSites
+	baseSiteInputs := edgeOneInputsForExec(exec)
+	if cctx != nil {
+		baseSites = cctx.BaseSites
+		baseSiteInputs = edgeOneInputsForSites(baseSites, exec.edgeData)
+	}
 	plan0 := provider.PlanTarget(provider.TargetPlanInput{
 		CloudType:         p.CloudType(),
 		Tag:               state.Config.Tag,
@@ -234,7 +246,7 @@ func (s *Syncer) runTargetAttemptExec(
 		EdgeOneTag:        edgeOneTagForExec(state, exec),
 		CoverageOnlyTag:   coverageOnlyTagForState(state),
 		Rules:             rules,
-		EdgeOneSites:      edgeOneInputsForExec(exec),
+		EdgeOneSites:      baseSiteInputs,
 		Resolved:          resolved,
 		DNSErrors:         dnsErrors,
 		Snapshot:          s0,
@@ -247,7 +259,19 @@ func (s *Syncer) runTargetAttemptExec(
 	res.observeUnsupported(plan0.Unsupported, "s0", complete)
 
 	// 4) Add：永远先于任何删除；只写本轮活动来源，但完整期望集已包含另一来源。
-	addActions := activeAddActions(state, plan0, exec)
+	baseAddActions := activeAddActions(state, plan0, exec)
+	baseAddsTruncated := false
+	if cctx != nil {
+		if limit := cctx.baseAddLimit(len(s0.Rules)); limit >= 0 && len(baseAddActions) > limit {
+			baseAddActions = baseAddActions[:limit]
+			baseAddsTruncated = true
+		}
+		s.buildCompressionPlan(state, exec, cctx, s0, len(baseAddActions))
+	}
+	addActions := append([]config.RuleAction(nil), baseAddActions...)
+	if cctx != nil {
+		addActions = append(addActions, cctx.compressionAddActions()...)
+	}
 	if len(addActions) > 0 {
 		createRes, err := p.CreateRules(s0, addActions)
 		// 即使返回错误，Written 仍表示此前已由云端确认的独立子批次
@@ -274,7 +298,7 @@ func (s *Syncer) runTargetAttemptExec(
 		EdgeOneTag:        edgeOneTagForExec(state, exec),
 		CoverageOnlyTag:   coverageOnlyTagForState(state),
 		Rules:             rules,
-		EdgeOneSites:      edgeOneInputsForExec(exec),
+		EdgeOneSites:      baseSiteInputs,
 		Resolved:          resolved,
 		DNSErrors:         dnsErrors,
 		Snapshot:          s1,
@@ -289,22 +313,41 @@ func (s *Syncer) runTargetAttemptExec(
 	res.cleanupDeferred = len(plan1.CleanupCandidates)
 	res.cleanupDeleted = 0
 
+	// 压缩 witness 必须来自本 attempt 所选行在 S1 的实际回读；缺失即零删除零确认。
+	if cctx != nil && cctx.Enabled && cctx.Selected != nil {
+		in1 := cctx.Input
+		in1.Snapshot = s1
+		readback := provider.VerifyCompressionReadback(in1, *cctx.Selected)
+		cctx.Readback = &readback
+		if !readback.Complete {
+			return res, fmt.Errorf("压缩覆盖验证失败：%s", compressionReadbackError(&readback))
+		}
+	}
 	// 先固化 EdgeOne 站点证明：DNS 侧失败时，只要 EdgeOne 全部目标在本轮
 	// 回读完整，站点仍可按单侧继续进入确认准入。
 	if exec.edgeActive && len(exec.edgeSites) > 0 {
-		res.siteProofs = siteCoverageForExec(state, exec, plan1)
+		res.siteProofs = siteCoverageForAttempt(state, exec, plan1, cctx)
 	}
+	allowBaseGap := false
 	if missing := missingActiveDesired(plan1, exec); len(missing) > 0 {
-		return res, fmt.Errorf("新增后覆盖验证失败：%d 个期望功能未在 S1 快照中得到确认", len(missing))
+		switch {
+		case cctx != nil && !cctx.Enabled:
+			// 关闭压缩后的替换路径：精确新增可能受 100 条硬配额限制，先允许
+			// 部分推进；后续压缩清理仍以实际覆盖证明为准。
+			allowBaseGap = true
+		case cctx != nil && baseAddsTruncated:
+			allowBaseGap = true
+		default:
+			return res, fmt.Errorf("新增后覆盖验证失败：%d 个期望功能未在 S1 快照中得到确认", len(missing))
+		}
 	}
 	if exec.dnsActive && len(plan1.DNSErrors) > 0 {
 		return res, dnsFailureError(plan1.DNSErrors, dnsErrValues)
 	}
 	// S1 覆盖确认后即确定功能结论；后续清理失败只影响 cleanup_deferred。
-	if len(plan1.Unsupported) > 0 {
+	res.outcome = TargetSuccess
+	if len(plan1.Unsupported) > 0 || allowBaseGap || (cctx != nil && cctx.compressionBlocked()) {
 		res.outcome = TargetPartial
-	} else {
-		res.outcome = TargetSuccess
 	}
 	if exec.edgeActive && len(exec.edgeSites) > 0 {
 		incomplete := ""
@@ -312,27 +355,44 @@ func (s *Syncer) runTargetAttemptExec(
 			if proof.Complete {
 				continue
 			}
-			if containsString(proof.Reasons, "s1_uncovered") {
+			if containsString(proof.Reasons, "s1_uncovered") && !allowBaseGap {
 				return res, fmt.Errorf("EdgeOne 站点 %s 覆盖不完整", proof.ZoneID)
 			}
 			incomplete = proof.ZoneID
 		}
 		if incomplete != "" {
-			// 查询不可用/跨 TAG 冲突/平台限制不重试同一轮冻结输入；保留证明并
-			// 禁止清理与确认，由后续轮次重新准备数据。
+			// 查询不可用/跨 TAG 冲突/平台限制/压缩阻断不重试同一轮冻结输入；
+			// 只有 disabled 且允许 base 缺口的替换路径继续压缩清理。
 			res.outcome = TargetPartial
 			res.cleanupDeferred = len(plan1.CleanupCandidates)
-			return res, nil
+			if cctx == nil || cctx.Enabled || !allowBaseGap {
+				return res, nil
+			}
 		}
 	}
 
 	// 7) 条件清理：只有安全门全部满足（CleanupDeletable 非空）且 S1 覆盖已确认时才删除；
 	//    Add 或覆盖验证失败时上面的 return 已保证本 attempt 零删除。
-	cleanup, err := s.runTargetCleanup(state, p, rules, s1, plan1, resolved, dnsErrors, exec.dnsActive, exec.edgeActive,
-		edgeOneInputsForExec(exec), edgeOneTagForExec(state, exec), protectedPrefixes, protectedUnknown)
+	epoch := exec.epoch
+	if epoch == 0 {
+		epoch = s.Generation()
+	}
+	var cleanup cleanupResult
+	if cctx == nil {
+		cleanup, err = s.runTargetCleanup(state, p, rules, s1, plan1, resolved, dnsErrors, exec.dnsActive, exec.edgeActive,
+			edgeOneInputsForExec(exec), edgeOneTagForExec(state, exec), protectedPrefixes, protectedUnknown)
+	} else {
+		cleanup, err = s.runTargetCleanupCompressed(state, p, rules, s1, plan1, resolved, dnsErrors,
+			exec.dnsActive, exec.edgeActive, baseSiteInputs, edgeOneTagForExec(state, exec), cctx,
+			protectedPrefixes, protectedUnknown)
+	}
 	res.cleanupDeleted = cleanup.deleted
 	res.deleted += cleanup.deleted
 	res.cleanupDeferred = cleanup.deferred
+	if cleanup.candidates > 0 {
+		res.cleanupCandidates = cleanup.candidates
+		res.cleanupObservation.Candidates = cleanup.candidates
+	}
 	if cleanup.basis != "" {
 		res.cleanupObservation.Basis = cleanup.basis
 		res.cleanupObservation.DeferredAt = cleanup.deferredAt
@@ -342,13 +402,29 @@ func (s *Syncer) runTargetAttemptExec(
 		return res, err
 	}
 	if cleanup.plan != nil && exec.edgeActive && len(exec.edgeSites) > 0 {
-		res.siteProofs = siteCoverageForExec(state, exec, *cleanup.plan)
+		if cctx == nil {
+			res.siteProofs = siteCoverageForExec(state, exec, *cleanup.plan)
+		} else {
+			cctx.Readback = cleanup.compression
+			res.siteProofs = siteCoverageForAttempt(state, exec, *cleanup.plan, cctx)
+		}
 		for _, proof := range res.siteProofs {
 			if !proof.Complete {
 				res.outcome = TargetPartial
 				break
 			}
 		}
+	}
+	if cctx != nil {
+		finalSnapshot := s1
+		coverage := provider.CompressionCoverageFromRules(s1, edgeOneTagForExec(state, exec), cctx.All,
+			cctx.Input.Protected, cctx.Settings.ExtraIPv4Allow)
+		if cleanup.finalSnapshot.Revision != "" {
+			finalSnapshot = cleanup.finalSnapshot
+			coverage = cleanup.coverage
+		}
+		s.recordCompressionPendingReview(state, epoch, cctx, finalSnapshot, coverage)
+		res.compressionData = s.compressionObservation(cctx, coverage, finalSnapshot)
 	}
 	return res, nil
 }
@@ -383,16 +459,21 @@ func edgeOneTagForExec(state *RuntimeState, exec targetExecution) string {
 }
 
 func edgeOneInputsForExec(exec targetExecution) []provider.EdgeOneSitePlanInput {
-	if len(exec.edgeSites) == 0 {
+	return edgeOneInputsForSites(exec.edgeSites, exec.edgeData)
+}
+
+// edgeOneInputsForSites 把指定站点集合与同一轮快照数据转换为规划输入。
+func edgeOneInputsForSites(sites []config.EdgeOneSite, data map[string]edgeOneSiteData) []provider.EdgeOneSitePlanInput {
+	if len(sites) == 0 {
 		return nil
 	}
-	out := make([]provider.EdgeOneSitePlanInput, 0, len(exec.edgeSites))
-	for _, site := range exec.edgeSites {
-		data := exec.edgeData[strings.TrimSpace(site.ZoneID)]
+	out := make([]provider.EdgeOneSitePlanInput, 0, len(sites))
+	for _, site := range sites {
+		item := data[strings.TrimSpace(site.ZoneID)]
 		out = append(out, provider.EdgeOneSitePlanInput{
 			Site:              site,
-			Snapshot:          data.snapshot,
-			UnavailableReason: data.unavailable,
+			Snapshot:          item.snapshot,
+			UnavailableReason: item.unavailable,
 		})
 	}
 	return out
@@ -585,6 +666,233 @@ func (s *Syncer) runTargetCleanup(
 		result.deferred = len(plan1.CleanupCandidates)
 	}
 	return result, nil
+}
+
+// compressionReadbackError 返回压缩回读失败的稳定原因码集合（不含敏感值）。
+func compressionReadbackError(readback *provider.CompressionReadback) string {
+	if readback == nil {
+		return "compression_incomplete"
+	}
+	parts := make([]string, 0, len(readback.Reasons))
+	seen := make(map[string]bool)
+	for _, blocker := range readback.Reasons {
+		if blocker.Code == "" || seen[blocker.Code] {
+			continue
+		}
+		seen[blocker.Code] = true
+		parts = append(parts, blocker.Code)
+	}
+	if len(parts) == 0 {
+		return "compression_incomplete"
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
+// compressionScopeRule 判断一条 EdgeOne TAG 行是否属于压缩清理范围。
+//
+// 压缩只接管 IPv4 TCP/UDP 允许行；IPv6/ICMP 等继续由原清理安全门处理。
+func compressionScopeRule(rule config.RuleInfo, edgeTag string) bool {
+	if edgeTag == "" || !tag.IsOwned(rule.Description, edgeTag) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(rule.Action), "ACCEPT") {
+		return false
+	}
+	if strings.TrimSpace(rule.CidrBlock) == "" {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(rule.Protocol)) {
+	case "TCP", "UDP":
+		return true
+	default:
+		return false
+	}
+}
+
+// runTargetCleanupCompressed 在压缩实例上执行 base 清理与压缩整批清理。
+//
+// 两类候选合并为一次 DeleteRules，共享同一 S1 版本；删除后 S2 同时核验
+// base 精确覆盖与压缩 witness。压缩候选只有在实际覆盖完整且移除后仍完整的
+// 情况下才会进入请求。
+func (s *Syncer) runTargetCleanupCompressed(
+	state *RuntimeState,
+	p provider.Provider,
+	rules []config.DomainRule,
+	s1 provider.RuleSnapshot,
+	plan1 provider.TargetPlan,
+	resolvedIPs map[int][]dns.ResolvedIP,
+	dnsErrors map[int]string,
+	allowDNS, allowEdge bool,
+	baseSiteInputs []provider.EdgeOneSitePlanInput,
+	edgeOneTag string,
+	cctx *compressionContext,
+	protectedPrefixes []netip.Prefix,
+	protectedUnknown bool,
+) (cleanupResult, error) {
+	fallback := cleanupResult{deferred: len(plan1.CleanupCandidates)}
+	if !allowDNS && !allowEdge {
+		return fallback, nil
+	}
+
+	baseCandidates := make([]config.RuleInfo, 0, len(plan1.CleanupCandidates))
+	baseDeletable := make([]config.RuleInfo, 0, len(plan1.CleanupDeletable))
+	for _, rule := range plan1.CleanupCandidates {
+		if compressionScopeRule(rule, edgeOneTag) {
+			continue
+		}
+		baseCandidates = append(baseCandidates, rule)
+	}
+	for _, rule := range plan1.CleanupDeletable {
+		if compressionScopeRule(rule, edgeOneTag) {
+			continue
+		}
+		baseDeletable = append(baseDeletable, rule)
+	}
+
+	compressionPlan := provider.CompressionCleanupPlan{}
+	if allowEdge && cctx != nil {
+		allowed := !cctx.Enabled && cctx.StateErr == "" &&
+			len(plan1.Unsupported) == 0 && len(plan1.Conflicts) == 0 && len(plan1.EdgeOneErrors) == 0 ||
+			(cctx.Enabled && cctx.Selected != nil && cctx.Readback != nil && cctx.Readback.Complete)
+		if allowed {
+			compressionPlan = provider.PlanCompressionCleanup(provider.CompressionCleanupInput{
+				Snapshot:         s1,
+				Tag:              edgeOneTag,
+				OtherTag:         state.Config.Tag,
+				Sites:            cctx.All,
+				EligibleSites:    cctx.Eligible,
+				Protected:        cctx.Input.Protected,
+				ProtectedUnknown: protectedUnknown,
+				Retained:         cctx.compressionSelectedRows(),
+				KeepKeys:         planDesiredKeys(plan1),
+			})
+		}
+	}
+
+	candidates := len(baseCandidates) + len(compressionPlan.Candidates)
+	fallback.candidates = candidates
+	fallback.deferred = candidates
+	deletable := append([]config.RuleInfo(nil), baseDeletable...)
+	deletable = append(deletable, compressionPlan.Deletable...)
+	deletable = uniqueRules(deletable)
+	if len(deletable) == 0 {
+		return fallback, nil
+	}
+
+	delRes, delErr := p.DeleteRules(s1, deletable)
+	result := cleanupResult{
+		deleted: delRes.Deleted, deferred: candidates - delRes.Resolved, candidates: candidates,
+		basis: "delete_progress", deferredAt: time.Now(),
+	}
+	switch {
+	case delErr == nil, isPartialDelete(delErr), isIdempotentDelete(delErr):
+		if delErr != nil && !isPartialDelete(delErr) {
+			slog.Warn("清理候选已不存在，按幂等处理", "provider", p.Name())
+		}
+		plan, readback, finalSnapshot, coverage, err := s.verifyCompressedCleanupResult(
+			state, p, rules, s1.Revision, baseSiteInputs, resolvedIPs, dnsErrors,
+			edgeOneTag, cctx, protectedPrefixes, protectedUnknown,
+		)
+		if err != nil {
+			return result, err
+		}
+		result.plan = &plan
+		result.compression = readback
+		result.finalSnapshot = finalSnapshot
+		result.coverage = coverage
+		result.deferred = candidates - delRes.Resolved
+		result.basis = "s2"
+		result.deferredAt = time.Now()
+	case isVersionMismatch(delErr):
+		return result, &retryableCleanupError{
+			err: fmt.Errorf("清理版本竞争，整目标重试: %w", delErr),
+		}
+	case isRetryable(delErr):
+		return result, &retryableCleanupError{
+			err: fmt.Errorf("清理失败（可重试）：%w", delErr),
+		}
+	default:
+		slog.Warn("清理失败，保留残留并记为 cleanup_deferred", "provider", p.Name(), "error", delErr)
+		result.deferred = candidates
+	}
+	return result, nil
+}
+
+// verifyCompressedCleanupResult 用 S2 同时核验 base 与压缩覆盖。
+func (s *Syncer) verifyCompressedCleanupResult(
+	state *RuntimeState,
+	p provider.Provider,
+	rules []config.DomainRule,
+	s1Revision string,
+	baseSiteInputs []provider.EdgeOneSitePlanInput,
+	resolvedIPs map[int][]dns.ResolvedIP,
+	dnsErrors map[int]string,
+	edgeOneTag string,
+	cctx *compressionContext,
+	protectedPrefixes []netip.Prefix,
+	protectedUnknown bool,
+) (provider.TargetPlan, *provider.CompressionReadback, provider.RuleSnapshot, provider.CompressionCoverage, error) {
+	s2, err := p.GetSnapshot()
+	if err != nil {
+		return provider.TargetPlan{}, nil, provider.RuleSnapshot{}, provider.CompressionCoverage{}, fmt.Errorf("获取 S2 快照失败: %w", err)
+	}
+	if strings.TrimSpace(s2.Revision) == "" && strings.TrimSpace(s1Revision) != "" {
+		return provider.TargetPlan{}, nil, provider.RuleSnapshot{}, provider.CompressionCoverage{}, fmt.Errorf("%w: S2 缺少版本号，无法证明清理后状态", provider.ErrSnapshotIncomplete)
+	}
+	plan2 := provider.PlanTarget(provider.TargetPlanInput{
+		CloudType:         p.CloudType(),
+		Tag:               state.Config.Tag,
+		OtherTag:          state.Config.EdgeOneTag,
+		EdgeOneTag:        edgeOneTag,
+		CoverageOnlyTag:   coverageOnlyTagForState(state),
+		Rules:             rules,
+		EdgeOneSites:      baseSiteInputs,
+		Resolved:          resolvedIPs,
+		DNSErrors:         dnsErrors,
+		Snapshot:          s2,
+		ProtectedPrefixes: protectedPrefixes,
+		ProtectedUnknown:  protectedUnknown,
+	})
+	var readback *provider.CompressionReadback
+	if cctx != nil && cctx.Selected != nil {
+		in2 := cctx.Input
+		in2.Snapshot = s2
+		verified := provider.VerifyCompressionReadback(in2, *cctx.Selected)
+		readback = &verified
+		if !verified.Complete {
+			return provider.TargetPlan{}, nil, provider.RuleSnapshot{}, provider.CompressionCoverage{}, errors.New("S2 压缩覆盖验证失败：清理后无法证明压缩表示")
+		}
+	}
+	if !plan2.CoverageReady {
+		// 纯压缩站点可能没有 base Desired；只有压缩证明完整时才允许。
+		if !(len(plan2.Desired) == 0 && readback != nil && readback.Complete) {
+			return provider.TargetPlan{}, nil, provider.RuleSnapshot{}, provider.CompressionCoverage{}, errors.New("S2 覆盖验证失败：清理后无法证明完整期望功能")
+		}
+	}
+	coverage := provider.CompressionCoverageFromRules(s2, edgeOneTag, cctx.All, cctx.Input.Protected, cctx.Settings.ExtraIPv4Allow)
+	return plan2, readback, s2, coverage, nil
+}
+
+func planDesiredKeys(plan provider.TargetPlan) []provider.FunctionalKey {
+	out := make([]provider.FunctionalKey, 0, len(plan.Desired))
+	for _, item := range plan.Desired {
+		out = append(out, item.Key)
+	}
+	return out
+}
+
+func uniqueRules(in []config.RuleInfo) []config.RuleInfo {
+	seen := make(map[config.RuleInfo]bool, len(in))
+	out := make([]config.RuleInfo, 0, len(in))
+	for _, rule := range in {
+		if seen[rule] {
+			continue
+		}
+		seen[rule] = true
+		out = append(out, rule)
+	}
+	return out
 }
 
 // verifyCleanupResult 用 S2 复算覆盖，供残留计数和站点证明共用。
@@ -787,6 +1095,9 @@ func (s *Syncer) publishTargetResult(res targetResult) {
 		"duration_ms":             res.durationMS,
 		// skipped 仅保留目标事件的既有计数表达；结构化明细唯一以 unsupported 为准。
 		"skipped": len(unsupported),
+	}
+	if res.compressionData != nil {
+		data["compression"] = res.compressionData
 	}
 	if res.outcome == TargetFailed {
 		data["error"] = errText(res.err)

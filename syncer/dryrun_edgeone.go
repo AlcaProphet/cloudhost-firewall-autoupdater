@@ -40,6 +40,50 @@ type DryRunSite struct {
 	ProtectedCIDRs  []string   `json:"protected_cidrs"`
 }
 
+// DryRunCompression 是一个物理 Lighthouse 实例的压缩只读预览。
+//
+// 数值字段在证据不足时为 null，避免把未知容量/风险当成零。
+type DryRunCompression struct {
+	Applicable       bool                           `json:"applicable"`
+	Enabled          bool                           `json:"enabled"`
+	Assumed          bool                           `json:"assumed"`
+	PendingReview    bool                           `json:"pending_review"`
+	PendingKnown     bool                           `json:"pending_known"`
+	Mode             string                         `json:"mode"`
+	S0Rows           int                            `json:"s0_rows"`
+	OtherNewRows     int                            `json:"other_new_rows"`
+	AddRows          int                            `json:"add_rows"`
+	NormalCap        int                            `json:"normal_cap"`
+	Reserved         int                            `json:"reserved"`
+	HardCap          int                            `json:"hard_cap"`
+	NormalBudget     *int                           `json:"normal_budget"`
+	Peak             *int                           `json:"peak"`
+	Borrowed         *int                           `json:"borrowed"`
+	ExpectedCleanup  *int                           `json:"expected_cleanup"`
+	ExpectedAfter    *int                           `json:"expected_after"`
+	RiskLimit        *int64                         `json:"risk_limit"`
+	ExtraIPv4        *uint64                        `json:"extra_ipv4"`
+	MaxExtraRun      *uint64                        `json:"max_extra_run"`
+	PerPort          []provider.CompressionPortRisk `json:"per_port"`
+	Rows             []DryRunCompressionRow         `json:"rows"`
+	Blockers         []provider.CompressionBlocker  `json:"blockers"`
+	Warnings         []provider.CompressionBlocker  `json:"warnings"`
+	ReservedRestored *bool                          `json:"reserved_restored"`
+	ResidualRows     int                            `json:"residual_rows"`
+}
+
+// DryRunCompressionRow 是一条拟写入或复用的压缩物理行。
+type DryRunCompressionRow struct {
+	Protocol      string `json:"protocol"`
+	Port          string `json:"port"`
+	CIDR          string `json:"cidr"`
+	Reused        bool   `json:"reused"`
+	ServesCurrent bool   `json:"serves_current"`
+	ServesNext    bool   `json:"serves_next"`
+	Lossy         bool   `json:"lossy"`
+	Description   string `json:"description"`
+}
+
 // DryRunExecutionUnit 是一个物理目标的预览摘要；正式执行按同一身份归并别名。
 type DryRunExecutionUnit struct {
 	TargetKey         string                `json:"target_key"`
@@ -60,8 +104,30 @@ type DryRunExecutionUnit struct {
 	CleanupCandidates []provider.RuleChange `json:"cleanup_candidates"`
 	CleanupDeletable  []provider.RuleChange `json:"cleanup_deletable"`
 	CleanupProtected  []provider.RuleChange `json:"cleanup_protected"`
+	Compression       DryRunCompression     `json:"compression"`
 	Error             string                `json:"error"`
 }
+
+// emptyDryRunCompression 构造非 null 的空压缩预览骨架。
+func emptyDryRunCompression() DryRunCompression {
+	return DryRunCompression{
+		Mode: "unknown", NormalCap: 96, Reserved: 4, HardCap: 100,
+		PerPort: []provider.CompressionPortRisk{}, Rows: []DryRunCompressionRow{},
+		Blockers: []provider.CompressionBlocker{}, Warnings: []provider.CompressionBlocker{},
+	}
+}
+
+func dryRunCompressionRow(row provider.CompressionRow) DryRunCompressionRow {
+	return DryRunCompressionRow{
+		Protocol: row.Protocol, Port: row.Port, CIDR: row.CIDR, Reused: row.Reused,
+		ServesCurrent: row.ServesCurrent, ServesNext: row.ServesNext, Lossy: row.Lossy, Description: row.Description,
+	}
+}
+
+func intPtr(v int) *int          { return &v }
+func int64Ptr(v int64) *int64    { return &v }
+func uint64Ptr(v uint64) *uint64 { return &v }
+func boolPtr(v bool) *bool       { return &v }
 
 type dryRunDNSData struct {
 	addresses []DNSAddress

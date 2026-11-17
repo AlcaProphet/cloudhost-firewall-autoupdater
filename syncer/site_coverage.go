@@ -186,3 +186,107 @@ func stableUniqueStrings(in []string) []string {
 	sort.Strings(out)
 	return out
 }
+
+// siteCoverageForAttempt 生成包含压缩 witness 的站点证明。
+//
+// enabled 压缩站点只对 IPv4 部分使用压缩证明；dual 站点的 IPv6 仍由 base 计划
+// 证明。disabled 或未配置压缩时与 siteCoverageForExec 语义一致。
+func siteCoverageForAttempt(state *RuntimeState, exec targetExecution, plan provider.TargetPlan, c *compressionContext) map[string]SiteCoverage {
+	if c == nil {
+		return siteCoverageForExec(state, exec, plan)
+	}
+	out := make(map[string]SiteCoverage)
+	if len(exec.edgeSites) == 0 {
+		return out
+	}
+	covered := coveredKeySet(plan)
+	unsupportedKeys := make(map[provider.FunctionalKey]bool)
+	for _, issue := range plan.Unsupported {
+		if issue.Key != nil {
+			unsupportedKeys[*issue.Key] = true
+		}
+	}
+	for _, site := range exec.edgeSites {
+		zone := strings.TrimSpace(site.ZoneID)
+		if zone == "" {
+			continue
+		}
+		data := exec.edgeData[zone]
+		proof := SiteCoverage{
+			ZoneID: zone, TargetKey: exec.identity, ConfigEpoch: exec.epoch, Reasons: []string{},
+		}
+		if data.unavailable != "" || strings.TrimSpace(data.snapshot.ZoneID) == "" ||
+			strings.TrimSpace(data.snapshot.Current.Version) == "" ||
+			!provider.OriginACLSnapshotPrefixesValid(data.snapshot) {
+			proof.Reasons = append(proof.Reasons, "snapshot_unavailable")
+		} else {
+			proof.Current = data.snapshot.Current.Version
+			if data.snapshot.Next != nil {
+				proof.Pending = data.snapshot.Next.Version
+			}
+			proof.SnapshotDigest = snapshotDigest(data.snapshot)
+			if !hasRequiredAddressFamilies(data.snapshot, site.AddressFamily) {
+				proof.Reasons = append(proof.Reasons, "address_family_missing")
+			}
+		}
+		for _, issue := range plan.EdgeOneErrors {
+			if strings.Contains(issue.Message, zone) {
+				proof.Reasons = append(proof.Reasons, "edgeone_unavailable")
+				break
+			}
+		}
+		if len(plan.Conflicts) > 0 {
+			proof.Reasons = append(proof.Reasons, "conflict")
+		}
+		compressed := c.Enabled && provider.CompressionSiteEligible(site)
+		siteMissing := false
+		for _, d := range plan.Desired {
+			if !containsString(d.SiteIDs, zone) {
+				continue
+			}
+			if !d.Implementable {
+				proof.Reasons = append(proof.Reasons, "unsupported")
+				continue
+			}
+			// 压缩站点的 IPv4 期望由压缩 witness 证明；base 只证明 IPv6。
+			if compressed && d.Key.Family == provider.AddressIPv4 {
+				continue
+			}
+			if !covered[d.Key] {
+				siteMissing = true
+			}
+			if unsupportedKeys[d.Key] {
+				proof.Reasons = append(proof.Reasons, "unsupported")
+			}
+		}
+		if siteMissing {
+			proof.Reasons = append(proof.Reasons, "s1_uncovered")
+		}
+		if compressed {
+			switch {
+			case c.Selected == nil:
+				proof.Reasons = append(proof.Reasons, "compression_blocked")
+				if len(c.Blockers) > 0 {
+					proof.HasConflicts = true
+				}
+			case c.Readback == nil:
+				proof.Reasons = append(proof.Reasons, "compression_unverified")
+			case !c.Readback.Complete:
+				proof.Reasons = append(proof.Reasons, "compression_incomplete")
+				if len(c.Readback.Coverage.Conflicts) > 0 {
+					proof.HasConflicts = true
+				}
+			}
+			if c.Readback != nil && c.Readback.Coverage.RiskKnown &&
+				c.Readback.Coverage.ExtraIPv4 > uint64(c.Settings.ExtraIPv4Allow) {
+				proof.Reasons = append(proof.Reasons, "compression_risk")
+			}
+		}
+		proof.Reasons = stableUniqueStrings(proof.Reasons)
+		proof.HasConflicts = proof.HasConflicts || len(plan.Conflicts) > 0 ||
+			len(plan.EdgeOneErrors) > 0 || containsString(proof.Reasons, "unsupported")
+		proof.Complete = len(proof.Reasons) == 0
+		out[zone] = proof
+	}
+	return out
+}
