@@ -13,8 +13,8 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
 
-// handleConfigExport 导出 version 4 完整敏感配置包（Build6 §3.3、§12.11；
-// version 4 见 Build8 Step 4）。
+// handleConfigExport 导出 version 5 完整敏感配置包（Build6 §3.3、§12.11；
+// version 4 见 Build8 Step 4，version 5 见 Build9 Step 1）。
 //
 // 协议要点：
 //   - 端点固定为 POST，请求不携带业务参数；
@@ -52,7 +52,7 @@ func (d *Deps) handleConfigExport(w http.ResponseWriter, r *http.Request) {
 	}
 	committed = true
 
-	bundle := toBundleV4(snapshot, time.Now().UTC())
+	bundle := toBundleV5(snapshot, time.Now().UTC())
 
 	// 先完成所有可能失败的 marshal，再写任何响应头
 	body, err := json.MarshalIndent(bundle, "", "  ")
@@ -81,11 +81,11 @@ func (d *Deps) handleConfigExport(w http.ResponseWriter, r *http.Request) {
 // attachmentName 构造固定的配置包附件文件名（UTC 时间格式 20060102T150405Z）。
 func attachmentName(exportedAt time.Time) string {
 	return fmt.Sprintf(`attachment; filename="%s%s.json"`,
-		bundleV4FilenamePrefix, exportedAt.UTC().Format(bundleV3FileTimeLayout))
+		bundleV5FilenamePrefix, exportedAt.UTC().Format(bundleV3FileTimeLayout))
 }
 
-// handleConfigImport 导入 version 3 或 version 4 完整敏感配置包
-// （Build6 §3.5、§12.12；v4 见 Build8 Step 4）。
+// handleConfigImport 导入 version 3、4 或 5 完整敏感配置包
+// （Build6 §3.5、§12.12；v4 见 Build8 Step 4，v5 见 Build9 Step 1）。
 //
 // 执行顺序固定：
 //
@@ -105,34 +105,8 @@ func (d *Deps) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 		writeRequestError(w, err)
 		return
 	}
-	version, err := detectBundleVersion(data)
-	if err != nil {
-		writeRequestError(w, err)
-		return
-	}
-
 	// 全部纯数据校验必须在打开写事务之前完成（非法配置包零写入、零 apply）。
-	var bundle *checkedBundle
-	switch version {
-	case schemaVersionV3:
-		var wire bundleV3Wire
-		if err := decodeBundleStrict(data, &wire); err != nil {
-			writeRequestError(w, err)
-			return
-		}
-		bundle, err = validateAndNormalizeBundleV3(&wire)
-	case schemaVersionV4:
-		var wire bundleV4Wire
-		if err := decodeBundleStrict(data, &wire); err != nil {
-			writeRequestError(w, err)
-			return
-		}
-		bundle, err = validateAndNormalizeBundleV4(&wire)
-	default:
-		// detectBundleVersion 已拒绝其他版本，此处仅防御内部接线错误。
-		writeRequestError(w, badRequest("不支持的配置版本"))
-		return
-	}
+	_, bundle, err := decodeAndValidateConfigBundle(data)
 	if err != nil {
 		var presence *bundleV3PresenceError
 		if errors.As(err, &presence) {
@@ -170,6 +144,14 @@ func (d *Deps) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 				return fmt.Errorf("导入目标失败: %w", ierr)
 			}
 			idMap[t.ExportID] = newID
+		}
+
+		// 2b) 实例级压缩配置以物理身份直接落库，不需要 export_id 映射；
+		// v3/v4 该列表为空，导入后默认关闭。
+		for _, compression := range bundle.LighthouseCompression {
+			if cerr := d.Store.SaveLighthouseCompressionTx(ctx, tx, compression); cerr != nil {
+				return fmt.Errorf("导入 Lighthouse 压缩配置失败: %w", cerr)
+			}
 		}
 
 		// 3) 为每条规则创建副本并按映射重写引用；不修改原始请求 DTO
@@ -243,4 +225,124 @@ func (d *Deps) handleConfigImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "导入成功"})
+}
+
+// decodeAndValidateConfigBundle 完成版本识别、严格解码与全部纯数据校验。
+// 导入与预览共用，保证两者接受/拒绝的配置包完全一致。
+func decodeAndValidateConfigBundle(data []byte) (int, *checkedBundle, error) {
+	version, err := detectBundleVersion(data)
+	if err != nil {
+		return 0, nil, err
+	}
+	switch version {
+	case schemaVersionV3:
+		var wire bundleV3Wire
+		if err := decodeBundleStrict(data, &wire); err != nil {
+			return 0, nil, err
+		}
+		bundle, err := validateAndNormalizeBundleV3(&wire)
+		return version, bundle, err
+	case schemaVersionV4:
+		var wire bundleV4Wire
+		if err := decodeBundleStrict(data, &wire); err != nil {
+			return 0, nil, err
+		}
+		bundle, err := validateAndNormalizeBundleV4(&wire)
+		return version, bundle, err
+	case schemaVersionV5:
+		var wire bundleV5Wire
+		if err := decodeBundleStrict(data, &wire); err != nil {
+			return 0, nil, err
+		}
+		bundle, err := validateAndNormalizeBundleV5(&wire)
+		return version, bundle, err
+	default:
+		return 0, nil, badRequest("不支持的配置版本")
+	}
+}
+
+type importPreviewCompression struct {
+	CloudType      string `json:"cloud_type"`
+	Region         string `json:"region"`
+	ResourceID     string `json:"resource_id"`
+	Enabled        bool   `json:"enabled"`
+	ExtraIPv4Allow int64  `json:"extra_ipv4_allow"`
+	TargetCount    int    `json:"target_count"`
+}
+
+type importPreviewResponse struct {
+	Version                    int                        `json:"version"`
+	Targets                    int                        `json:"targets"`
+	Rules                      int                        `json:"rules"`
+	EdgeOneSites               int                        `json:"edgeone_sites"`
+	LighthouseTargetCount      int                        `json:"lighthouse_target_count"`
+	CompressionEntriesCount    int                        `json:"compression_entries_count"`
+	CompressionEnabledCount    int                        `json:"compression_enabled_count"`
+	CompressionDefaultDisabled bool                       `json:"compression_default_disabled"`
+	LighthouseCompression      []importPreviewCompression `json:"lighthouse_compression"`
+}
+
+// handleConfigImportPreview 只读预览导入结果，不写库、不发布、不访问云。
+func (d *Deps) handleConfigImportPreview(w http.ResponseWriter, r *http.Request) {
+	data, err := readImportBody(w, r)
+	if err != nil {
+		writeRequestError(w, err)
+		return
+	}
+	version, bundle, err := decodeAndValidateConfigBundle(data)
+	if err != nil {
+		var presence *bundleV3PresenceError
+		if errors.As(err, &presence) {
+			writeJSON(w, http.StatusBadRequest, struct {
+				Error     string   `json:"error"`
+				Fields    []string `json:"missing_fields"`
+				Total     int      `json:"missing_fields_total"`
+				Truncated bool     `json:"missing_fields_truncated"`
+			}{presence.Error(), presence.Fields, presence.Total, presence.Total > len(presence.Fields)})
+		} else {
+			writeRequestError(w, err)
+		}
+		return
+	}
+
+	aliases := make(map[string]int, len(bundle.Targets))
+	lighthouseTargets := 0
+	for _, target := range bundle.Targets {
+		if config.CloudType(target.CloudType) != config.CloudTCLighthouse {
+			continue
+		}
+		lighthouseTargets++
+		identity := config.TargetIdentity(config.TargetConfig{
+			CloudType:  config.CloudType(target.CloudType),
+			Region:     target.Region,
+			ResourceID: target.ResourceID,
+		})
+		aliases[identity]++
+	}
+	compression := make([]importPreviewCompression, 0, len(bundle.LighthouseCompression))
+	enabledCount := 0
+	for _, item := range bundle.LighthouseCompression {
+		if item.Enabled {
+			enabledCount++
+		}
+		compression = append(compression, importPreviewCompression{
+			CloudType:      string(item.CloudType),
+			Region:         item.Region,
+			ResourceID:     item.ResourceID,
+			Enabled:        item.Enabled,
+			ExtraIPv4Allow: item.ExtraIPv4Allow,
+			TargetCount:    aliases[item.Identity()],
+		})
+	}
+	writeJSON(w, http.StatusOK, importPreviewResponse{
+		Version:                    version,
+		Targets:                    len(bundle.Targets),
+		Rules:                      len(bundle.Rules),
+		EdgeOneSites:               len(bundle.Sites),
+		LighthouseTargetCount:      lighthouseTargets,
+		CompressionEntriesCount:    len(compression),
+		CompressionEnabledCount:    enabledCount,
+		CompressionDefaultDisabled: version < schemaVersionV5,
+		LighthouseCompression:      compression,
+	})
 }

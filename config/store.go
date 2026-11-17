@@ -290,6 +290,26 @@ CREATE TABLE IF NOT EXISTS edgeone_origin_transitions (
 	confirmation_request_id TEXT NOT NULL DEFAULT '',
 	updated_at              TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS lighthouse_compression_settings (
+	cloud_type       TEXT NOT NULL,
+	region           TEXT NOT NULL,
+	resource_id      TEXT NOT NULL,
+	enabled          INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+	extra_ipv4_allow INTEGER NOT NULL DEFAULT 0
+	                 CHECK (extra_ipv4_allow BETWEEN 0 AND 4294967296),
+	updated_at       TEXT NOT NULL,
+	PRIMARY KEY (cloud_type, region, resource_id)
+);
+CREATE TABLE IF NOT EXISTS lighthouse_compression_state (
+	cloud_type      TEXT NOT NULL,
+	region          TEXT NOT NULL,
+	resource_id     TEXT NOT NULL,
+	pending_review  INTEGER NOT NULL DEFAULT 0 CHECK (pending_review IN (0, 1)),
+	pending_reason  TEXT NOT NULL DEFAULT '',
+	pending_since   TEXT NOT NULL DEFAULT '',
+	updated_at      TEXT NOT NULL,
+	PRIMARY KEY (cloud_type, region, resource_id)
+);
 `
 
 // defaultWebhookRowSQL 显式指定未配置渠道，避免旧表默认值影响初始化与重置。
@@ -303,9 +323,12 @@ var singleRowTables = []string{"alert_email", "alert_webhook", "alert_policy", "
 // 版本 1 对应 Step 1：旧库缺键/空白 DNS TAG 一次性写入原有效值 auto-dns。
 // 版本 2 对应 Step 2：旧库缺键/空白 EdgeOne TAG 时，仅当 DNS TAG 恰为 edgeone
 // 才写入 edgeone-origin，避免新模块与既有 DNS 规则共用命名空间。
+// 版本 3 对应 Build9 Step 1：新增 Lighthouse 实例级策略压缩的两张表。
+// 该版本没有额外数据迁移，表由 schemaSQL 在同一个初始化事务内创建；提升版本
+// 是为了让旧二进制在降级时拒绝打开新库，避免旧 reset/import 留下孤儿压缩行。
 // 标记、实际数据写入与 Schema 变更在同一事务内提交，失败时一起回滚；
 // reset 只清业务表，保留该标记，因此 reset 后的空设置使用新默认值。
-const schemaMigrationVersion = 2
+const schemaMigrationVersion = 3
 
 // initTables 在**单个事务**内建立/迁移 Schema（Build7 §4.2）。
 //
@@ -728,6 +751,7 @@ func ruleColumns(r DomainRule) (targetsJSON string, enableIPv6 int, err error) {
 // 邮件、Webhook、三个触发开关与 Push 全部回到关闭，health_timeout 回 10m、
 // Push interval 回 60s（Build7 §2.1、§4.2；Build8 Step 7 增加 sync_address_conflict）。
 const resetAllSQL = "DELETE FROM edgeone_site_targets; DELETE FROM edgeone_sites;" +
+	"DELETE FROM lighthouse_compression_state; DELETE FROM lighthouse_compression_settings;" +
 	"DELETE FROM targets; DELETE FROM rules; DELETE FROM settings; DELETE FROM sync_logs;" +
 	"DELETE FROM sync_address_conflict;" +
 	"DELETE FROM edgeone_origin_transitions;" +
@@ -1386,6 +1410,22 @@ func (s *Store) LoadBusinessSnapshotTx(ctx context.Context, q DBTX) (*BusinessSn
 	if err != nil {
 		return nil, err
 	}
+	compression, err := loadLighthouseCompressionSettings(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	// 压缩配置以物理实例身份为键：每条必须仍命中至少一个 target，否则说明
+	// 改绑/删除清理遗漏或外部直接改坏数据库，按持久化完整性错误 fail-closed。
+	targetIdentities := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		targetIdentities[TargetIdentity(target)] = struct{}{}
+	}
+	for _, item := range compression {
+		if _, ok := targetIdentities[item.Identity()]; !ok {
+			return nil, fmt.Errorf("Lighthouse 压缩配置引用了不存在的实例 %s/%s/%s，数据已损坏",
+				item.CloudType, item.Region, item.ResourceID)
+		}
+	}
 	settings, err := loadSettings(ctx, q)
 	if err != nil {
 		return nil, err
@@ -1413,14 +1453,15 @@ func (s *Store) LoadBusinessSnapshotTx(ctx context.Context, q DBTX) (*BusinessSn
 	}
 
 	return &BusinessSnapshot{
-		Targets:        targets,
-		Rules:          rules,
-		EdgeOneSites:   sites,
-		Settings:       normalized,
-		Policy:         policy,
-		Email:          email,
-		Webhook:        webhook,
-		UptimeKumaPush: push,
+		Targets:               targets,
+		Rules:                 rules,
+		EdgeOneSites:          sites,
+		LighthouseCompression: compression,
+		Settings:              normalized,
+		Policy:                policy,
+		Email:                 email,
+		Webhook:               webhook,
+		UptimeKumaPush:        push,
 	}, nil
 }
 
@@ -1651,12 +1692,16 @@ func (s *Store) ClearScannedResourcesTx(ctx context.Context, tx *sql.Tx) error {
 }
 
 // DeleteImportOwnedTablesTx 按依赖顺序清空导入覆盖的业务表（Build6 §12.12 固定顺序，
-// Build8 Step 3 加入站点与绑定）：edgeone_site_targets → edgeone_sites → rules →
-// targets → settings → alert_email → alert_webhook → alert_policy → uptime_kuma_push。
+// Build8 Step 3 加入站点与绑定，Build9 Step 1 加入实例级压缩配置与观察）：
+// lighthouse_compression_state → lighthouse_compression_settings → edgeone_site_targets
+// → edgeone_sites → rules → targets → settings → alert_email → alert_webhook
+// → alert_policy → uptime_kuma_push。
 //
 // 即使当前 Schema 没有外键，也按依赖顺序实现；不触碰 sync_logs 与 sqlite_sequence。
 func (s *Store) DeleteImportOwnedTablesTx(ctx context.Context, tx *sql.Tx) error {
 	stmts := []string{
+		"DELETE FROM lighthouse_compression_state",
+		"DELETE FROM lighthouse_compression_settings",
 		"DELETE FROM edgeone_site_targets",
 		"DELETE FROM edgeone_sites",
 		"DELETE FROM rules",

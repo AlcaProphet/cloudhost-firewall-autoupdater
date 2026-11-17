@@ -11,8 +11,8 @@ import (
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 )
 
-// version4FilenamePattern 固定附件文件名：fwalizer-config-v4-<UTC 20060102T150405Z>.json
-var version4FilenamePattern = regexp.MustCompile(`^attachment; filename="fwalizer-config-v4-\d{8}T\d{6}Z\.json"$`)
+// version5FilenamePattern 固定附件文件名：fwalizer-config-v5-<UTC 20060102T150405Z>.json
+var version5FilenamePattern = regexp.MustCompile(`^attachment; filename="fwalizer-config-v5-\d{8}T\d{6}Z\.json"$`)
 
 // TestConfigExportEmptyDatabaseSchema 空数据库导出仍必须是完整合法 Schema：
 // 数组为 [] 而不是 null、四个凭据字段存在但为空、告警对象与全部字段存在、默认值齐全。
@@ -26,7 +26,7 @@ func TestConfigExportEmptyDatabaseSchema(t *testing.T) {
 
 	// 必须使用缩进格式并以换行结束
 	body := w.Body.String()
-	if !strings.Contains(body, "\n  \"version\": 4") {
+	if !strings.Contains(body, "\n  \"version\": 5") {
 		t.Errorf("导出应为缩进 JSON: %s", body)
 	}
 	if !strings.HasSuffix(body, "}\n") {
@@ -47,13 +47,16 @@ func TestConfigExportEmptyDatabaseSchema(t *testing.T) {
 	if string(raw["edgeone_sites"]) != "[]" {
 		t.Errorf("edgeone_sites 必须是 []，实际 %s", raw["edgeone_sites"])
 	}
+	if string(raw["lighthouse_compression"]) != "[]" {
+		t.Errorf("lighthouse_compression 必须是 []，实际 %s", raw["lighthouse_compression"])
+	}
 
 	var got bundleV4
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatalf(" struct 解码失败: %v", err)
 	}
-	if got.Version != 4 {
-		t.Errorf("version = %d, want 4", got.Version)
+	if got.Version != 5 {
+		t.Errorf("version = %d, want 5", got.Version)
 	}
 	if got.Targets == nil || got.Rules == nil || got.EdgeOneSites == nil {
 		t.Errorf("targets/rules/edgeone_sites 不得为 nil: %+v", got)
@@ -105,7 +108,7 @@ func TestConfigExportHeaders(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want no-store", cc)
 	}
 	cd := w.Header().Get("Content-Disposition")
-	if !version4FilenamePattern.MatchString(cd) {
+	if !version5FilenamePattern.MatchString(cd) {
 		t.Errorf("Content-Disposition = %q, 不符合固定文件名格式", cd)
 	}
 }

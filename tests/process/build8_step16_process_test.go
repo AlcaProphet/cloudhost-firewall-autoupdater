@@ -149,9 +149,9 @@ func TestStep16ConfigBundleImportExport(t *testing.T) {
 	})
 	source.start()
 	exportBody := step16RawRequest(t, http.MethodPost, source.url("/api/config/export"), "")
-	for _, fragment := range []string{`"version": 4`, `"edgeone_sites"`, `"zone-roundtrip"`, `"roundtrip.example.test"`} {
+	for _, fragment := range []string{`"version": 5`, `"edgeone_sites"`, `"lighthouse_compression"`, `"zone-roundtrip"`, `"roundtrip.example.test"`} {
 		if !strings.Contains(string(exportBody), fragment) {
-			t.Fatalf("v4 导出缺少 %s", fragment)
+			t.Fatalf("v5 导出缺少 %s", fragment)
 		}
 	}
 	source.stop()

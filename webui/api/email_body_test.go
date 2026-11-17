@@ -181,6 +181,8 @@ func TestI9R04ImportEmptyBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	bundle.Alerts.Email.Body = ""
+	// 导出已升级为 v5；本用例只验证空正文，显式降回 v4 构造导入包。
+	bundle.Version = 4
 	w := e.do(t, http.MethodPost, "/api/config/import", i9r04JSON(t, bundle))
 	if w.Code != http.StatusOK {
 		t.Fatalf("导入状态码=%d, body=%s", w.Code, w.Body.String())

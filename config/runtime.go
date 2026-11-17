@@ -32,14 +32,15 @@ var settingsKeysCurrent = append(append([]string{}, settingsKeysV3...),
 // 同一事务内一次性取出全部业务表，保证导出快照内部一致；构造 RuntimeState
 // 的候选也只依赖本结构，不在 commit 之后再读库。
 type BusinessSnapshot struct {
-	Targets        []TargetConfig
-	Rules          []DomainRule
-	EdgeOneSites   []EdgeOneSite
-	Settings       map[string]string
-	Policy         AlertPolicyConfig
-	Email          AlertEmailConfig
-	Webhook        AlertWebhookConfig
-	UptimeKumaPush UptimeKumaPushConfig
+	Targets               []TargetConfig
+	Rules                 []DomainRule
+	EdgeOneSites          []EdgeOneSite
+	LighthouseCompression []LighthouseCompression
+	Settings              map[string]string
+	Policy                AlertPolicyConfig
+	Email                 AlertEmailConfig
+	Webhook               AlertWebhookConfig
+	UptimeKumaPush        UptimeKumaPushConfig
 }
 
 // Credentials 从快照设置中取出四个云凭据。
@@ -71,22 +72,23 @@ func DeepCopyRules(rules []DomainRule) []DomainRule {
 // 发布到运行时后视为**不可变**：slice 已深拷贝，任何调用方都不得再修改
 // 其元素或追加。同步、Dry Run、连接测试与资源扫描各自只取一次本结构。
 type RuntimeConfig struct {
-	Credentials      Credentials
-	Targets          []TargetConfig
-	DomainRules      []DomainRule
-	EdgeOneSites     []EdgeOneSite
-	Tag              string
-	Interval         time.Duration
-	DNS              string
-	DNSTimeout       time.Duration
-	DNSFailThreshold int
-	LogLevel         string
-	SyncEnabled      bool
-	DNSEnabled       bool
-	EdgeOneEnabled   bool
-	EdgeOneTag       string
-	EdgeOneInterval  time.Duration
-	Theme            string
+	Credentials           Credentials
+	Targets               []TargetConfig
+	DomainRules           []DomainRule
+	EdgeOneSites          []EdgeOneSite
+	LighthouseCompression []LighthouseCompression
+	Tag                   string
+	Interval              time.Duration
+	DNS                   string
+	DNSTimeout            time.Duration
+	DNSFailThreshold      int
+	LogLevel              string
+	SyncEnabled           bool
+	DNSEnabled            bool
+	EdgeOneEnabled        bool
+	EdgeOneTag            string
+	EdgeOneInterval       time.Duration
+	Theme                 string
 	// dnsEnabledSet 区分“生产快照显式写入 dns_enabled”与旧测试夹具/零值配置。
 	// 未显式设置时沿用 Build8 之前的唯一 DNS 路径默认开启，避免把零值误判为关闭。
 	dnsEnabledSet  bool
@@ -105,6 +107,8 @@ func (rc RuntimeConfig) DeepCopy() RuntimeConfig {
 	out.Targets = append([]TargetConfig(nil), rc.Targets...)
 	out.DomainRules = DeepCopyRules(rc.DomainRules)
 	out.EdgeOneSites = DeepCopyEdgeOneSites(rc.EdgeOneSites)
+	out.LighthouseCompression = make([]LighthouseCompression, len(rc.LighthouseCompression))
+	copy(out.LighthouseCompression, rc.LighthouseCompression)
 	return out
 }
 
@@ -113,28 +117,31 @@ func (rc RuntimeConfig) DeepCopy() RuntimeConfig {
 // Settings 必须已经归一化并通过校验；生产调用方通过 LoadBusinessSnapshot
 // 或 LoadBusinessSnapshotTx 取得快照。本方法不补默认值或重新校验。
 func (s *BusinessSnapshot) ToRuntimeConfig() RuntimeConfig {
+	compression := make([]LighthouseCompression, len(s.LighthouseCompression))
+	copy(compression, s.LighthouseCompression)
 	return RuntimeConfig{
-		Credentials:      s.Credentials(),
-		Targets:          append([]TargetConfig(nil), s.Targets...),
-		DomainRules:      DeepCopyRules(s.Rules),
-		EdgeOneSites:     DeepCopyEdgeOneSites(s.EdgeOneSites),
-		Tag:              s.Settings["tag"],
-		Interval:         mustDuration(s.Settings["interval"]),
-		DNS:              s.Settings["dns"],
-		DNSTimeout:       mustDuration(s.Settings["dns_timeout"]),
-		DNSFailThreshold: mustThreshold(s.Settings["dns_fail_threshold"]),
-		LogLevel:         s.Settings["log_level"],
-		SyncEnabled:      s.Settings["sync_enabled"] == "true",
-		DNSEnabled:       s.Settings["dns_enabled"] == "true",
-		dnsEnabledSet:    true,
-		EdgeOneEnabled:   s.Settings["edgeone_enabled"] == "true",
-		EdgeOneTag:       s.Settings["edgeone_tag"],
-		EdgeOneInterval:  mustDuration(s.Settings["edgeone_interval"]),
-		Theme:            s.Settings["theme"],
-		Policy:           s.Policy,
-		Email:            s.Email,
-		Webhook:          s.Webhook,
-		UptimeKumaPush:   s.UptimeKumaPush,
+		Credentials:           s.Credentials(),
+		Targets:               append([]TargetConfig(nil), s.Targets...),
+		DomainRules:           DeepCopyRules(s.Rules),
+		EdgeOneSites:          DeepCopyEdgeOneSites(s.EdgeOneSites),
+		LighthouseCompression: compression,
+		Tag:                   s.Settings["tag"],
+		Interval:              mustDuration(s.Settings["interval"]),
+		DNS:                   s.Settings["dns"],
+		DNSTimeout:            mustDuration(s.Settings["dns_timeout"]),
+		DNSFailThreshold:      mustThreshold(s.Settings["dns_fail_threshold"]),
+		LogLevel:              s.Settings["log_level"],
+		SyncEnabled:           s.Settings["sync_enabled"] == "true",
+		DNSEnabled:            s.Settings["dns_enabled"] == "true",
+		dnsEnabledSet:         true,
+		EdgeOneEnabled:        s.Settings["edgeone_enabled"] == "true",
+		EdgeOneTag:            s.Settings["edgeone_tag"],
+		EdgeOneInterval:       mustDuration(s.Settings["edgeone_interval"]),
+		Theme:                 s.Settings["theme"],
+		Policy:                s.Policy,
+		Email:                 s.Email,
+		Webhook:               s.Webhook,
+		UptimeKumaPush:        s.UptimeKumaPush,
 	}
 }
 

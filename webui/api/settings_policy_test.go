@@ -280,8 +280,8 @@ func TestConfigExport_OmitsWebuiPort(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("解析导出响应失败: %v; body=%s", err, w.Body.String())
 	}
-	if got.Version != 4 {
-		t.Errorf("version = %d, want 4", got.Version)
+	if got.Version != 5 {
+		t.Errorf("version = %d, want 5", got.Version)
 	}
 	if got.Settings.Tag != "exported" {
 		t.Errorf("导出应包含业务设置: %+v", got.Settings)

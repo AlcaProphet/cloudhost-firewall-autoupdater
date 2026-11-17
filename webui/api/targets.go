@@ -77,6 +77,15 @@ func (d *Deps) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err = d.coordinator().Mutate(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		// 改绑前读取旧身份：若本次更新把最后一个别名移出旧实例，必须在同一事务内
+		// 清理旧实例的压缩设置与待复查状态；新实例默认不继承旧值。
+		previous, found, perr := d.Store.LoadTargetByIDTx(ctx, tx, id)
+		if perr != nil {
+			return perr
+		}
+		if !found {
+			return notFound("目标不存在")
+		}
 		// 不存在的目标按 RowsAffected=0 判定 404（Build6 §12.7、AGENTS §9.1）
 		rows, uerr := d.Store.UpdateTargetTx(ctx, tx, id, target)
 		if uerr != nil {
@@ -84,6 +93,12 @@ func (d *Deps) handleUpdateTarget(w http.ResponseWriter, r *http.Request) {
 		}
 		if rows == 0 {
 			return notFound("目标不存在")
+		}
+		if config.TargetIdentity(previous) != config.TargetIdentity(target) {
+			if _, derr := d.Store.DeleteLighthouseCompressionIfUnreferencedTx(ctx, tx,
+				lighthouseCompressionForTarget(previous)); derr != nil {
+				return derr
+			}
 		}
 		return nil
 	})
@@ -102,6 +117,13 @@ func (d *Deps) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err = d.coordinator().Mutate(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		previous, found, perr := d.Store.LoadTargetByIDTx(ctx, tx, id)
+		if perr != nil {
+			return perr
+		}
+		if !found {
+			return notFound("目标不存在")
+		}
 		// 同一事务内检查规则引用：被引用返回 409，不静默删除引用，
 		// 也不把规则扩大为“适用于全部目标”
 		refs, rerr := d.Store.ReferencingRuleIDsTx(ctx, tx, id)
@@ -126,6 +148,11 @@ func (d *Deps) handleDeleteTarget(w http.ResponseWriter, r *http.Request) {
 		}
 		if rows == 0 {
 			return notFound("目标不存在")
+		}
+		// 最后一个别名删除后，实例级压缩设置与待复查状态一并清理；仍有别名则保留。
+		if _, derr := d.Store.DeleteLighthouseCompressionIfUnreferencedTx(ctx, tx,
+			lighthouseCompressionForTarget(previous)); derr != nil {
+			return derr
 		}
 		return nil
 	})

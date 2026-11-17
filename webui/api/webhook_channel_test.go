@@ -17,7 +17,7 @@ func i8113JSON(t *testing.T, value any) string {
 	return string(body)
 }
 
-// TestI8113EmptyChannelRoundTrip 未选择状态走真实 GET/PUT/导出/导入/reset，并保持 v4 往返。
+// TestI8113EmptyChannelRoundTrip 未选择状态走真实 GET/PUT/导出/导入/reset，并保持 v5 往返。
 func TestI8113EmptyChannelRoundTrip(t *testing.T) {
 	for _, absent := range []bool{false, true} {
 		t.Run(map[bool]string{false: "默认行", true: "缺行"}[absent], func(t *testing.T) {
@@ -43,9 +43,11 @@ func TestI8113EmptyChannelRoundTrip(t *testing.T) {
 			if err := json.Unmarshal([]byte(body), &b); err != nil {
 				t.Fatal(err)
 			}
-			if b.Version != 4 || b.Alerts.Webhook.Channel != "" || b.Alerts.Webhook.Enabled {
+			if b.Version != 5 || b.Alerts.Webhook.Channel != "" || b.Alerts.Webhook.Enabled {
 				t.Fatalf("导出未保留未选择状态: %+v", b.Alerts.Webhook)
 			}
+			// 后续构造的是 v4 导入包，不携带 v5 的压缩段。
+			b.Version = 4
 			before = e.applyCount()
 			w = e.do(t, http.MethodPost, "/api/config/import", body)
 			if w.Code != 200 || e.applyCount() != before+1 {

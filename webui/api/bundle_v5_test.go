@@ -1,0 +1,179 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"testing"
+
+	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
+)
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	body, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+func TestBuild9S1V5RoundTripPreview(t *testing.T) {
+	e := newTestEnv(t)
+	id := e.seedTarget(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-a")
+	if w := e.do(t, http.MethodPut, compressionPath(id), `{"enabled":true,"extra_ipv4_allow":123}`); w.Code != http.StatusOK {
+		t.Fatalf("保存失败: %d %s", w.Code, w.Body.String())
+	}
+
+	w := e.do(t, http.MethodPost, "/api/config/export", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("导出失败: %d %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+
+	beforeApply := e.applyCount()
+	beforeSettings, _ := e.store.LoadLighthouseCompressionSettings()
+	w = e.do(t, http.MethodPost, "/api/config/import/preview", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("预览失败: %d %s", w.Code, w.Body.String())
+	}
+	var preview importPreviewResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.Version != 5 || preview.CompressionEntriesCount != 1 || preview.CompressionEnabledCount != 1 ||
+		preview.CompressionDefaultDisabled || preview.LighthouseCompression[0].TargetCount != 1 ||
+		preview.LighthouseCompression[0].ExtraIPv4Allow != 123 {
+		t.Fatalf("预览摘要错误: %+v", preview)
+	}
+	if e.applyCount() != beforeApply {
+		t.Fatal("预览不得发布运行时")
+	}
+	afterSettings, _ := e.store.LoadLighthouseCompressionSettings()
+	if len(afterSettings) != len(beforeSettings) || len(afterSettings) != 1 || !afterSettings[0].Enabled {
+		t.Fatal("预览改动了配置")
+	}
+
+	if w := e.do(t, http.MethodPost, "/api/config/reset", "{}"); w.Code != http.StatusOK {
+		t.Fatalf("reset 失败: %d %s", w.Code, w.Body.String())
+	}
+	if w := e.do(t, http.MethodPost, "/api/config/import", body); w.Code != http.StatusOK {
+		t.Fatalf("v5 导入失败: %d %s", w.Code, w.Body.String())
+	}
+	targets, err := e.store.GetTargets()
+	if err != nil || len(targets) != 1 {
+		t.Fatalf("导入后目标 = %+v err=%v", targets, err)
+	}
+	got := getCompression(t, e, targets[0].ID)
+	if !got.Enabled || got.ExtraIPv4Allow != 123 || got.PendingReview {
+		t.Fatalf("v5 往返未保留设置: %+v", got)
+	}
+	if state := e.snapshot(); state == nil || len(state.Config.LighthouseCompression) != 1 ||
+		state.Config.LighthouseCompression[0].ExtraIPv4Allow != 123 {
+		t.Fatalf("v5 导入未发布运行时: %+v", state)
+	}
+}
+
+func TestBuild9S1V5RejectsInvalid(t *testing.T) {
+	e := newTestEnv(t)
+	id := e.seedTarget(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-a")
+	if w := e.do(t, http.MethodPut, compressionPath(id), `{"enabled":true,"extra_ipv4_allow":123}`); w.Code != http.StatusOK {
+		t.Fatalf("保存失败: %d %s", w.Code, w.Body.String())
+	}
+	w := e.do(t, http.MethodPost, "/api/config/export", "")
+	var raw map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	entries, ok := raw["lighthouse_compression"].([]any)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("导出压缩段错误: %T %v", raw["lighthouse_compression"], raw["lighthouse_compression"])
+	}
+	entry := entries[0].(map[string]any)
+
+	cases := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"重复身份", func(m map[string]any) {
+			arr := m["lighthouse_compression"].([]any)
+			copyEntry := map[string]any{}
+			for k, v := range entry {
+				copyEntry[k] = v
+			}
+			m["lighthouse_compression"] = append(arr, copyEntry)
+		}},
+		{"悬空引用", func(m map[string]any) { entry["resource_id"] = "lhins-missing" }},
+		{"非法平台", func(m map[string]any) { entry["cloud_type"] = "tc_cvm" }},
+		{"缺失额度", func(m map[string]any) { delete(entry, "extra_ipv4_allow") }},
+		{"缺失压缩段", func(m map[string]any) { delete(m, "lighthouse_compression") }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 每个子用例从原始导出的深拷贝开始，避免前一个用例污染。
+			base := map[string]any{}
+			if err := json.Unmarshal(w.Body.Bytes(), &base); err != nil {
+				t.Fatal(err)
+			}
+			rawEntry := base["lighthouse_compression"].([]any)[0].(map[string]any)
+			oldEntry := entry
+			entry = rawEntry
+			tc.mutate(base)
+			entry = oldEntry
+			body := mustJSON(t, base)
+			beforeApply := e.applyCount()
+			resp := e.do(t, http.MethodPost, "/api/config/import", body)
+			if resp.Code != http.StatusBadRequest {
+				t.Fatalf("状态码=%d want=400 body=%s", resp.Code, resp.Body.String())
+			}
+			if e.applyCount() != beforeApply {
+				t.Fatal("非法 v5 不得发布")
+			}
+			got := getCompression(t, e, id)
+			if !got.Enabled || got.ExtraIPv4Allow != 123 {
+				t.Fatalf("非法 v5 改动了现有配置: %+v", got)
+			}
+		})
+	}
+}
+
+func TestBuild9S1V3V4ImportDefaultsOff(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"v3", bundleWith(`[{"export_id":1,"cloud_type":"tc_lighthouse","region":"ap-guangzhou","resource_id":"lhins-a"}]`, `[]`)},
+		{"v4", func() string {
+			e := newTestEnv(t)
+			id := e.seedTarget(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-a")
+			if w := e.do(t, http.MethodPut, compressionPath(id), `{"enabled":true,"extra_ipv4_allow":1}`); w.Code != http.StatusOK {
+				t.Fatalf("保存失败: %d", w.Code)
+			}
+			w := e.do(t, http.MethodPost, "/api/config/export", "")
+			var raw map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+				t.Fatal(err)
+			}
+			raw["version"] = 4
+			delete(raw, "lighthouse_compression")
+			return mustJSON(t, raw)
+		}()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnv(t)
+			id := e.seedTarget(t, config.CloudTCLighthouse, "ap-guangzhou", "lhins-a")
+			if w := e.do(t, http.MethodPut, compressionPath(id), `{"enabled":true,"extra_ipv4_allow":1}`); w.Code != http.StatusOK {
+				t.Fatalf("保存失败: %d", w.Code)
+			}
+			if w := e.do(t, http.MethodPost, "/api/config/import", tc.body); w.Code != http.StatusOK {
+				t.Fatalf("导入失败: %d %s", w.Code, w.Body.String())
+			}
+			settings, err := e.store.LoadLighthouseCompressionSettings()
+			if err != nil || len(settings) != 0 {
+				t.Fatalf("%s 导入后压缩配置未清空: %+v err=%v", tc.name, settings, err)
+			}
+			if state := e.snapshot(); state == nil || len(state.Config.LighthouseCompression) != 0 {
+				t.Fatalf("%s 导入后运行时未清空: %+v", tc.name, state)
+			}
+		})
+	}
+}

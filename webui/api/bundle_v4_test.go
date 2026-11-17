@@ -87,8 +87,8 @@ func TestExportV4ShapeAndNoRuntimeState(t *testing.T) {
 		}
 	}
 	var version int
-	if err := json.Unmarshal(raw["version"], &version); err != nil || version != 4 {
-		t.Fatalf("version = %d err=%v, want 4", version, err)
+	if err := json.Unmarshal(raw["version"], &version); err != nil || version != 5 {
+		t.Fatalf("version = %d err=%v, want 5", version, err)
 	}
 
 	var settingsRaw map[string]json.RawMessage
@@ -262,7 +262,7 @@ func TestImportV4ValidationZeroWriteNoApply(t *testing.T) {
 		"站点非法地址族":              v4Bundle(validTargets, `[]`, validSite(`[1]`, "80", "ipx", "z"), defaultV4Settings()),
 		"站点非法 ZoneId":          v4Bundle(validTargets, `[]`, validSite(`[1]`, "80", "ipv4", "a/b"), defaultV4Settings()),
 		"TAG 重名":               v4Bundle(`[]`, `[]`, `[]`, v4SettingsJSON("same", "5m", "same", "72h", true, false, true)),
-		"未知版本 5":               strings.Replace(validV4Bundle(), `"version":4`, `"version":5`, 1),
+		"未知版本 6":               strings.Replace(validV4Bundle(), `"version":4`, `"version":6`, 1),
 		"未知运行字段":               strings.Replace(validV4Bundle(), `{`, `{"edgeone_status":{}`, 1),
 	}
 	for name, body := range cases {

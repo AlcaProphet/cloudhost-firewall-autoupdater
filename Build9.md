@@ -70,8 +70,8 @@
 ## 进度索引
 
 - [x] [Step 0 文档与基线](#step-0)
-- [ ] [Step 1 实例配置、迁移与备份](#step-1)
-- [ ] [Step 2 压缩规划、物理容量与风险额度](#step-2)
+- [x] [Step 1 实例配置、迁移与备份](#step-1)
+- [x] [Step 2 压缩规划、物理容量与风险额度](#step-2)
 - [ ] [Step 3 正式同步、覆盖证明与模拟](#step-3)
 - [ ] [Step 4 EdgeOne TAG 清理预览](#step-4)
 - [ ] [Step 5 条件删除、同步互斥与回读结果](#step-5)
@@ -79,7 +79,7 @@
 - [ ] [Step 7 本地端到端验收](#step-7)
 - [ ] [Step 8 真实云验收与发布证据](#step-8)
 
-**当前进度（2026-11-17）**　已建立台账、交叉导航和设计冻结。Step 1～8 待实施或验收。Build8 Step 17 的真实只读及测算见[两阶段验收衔接](#build8-step17-link)。
+**当前进度（2026-11-17）**　Step 0 基线、Step 1 实例配置/迁移/v5、Step 2 纯压缩规划与容量风险判定已本地实施并通过自动化门禁；Step 3 起的正式同步接线、WebUI、端到端与真实云验收待执行。Build8 Step 17 的真实只读及测算见[两阶段验收衔接](#build8-step17-link)。
 
 <a name="step-0"></a>
 
@@ -100,15 +100,17 @@
 
 ### Step 1 · 实例配置、迁移与备份
 
-依赖 Step 0。将压缩开关、额度及退出压缩的待复查状态接入现有实例配置和协调器。 [Design6 §9.1](Design6.md#lighthouse-edgeone-compression) · [Store](config/store.go) · [运行配置](config/runtime.go) · [目标 API](webui/api/targets.go) · [配置协调器](webui/api/coordinator.go) · [v4 配置包](webui/api/bundle_v4.go)
+依赖 Step 0。将压缩开关、额度及退出压缩的待复查状态接入现有实例配置和协调器。 [Design6 §9.1](Design6.md#lighthouse-edgeone-compression) · [Store](config/store.go) · [运行配置](config/runtime.go) · [目标 API](webui/api/targets.go) · [配置协调器](webui/api/coordinator.go) · [v5 配置包](webui/api/bundle_v5.go)
 
 **实施与收口**　使用物理实例身份保存策略，多别名读写同一份值。校验 Lighthouse 平台和启用时的显式额外 IPv4 上限，支持 `0`。配额以常态预留 4 条计算。启用转关闭时持久化待复查状态，交由 Step 3 的可信回读结束。按草案引入 v5 配置包，严格按物理实例核对目标引用，保留 v3/v4 导入。业务配置和运行观察各走对应存储。
 
 **Checklist**
 
-- [ ] 新库、旧库升级、reset 与 v3/v4 导入默认关闭。重启后恢复已保存设置。迁移或发布失败时，无部分提交。
-- [ ] 别名共享设置、其他实例独立。编辑资源身份和删除最后一个别名的行为按设计验证。
-- [ ] v5 往返保留策略，非法平台、重复身份、悬空引用、缺失额度及非法数值被拒绝，配置提交与运行时发布一致。
+- [x] 新库、旧库升级、reset 与 v3/v4 导入默认关闭。重启后恢复已保存设置。迁移或发布失败时，无部分提交。
+- [x] 别名共享设置、其他实例独立。编辑资源身份和删除最后一个别名的行为按设计验证。
+- [x] v5 往返保留策略，非法平台、重复身份、悬空引用、缺失额度及非法数值被拒绝，配置提交与运行时发布一致。
+
+**本地实施证据（2026-11-17）**　新增 `lighthouse_compression_settings` / `lighthouse_compression_state` 两表，SQLite `user_version` 提升为 3；业务配置进入 `BusinessSnapshot`/`RuntimeConfig`，运行观察（待复查）单独存储且不进入 v5。实例 API 为 `GET/PUT /api/targets/{id}/lighthouse-compression`：全量替换、两个字段必填、额度 0～2^32、仅 Lighthouse；启用→关闭同事务写待复查，重新启用清空。目标改绑/删除最后一个别名在同一事务清理旧实例设置；`LoadBusinessSnapshotTx` 对悬空实例 fail-closed。v5 导出固定 `version 5`、顶层 `lighthouse_compression` 数组、只含已保存设置；导入严格接受 3/4/5，v5 校验非法平台、重复身份、悬空引用、缺失额度和非法数值，v3/v4 导入默认关闭；新增 `POST /api/config/import/preview` 只读预览。正式入口测试覆盖新库/旧库/reset/v3/v4 默认关闭、重启、别名共享/隔离、改绑与删除最后别名、显式 0、待复查持久化、迁移/保存/导入失败回滚、v5 往返与非法包、运行时发布一致性。命令：`go test ./config ./webui/api -run '^TestBuild9S1' -race -count=1`、`go test ./... -race -count=1 -timeout=20m`、`go vet ./...`、`go build ./...` 通过；`gofmt`/`git diff --check` 无输出。未执行真实云、浏览器、Docker 与远端 CI。
 
 <a name="step-2"></a>
 
@@ -120,11 +122,13 @@
 
 **Checklist**
 
-- [ ] 精确合并前后地址集合相等，IPv4 与 IPv6、不同协议端口、不同 TAG 无串用。全端口和 ICMP 不走有损路径。
-- [ ] 测出零额度、等额、超额、预留耗尽、旧压缩残留及跨端口重复地址；手工放行不抵扣额外额度。
-- [ ] 用混合原有／DDNS／EdgeOne／IPv6 规则的 S0 验证每条物理行只计一次。S0 为 8 条、无其他新增时，常态 EdgeOne 可新增 88 条。达到 96 条时，普通 EdgeOne 和 DDNS 新增均受预留约束。换版从 96 条开始，验证实际新增 1／4 条的峰值为 97／100，需新增 5 条时零新增。
-- [ ] 多授权组同为 5 条的合成对照中，局部最优组合额外放行 5 个 IPv4，联合最优放行 3 个。风险额度为 3 时找到合规组合，额度为 2 时阻断。以小规模穷举对照候选裁剪、跨组风险去重与结果稳定性。
-- [ ] 对 DNS 输入不足、冲突及没有合规候选分别给出结果；以可复核的脱敏数据或等价夹具核对配额与地址计数。
+- [x] 精确合并前后地址集合相等，IPv4 与 IPv6、不同协议端口、不同 TAG 无串用。全端口和 ICMP 不走有损路径。
+- [x] 测出零额度、等额、超额、预留耗尽、旧压缩残留及跨端口重复地址；手工放行不抵扣额外额度。
+- [x] 用混合原有／DDNS／EdgeOne／IPv6 规则的 S0 验证每条物理行只计一次。S0 为 8 条、无其他新增时，常态 EdgeOne 可新增 88 条。达到 96 条时，普通 EdgeOne 和 DDNS 新增均受预留约束。换版从 96 条开始，验证实际新增 1／4 条的峰值为 97／100，需新增 5 条时零新增。
+- [x] 多授权组同为 5 条的合成对照中，局部最优组合额外放行 5 个 IPv4，联合最优放行 3 个。风险额度为 3 时找到合规组合，额度为 2 时阻断。以小规模穷举对照候选裁剪、跨组风险去重与结果稳定性。
+- [x] 对 DNS 输入不足、冲突及没有合规候选分别给出结果；以可复核的脱敏数据或等价夹具核对配额与地址计数。
+
+**本地实施证据（2026-11-17）**　新增 `provider/compression*.go` 纯规划器：保留站点 current/next 原始 CIDR、协议、端口与版本来源；IPv4 无损 CIDR 合并、按精确授权集合分组、离散端口 64 字符装箱、range/discrete 分开、TCP+UDP 拆分；无损超额时生成有损覆盖并做跨组联合选择（小规模穷举，超 `MaxStates` 返回 `planning_incomplete`，不返回部分计划）；风险按协议端口差集后跨端口并集，旧残留计入、手工放行不抵扣；容量按 S0 物理行一次计数、常态 96、硬上限 100、固定预留 4，仅 pending 增量可借用且清理后须 ≤96。测试覆盖精确合并地址集合、IPv4/IPv6 分离、不同授权集合不合并、64 字符边界、全端口/ICMP 禁有损、零/等额/超额、跨端口重复、旧残留、手工零抵扣、DNS 不完整/命中/冲突、相反动作、S0 混合 8 行、S0=8 的 88/89、96 的 1/4/5 与 100 清理 3/4、5/3 联合选择与额度 3/2、取消/搜索上限、确定性，以及 Build8 样本 88/90/92 的容量关系。命令：`go test ./provider -run '^TestBuild9S2' -race -count=1`、`go test ./... -race -count=1 -timeout=20m`、`go vet ./...`、`go build ./...` 通过；`gofmt`/`git diff --check` 无输出。Step 2 尚未接入正式同步/Dry Run；S1/S2 的宽前缀 witness 消费、计划行保护和 Dry Run 字段留 Step 3。真实组合端口创建/回读/删除、100 配额错误与换版窗口留 Step 8。
 
 <a name="step-3"></a>
 

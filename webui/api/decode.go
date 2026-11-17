@@ -122,7 +122,7 @@ func detectBundleVersion(data []byte) (int, error) {
 		return 0, badRequest("version 字段缺失")
 	}
 	switch *head.Version {
-	case schemaVersionV3, schemaVersionV4:
+	case schemaVersionV3, schemaVersionV4, schemaVersionV5:
 		return *head.Version, nil
 	default:
 		return 0, badRequest(fmt.Sprintf("不支持的配置版本: %d", *head.Version))

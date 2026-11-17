@@ -846,7 +846,7 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 	if headers.Get("Cache-Control") != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", headers.Get("Cache-Control"))
 	}
-	if !strings.HasPrefix(headers.Get("Content-Disposition"), `attachment; filename="fwalizer-config-v4-`) {
+	if !strings.HasPrefix(headers.Get("Content-Disposition"), `attachment; filename="fwalizer-config-v5-`) {
 		t.Errorf("Content-Disposition = %q", headers.Get("Content-Disposition"))
 	}
 	if !strings.HasSuffix(exportBody, "}\n") {
@@ -855,13 +855,13 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 	// 导出是唯一允许包含敏感值的响应
 	for _, secret := range []string{tcSecretKey, smtpPass, webhookURL} {
 		if !strings.Contains(exportBody, secret) {
-			t.Errorf("v4 导出应包含敏感值 %q", secret)
+			t.Errorf("v5 导出应包含敏感值 %q", secret)
 		}
 	}
-	// Build8 Step 4：version 4 固定结构必须包含 edgeone_sites、policy 与 monitoring
-	for _, fragment := range []string{`"version": 4`, `"edgeone_sites"`, `"zone-process"`, `"policy"`, `"uptime_kuma_push"`, `"health_timeout": "25m"`, `"interval": "45s"`} {
+	// Build9 Step 1：version 5 固定结构在 v4 基础上必须包含 lighthouse_compression
+	for _, fragment := range []string{`"version": 5`, `"edgeone_sites"`, `"lighthouse_compression"`, `"zone-process"`, `"policy"`, `"uptime_kuma_push"`, `"health_timeout": "25m"`, `"interval": "45s"`} {
 		if !strings.Contains(exportBody, fragment) {
-			t.Errorf("v4 导出缺少 %s；body=%s", fragment, exportBody)
+			t.Errorf("v5 导出缺少 %s；body=%s", fragment, exportBody)
 		}
 	}
 
@@ -959,8 +959,8 @@ func TestProcessConfigExportImportRoundTrip(t *testing.T) {
 	if code := postJSON(t, dstBase+"/api/config/import", `{"version":2,"targets":[],"rules":[],"settings":{}}`); code != http.StatusBadRequest {
 		t.Errorf("version 2 导入状态码 = %d, want 400", code)
 	}
-	if code := postJSON(t, dstBase+"/api/config/import", `{"version":5,"targets":[],"rules":[],"settings":{}}`); code != http.StatusBadRequest {
-		t.Errorf("version 5 导入状态码 = %d, want 400", code)
+	if code := postJSON(t, dstBase+"/api/config/import", `{"version":6,"targets":[],"rules":[],"settings":{}}`); code != http.StatusBadRequest {
+		t.Errorf("version 6 导入状态码 = %d, want 400", code)
 	}
 
 	// 5) 进程日志不得泄露任何敏感值（导出响应是唯一允许包含它们的 HTTP 响应）

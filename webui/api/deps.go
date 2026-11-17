@@ -210,6 +210,8 @@ func (d *Deps) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/targets", d.handleAddTarget)
 	mux.HandleFunc("PUT /api/targets/{id}", d.handleUpdateTarget)
 	mux.HandleFunc("DELETE /api/targets/{id}", d.handleDeleteTarget)
+	mux.HandleFunc("GET /api/targets/{id}/lighthouse-compression", d.handleGetLighthouseCompression)
+	mux.HandleFunc("PUT /api/targets/{id}/lighthouse-compression", d.handlePutLighthouseCompression)
 	mux.HandleFunc("POST /api/test-connection", d.handleTestConnection)
 	// 地域数据（前端自动补全数据源）
 	mux.HandleFunc("GET /api/zones", d.handleGetZones)
@@ -248,6 +250,7 @@ func (d *Deps) Register(mux *http.ServeMux) {
 	// 配置导出固定为 POST（旧 GET 端点已删除，Build6 §3.3）
 	mux.HandleFunc("POST /api/config/export", d.handleConfigExport)
 	mux.HandleFunc("POST /api/config/import", d.handleConfigImport)
+	mux.HandleFunc("POST /api/config/import/preview", d.handleConfigImportPreview)
 	// 告警配置
 	mux.HandleFunc("GET /api/alerts", d.handleGetAlerts)
 	mux.HandleFunc("PUT /api/alerts", d.handlePutAlerts)

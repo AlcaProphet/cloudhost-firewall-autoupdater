@@ -75,7 +75,7 @@ const v3DefaultPolicyJSON = `{"dns_failed_enabled":false,"sync_error_enabled":fa
 // v3DefaultEmailJSON 是默认邮件片段（含 Build7 主题/正文）
 const v3DefaultEmailJSON = `{"enabled":false,"host":"","port":"587","security":"auto_starttls","username":"","password":"","from_addr":"","to_addr":"","subject":"[FWAlizer] 告警通知","body":"FWAlizer 检测到运行异常，请检查同步日志。"}`
 
-// TestExportVersion4StructureAndFilename 空库导出必须是完整 version 4 结构：
+// TestExportVersion5StructureAndFilename 空库导出必须是完整 version 5 结构：
 // policy/email/webhook + monitoring、默认全部关闭、默认主题正文与时长、v4 附件名。
 func TestExportVersion4StructureAndFilename(t *testing.T) {
 	e := newTestEnv(t)
@@ -87,8 +87,8 @@ func TestExportVersion4StructureAndFilename(t *testing.T) {
 	if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
 		t.Errorf("导出 Cache-Control = %q, want no-store", cc)
 	}
-	if !version4FilenamePattern.MatchString(w.Header().Get("Content-Disposition")) {
-		t.Errorf("导出附件名 = %q, want fwalizer-config-v4-*.json", w.Header().Get("Content-Disposition"))
+	if !version5FilenamePattern.MatchString(w.Header().Get("Content-Disposition")) {
+		t.Errorf("导出附件名 = %q, want fwalizer-config-v5-*.json", w.Header().Get("Content-Disposition"))
 	}
 
 	var raw map[string]json.RawMessage
@@ -99,8 +99,8 @@ func TestExportVersion4StructureAndFilename(t *testing.T) {
 	if err := json.Unmarshal(raw["version"], &version); err != nil {
 		t.Fatalf("解析 version 失败: %v", err)
 	}
-	if version != 4 {
-		t.Fatalf("version = %d, want 4（导出固定 v4）", version)
+	if version != 5 {
+		t.Fatalf("version = %d, want 5（导出固定 v5）", version)
 	}
 
 	var alerts struct {
@@ -145,14 +145,16 @@ func TestExportVersion4StructureAndFilename(t *testing.T) {
 }
 
 // TestImportRejectsVersion1And2AndOthers version 1/2 与其他版本必须直接拒绝（400、零写入、零发布）；
-// v3 与 v4 是接受版本。
+// v3/v4/v5 是接受版本，v5 另需完整压缩段。
 func TestImportRejectsVersion1And2AndOthers(t *testing.T) {
 	cases := map[string]string{
 		"version 1": `{"version":1,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` +
 			validBundleSettings() + `,` + validBundleAlerts() + `,` + validBundleMonitoring() + `}`,
 		"version 2": `{"version":2,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` +
 			validBundleSettings() + `,` + validBundleAlerts() + `,` + validBundleMonitoring() + `}`,
-		"version 5": `{"version":5,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` +
+		"version 5 缺压缩段": `{"version":5,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` +
+			validBundleSettings() + `,` + validBundleAlerts() + `,` + validBundleMonitoring() + `}`,
+		"version 6": `{"version":6,"metadata":{"exported_at":"2026-09-22T08:00:00Z"},"targets":[],"rules":[],` +
 			validBundleSettings() + `,` + validBundleAlerts() + `,` + validBundleMonitoring() + `}`,
 	}
 	for name, body := range cases {

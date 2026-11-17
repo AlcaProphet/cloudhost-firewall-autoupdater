@@ -18,6 +18,7 @@ import (
 const (
 	schemaVersionV3 = 3
 	schemaVersionV4 = 4
+	schemaVersionV5 = 5
 )
 
 // bundleV3SecondsRFC3339 是导出时间与附件文件名共用的 UTC 时间格式。
@@ -25,8 +26,8 @@ const (
 	bundleV3TimeLayout = time.RFC3339
 	// bundleV3FileTimeLayout 固定为 20060102T150405Z（Build6 §3.3）
 	bundleV3FileTimeLayout = "20060102T150405Z"
-	// bundleV4FilenamePrefix 附件文件名前缀（导出固定 v4）
-	bundleV4FilenamePrefix = "fwalizer-config-v4-"
+	// bundleV5FilenamePrefix 附件文件名前缀（导出固定 v5）
+	bundleV5FilenamePrefix = "fwalizer-config-v5-"
 )
 
 // presenceSlice 是带 presence 信息的 JSON 数组：缺失与 null 都视为未提供。
@@ -302,15 +303,16 @@ type bundleV3Wire struct {
 
 // checkedBundle 是预校验通过、已归一化的配置包（v3 与 v4 共用）。
 type checkedBundle struct {
-	ExportedAt time.Time
-	Targets    []bundleV3Target
-	Rules      []bundleV3Rule
-	Sites      []config.EdgeOneSite
-	Settings   checkedBundleSettings
-	Policy     config.AlertPolicyConfig
-	Email      config.AlertEmailConfig
-	Webhook    config.AlertWebhookConfig
-	Push       config.UptimeKumaPushConfig
+	ExportedAt            time.Time
+	Targets               []bundleV3Target
+	Rules                 []bundleV3Rule
+	Sites                 []config.EdgeOneSite
+	LighthouseCompression []config.LighthouseCompression
+	Settings              checkedBundleSettings
+	Policy                config.AlertPolicyConfig
+	Email                 config.AlertEmailConfig
+	Webhook               config.AlertWebhookConfig
+	Push                  config.UptimeKumaPushConfig
 }
 
 type checkedBundleSettings struct {
