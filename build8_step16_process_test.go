@@ -320,31 +320,54 @@ func TestStep16ConflictOverlapAndRecovery(t *testing.T) {
 		t.Fatalf("重启预检 = %+v", restarted.Preflight)
 	}
 
-	// 查实解除：完整且无重叠，手动轮放行；冲突记录清除。
-	f.cloud.patchZone("zone-overlap", func(zone *step16Zone) {
-		zone.CurrentV4 = []string{"198.51.100.0/24"}
-	})
-	f.dns.setIP("192.0.2.10")
-	lastEdge = *restarted.EdgeOne.LastCompletedAt
-	if code := f.trigger(); code != http.StatusAccepted {
-		t.Fatalf("recovery trigger = %d", code)
+	// 只改变 DNS 输入，等待定时轮利用有效的 EdgeOne 快照查实解除。
+	if restarted.DNS.LastCompletedAt == nil {
+		t.Fatal("重启轮缺少 DNS 完成时间")
 	}
-	recovered := f.waitRoundAfter(&lastEdge, 30*time.Second)
+	f.dns.setIP("192.0.2.10")
+	recovered := f.waitRoundAfter(restarted.DNS.LastCompletedAt, 20*time.Second)
 	row, err = f.conflict()
 	if err != nil || row != nil {
-		t.Fatalf("恢复后冲突记录 = %+v err=%v", row, err)
+		t.Fatalf("定时恢复后冲突记录 = %+v err=%v", row, err)
 	}
 	td5, cf5 := f.cloud.teoCounts("zone-overlap")
-	lhD5, lhC5, lhX5 := f.cloud.totalLHCounts()
-	if cf5 != 0 || lhC5-lhC4 != 2 || lhX5 != 0 || td5 != td4+1 {
-		t.Fatalf("恢复计数 TEO=%d/%d LH=%d/%d/%d (before %d/%d/%d)", td5, cf5, lhD5, lhC5, lhX5, td4, lhC4, lhX4)
+	if td5 != td4 || cf5 != 0 {
+		t.Fatalf("DNS 定时恢复应复用 EdgeOne 快照且零确认，TEO=%d/%d", td5, cf5)
+	}
+	if d, c, x := f.cloud.lhCounts("lhins-step16-a"); d+c+x != 0 {
+		t.Fatalf("EdgeOne 未到期，定时轮不应执行该目标，LH=%d/%d/%d", d, c, x)
+	}
+	if d, c, x := f.cloud.lhCounts("lhins-step16-b"); d != 2 || c != 1 || x != 0 {
+		t.Fatalf("DNS 定时恢复计数 LH=%d/%d/%d，期望 2/1/0", d, c, x)
 	}
 	if recovered.Preflight.State != syncer.PreflightStateClear {
-		t.Fatalf("恢复预检 = %+v", recovered.Preflight)
+		t.Fatalf("定时恢复预检 = %+v", recovered.Preflight)
 	}
 	code, health, _ = f.health()
 	if code != http.StatusOK {
-		t.Fatalf("恢复 health = %d %v", code, health)
+		t.Fatalf("定时恢复 health = %d %v", code, health)
+	}
+	t.Logf("STEP16 ticker recovery: conflict cleared, DNS LH=2/1/0, Edge LH=0/0/0, TEO=%d/%d, health=%d", td5, cf5, code)
+
+	// 手动轮让两侧到期，验证 EdgeOne 也恢复写入，已恢复的 DNS 不重复新增。
+	if code := f.putSettings(map[string]string{"interval": "5m"}); code != http.StatusOK {
+		t.Fatalf("恢复 DNS 间隔 = %d", code)
+	}
+	if code := f.trigger(); code != http.StatusAccepted {
+		t.Fatalf("恢复后手动触发 = %d", code)
+	}
+	manualRecovered := f.waitRoundAfter(recovered.LastSync, 30*time.Second)
+	if manualRecovered.Preflight.State != syncer.PreflightStateClear {
+		t.Fatalf("恢复后手动预检 = %+v", manualRecovered.Preflight)
+	}
+	if td, cf := f.cloud.teoCounts("zone-overlap"); td != td5+1 || cf != 0 {
+		t.Fatalf("恢复后手动轮 TEO=%d/%d，期望 %d/0", td, cf, td5+1)
+	}
+	if d, c, x := f.cloud.lhCounts("lhins-step16-a"); d != 2 || c != 1 || x != 0 {
+		t.Fatalf("EdgeOne 恢复计数 LH=%d/%d/%d，期望 2/1/0", d, c, x)
+	}
+	if _, c, x := f.cloud.lhCounts("lhins-step16-b"); c != 1 || x != 0 {
+		t.Fatalf("DNS 不应重复新增或删除，LH create/delete=%d/%d", c, x)
 	}
 	f.stop()
 }
@@ -842,8 +865,10 @@ func TestStep16SourceIsolation(t *testing.T) {
 		if status.LastRound == nil || status.LastRound.Outcome != syncer.RoundSuccess {
 			t.Fatalf("DNS-only 轮次 = %+v", status.LastRound)
 		}
-		if td, cf := f.cloud.teoCounts("zone-any"); td != 0 || cf != 0 {
-			t.Fatalf("DNS-only 出现 TEO 调用: %d/%d", td, cf)
+		for _, action := range f.cloud.actionLog() {
+			if strings.Contains(action, " teo ") {
+				t.Fatalf("DNS-only 出现 TEO 调用: %s", action)
+			}
 		}
 		if d, c, x := f.cloud.lhCounts("lhins-step16-a"); d != 2 || c != 1 || x != 0 {
 			t.Fatalf("DNS-only Lighthouse = %d/%d/%d", d, c, x)

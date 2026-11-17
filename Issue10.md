@@ -234,7 +234,7 @@ R08～R13 均已在 2026-11-14 的单一本地提交中处理，实施细节见 
   - 单源运行保留历史冲突提示，不把历史冲突当作当前双开阻断；这是 Design6 的既定语义。
   - 原提交说明的「16 用例」「30+ 文件」等历史元数据不重写提交，由文档订正口径。
 - **实施范围（2026-11-14，单提交）：** 生产仅 `internal/health/health.go` 的原因选择；其余为 `internal/health/health_test.go`、`syncer/step10_confirm_test.go`、`syncer/step15_source_test.go`、`webui/frontend/tests/step14-ui.test.mjs`、`webui/frontend/tests/edgeone-ui.test.mjs`、`webui/frontend/tests/helpers/compiled-component.mjs` 与本文件、Build8/AGENTS/Design6。未改预检、写入、确认、调度、API/schema、配置包或依赖。
-- **后续：** 按用户选择完成单一本地提交，不推送；Step 16 本地端到端与 Step 17 真实云/发布仍待执行。R13 的 helper 桥接测试使用真实 `createRouter` + memory history，但不是完整 `app.use(router)` 挂载；R11 的日志捕获依赖 syncer 当前无并行测试，后续引入并行测试时需改为注入 logger。这两点作为已知测试边界记录，不改变生产合同。
+- **后续：** 本批按用户选择完成单一本地提交 `5fc04ee`。Step 16 随后在该提交上完成，实施提交 `7d25dce` 已推送。当前本地验收与补强见 [Build8 Step 16](Build8.md#step-16)，Step 17 暂缓。R13 的 helper 桥接测试使用真实 `createRouter` + memory history，但不是完整 `app.use(router)` 挂载；R11 的日志捕获依赖 syncer 当前无并行测试，后续引入并行测试时需改为注入 logger。这两点作为已知测试边界记录，不改变生产合同。
 - **复查入口：** 本文件是复核与实施台账；旧 Issue9 已归档，不重新打开 I9 编号。若后续再发现问题，在本文件追加新编号与实施补记，不覆盖本次复核事实。
 
 ## 7. 实施补记（2026-11-14，单提交）
@@ -268,5 +268,5 @@ R08～R13 均已在 2026-11-14 的单一本地提交中处理，实施细节见 
 
 **提交与边界**
 
-- 本批为单一本地提交，不推送；提交 hash 见 `git log -1`。未执行 `make all`、`npm audit`、真实云/DNS、真实浏览器人工回归、Linux/Docker、远端 CI/GHCR 与发布。
+- 本批提交为 `5fc04ee`，实施当时未推送。本批未执行 `make all`、`npm audit`、真实云/DNS、真实浏览器人工回归、Linux/Docker、远端 CI/GHCR 与发布。
 - R13 测试使用真实 memory history，但 `useRoute` 由 helper 的 `afterEach` 桥接，不是完整 `app.use(router)` 挂载；R11 的全局 `slog` 捕获依赖 `syncer` 当前无并行测试。两点为测试边界，不改变生产合同。
