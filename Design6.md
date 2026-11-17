@@ -1,6 +1,6 @@
 # Design6 — EdgeOne 回源同步与 DNS 协同
 
-> 2026-11-12 · 已确认方案的设计记录 · 实施状态见 [Build8](Build8.md)。
+> 2026-11-12 · EdgeOne 回源同步实施状态见 [Build8](Build8.md)。第九、十节的实施与验收计划见 [Build9](Build9.md)。
 > 基线为 `beta` 的 `102d838f3bcc3d1624c32e44ed65f2eb6feaa0b4`。当前约束见 [AGENTS.md](AGENTS.md)，历史依据见 [Design5](HistoryDocs/Design5.md)、[Build7](HistoryDocs/Build7.md) 和 [Issue7](HistoryDocs/Issue7.md)。本文描述目标行为，现有发布和验收状态仍以仓库记录为准。
 
 [冻结合同](#frozen-contract) · [SQLite 与迁移](#schema-reference) · [API 与配置包](#api-reference) · [TEO 客户端](#teo-reference) · [预检与调度](#preflight-reference) · [目标写入和确认](#target-reference) · [界面与健康](#view-reference) · [Lighthouse 策略压缩](#lighthouse-edgeone-compression) · [一键删除 EdgeOne TAG 规则](#edgeone-tag-cleanup)
@@ -614,7 +614,7 @@ resp, err := client.ConfirmOriginACLUpdateWithContext(ctx, req)
 
 ## 九、腾讯云 Lighthouse 的 EdgeOne 防火墙策略压缩
 
-> 2026-11-17 · 已确认实例级开关、默认关闭、绑定时提示与风险警告。以下算法、参数及兼容方案为设计草案。研究基线见 [Build8 Step 17](Build8.md#step-17) 和 [Step 17 只读测算](thread://01a1e6f5-fcd9-7963-a5c0-63f39beffc2a?hostId=local)。
+> 2026-11-17 · 已确认实例级开关、默认关闭、绑定时提示与风险警告。以下算法、参数及兼容方案为设计草案。实施从 [Build9 Step 1](Build9.md#step-1) 开始，研究基线见 [Build8 Step 17](Build8.md#step-17) 和 [Step 17 只读测算](thread://01a1e6f5-fcd9-7963-a5c0-63f39beffc2a?hostId=local)。
 
 ### 9.1 实例配置与绑定提示
 
@@ -671,7 +671,7 @@ Step 17 样本已有 8 条规则。312 个 IPv4 网段精确合并为 218 个。
 
 ## 十、一键删除 EdgeOne TAG 防火墙规则
 
-> 2026-11-17 · 配套功能设计草案。复用四个现有 Provider 的精确删除能力，可清理压缩规则和当前 TAG 下的普通规则。
+> 2026-11-17 · 配套功能设计草案。复用四个现有 Provider 的精确删除能力，可清理压缩规则和当前 TAG 下的普通规则。实施从 [Build9 Step 4](Build9.md#step-4) 开始。
 
 ### 10.1 清理范围与确认
 

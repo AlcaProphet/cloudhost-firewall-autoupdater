@@ -979,6 +979,8 @@ git diff --check
 
 **Lighthouse 容量后续设计（2026-11-17）**　已完成同站点的只读聚合测算。配置改为 TCP `80,443` 后，现版模拟逐端口展开为 624 条待新增规则。IPv4 精确集合可压至 218 个 CIDR；按官方离散端口格式合成每网段一条仍超过实例配额。已有 8 条规则时，要把当时的网段装进剩余 92 条至少会额外放行 53,246,048 个 IPv4 地址；预留 4 条时至少为 67,696,480 个。以上为只读测算，真实组合规则创建、回读及换版仍待验证。[实例级压缩设计](Design6.md#lighthouse-edgeone-compression) · [腾讯云防火墙配额及端口格式](https://cloud.tencent.com/document/product/1207/44577/)
 
+**后续构建与补验路径**　实例级 Lighthouse 策略压缩和一键删除 EdgeOne TAG 规则由 [Build9](Build9.md) 追踪。本步可使用能按现有策略容纳网段且覆盖全部测试源站的目标继续验收。若沿用需要压缩的 Lighthouse 目标，先完成该功能的本地验收，再进入 [Build9 Step 8](Build9.md#step-8) 的真实试验。可按实际 revision、配置和 RequestId 引用一站多目标、回读、确认及生效等共用证据。 [两阶段验收衔接](Build9.md#build8-step17-link)
+
 <a name="acceptance-matrix"></a>
 
 ## 跨 Step 验收矩阵
