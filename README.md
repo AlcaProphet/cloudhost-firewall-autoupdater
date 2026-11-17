@@ -188,6 +188,8 @@ make all
 
 使用本地镜像时，在 Compose 文件中把 `image` 改为 `fwalizer:local`，然后执行 `docker compose up -d --pull never`。
 
+测试 Build8 候选版的 EdgeOne 回源功能时，请在总同步暂停的状态下先执行模拟测试。Lighthouse 的预览目前显示配额未知，可将预计总规则数与腾讯云公布的每实例 100 条上限核对。 [Build8 实测记录](Build8.md#step-17) · [腾讯云 Lighthouse 配额](https://cloud.tencent.com/document/product/1207/44577/)
+
 默认 DNS 测试使用回环夹具。需要单独验证真实上游 `223.5.5.5:53` 时，运行下面的显式联网测试。
 
 ```bash

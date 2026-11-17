@@ -61,7 +61,7 @@
 
 Step 0～16 达到本地阶段判据，共 17/18 步。Step 0～7 的提交见 `cbec01b`、`1bcfbaa`、`14642a6`、`9df4e19`、`8efbda8`；Step 8～10 的实施与复核见 `76241cc`、`2c4653d`、`29ca91a`、`470f170`。Step 11～15 的实施与复核见 `b3ccb6b`、`ee20e08`、`e94c8fc`（23 个文件，提交标题按实施批次称「三次核验修复」，本文按核验轮次称「二次核验修复」）及 `5fc04ee`（[Issue10](Issue10.md) 收口）。
 
-Step 16 于 2026-11-15 在干净的 `beta / 5fc04ee` 上完成本地验收，原批次已提交并推送为 `7d25dce`。2026-11-17 在该提交上补齐定时自动恢复、DNS-only 请求计数与台账状态，见 [Step 16](#step-16)。Step 17 暂缓，真实云、Linux/Docker、远端 CI 与发布均待执行。
+Step 16 于 2026-11-15 在干净的 `beta / 5fc04ee` 上完成本地验收，原批次已提交并推送为 `7d25dce`。2026-11-17 在该提交上补齐定时自动恢复、DNS-only 请求计数与台账状态，见 [Step 16](#step-16)。Step 17 已开始，当前结果与待验项见 [Step 17](#step-17)。
 
 <a name="step-0"></a>
 
@@ -964,7 +964,20 @@ git diff --check
 - [ ] 更新 README、生产验收清单与阶段实施记录；逐项区分本地模拟、真实云和远端发布证据。
 - [ ] 如执行发布，记录 tag/提交、远端 Actions、目标架构和实物镜像；待补项目按实际状态登记。
 
-**当前证据**　仓库记录的 `v3.0.2` 为 Build8 前的发布基线。Build8 的 TEO 查询证据来自本地模拟服务；真实站点与目标、实际待更新窗口、Build8 对应的远端 CI 与镜像均待本步取证。 [发布基线](AGENTS.md) · [TEO 本地证据](#step-5)
+**进入本步时的基线**　仓库记录的 `v3.0.2` 为 Build8 前的发布基线。Step 5 的 TEO 查询和 Step 16 的写入与确认证据使用本地替身。 [发布基线](AGENTS.md) · [TEO 本地证据](#step-5) · [本地端到端验收](#step-16)
+
+**2026-11-17 开始验收**　在干净的 `beta / 7a5a3a942746e3a36b8c37033246a6fd401d35cf` 开始，远端 `beta` 指向同一提交。Step 16 专项证据见上一步；迁移后的默认真实二进制进程包执行 `go test -race -count=1 -timeout=5m ./tests/process` 通过（`23.303s`）。
+
+| 项目 | 首批结果 |
+|---|---|
+| 真实 TEO 只读 | 站点 A（`ZoneId` 脱敏），2026-11-17 08:51:20（UTC+8），使用 WebUI 保存的 CAM 凭据调用真实 `DescribeOriginACL`，RequestId `8801f673-8472-4eda-b346-6a5b181ba131`。`Status=online`，当前版本 `gaz-0.0.4-20260907`，IPv4 `312`、IPv6 `184`，`ActiveTime=2026-10-12T00:00:00+08:00`、`IsPlaned=false`。响应无 `NextOriginACL`。产品在 08:51:36 通过暂停态 `POST /api/sync/dryrun` 独立向真实 TEO 查询并接受同一当前版，RequestId `3371b923-a22a-48c7-979c-c1cb0fadd123`。 |
+| 真实云目标只读及容量 | 站点 A 绑定一个 Lighthouse 目标（目标 ID 脱敏），选择 IPv4、TCP `ALL`。正式 Dry Run 成功读到 `8` 条防火墙规则，期望 `312` 条，均为待新增，预计总量 `320`；冲突、能力跳过和清理候选均为 `0`。产品返回 `limit=null`、`limit_source=unknown`、`limit_exceeded=false`，目标的实际容量判断依据为腾讯云公开的每实例 `100` 条上限。当前方案超出公开配额。总同步保持暂停，正式 EdgeOne 来源无开始或完成记录，过渡与冲突表各 `0` 行。 [Lighthouse 配额](https://cloud.tencent.com/document/product/1207/44577/) |
+| 真实写入、确认与生效 | 当前目标方案超出容量且仅绑定一个目标，未执行新增、删除或确认。真实一站多目标写入与回读待可容纳当前网段的完整测试源站绑定。当前无待更新版，自动确认、新旧并存、实际生效、旧网段清理与 `unknown` 判明仍待真实窗口。 |
+| 本地 Linux/Docker | `docker compose -f docker-compose.yml.example config -q` 及 `docker build --platform linux/amd64 -f build/Dockerfile -t fwalizer-step17-local:7a5a3a9 .` 通过。Docker Desktop 上运行的本地镜像为 `linux/amd64`，本地镜像索引摘要 `sha256:8bf4aac67ad692b757e55207e292fef14b1379705ebc638df9057fec36e9fac9`。取出二进制验证为 x86-64 静态 ELF、Go `1.27.3`、`CGO_ENABLED=0`；容器 Alpine `3.24.4`、UID `1000`、数据目录 `0700`、SQLite `0600`。WebUI、`/api/health`、空库 `GET /api/edgeone/sites` 均 HTTP 200，容器达 `healthy`，SIGTERM 退出码 `0`（`0.15s`）。 |
+| 真实 DNS 上游补测 | `go test -tags=dnsintegration -json -run '^TestResolve_Upstream223$' -count=1 -timeout=45s ./dns` 执行两条场景后退出 `1`。本机到 `223.5.5.5` 经 `utun1024`，公网域名和 `.invalid` 域名分别得到 `198.18.2.126` 与 `198.18.2.127`。独立 UDP/TCP 查询及本机 Docker 容器内查询复现该结果，当前环境无法取得直达真实上游的验收证据。 |
+| 远端 CI 与发布 | GitHub Actions 按完整 SHA 查询返回 `0` 条，`beta` 无打开的 PR，HEAD 无 tag。现行 workflow 由面向 `main` 的 PR 或 `v*` tag 推送触发。Build8 远端 CI、发布 tag 和 GHCR 镜像待执行。 |
+
+**Lighthouse 容量后续设计（2026-11-17）**　已完成同站点的只读聚合测算。配置改为 TCP `80,443` 后，现版模拟逐端口展开为 624 条待新增规则。IPv4 精确集合可压至 218 个 CIDR；按官方离散端口格式合成每网段一条仍超过实例配额。已有 8 条规则时，要把当时的网段装进剩余 92 条至少会额外放行 53,246,048 个 IPv4 地址；预留 4 条时至少为 67,696,480 个。以上为只读测算，真实组合规则创建、回读及换版仍待验证。[实例级压缩设计](Design6.md#lighthouse-edgeone-compression) · [腾讯云防火墙配额及端口格式](https://cloud.tencent.com/document/product/1207/44577/)
 
 <a name="acceptance-matrix"></a>
 

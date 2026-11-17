@@ -13,7 +13,7 @@
 
 > **Build8 Step 11～15 本地实施（2026-11-14）。** 实施提交为 `b3ccb6b`，首轮核验修复为 `ee20e08`，二次核验修复已提交为 `e94c8fc`（23 个文件；提交标题按实施批次称「三次核验修复」，本文按核验轮次称「二次核验修复」）。本轮从干净的 `beta / ee20e08` 实施二次核验修复，覆盖跨轮过渡保护、旧确认指纹保护、缓存过期、共享目标模拟、站点生效取证及预检健康恢复。修复和本地证据见 [Build8](Build8.md#step-11-15-second-review-fixes)，复核问题与修复方案见 [Issue10.md](Issue10.md)，R08～R13 收口提交为 `5fc04ee`。
 
-> **Build8 Step 16 本地端到端验收（2026-11-15）。** 在干净的 `beta / 5fc04ee` 上使用真实二进制、链接期回环 TEO/Lighthouse 替身、临时 SQLite 与 Chrome 157 CDP 完成 Step 16。本地计数、SQLite/API、浏览器和门禁证据见 [Build8 Step 16](Build8.md#step-16)。生产默认端点与三变量部署接口不变；`step16` 夹具不进入默认门禁/CI。原批次已提交并推送为 `7d25dce`。2026-11-17 在该提交上补齐 DNS 定时轮自动恢复及 DNS-only 全部 TEO 请求的仓内断言。Step 17 暂缓，真实云、Linux/Docker、远端 CI 与发布待执行。
+> **Build8 Step 16 本地端到端验收（2026-11-15）。** 在干净的 `beta / 5fc04ee` 上使用真实二进制、链接期回环 TEO/Lighthouse 替身、临时 SQLite 与 Chrome 157 CDP 完成 Step 16。本地计数、SQLite/API、浏览器和门禁证据见 [Build8 Step 16](Build8.md#step-16)。生产默认端点与三变量部署接口不变；`step16` 夹具不进入默认门禁/CI。原批次已提交并推送为 `7d25dce`。2026-11-17 在该提交上补齐 DNS 定时轮自动恢复及 DNS-only 全部 TEO 请求的仓内断言。同日开始 Step 17，真实查询、容量与本地容器证据见 [Build8 Step 17](Build8.md#step-17)。
 
 > **I9-R01 后续修复（2026-11-02，用户选择并授权 A）：** 实施前 `main / d50daa5b9e619e70a7818349dcc6039bd125199f`，工作树/暂存区干净。唯一生产文件为 `provider/ali_swas.go`；每次规则快照独立创建 SDK 与 HTTP client，避免共享 Headers 和 dara 默认 HTTP 池 Timeout 竞争，分页内复用连接并统一收尾。保留原单请求超时与 100 页限制，不新增 120 秒总预算。正式回归见 `provider/swas_concurrency_test.go` 与 `syncer/swas_concurrency_test.go`；实施证据、验证范围和发布边界统一见 [Issue9 I9-R01](HistoryDocs/Issue9.md#i9-r01)。本轮未部署、提交或推送。
 
