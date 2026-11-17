@@ -171,8 +171,8 @@ func TestBuild9S2RiskCrossPortAndResidue(t *testing.T) {
 		}}},
 	}
 	plan := runCompressionPlan(t, in)
-	if plan.Selected != nil {
-		t.Fatalf("旧残留额外 4 个地址应超过额度 3: %+v", plan.Risk)
+	if plan.Selected == nil || !plan.Selected.Exact {
+		t.Fatalf("旧残留超额时只准入无扩张的精确替换: %+v", plan)
 	}
 	if plan.Risk.ExtraIPv4 != 4 || plan.Risk.OldResidue != 4 {
 		t.Fatalf("风险核算错误: %+v", plan.Risk)
@@ -214,7 +214,7 @@ func TestBuild9S2ManualRuleDoesNotOffset(t *testing.T) {
 		}},
 	}
 	plan := runCompressionPlan(t, in)
-	if plan.Selected != nil || plan.Risk.ExtraIPv4 != 4 {
+	if plan.Selected == nil || !plan.Selected.Exact || plan.Risk.ExtraIPv4 != 4 {
 		t.Fatalf("手工规则不得抵扣: selected=%v risk=%+v", plan.Selected, plan.Risk)
 	}
 	if !plan.Risk.ManualIgnored {
@@ -566,15 +566,15 @@ func TestBuild9S2OppositeActionAndIncomplete(t *testing.T) {
 func TestBuild9S2OtherTagNotReused(t *testing.T) {
 	in := LighthouseCompressionInput{
 		Config:     CompressionConfig{Enabled: true, ExtraIPv4Limit: 0},
-		EdgeOneTag: "edgeone",
-		Sites:      []EdgeOneSitePlanInput{compressionSiteInput("zone-a", []string{"10.0.0.0/24"}, "TCP", "443")},
+		EdgeOneTag: "edgeone", OtherTag: "auto-ddns",
+		Sites: []EdgeOneSitePlanInput{compressionSiteInput("zone-a", []string{"10.0.0.0/24"}, "TCP", "443")},
 		Snapshot: RuleSnapshot{Revision: "1", Rules: []config.RuleInfo{{
 			Protocol: "TCP", Port: "443", CidrBlock: "10.0.0.0/24", Action: "ACCEPT", Description: "[auto-ddns]",
 		}}},
 	}
 	plan := runCompressionPlan(t, in)
-	if plan.Selected == nil || len(plan.Selected.ReusedRows) != 0 || len(plan.Selected.AddRows) != 1 {
-		t.Fatalf("其他 TAG 不得复用: %+v", plan.Selected)
+	if plan.Selected != nil || len(plan.Blockers) != 1 || plan.Blockers[0].Code != IssueCrossTagEquivalent {
+		t.Fatalf("其他 TAG 既不得复用也不得重复新增: %+v", plan)
 	}
 	if plan.Risk.ExtraIPv4 != 0 {
 		t.Fatalf("其他 TAG 不得作为 grant: %+v", plan.Risk)
@@ -670,7 +670,7 @@ func TestBuild9S2OldPortRangeRiskAndProtection(t *testing.T) {
 	for _, ports := range []string{"80-81", "ALL", "1-32767,32768-65535"} {
 		in.Snapshot.Rules[0].Port = ports
 		plan := runCompressionPlan(t, in)
-		if plan.Selected != nil || plan.Risk.ExtraIPv4 != 4 || plan.Risk.OldResidue != 4 {
+		if plan.Selected == nil || !plan.Selected.Exact || plan.Risk.ExtraIPv4 != 4 || plan.Risk.OldResidue != 4 {
 			t.Fatalf("旧端口 %s 在未授权端口仍放行 4 个地址: %+v", ports, plan)
 		}
 		if !slices.ContainsFunc(plan.Risk.PerPort, func(r CompressionPortRisk) bool {
@@ -687,7 +687,7 @@ func TestBuild9S2OldPortRangeRiskAndProtection(t *testing.T) {
 		t.Fatalf("受保护的 81 应抵扣风险，仅 80 作为新增要求: %+v", plan)
 	}
 	in.Protected[0].Protocol = "UDP"
-	if plan := runCompressionPlan(t, in); plan.Selected != nil || plan.Risk.ExtraIPv4 != 4 {
+	if plan := runCompressionPlan(t, in); plan.Selected == nil || !plan.Selected.Exact || plan.Risk.ExtraIPv4 != 4 {
 		t.Fatalf("UDP 保护不得抵扣 TCP: %+v", plan)
 	}
 }

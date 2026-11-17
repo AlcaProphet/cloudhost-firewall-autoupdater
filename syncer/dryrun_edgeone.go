@@ -62,6 +62,7 @@ type DryRunCompression struct {
 	ExpectedCleanup  *int                           `json:"expected_cleanup"`
 	ExpectedAfter    *int                           `json:"expected_after"`
 	RiskLimit        *int64                         `json:"risk_limit"`
+	CurrentExtraIPv4 *uint64                        `json:"current_extra_ipv4"`
 	ExtraIPv4        *uint64                        `json:"extra_ipv4"`
 	MaxExtraRun      *uint64                        `json:"max_extra_run"`
 	PerPort          []provider.CompressionPortRisk `json:"per_port"`

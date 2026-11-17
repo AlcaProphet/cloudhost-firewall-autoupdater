@@ -79,7 +79,7 @@
 - [ ] [Step 7 本地端到端验收](#step-7)
 - [ ] [Step 8 真实云验收与发布证据](#step-8)
 
-**当前进度（2026-11-17）**　Step 0 基线、Step 1 实例配置/迁移/v5、Step 2 纯压缩规划与容量风险判定、Step 3 正式同步/覆盖证明/Dry Run 已本地实施；Step 3 工作树改动未提交。Step 4 起的 WebUI、端到端与真实云验收待执行。Build8 Step 17 的真实只读及测算见[两阶段验收衔接](#build8-step17-link)。
+**当前进度（2026-11-17）**　Step 0 基线、Step 1 实例配置/迁移/v5、Step 2 纯压缩规划与容量风险判定、Step 3 初次实施已提交为 `f7bd2f6`。本次核验修复基于该提交，源码、回归和文档已更新，工作树尚未提交。Step 4～8 待执行。Build8 Step 17 的真实只读及测算见[两阶段验收衔接](#build8-step17-link)。
 
 <a name="step-0"></a>
 
@@ -164,11 +164,29 @@
 - [x] 关闭后无新的压缩写入。满配额或过渡保护时展示待复查和残留，取得足够名额及可信回读后恢复。验证状态跨重启。
 - [x] 正式与模拟使用同一输入得到同一计划；模拟的新增、删除、TEO 确认及运行状态写入均为零。
 
-**本地实施证据（2026-11-17，基线 `beta / 006f675`）**　本轮为本地工作树改动（未提交）。新增 `provider/compression_runtime.go`：对 S1/S2 实际回读核验计划行与压缩 witness、按协议端口核验原始 IPv4 授权、计算实际额外 IPv4/风险、生成借用清理证据、在同一快照上选择“移除后仍完整覆盖”的整批删除子集；手工/另一 TAG 行不计压缩覆盖。新增 `syncer/compression.go`、`syncer/dryrun_compression.go`：正式 attempt 与 Dry Run 共用设置/待复查读取、base 站点过滤、同一压缩计划和容量判定；enabled 使用 96/4/100 合同，disabled 使用原精确表示与 100 条硬配额；S1 缺 witness 时零删除、零确认，S2 缺覆盖时零确认并保留实际增删计数；整批清理共享同一 S1 版本并复核剩余覆盖；关闭态仅在可信 S2 满足覆盖、额外 IPv4 为 0、总行数 ≤96 且无过渡保护时清除 `pending_review`。`syncer/target.go`、`syncer/site_coverage.go` 接入压缩证明与合并清理；`config/store_lighthouse_compression.go` 增加非事务状态读写；`run.go` 注入状态存储；`syncer/dryrun_edgeone.go`、`syncer/syncer.go` 返回 `execution_units[].compression`（物理占用、同轮新增、预算、峰值、借用、预计清理后空位、风险额度、额外 IPv4、阻断原因、残留和 `reserved_restored`），证据不足为 null，关闭态另给 `assumed=true` 测算。enabled 收窄到低于实际残留时按容量/风险阻断且不执行压缩清理，残留由 DryRun 显示；这是本轮确认的边界。
+**初次实施记录（2026-11-17，基线 `beta / 006f675`）**　原批次后来提交为 `f7bd2f6`。新增 `provider/compression_runtime.go`：对 S1/S2 实际回读核验计划行与压缩 witness、按协议端口核验原始 IPv4 授权、计算实际额外 IPv4/风险、生成借用清理证据、在同一快照上选择“移除后仍完整覆盖”的整批删除子集；手工/另一 TAG 行不计压缩覆盖。新增 `syncer/compression.go`、`syncer/dryrun_compression.go`：正式 attempt 与 Dry Run 共用设置/待复查读取、base 站点过滤、同一压缩计划和容量判定；enabled 使用 96/4/100 合同，disabled 使用原精确表示与 100 条硬配额；S1 缺 witness 时零删除、零确认，S2 缺覆盖时零确认并保留实际增删计数；整批清理共享同一 S1 版本并复核剩余覆盖；关闭态仅在可信 S2 满足覆盖、额外 IPv4 为 0、总行数 ≤96 且无过渡保护时清除 `pending_review`。`syncer/target.go`、`syncer/site_coverage.go` 接入压缩证明与合并清理；`config/store_lighthouse_compression.go` 增加非事务状态读写；`run.go` 注入状态存储；`syncer/dryrun_edgeone.go`、`syncer/syncer.go` 返回 `execution_units[].compression`（物理占用、同轮新增、预算、峰值、借用、预计清理后空位、风险额度、额外 IPv4、阻断原因、残留和 `reserved_restored`），证据不足为 null，关闭态另给 `assumed=true` 测算。初版收窄路径在现有残留超额时停止清理，现行行为见下方核验修复。
 
 本地测试：`TestBuild9S3*` 覆盖配额/风险/DNS 独立/版本竞争/旧新并存、S1 缺端口或整行、另一 TAG 等价、相反动作、S2 缺覆盖计数、整批重叠子集、借用 100→96/100→97、删除失败、并发新增清理、DDNS 同轮预算、关闭替换与 pending 清除、受保护/满配额残留、临时 SQLite 重启、压缩站点确认、正式/模拟同计划及 DryRun 零副作用。命令：`go test ./provider ./syncer ./config -run '^TestBuild9S3' -race -count=10 -timeout=20m` 通过；`go test ./... -race -count=1 -timeout=20m` 12 包通过；`make all` 退出码 0（前端 188 项通过、0 失败；Go 12 包 race、`go vet`、产品构建通过）；`gofmt` 与 `git diff --check` 无输出。本机 Go 1.27.3 darwin/arm64、Node 26.7.0；CI/Docker 固定 Node 24.21.0，本地前端工具链差异已记录。
 
 边界：仅使用本地 Provider/TEO 替身、临时 SQLite 和正式入口；未执行真实 TEO/Lighthouse 写删、真实换版/生效、浏览器、Docker、远端 CI 或发布。真实组合端口、真实确认与清理、Step 17 样本复算留 Step 8，按实际授权执行。
+
+<a name="step-3-review-fixes"></a>
+
+#### Step 3 核验修复（2026-11-17）
+
+实施前为干净的 `beta / f7bd2f6`，本地分支领先本地 `origin/beta` 两个提交。
+
+| 核验项 | 修复与本地判据 |
+|---|---|
+| 来源和配额 | 一个来源到期时，新增和条件删除只准入相应 TAG。仅 EdgeOne 到期且 DDNS 覆盖完整时，实际只删除 EdgeOne 旧行，保留 DDNS 候选。已启用实例即使只配置 DDNS、没有可压缩站点，S0 为 96 条时仍为零新增。 |
+| 回读取证 | S0、S1 和 S2 共用相反动作判定。仅在 S1 出现的 `ALL/空端口` 或 `TCP/空端口` DROP 触发零删除、零 TEO 确认。手工精确等价按既有功能 key 只读取证，和压缩混用时仅新增缺少的端口。另一 TAG 精确等价按冲突阻断重复新增。S2 缺覆盖时保留实际新增 4 条、删除 4 条及失败观测，TEO 确认为零。 |
+| 收窄与关闭 | 已有超额时，常态容量内的替换须按协议、端口区间证明额外放行集合不扩大。覆盖完整时可直接安全纯清理，并在可信 S2 上复算。单名额回归将 `/28` 安全替换为 `/30`，最终额外 IPv4 为 2。关闭态以零额外放行为确认门槛，保护中的旧宽行仍额外放行 65,280 个 IPv4 时保留待复查，TEO 确认为零。待复查按可信 S2 的完整覆盖、零额外放行、实际行数 ≤96 及已知且无剩余过渡保护收口。 |
+| 借用与释放 | 在同一 S0、候选和待更新指纹下，用既有过渡状态机推演生效后仍保留的保护。仅服务旧版的复用行计入符合条件的回收证据，仍需覆盖新版或其他站点、处在保护内或定位不唯一的行保留。临时 SQLite 场景从 96 条借用至 100 条，生效前零删除并确认一次，重启后读取新版成为当前，零新增、删除四条并回读 96 条。预计回到 97 条或历史保护导致只能回到 99 条时，实际零新增、零删除、零确认。 |
+| 模拟与正式诊断 | 物理执行单元复用冻结快照、预检来源准入、规划及清理安全门。空快照即使有可执行新增计划，`coverage_ready` 仍为 false。站点输入不可用时压缩峰值和风险为 null。关闭态实际新增两条时，从同一 S0 重算的假设启用计划峰值为一条。`compression.current_extra_ipv4` 带回当前快照的风险证据。正式目标成功、阻断和失败事件附最后一次 attempt 的 `compression` 观察，分别呈现实际占用、规划峰值、保护范围、额度、读取阶段和阻断原因。 |
+
+专项 `go test ./provider ./syncer ./config -run '^TestBuild9S[123]' -race -count=10 -timeout=20m` 在三个包均通过。将 12 组针对性回归放入独立的 `f7bd2f6` 基线副本，12 组均按行为断言失败。回归使用正式同步轮和 Dry Run 入口、本地 Provider/TEO 替身及临时 SQLite。使用临时 npm 缓存执行 `make all`，前端构建和 188 项行为回归、12 个 Go 包的无缓存 race 测试、`go vet` 与产品构建均通过。`gofmt` 和 `git diff --check` 无输出。
+
+真实浏览器、Docker、真实云写删与换版、远端 CI 和发布归后续步骤。
 
 <a name="step-4"></a>
 

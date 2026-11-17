@@ -90,6 +90,7 @@ type compressionCoverSearch struct {
 	rowBudget    int
 	normalBudget int
 	limit        uint64
+	narrowing    bool
 	remainingMin []int
 	best         compressionCoverResult
 }
@@ -114,6 +115,11 @@ func (s *compressionCoverSearch) walk(group int, task *compressionCoverTask, add
 		return
 	}
 	baseRisk := s.planner.risk.oldExtra
+	if s.narrowing {
+		// Options already proved containment within S0 per port. Rank
+		// replacements by their retained extra addresses after old rows leave.
+		baseRisk = nil
+	}
 	total := baseRisk.union(risk)
 	limit := s.limit
 	if s.best.rep != nil {

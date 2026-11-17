@@ -91,7 +91,7 @@ func (p compressionPlanner) buildCoverTree(group compressionAuthGroup, prefix ne
 			}
 			if p.hitsDNS(option.extra) {
 				rejections[CompressionBlockedDNSHit] = true
-			} else if p.risk.oldExtra.union(option.extra).count() <= uint64(p.in.Config.ExtraIPv4Limit) {
+			} else if p.lossyOptionFits(option) {
 				tree.option = option
 			}
 		}
@@ -102,8 +102,20 @@ func (p compressionPlanner) buildCoverTree(group compressionAuthGroup, prefix ne
 		}
 		return left
 	}
-	tree.cost = coverTreeCosts(tree, p.risk.oldExtra, rowBudget)
+	oldExtra := p.risk.oldExtra
+	if oldExtra.count() > uint64(p.in.Config.ExtraIPv4Limit) {
+		oldExtra = nil
+	}
+	tree.cost = coverTreeCosts(tree, oldExtra, rowBudget)
 	return tree
+}
+
+func (p compressionPlanner) lossyOptionFits(option *compressionCoverOption) bool {
+	limit := uint64(p.in.Config.ExtraIPv4Limit)
+	if p.risk.oldExtra.count() > limit {
+		return option.extra.count() <= limit && !p.risk.expandsExtra(CompressionRepresentation{Rows: option.rows})
+	}
+	return p.risk.oldExtra.union(option.extra).count() <= limit
 }
 
 func (p compressionPlanner) hitsDNS(extra ipv4Set) bool {
@@ -133,7 +145,11 @@ func (p compressionPlanner) planLossy(ctx context.Context, groups []compressionA
 	baseRows := len(p.in.Snapshot.Rules) + p.in.OtherNewRows
 	normalBudget := max(0, compressionNormalCap-baseRows)
 	rowBudget := normalBudget
-	if p.pending && p.in.AssessCleanup != nil && strings.TrimSpace(p.in.PendingFingerprint) != "" {
+	limit := uint64(p.in.Config.ExtraIPv4Limit)
+	narrowing := p.risk.oldExtra.count() > limit
+	if narrowing {
+		p.in.AssessCleanup = nil
+	} else if p.pending && p.in.AssessCleanup != nil && strings.TrimSpace(p.in.PendingFingerprint) != "" {
 		rowBudget = max(0, compressionHardCap-baseRows)
 	}
 	var roots []*compressionCoverTree
@@ -147,7 +163,7 @@ func (p compressionPlanner) planLossy(ctx context.Context, groups []compressionA
 	}
 	search := compressionCoverSearch{
 		planner: p, budget: &budget, roots: roots, rowBudget: rowBudget,
-		normalBudget: normalBudget, limit: uint64(p.in.Config.ExtraIPv4Limit),
+		normalBudget: normalBudget, limit: limit, narrowing: narrowing,
 	}
 	search.run()
 	if budget.blocker != nil {

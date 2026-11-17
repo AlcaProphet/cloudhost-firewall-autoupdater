@@ -34,7 +34,7 @@ func TestBuild9S3DryRunCompressionMatchesFormalNoSideEffects(t *testing.T) {
 		t.Fatalf("压缩预览标志错误: %+v", unit.Compression)
 	}
 	if unit.Compression.Mode != provider.CompressionModeNormal || unit.Compression.AddRows != 1 ||
-		unit.PlannedAdd != 1 || unit.TransitionPeak != 1 {
+		unit.PlannedAdd != 1 || unit.TransitionPeak != 1 || unit.CoverageReady {
 		t.Fatalf("压缩预览容量错误: %+v unit=%+v", unit.Compression, unit)
 	}
 	if len(unit.Compression.Rows) != 1 || unit.Compression.Rows[0].Port != "80,443" {
@@ -67,7 +67,7 @@ func TestBuild9S3DryRunCompressionMatchesFormalNoSideEffects(t *testing.T) {
 
 func TestBuild9S3DryRunDisabledShowsAssumed(t *testing.T) {
 	p := newProbeProvider(config.CloudTCLighthouse, 0)
-	site := step3Site("zone-a", "TCP", "443")
+	site := step3Site("zone-a", "TCP", "80,443")
 	teo := &step10TEO{snapshots: []provider.OriginACLSnapshot{
 		step11Snapshot("v1", []string{"203.0.113.0/24"}, "", nil),
 	}}
@@ -85,7 +85,7 @@ func TestBuild9S3DryRunDisabledShowsAssumed(t *testing.T) {
 	if len(unit.Compression.Rows) == 0 || unit.Compression.AddRows == 0 {
 		t.Fatalf("假设启用测算应包含压缩行: %+v", unit.Compression)
 	}
-	if unit.PlannedAdd != 1 || unit.TransitionPeak != 1 {
+	if unit.PlannedAdd != 2 || unit.TransitionPeak != 2 || unit.Compression.OtherNewRows != 0 || unit.Compression.Peak == nil || *unit.Compression.Peak != 1 {
 		t.Fatalf("现行计划仍应按关闭态展示精确新增: %+v", unit)
 	}
 	if _, creates, deletes := p.counts(); creates != 0 || deletes != 0 {
@@ -155,8 +155,8 @@ func TestBuild9S3DryRunNarrowedResidualIsVisible(t *testing.T) {
 		t.Fatalf("DryRun 失败: %v", err)
 	}
 	unit := resp.ExecutionUnits[0]
-	if unit.Compression.Mode != provider.CompressionModeBlocked {
-		t.Fatalf("收窄额度应阻断新压缩写: %+v", unit.Compression)
+	if unit.Compression.Mode != provider.CompressionModeNormal || unit.Compression.AddRows != 1 || unit.CoverageReady {
+		t.Fatalf("收窄应允许精确替换并显示当前未达标: %+v", unit.Compression)
 	}
 	if unit.Compression.ExtraIPv4 == nil || *unit.Compression.ExtraIPv4 == 0 {
 		t.Fatalf("应显示实际额外放行残留: %+v", unit.Compression)
@@ -166,5 +166,24 @@ func TestBuild9S3DryRunNarrowedResidualIsVisible(t *testing.T) {
 	}
 	if _, creates, deletes := p.counts(); creates != 0 || deletes != 0 {
 		t.Fatalf("DryRun 不得写云: create=%d delete=%d", creates, deletes)
+	}
+}
+
+func TestBuild9S3DryRunUnknownPeakForUnavailableSite(t *testing.T) {
+	p := newProbeProvider(config.CloudTCLighthouse, 0)
+	teo := &step10TEO{describeFn: func() (provider.OriginACLSnapshot, error) {
+		return provider.OriginACLSnapshot{}, errors.New("fixture: site unavailable")
+	}}
+	for _, enabled := range []bool{true, false} {
+		st := step3State(t, p, step3Site("zone-a", "TCP", "443"), step3Settings(enabled, 0), teo)
+		resp, err := step3Syncer(t, st, newStep3CompressionStore()).DryRun()
+		if err != nil {
+			t.Fatal(err)
+		}
+		unit := resp.ExecutionUnits[0]
+		if unit.DataComplete || unit.CoverageReady || unit.Compression.Peak != nil || unit.Compression.ExtraIPv4 != nil ||
+			len(unit.Compression.Blockers) == 0 {
+			t.Fatalf("enabled=%v: 站点输入不足时峰值和风险均未知: %+v", enabled, unit)
+		}
 	}
 }

@@ -84,7 +84,7 @@ func TestBuild9S3CleanupBatchKeepsCoverage(t *testing.T) {
 	}
 	plan := PlanCompressionCleanup(CompressionCleanupInput{
 		Snapshot: in.Snapshot, Tag: in.EdgeOneTag, OtherTag: "auto-dns",
-		Sites: in.Sites, EligibleSites: in.Sites,
+		Sites: in.Sites,
 	})
 	if len(plan.Deletable) != 1 || plan.Remaining != 1 {
 		t.Fatalf("整批删除会失去覆盖时只能提交一个子集: %+v", plan)
@@ -97,10 +97,10 @@ func TestBuild9S3CleanupBatchKeepsCoverage(t *testing.T) {
 func TestBuild9S3CleanupEvidence96And97(t *testing.T) {
 	makeInput := func(oldRows int) LighthouseCompressionInput {
 		site := compressionSiteInput("zone-a", []string{"10.0.0.0/32", "10.0.0.2/32"}, "TCP", "1-65535")
-		next := edgeVersion("v2", "10.0.0.4/32", "10.0.0.6/32", "10.0.0.8/32", "10.0.0.10/32")
+		next := edgeVersion("v2", "10.0.0.0/32", "10.0.0.2/32", "10.0.0.4/32", "10.0.0.6/32", "10.0.0.8/32", "10.0.0.10/32")
 		site.Snapshot.Next = &next
 		rules := make([]config.RuleInfo, 0, 96)
-		// 当前版两行复用，不进入释放证据。
+		// 两条复用行在新版仍有授权，不能计入释放证据。
 		rules = append(rules,
 			compressionRule("10.0.0.0/32", "ALL", "[edgeone]"),
 			compressionRule("10.0.0.2/32", "ALL", "[edgeone]"),
@@ -170,7 +170,7 @@ func TestBuild9S3CoverageOppositeAction(t *testing.T) {
 		compressionRule("10.0.0.0/32", "ALL", "[edgeone]"),
 		{Protocol: "TCP", Port: "80", CidrBlock: "10.0.0.0/32", Action: "DROP", Description: "manual"},
 	}}
-	coverage := CompressionCoverageFromRules(snapshot, "edgeone", []EdgeOneSitePlanInput{site}, nil, 0)
+	coverage := CompressionCoverageFromRules(snapshot, "edgeone", "auto-dns", []EdgeOneSitePlanInput{site}, nil, 0)
 	if coverage.Complete || len(coverage.Conflicts) == 0 {
 		t.Fatalf("相反动作必须冻结覆盖: %+v", coverage)
 	}
@@ -194,5 +194,27 @@ func TestBuild9S3CleanupEvidenceRejectsMissingPendingCoverage(t *testing.T) {
 	evidence := AssessCompressionCleanupEvidence(in, in.Sites, candidate)
 	if len(evidence.ReleasableRows) != 0 {
 		t.Fatalf("待更新版缺覆盖时不得产生借用证据: %+v", evidence)
+	}
+}
+
+func TestBuild9S3RiskSubsetPerProtocolAndPort(t *testing.T) {
+	site := compressionSiteInput("zone-a", []string{"203.0.113.0/24"}, "TCP", "80,443")
+	before := LighthouseCompressionInput{
+		EdgeOneTag: "edgeone", OtherTag: "auto-dns", Sites: []EdgeOneSitePlanInput{site},
+		Snapshot: RuleSnapshot{Revision: "1", Rules: []config.RuleInfo{compressionRule("203.0.0.0/16", "80", "[edgeone]")}},
+	}
+	after := before
+	after.Snapshot.Rules = append(append([]config.RuleInfo{}, before.Snapshot.Rules...), compressionRule("203.0.0.0/16", "443", "[edgeone]"))
+	old := CompressionCoverageFromRules(before.Snapshot, before.EdgeOneTag, before.OtherTag, before.Sites, nil, 0)
+	new := CompressionCoverageFromRules(after.Snapshot, after.EdgeOneTag, after.OtherTag, after.Sites, nil, 0)
+	if !old.RiskKnown || !new.RiskKnown || old.ExtraIPv4 == 0 || new.ExtraIPv4 != old.ExtraIPv4 {
+		t.Fatalf("对照应保持跨端口去重总数: before=%d after=%d", old.ExtraIPv4, new.ExtraIPv4)
+	}
+	if CompressionRiskDoesNotExpand(before, after) {
+		t.Fatal("443 新增额外地址，不能通过收窄准入")
+	}
+	after.Snapshot.Rules[1].CidrBlock = "203.0.113.0/24"
+	if !CompressionRiskDoesNotExpand(before, after) {
+		t.Fatal("443 新增精确授权应通过收窄准入")
 	}
 }

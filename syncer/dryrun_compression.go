@@ -1,10 +1,8 @@
 package syncer
 
 import (
-	"sort"
 	"strings"
 
-	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/provider"
 )
 
@@ -14,93 +12,63 @@ import (
 //
 // cctx 的 Plan 已由与正式相同的 buildCompressionPlan 计算。disabled 时再以
 // 假设启用副本生成只读测算，实际计划仍保持关闭态。
-func (s *Syncer) dryRunCompressionForUnit(
-	state *RuntimeState,
-	exec targetExecution,
-	snapshot provider.RuleSnapshot,
-	basePlan provider.TargetPlan,
-	cctx *compressionContext,
-	baseAddRows int,
-	baseAddLimit int,
-) DryRunCompression {
+func dryRunCompressionForUnit(state *RuntimeState, exec targetExecution, baseInput provider.TargetPlanInput, cctx *compressionContext) DryRunCompression {
 	out := emptyDryRunCompression()
 	if cctx == nil {
 		return out
 	}
+	snapshot := baseInput.Snapshot
 	out.Applicable = true
 	out.Enabled = cctx.Enabled
 	out.PendingReview = cctx.Pending.PendingReview
 	out.PendingKnown = cctx.PendingKnown
 	out.S0Rows = len(snapshot.Rules)
-	out.OtherNewRows = baseAddRows
-	out.NormalCap = 96
-	out.Reserved = 4
-	out.HardCap = 100
-	out.RiskLimit = int64Ptr(cctx.Settings.ExtraIPv4Allow)
-	if baseAddLimit >= 0 {
-		out.NormalBudget = intPtr(max(0, baseAddLimit))
+	out.RiskLimit = int64Ptr(cctx.riskLimit())
+	if cctx.Coverage.RiskKnown {
+		out.CurrentExtraIPv4 = uint64Ptr(cctx.Coverage.ExtraIPv4)
+		out.ExtraIPv4 = out.CurrentExtraIPv4
+		out.MaxExtraRun = uint64Ptr(cctx.Coverage.MaxExtraRun)
+		out.PerPort = append([]provider.CompressionPortRisk{}, cctx.Coverage.PerPort...)
 	}
-	out.ResidualRows = dryRunCompressionResidualRows(snapshot, cctx)
-
-	if !cctx.Enabled {
-		out.Mode = provider.CompressionModeDisabled
-		if baseAddLimit >= 0 {
-			out.NormalBudget = intPtr(max(0, 100-len(snapshot.Rules)))
-		}
-		coverage := provider.CompressionCoverageFromRules(snapshot, cctx.EdgeOneTag, cctx.All,
-			cctx.Input.Protected, cctx.Settings.ExtraIPv4Allow)
-		if coverage.RiskKnown {
-			out.ExtraIPv4 = uint64Ptr(coverage.ExtraIPv4)
-			out.MaxExtraRun = uint64Ptr(coverage.MaxExtraRun)
-			out.PerPort = append([]provider.CompressionPortRisk{}, coverage.PerPort...)
-			out.ReservedRestored = boolPtr(len(snapshot.Rules) <= 96 && coverage.ExtraIPv4 == 0)
-		} else {
-			out.ReservedRestored = nil
-		}
-		if len(cctx.Eligible) > 0 {
-			assumed := *cctx
-			assumed.Enabled = true
-			assumed.Settings.Enabled = true
+	out.ReservedRestored = boolPtr(len(snapshot.Rules) <= 96)
+	current := cctx
+	if !cctx.Enabled && len(cctx.Eligible) > 0 {
+		out.Assumed = true
+		assumed := *cctx
+		assumed.Enabled = true
+		if exec.edgeActive {
 			assumed.BaseSites = compressionBaseSites(exec.edgeSites, true)
-			s.buildCompressionPlan(state, exec, &assumed, snapshot, baseAddRows)
-			out.Assumed = true
-			out.Mode = assumed.Plan.Capacity.Mode
-			out.AddRows = len(assumed.compressionAddActions())
-			out.Peak = intPtr(assumed.Plan.Capacity.Peak)
-			out.Borrowed = intPtr(assumed.Plan.Capacity.Borrowed)
-			out.ExpectedCleanup = intPtr(assumed.Plan.Capacity.ExpectedCleanupRows)
-			out.ExpectedAfter = intPtr(assumed.Plan.Capacity.ExpectedAfter)
-			out.NormalBudget = intPtr(assumed.Plan.Capacity.NormalBudget)
-			out.RiskLimit = int64Ptr(assumed.Plan.Risk.Limit)
-			out.Blockers = append([]provider.CompressionBlocker{}, assumed.Plan.Blockers...)
-			out.Warnings = append([]provider.CompressionBlocker{}, assumed.Plan.Warnings...)
-			out.PerPort = append([]provider.CompressionPortRisk{}, assumed.Plan.Risk.PerPort...)
-			if assumed.Plan.Risk.Complete {
-				out.ExtraIPv4 = uint64Ptr(assumed.Plan.Risk.ExtraIPv4)
-				out.MaxExtraRun = uint64Ptr(assumed.Plan.Risk.MaxExtraRun)
-			}
-			out.Rows = dryRunCompressionRows(assumed.Plan.Selected)
+			baseInput.EdgeOneSites = edgeOneInputsForSites(assumed.BaseSites, exec.edgeData)
+		}
+		assumed.planAttempt(state, exec, snapshot, provider.PlanTarget(baseInput))
+		current = &assumed
+	}
+	out.Mode = current.Plan.Capacity.Mode
+	out.OtherNewRows = current.Plan.Capacity.OtherNewRows
+	out.AddRows = len(current.compressionAddActions())
+	out.RiskLimit = int64Ptr(current.riskLimit())
+	out.Blockers = append([]provider.CompressionBlocker{}, current.Blockers...)
+	out.Warnings = append([]provider.CompressionBlocker{}, current.Plan.Warnings...)
+	out.Rows = dryRunCompressionRows(current.Selected)
+	if !edgePreviewComplete(exec.edgeSites, exec.edgeData) || current.Plan.Incomplete ||
+		current.Plan.Capacity.HardCap == 0 || strings.TrimSpace(snapshot.Revision) == "" {
+		if !edgePreviewComplete(exec.edgeSites, exec.edgeData) && len(out.Blockers) == 0 {
+			out.Blockers = append(out.Blockers, provider.CompressionBlocker{Code: provider.CompressionBlockedSnapshotIncomplete, Message: "站点输入不完整"})
 		}
 		return out
 	}
-
-	out.Mode = cctx.Plan.Capacity.Mode
-	out.AddRows = len(cctx.compressionAddActions())
-	out.Peak = intPtr(cctx.Plan.Capacity.Peak)
-	out.Borrowed = intPtr(cctx.Plan.Capacity.Borrowed)
-	out.ExpectedCleanup = intPtr(cctx.Plan.Capacity.ExpectedCleanupRows)
-	out.ExpectedAfter = intPtr(cctx.Plan.Capacity.ExpectedAfter)
-	out.NormalBudget = intPtr(cctx.Plan.Capacity.NormalBudget)
-	out.RiskLimit = int64Ptr(cctx.Plan.Risk.Limit)
-	out.Blockers = append([]provider.CompressionBlocker{}, cctx.Plan.Blockers...)
-	out.Warnings = append([]provider.CompressionBlocker{}, cctx.Plan.Warnings...)
-	out.PerPort = append([]provider.CompressionPortRisk{}, cctx.Plan.Risk.PerPort...)
-	if cctx.Plan.Risk.Complete {
-		out.ExtraIPv4 = uint64Ptr(cctx.Plan.Risk.ExtraIPv4)
-		out.MaxExtraRun = uint64Ptr(cctx.Plan.Risk.MaxExtraRun)
+	out.Peak = intPtr(current.Plan.Capacity.Peak)
+	out.Borrowed = intPtr(current.Plan.Capacity.Borrowed)
+	out.ExpectedCleanup = intPtr(current.Plan.Capacity.ExpectedCleanupRows)
+	if current.Plan.Capacity.Mode != provider.CompressionModeBlocked || current.Plan.Capacity.ExpectedAfter > 0 {
+		out.ExpectedAfter = intPtr(current.Plan.Capacity.ExpectedAfter)
 	}
-	out.Rows = dryRunCompressionRows(cctx.Plan.Selected)
-	out.ReservedRestored = dryRunReservedRestored(snapshot, &cctx.Plan.Risk)
+	out.NormalBudget = intPtr(current.Plan.Capacity.NormalBudget)
+	if current.Plan.Risk.Complete {
+		out.ExtraIPv4 = uint64Ptr(current.Plan.Risk.ExtraIPv4)
+		out.MaxExtraRun = uint64Ptr(current.Plan.Risk.MaxExtraRun)
+		out.PerPort = append([]provider.CompressionPortRisk{}, current.Plan.Risk.PerPort...)
+	}
 	return out
 }
 
@@ -115,71 +83,6 @@ func dryRunCompressionRows(rep *provider.CompressionRepresentation) []DryRunComp
 	return out
 }
 
-// dryRunCompressionResidualRows 统计当前快照中属于压缩范围的 EdgeOne 行。
-func dryRunCompressionResidualRows(snapshot provider.RuleSnapshot, cctx *compressionContext) int {
-	if cctx == nil {
-		return 0
-	}
-	count := 0
-	for _, rule := range snapshot.Rules {
-		if compressionScopeRule(rule, cctx.EdgeOneTag) {
-			count++
-		}
-	}
-	return count
-}
-
-func dryRunReservedRestored(snapshot provider.RuleSnapshot, risk *provider.CompressionRisk) *bool {
-	if risk != nil && !risk.Complete {
-		return nil
-	}
-	restored := len(snapshot.Rules) <= 96
-	if risk != nil {
-		restored = restored && risk.ExtraIPv4 == 0
-	}
-	return boolPtr(restored)
-}
-
-// dryRunCompressionCandidates 返回压缩清理预览候选（只读，不证明可删）。
-func dryRunCompressionCandidates(snapshot provider.RuleSnapshot, cctx *compressionContext, edgeTag string) []provider.RuleChange {
-	out := []provider.RuleChange{}
-	if cctx == nil {
-		return out
-	}
-	retained := cctx.compressionSelectedRows()
-	for _, rule := range snapshot.Rules {
-		if !compressionScopeRule(rule, edgeTag) {
-			continue
-		}
-		row := provider.CompressionRow{Protocol: strings.ToUpper(strings.TrimSpace(rule.Protocol)), Port: rule.Port, CIDR: rule.CidrBlock}
-		skip := false
-		for _, item := range retained {
-			if sameCompressionPhysical(row, item) {
-				skip = true
-				break
-			}
-		}
-		if skip {
-			continue
-		}
-		out = append(out, provider.RuleChangeFromInfo(rule))
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Cidr != out[j].Cidr {
-			return out[i].Cidr < out[j].Cidr
-		}
-		if out[i].Protocol != out[j].Protocol {
-			return out[i].Protocol < out[j].Protocol
-		}
-		return out[i].Port < out[j].Port
-	})
-	return out
-}
-
-func sameCompressionPhysical(a provider.CompressionRow, b provider.CompressionRow) bool {
-	return a.Protocol == b.Protocol && a.Port == b.Port && a.CIDR == b.CIDR
-}
-
 // dryRunUnknown 在快照读取失败时返回非 null 的未知压缩骨架。
 func (c *compressionContext) dryRunUnknown() DryRunCompression {
 	out := emptyDryRunCompression()
@@ -191,20 +94,5 @@ func (c *compressionContext) dryRunUnknown() DryRunCompression {
 	out.PendingReview = c.Pending.PendingReview
 	out.PendingKnown = c.PendingKnown
 	out.RiskLimit = int64Ptr(c.Settings.ExtraIPv4Allow)
-	return out
-}
-
-// dryRunCompressionAwareRules 从 base 清理预览中剔除由压缩预览接管的行。
-func dryRunCompressionAwareRules(rules []config.RuleInfo, cctx *compressionContext) []config.RuleInfo {
-	if cctx == nil {
-		return rules
-	}
-	out := make([]config.RuleInfo, 0, len(rules))
-	for _, rule := range rules {
-		if compressionScopeRule(rule, cctx.EdgeOneTag) {
-			continue
-		}
-		out = append(out, rule)
-	}
 	return out
 }

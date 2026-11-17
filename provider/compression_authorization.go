@@ -33,7 +33,7 @@ type compressionAuthGroup struct {
 }
 
 // buildCompressionAuthorizations 按每个协议端口的完整 IPv4 授权集合分组。
-func buildCompressionAuthorizations(in LighthouseCompressionInput) ([]compressionAuthGroup, []CompressionBlocker, []CompressionBlocker) {
+func buildCompressionAuthorizations(in LighthouseCompressionInput, external map[FunctionalKey][]config.RuleInfo) ([]compressionAuthGroup, []CompressionBlocker, []CompressionBlocker) {
 	byProtocol := make(map[string][]compressionSource)
 	var blockers, warnings []CompressionBlocker
 	for _, input := range in.Sites {
@@ -84,13 +84,15 @@ func buildCompressionAuthorizations(in LighthouseCompressionInput) ([]compressio
 				}
 				for _, protocol := range protocols {
 					for i, span := range spans {
+						ref := CompressionAuthorization{
+							ZoneID: zone, Version: version.Version, VersionKind: kind,
+							Prefix: prefix.Masked().String(), Protocol: protocol, PortItem: strings.ToUpper(strings.TrimSpace(items[i])),
+						}
+						if compressionExternalCovers(external, ref) {
+							continue
+						}
 						byProtocol[protocol] = append(byProtocol[protocol], compressionSource{
-							grant: compressionGrant{span, ipv4Set{r}},
-							ref: CompressionAuthorization{
-								ZoneID: zone, Version: version.Version, VersionKind: kind,
-								Prefix: prefix.Masked().String(), Protocol: protocol, PortItem: strings.ToUpper(strings.TrimSpace(items[i])),
-							},
-							fullPorts: full,
+							grant: compressionGrant{span, ipv4Set{r}}, ref: ref, fullPorts: full,
 						})
 					}
 				}

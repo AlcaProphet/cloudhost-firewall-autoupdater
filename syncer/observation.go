@@ -71,6 +71,10 @@ func (r *targetResult) observeUnsupported(issues []provider.PlanIssue, stage str
 // mergeObservations 只用确实建立的新观察替换旧值，包括可信零；确认写入另行累计。
 func (r *targetResult) mergeObservations(next targetResult, attempt int) {
 	r.attempts = attempt
+	r.compressionData = next.compressionData
+	if r.compressionData != nil {
+		r.compressionData["attempt"] = attempt
+	}
 	if next.cleanupObservation != nil {
 		next.cleanupObservation.Attempt = attempt
 		r.cleanupObservation = next.cleanupObservation

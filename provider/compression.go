@@ -159,6 +159,7 @@ type LighthouseCompressionInput struct {
 	Config        CompressionConfig
 	AssumeEnabled bool
 	EdgeOneTag    string
+	OtherTag      string
 	Snapshot      RuleSnapshot
 	Sites         []EdgeOneSitePlanInput
 
@@ -169,6 +170,9 @@ type LighthouseCompressionInput struct {
 	AssessCleanup func(candidate CompressionRepresentation) CompressionCleanupEvidence
 	// Protected 是本轮仍有效的逐协议端口过渡授权，仅用于峰值风险计算。
 	Protected []CompressionAuthorization
+	// PostActivationProtected comes from the same transition rules as the live round.
+	PostActivationProtected []CompressionAuthorization
+	CleanupKeepKeys         []FunctionalKey
 
 	DNSEnabled   bool
 	DNSAddresses []netip.Addr
@@ -233,14 +237,19 @@ func PlanLighthouseCompression(ctx context.Context, in LighthouseCompressionInpu
 		return plan
 	}
 
-	auths, blockers, warnings := buildCompressionAuthorizations(in)
+	auths, blockers, warnings := buildCompressionAuthorizations(in, nil)
 	plan.Blockers = append(plan.Blockers, blockers...)
 	plan.Warnings = append(plan.Warnings, warnings...)
 	if len(plan.Blockers) > 0 {
 		plan.Capacity.Mode = CompressionModeBlocked
 		return plan
 	}
+	hasAuthorizations := len(auths) > 0
 	planner := newCompressionPlanner(in, auths)
+	external := compressionExternalKeys(in.Snapshot, in.EdgeOneTag, in.OtherTag)
+	if len(external) > 0 {
+		auths, _, _ = buildCompressionAuthorizations(in, external)
+	}
 	var exactRows []CompressionRow
 	for _, group := range auths {
 		for _, prefix := range group.prefixes {
@@ -256,7 +265,34 @@ func PlanLighthouseCompression(ctx context.Context, in LighthouseCompressionInpu
 		plan.Capacity.Mode = CompressionModeBlocked
 		return plan
 	}
+	plan.Blockers = append(plan.Blockers, compressionDropConflicts(in.Snapshot.Rules, in.Sites)...)
+	plan.Blockers = append(plan.Blockers, compressionCrossTagConflicts(in)...)
+	if len(plan.Blockers) > 0 {
+		plan.Capacity.Mode = CompressionModeBlocked
+		return plan
+	}
+	opposite := planner.hitsDrop(exactRows)
 	if plan.Risk.ExtraIPv4 > uint64(in.Config.ExtraIPv4Limit) {
+		// Recovery may replace existing coverage within normal capacity.
+		// S1 checks the actual peak sets and S2 determines eligibility for confirmation.
+		if !opposite && planner.risk.oldExtra.count() > uint64(in.Config.ExtraIPv4Limit) {
+			if (plan.Capacity.Mode == CompressionModeNormal || plan.Capacity.Mode == CompressionModeCleanupOnly) &&
+				!planner.risk.expandsExtra(plan.Lossless) {
+				plan.Selected = &plan.Lossless
+				return plan
+			}
+			if len(auths) > 0 && in.Config.ExtraIPv4Limit > 0 {
+				rep, capacity, incomplete, blockers := planner.planLossy(ctx, auths)
+				if rep != nil {
+					plan.Lossy, plan.Selected = rep, rep
+					plan.Capacity = capacity
+					plan.Risk = planner.risk.summarize(in.Config.ExtraIPv4Limit, *rep)
+					return plan
+				}
+				plan.Incomplete = incomplete
+				plan.Blockers = append(plan.Blockers, blockers...)
+			}
+		}
 		plan.Blockers = append(plan.Blockers, CompressionBlocker{
 			Code:    CompressionBlockedRiskLimit,
 			Message: fmt.Sprintf("额外放行 %d 个 IPv4，超过额度 %d", plan.Risk.ExtraIPv4, in.Config.ExtraIPv4Limit),
@@ -265,8 +301,7 @@ func PlanLighthouseCompression(ctx context.Context, in LighthouseCompressionInpu
 		return plan
 	}
 
-	opposite := planner.hitsDrop(exactRows)
-	if len(auths) == 0 {
+	if !hasAuthorizations {
 		plan.Blockers = append(plan.Blockers, plan.Capacity.Reasons...)
 		return plan
 	}
@@ -278,6 +313,8 @@ func PlanLighthouseCompression(ctx context.Context, in LighthouseCompressionInpu
 	// 仅无损容量不足时考虑扩大授权范围。
 	if opposite && plan.Capacity.Mode != CompressionModeBlocked {
 		plan.Blockers = append(plan.Blockers, compressionOppositeAction)
+	} else if len(auths) == 0 {
+		plan.Blockers = append(plan.Blockers, plan.Capacity.Reasons...)
 	} else if in.Config.ExtraIPv4Limit == 0 {
 		plan.Blockers = append(plan.Blockers, plan.Capacity.Reasons...)
 		plan.Blockers = append(plan.Blockers, CompressionBlocker{
@@ -407,7 +444,7 @@ type compressionPlanner struct {
 }
 
 func newCompressionPlanner(in LighthouseCompressionInput, groups []compressionAuthGroup) compressionPlanner {
-	p := compressionPlanner{in: in, risk: buildCompressionRiskModel(in, groups), owned: make(map[string]config.RuleInfo)}
+	p := compressionPlanner{in: in, risk: buildCompressionRiskModel(in, groups), owned: make(map[string]config.RuleInfo), drops: compressionDrops(in.Snapshot.Rules)}
 	for _, site := range in.Sites {
 		p.pending = p.pending || site.Snapshot.Next != nil
 	}
@@ -425,22 +462,10 @@ func newCompressionPlanner(in LighthouseCompressionInput, groups []compressionAu
 		if !ok {
 			continue
 		}
-		switch strings.ToUpper(strings.TrimSpace(rule.Action)) {
-		case "ACCEPT":
-			if tag.IsOwned(rule.Description, in.EdgeOneTag) {
-				key := compressionReuseKey(rule.Protocol, rule.Port, cidr)
-				if previous, found := p.owned[key]; !found || compareCompressionRules(rule, previous) < 0 {
-					p.owned[key] = rule
-				}
-			}
-		case "DROP":
-			addresses, ports := compressionRuleGrant(rule)
-			for _, protocol := range compressionProtocols(rule.Protocol) {
-				for _, port := range ports {
-					for _, address := range addresses {
-						p.drops = append(p.drops, compressionDrop{protocol, port, address})
-					}
-				}
+		if strings.EqualFold(strings.TrimSpace(rule.Action), "ACCEPT") && tag.IsOwned(rule.Description, in.EdgeOneTag) {
+			key := compressionReuseKey(rule.Protocol, rule.Port, cidr)
+			if previous, found := p.owned[key]; !found || compareCompressionRules(rule, previous) < 0 {
+				p.owned[key] = rule
 			}
 		}
 	}
@@ -451,19 +476,59 @@ var compressionOppositeAction = CompressionBlocker{
 	Code: CompressionBlockedOppositeAction, Message: "候选与 S0 的相反动作重叠",
 }
 
-func (p compressionPlanner) hitsDrop(rows []CompressionRow) bool {
-	for _, row := range rows {
-		address, _ := prefixIPv4Range(netip.MustParsePrefix(row.CIDR))
-		ports, _ := compressionPortSpans(row.Port)
-		for _, drop := range p.drops {
-			if row.Protocol != drop.protocol || address.Start > drop.address.End || drop.address.Start > address.End {
-				continue
-			}
+func compressionDrops(rules []config.RuleInfo) []compressionDrop {
+	var drops []compressionDrop
+	for _, rule := range rules {
+		if !strings.EqualFold(strings.TrimSpace(rule.Action), "DROP") {
+			continue
+		}
+		addresses, ports := compressionRuleGrant(rule)
+		protocols := compressionProtocols(rule.Protocol)
+		if canonicalProtocol(rule.Protocol) == "ALL" {
+			protocols = []string{"TCP", "UDP", "ICMP"}
+			ports = []compressionPortSpan{allCompressionPorts}
+		} else if canonicalProtocol(rule.Protocol) == "ICMP" {
+			protocols = []string{"ICMP"}
+			ports = []compressionPortSpan{allCompressionPorts}
+		}
+		for _, protocol := range protocols {
 			for _, port := range ports {
-				if port.overlaps(drop.port) {
-					return true
+				for _, address := range addresses {
+					drops = append(drops, compressionDrop{protocol, port, address})
 				}
 			}
+		}
+	}
+	return drops
+}
+
+func compressionHitsDrop(drops []compressionDrop, protocol, cidr, port string) bool {
+	prefix, err := netip.ParsePrefix(cidr)
+	if err != nil {
+		return false
+	}
+	address, ok := prefixIPv4Range(prefix)
+	if !ok {
+		return false
+	}
+	ports, _ := compressionPortSpans(port)
+	for _, drop := range drops {
+		if protocol != drop.protocol || address.Start > drop.address.End || drop.address.Start > address.End {
+			continue
+		}
+		for _, span := range ports {
+			if span.overlaps(drop.port) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (p compressionPlanner) hitsDrop(rows []CompressionRow) bool {
+	for _, row := range rows {
+		if compressionHitsDrop(p.drops, row.Protocol, row.CIDR, row.Port) {
+			return true
 		}
 	}
 	return false

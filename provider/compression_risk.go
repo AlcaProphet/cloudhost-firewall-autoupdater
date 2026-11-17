@@ -138,3 +138,51 @@ func (model compressionRiskModel) summarize(limit int64, rep CompressionRepresen
 	out.MaxExtraRun = total.maxRun()
 	return out
 }
+
+// expandsExtra checks each protocol/port interval, including ports absent from S0.
+func (model compressionRiskModel) expandsExtra(rep CompressionRepresentation) bool {
+	for _, row := range rep.Rows {
+		ports, _ := compressionPortSpans(row.Port)
+		addresses := ipv4SetFromPrefixes([]netip.Prefix{netip.MustParsePrefix(row.CIDR)})
+		for _, port := range ports {
+			var safe ipv4SetPorts
+			for _, part := range model.byProtocol[row.Protocol] {
+				if port.overlaps(part.ports) && len(addresses.subtract(part.authorized).subtract(part.oldExtra)) == 0 {
+					safe = append(safe, part.ports)
+				}
+			}
+			if !safe.covers(port) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// CompressionRiskDoesNotExpand compares the actual extra sets per protocol and
+// port. Comparing the total can miss new exposure on a different port.
+func CompressionRiskDoesNotExpand(before, after LighthouseCompressionInput) bool {
+	groups, blockers, _ := buildCompressionAuthorizations(before, nil)
+	if len(blockers) > 0 {
+		return false
+	}
+	previous := buildCompressionRiskModel(before, groups)
+	current := buildCompressionRiskModel(after, groups)
+	for protocol, parts := range current.byProtocol {
+		for _, part := range parts {
+			if len(part.oldExtra) == 0 {
+				continue
+			}
+			var safe ipv4SetPorts
+			for _, old := range previous.byProtocol[protocol] {
+				if part.ports.overlaps(old.ports) && len(part.oldExtra.subtract(old.oldExtra)) == 0 {
+					safe = append(safe, old.ports)
+				}
+			}
+			if !safe.covers(part.ports) {
+				return false
+			}
+		}
+	}
+	return true
+}

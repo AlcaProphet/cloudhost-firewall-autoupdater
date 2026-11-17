@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 
@@ -61,14 +62,14 @@ type CompressionCleanupInput struct {
 	OtherTag string
 	// Sites 是本实例的全部适用站点；覆盖与保留判断按当前/待更新原始授权执行。
 	Sites []EdgeOneSitePlanInput
-	// EligibleSites 只用于计算风险摘要；为空时使用 Sites 中可压缩的部分。
-	EligibleSites []EdgeOneSitePlanInput
 	// Protected 是本轮仍有效的过渡保护；与候选功能 key 重叠时保留。
 	Protected []CompressionAuthorization
 	// ProtectedUnknown 为 true 时不做任何压缩清理。
 	ProtectedUnknown bool
 	// Retained 是本 attempt 已选择并回读核实的压缩行，绝不进入删除候选。
 	Retained []CompressionRow
+	// RetainedRules holds the S0 witnesses adopted by a cleanup-only attempt.
+	RetainedRules []config.RuleInfo
 	// KeepKeys 是 base 计划的完整期望 key；候选与这些 key 重叠时保留。
 	KeepKeys []FunctionalKey
 }
@@ -267,19 +268,12 @@ func compressionRefsFromSites(sites []EdgeOneSitePlanInput, mode compressionRefM
 
 // CompressionCoverageFromRules 核验实际规则集对当前/待更新原始 IPv4 授权的覆盖。
 //
-// 手工/另一 TAG 规则不计覆盖；只统计当前 EdgeOne TAG 的 ACCEPT 行。宽于原始授权的
-// 行可以覆盖，但额外地址仍由风险摘要表达。
-func CompressionCoverageFromRules(snapshot RuleSnapshot, edgeTag string, sites []EdgeOneSitePlanInput, protected []CompressionAuthorization, limit int64) CompressionCoverage {
+// 手工规则仅按精确功能键取证。只有当前 EdgeOne TAG 行可按地址和端口并集取证。
+func CompressionCoverageFromRules(snapshot RuleSnapshot, edgeTag, otherTag string, sites []EdgeOneSitePlanInput, protected []CompressionAuthorization, limit int64) CompressionCoverage {
 	refs, blockers := compressionRefsFromSites(sites, compressionRefsCurrentAndNext)
-	out := CompressionCoverage{Applicable: len(refs) > 0 || len(blockers) > 0}
-	out.Conflicts = append(out.Conflicts, blockers...)
-	if len(refs) == 0 {
-		out.Complete = len(blockers) == 0
-		return out
-	}
-	coverage := compressionCoverageForRefs(snapshot.Rules, refs, edgeTag)
+	coverage := compressionCoverageForRefs(snapshot.Rules, refs, edgeTag, otherTag)
 	coverage.Conflicts = append(coverage.Conflicts, blockers...)
-	coverage.Applicable = true
+	coverage.Applicable = len(refs) > 0 || len(blockers) > 0
 	coverage.Complete = coverage.Complete && len(coverage.Conflicts) == 0
 	risk := compressionRiskFromRules(snapshot, edgeTag, sites, protected, limit)
 	coverage.RiskKnown = risk.Complete
@@ -291,149 +285,110 @@ func CompressionCoverageFromRules(snapshot RuleSnapshot, edgeTag string, sites [
 }
 
 // compressionCoverageForRefs 对每一原始授权按协议/端口求实际覆盖并集。
-func compressionCoverageForRefs(rules []config.RuleInfo, refs []CompressionAuthorization, edgeTag string) CompressionCoverage {
+func compressionCoverageForRefs(rules []config.RuleInfo, refs []CompressionAuthorization, edgeTag, otherTag string) CompressionCoverage {
 	out := CompressionCoverage{Applicable: len(refs) > 0}
-	type coverState struct {
-		span    compressionPortSpan
-		covered ipv4SetPorts
+	external := compressionExternalKeys(RuleSnapshot{Rules: rules}, edgeTag, otherTag)
+	grants := make(map[string][]compressionGrant)
+	for _, rule := range rules {
+		if !strings.EqualFold(strings.TrimSpace(rule.Action), "ACCEPT") || !tag.IsOwned(rule.Description, edgeTag) {
+			continue
+		}
+		if _, ok := SnapshotRuleKeys(rule); !ok {
+			continue
+		}
+		addresses, ports := compressionRuleGrant(rule)
+		for _, port := range ports {
+			protocol := canonicalProtocol(rule.Protocol)
+			grants[protocol] = append(grants[protocol], compressionGrant{port, addresses})
+		}
 	}
-	states := make(map[CompressionAuthorization]*coverState, len(refs))
 	for _, ref := range refs {
+		if compressionExternalCovers(external, ref) {
+			continue
+		}
 		spans, ok := compressionPortSpans(ref.PortItem)
-		if !ok || len(spans) == 0 {
+		if !ok || len(spans) != 1 {
 			out.Conflicts = append(out.Conflicts, CompressionBlocker{
 				Code: CompressionBlockedInvalidPort, Message: "原始授权端口无法解析", ZoneID: ref.ZoneID, Prefix: ref.Prefix,
 			})
 			continue
 		}
-		// 每个原始授权项的 PortItem 是单个端口或范围；取首个 span。
-		state := &coverState{span: spans[0]}
-		states[ref] = state
-	}
-	for _, rule := range rules {
-		if !strings.EqualFold(strings.TrimSpace(rule.Action), "ACCEPT") {
-			continue
-		}
-		if !tag.IsOwned(rule.Description, edgeTag) {
-			continue
-		}
-		protocol := canonicalProtocol(rule.Protocol)
-		cidr, ok := CanonicalCIDR(rule.CidrBlock)
-		if !ok {
-			continue
-		}
-		rulePrefix, err := netip.ParsePrefix(cidr)
-		if err != nil || !rulePrefix.Addr().Is4() {
-			continue
-		}
-		ruleRange, ok := prefixIPv4Range(rulePrefix)
-		if !ok {
-			continue
-		}
-		ports, ok := compressionPortSpans(rule.Port)
-		if !ok || len(ports) == 0 {
-			continue
-		}
-		for ref, state := range states {
-			if ref.Protocol != protocol {
-				continue
-			}
-			refPrefix, err := netip.ParsePrefix(ref.Prefix)
-			if err != nil || !refPrefix.Addr().Is4() {
-				continue
-			}
-			refRange, ok := prefixIPv4Range(refPrefix)
-			if !ok || ruleRange.Start > refRange.Start || ruleRange.End < refRange.End {
-				continue
-			}
-			for _, port := range ports {
-				if port.overlaps(state.span) {
-					first := max(port.first, state.span.first)
-					last := min(port.last, state.span.last)
-					state.covered = append(state.covered, compressionPortSpan{first, last})
-				}
+		prefix := netip.MustParsePrefix(ref.Prefix)
+		span := spans[0]
+		protocolGrants := grants[ref.Protocol]
+		boundaries := []compressionPortSpan{span}
+		for _, grant := range protocolGrants {
+			if grant.ports.overlaps(span) {
+				boundaries = append(boundaries, grant.ports)
 			}
 		}
-	}
-	for ref, state := range states {
-		if !state.covered.covers(state.span) {
-			out.Missing = append(out.Missing, ref)
-		}
-	}
-	// 相反动作：任何 TAG 的 DROP 与原始授权重叠时冻结覆盖。
-	dropConflict := false
-	for _, rule := range rules {
-		if dropConflict {
-			break
-		}
-		if !strings.EqualFold(strings.TrimSpace(rule.Action), "DROP") {
-			continue
-		}
-		protocol := canonicalProtocol(rule.Protocol)
-		cidr, ok := CanonicalCIDR(rule.CidrBlock)
-		if !ok {
-			continue
-		}
-		prefix, err := netip.ParsePrefix(cidr)
-		if err != nil || !prefix.Addr().Is4() {
-			continue
-		}
-		ruleRange, _ := prefixIPv4Range(prefix)
-		ports, ok := compressionPortSpans(rule.Port)
-		if !ok {
-			continue
-		}
-		for ref := range states {
-			if ref.Protocol != protocol {
-				continue
-			}
-			refPrefix, err := netip.ParsePrefix(ref.Prefix)
-			if err != nil {
-				continue
-			}
-			refRange, _ := prefixIPv4Range(refPrefix)
-			if ruleRange.Start > refRange.End || refRange.Start > ruleRange.End {
-				continue
-			}
-			refPorts, _ := compressionPortSpans(ref.PortItem)
-			overlap := false
-			for _, port := range ports {
-				for _, refPort := range refPorts {
-					if port.overlaps(refPort) {
-						overlap = true
-						break
-					}
-				}
-				if overlap {
-					break
-				}
-			}
-			if overlap {
-				out.Conflicts = append(out.Conflicts, CompressionBlocker{
-					Code: CompressionBlockedOppositeAction, Message: "实际快照存在与原始授权重叠的 DROP 规则",
-					ZoneID: ref.ZoneID, Protocol: ref.Protocol, Port: ref.PortItem, Prefix: ref.Prefix,
-				})
-				dropConflict = true
+		for _, part := range splitCompressionPorts(boundaries) {
+			if part.overlaps(span) && !compressionAddressesAtPort(protocolGrants, part).containsPrefix(prefix) {
+				out.Missing = append(out.Missing, ref)
 				break
 			}
 		}
 	}
-	sort.SliceStable(out.Missing, func(i, j int) bool {
-		a, b := out.Missing[i], out.Missing[j]
-		if a.ZoneID != b.ZoneID {
-			return a.ZoneID < b.ZoneID
-		}
-		if a.Prefix != b.Prefix {
-			return a.Prefix < b.Prefix
-		}
-		if a.Protocol != b.Protocol {
-			return a.Protocol < b.Protocol
-		}
-		return a.PortItem < b.PortItem
-	})
-	out.Conflicts = sortCompressionBlockers(out.Conflicts)
+	out.Conflicts = append(out.Conflicts, compressionDropConflictsForRefs(rules, refs)...)
 	out.Complete = len(out.Missing) == 0 && len(out.Conflicts) == 0
 	return out
+}
+
+func compressionExternalKeys(snapshot RuleSnapshot, edgeTag, otherTag string) map[FunctionalKey][]config.RuleInfo {
+	_, external, _ := compressionRuleIndexes(snapshot.Rules, edgeTag, otherTag)
+	return external
+}
+
+func compressionAuthorizationKey(ref CompressionAuthorization) FunctionalKey {
+	return FunctionalKey{
+		Family: AddressIPv4, CIDR: ref.Prefix, Protocol: ref.Protocol,
+		Port: canonicalPortExpression(ref.Protocol, ref.PortItem), Action: "ACCEPT",
+	}
+}
+
+func compressionExternalCovers(external map[FunctionalKey][]config.RuleInfo, ref CompressionAuthorization) bool {
+	return len(external[compressionAuthorizationKey(ref)]) > 0
+}
+
+func compressionCrossTagConflicts(in LighthouseCompressionInput) []CompressionBlocker {
+	owned, external, other := compressionRuleIndexes(in.Snapshot.Rules, in.EdgeOneTag, in.OtherTag)
+	if len(other) == 0 {
+		return nil
+	}
+	refs, _ := compressionRefsFromSites(in.Sites, compressionRefsCurrentAndNext)
+	var conflicts []CompressionBlocker
+	for _, ref := range refs {
+		key := compressionAuthorizationKey(ref)
+		if len(other[key]) > 0 && len(owned[key]) == 0 && len(external[key]) == 0 {
+			conflicts = append(conflicts, CompressionBlocker{
+				Code: IssueCrossTagEquivalent, Message: "另一 TAG 下存在精确等价规则",
+				ZoneID: ref.ZoneID, Protocol: ref.Protocol, Port: ref.PortItem, Prefix: ref.Prefix,
+			})
+		}
+	}
+	return sortCompressionBlockers(conflicts)
+}
+
+func compressionDropConflicts(rules []config.RuleInfo, sites []EdgeOneSitePlanInput) []CompressionBlocker {
+	refs, _ := compressionRefsFromSites(sites, compressionRefsCurrentAndNext)
+	return compressionDropConflictsForRefs(rules, refs)
+}
+
+func compressionDropConflictsForRefs(rules []config.RuleInfo, refs []CompressionAuthorization) []CompressionBlocker {
+	drops := compressionDrops(rules)
+	if len(drops) == 0 {
+		return nil
+	}
+	var conflicts []CompressionBlocker
+	for _, ref := range refs {
+		if compressionHitsDrop(drops, ref.Protocol, ref.Prefix, ref.PortItem) {
+			conflicts = append(conflicts, CompressionBlocker{
+				Code: CompressionBlockedOppositeAction, Message: "实际快照存在与原始授权重叠的 DROP 规则",
+				ZoneID: ref.ZoneID, Protocol: ref.Protocol, Port: ref.PortItem, Prefix: ref.Prefix,
+			})
+		}
+	}
+	return sortCompressionBlockers(conflicts)
 }
 
 // ipv4SetPorts 是端口闭区间的并集运算，保持稳定排序。
@@ -469,25 +424,12 @@ func compressionRiskFromRules(snapshot RuleSnapshot, edgeTag string, sites []Edg
 		CloudType: config.CloudTCLighthouse, EdgeOneTag: edgeTag,
 		Snapshot: snapshot, Sites: sites, Protected: protected,
 	}
-	groups, blockers, _ := buildCompressionAuthorizations(input)
+	groups, blockers, _ := buildCompressionAuthorizations(input, nil)
 	if len(blockers) > 0 {
 		return CompressionRisk{Limit: limit, Complete: false, PerPort: []CompressionPortRisk{}}
 	}
 	model := buildCompressionRiskModel(input, groups)
-	rep := CompressionRepresentation{Rows: []CompressionRow{}}
-	for _, rule := range snapshot.Rules {
-		if !strings.EqualFold(strings.TrimSpace(rule.Action), "ACCEPT") || !tag.IsOwned(rule.Description, edgeTag) {
-			continue
-		}
-		row, ok := compressionRowFromRule(rule)
-		if !ok {
-			continue
-		}
-		rep.Rows = append(rep.Rows, row)
-	}
-	risk := model.summarize(limit, rep)
-	risk.Complete = true
-	return risk
+	return model.summarize(limit, CompressionRepresentation{})
 }
 
 // compressionRowFromRule 把一条云端允许规则转换为压缩行摘要。
@@ -569,7 +511,8 @@ func compressionRowMatchesRule(row CompressionRow, rule config.RuleInfo, edgeTag
 
 // VerifyCompressionReadback 核验本 attempt 计划行与 witness 是否被实际快照完整证明。
 func VerifyCompressionReadback(in LighthouseCompressionInput, rep CompressionRepresentation) CompressionReadback {
-	out := CompressionReadback{PlannedRows: len(rep.Rows), Coverage: CompressionCoverageFromRules(in.Snapshot, in.EdgeOneTag, in.Sites, in.Protected, in.Config.ExtraIPv4Limit)}
+	out := CompressionReadback{PlannedRows: len(rep.Rows), Coverage: CompressionCoverageFromRules(in.Snapshot, in.EdgeOneTag, in.OtherTag, in.Sites, in.Protected, in.Config.ExtraIPv4Limit)}
+	drops := compressionDrops(in.Snapshot.Rules)
 	matched := make([]int, len(in.Snapshot.Rules))
 	verifiedRow := make([]bool, len(rep.Rows))
 	for i, row := range rep.Rows {
@@ -620,7 +563,11 @@ func VerifyCompressionReadback(in LighthouseCompressionInput, rep CompressionRep
 		covered[witness.Authorization] = append(covered[witness.Authorization], spans...)
 		out.Witnesses++
 	}
+	external := compressionExternalKeys(in.Snapshot, in.EdgeOneTag, in.OtherTag)
 	for _, ref := range expected {
+		if compressionExternalCovers(external, ref) {
+			continue
+		}
 		original, ok := compressionPortSpans(ref.PortItem)
 		if !ok || len(original) == 0 {
 			continue
@@ -637,11 +584,12 @@ func VerifyCompressionReadback(in LighthouseCompressionInput, rep CompressionRep
 	if !out.Coverage.Complete {
 		out.Reasons = append(out.Reasons, CompressionBlocker{Code: CompressionBlockedSnapshotIncomplete, Message: "实际规则集未完整覆盖原始授权"})
 	}
-	if out.Coverage.RiskKnown && out.Coverage.ExtraIPv4 > uint64(in.Config.ExtraIPv4Limit) {
-		out.Reasons = append(out.Reasons, CompressionBlocker{
-			Code:    CompressionBlockedRiskLimit,
-			Message: fmt.Sprintf("实际额外放行 %d 个 IPv4，超过额度 %d", out.Coverage.ExtraIPv4, in.Config.ExtraIPv4Limit),
-		})
+	out.Reasons = append(out.Reasons, out.Coverage.Conflicts...)
+	for _, row := range out.VerifiedRows {
+		if compressionHitsDrop(drops, row.Protocol, row.CIDR, row.Port) {
+			out.Reasons = append(out.Reasons, compressionOppositeAction)
+			break
+		}
 	}
 	if len(in.Snapshot.Rules) > compressionHardCap {
 		out.Reasons = append(out.Reasons, CompressionBlocker{
@@ -672,56 +620,40 @@ func AssessCompressionCleanupEvidence(in LighthouseCompressionInput, sites []Edg
 			CidrBlock: row.CidrBlock, Protocol: row.Protocol, Port: row.Port, Action: row.Action, Description: row.Description,
 		})
 	}
-	reused := make(map[config.RuleInfo]int, len(candidate.ReusedRows))
-	for _, rule := range candidate.ReusedRows {
-		reused[rule]++
+	working := append(append([]config.RuleInfo(nil), in.Snapshot.Rules...), addRules...)
+	owners, external, other := compressionRuleIndexes(working, in.EdgeOneTag, in.OtherTag)
+	keep := make(map[FunctionalKey]bool, len(in.CleanupKeepKeys))
+	for _, key := range in.CleanupKeepKeys {
+		keep[key] = true
 	}
-	working := append([]config.RuleInfo(nil), in.Snapshot.Rules...)
-	// 已复用的 S0 行不重复加入；新增行加入 working。
-	working = append(working, addRules...)
-	// 只允许释放非复用 S0 行；按稳定顺序尝试。
-	releasable := make([]int, 0, len(in.Snapshot.Rules))
-	locators := compressionLocatorCounts(in.Snapshot.Rules)
-	for i, rule := range in.Snapshot.Rules {
-		if reused[rule] > 0 {
-			reused[rule]--
-			continue
-		}
-		if !tag.IsOwned(rule.Description, in.EdgeOneTag) {
-			continue
-		}
-		if _, ok := compressionRowFromRule(rule); !ok {
-			continue
-		}
-		keys, known := SnapshotRuleKeys(rule)
-		if !known || len(keys) == 0 {
-			continue
-		}
-		ambiguous := false
-		for _, key := range keys {
-			if locators[key] != 1 {
-				ambiguous = true
-				break
-			}
-		}
-		if ambiguous {
-			continue
-		}
-		releasable = append(releasable, i)
-	}
-	removed := make([]bool, len(in.Snapshot.Rules))
 	evidence := CompressionCleanupEvidence{
 		SnapshotRevision: in.Snapshot.Revision, PendingFingerprint: in.PendingFingerprint,
 	}
-	for _, index := range releasable {
-		trial := append([]config.RuleInfo(nil), working...)
-		trial = removeRuleAt(trial, in.Snapshot.Rules[index])
-		coverage := compressionCoverageForRefs(trial, pendingRefs, in.EdgeOneTag)
-		if !coverage.Complete {
+	for index, rule := range in.Snapshot.Rules {
+		row, scoped := compressionRowFromRule(rule)
+		if !scoped || !tag.IsOwned(rule.Description, in.EdgeOneTag) {
+			continue
+		}
+		retainsNext := false
+		for _, planned := range candidate.Rows {
+			if planned.ServesNext && compressionRetained(row, []CompressionRow{planned}) {
+				retainsNext = true
+				break
+			}
+		}
+		keys, known := SnapshotRuleKeys(rule)
+		if retainsNext || !known || compressionRuleProtected(in.PostActivationProtected, keys) {
+			continue
+		}
+		if _, bad := cleanupLocatorIssue(config.CloudTCLighthouse, rule, keys, owners, external, other); bad ||
+			compressionKeepKey(keys, keep) {
+			continue
+		}
+		trial := removeRuleAt(working, rule)
+		if !compressionCoverageForRefs(trial, pendingRefs, in.EdgeOneTag, in.OtherTag).Complete {
 			continue
 		}
 		working = trial
-		removed[index] = true
 		evidence.ReleasableRows = append(evidence.ReleasableRows, index)
 	}
 	if len(evidence.ReleasableRows) == 0 {
@@ -732,51 +664,41 @@ func AssessCompressionCleanupEvidence(in LighthouseCompressionInput, sites []Edg
 
 // PlanCompressionCleanup 在 S1 实际规则集上选择可安全删除的整行子集。
 func PlanCompressionCleanup(in CompressionCleanupInput) CompressionCleanupPlan {
-	out := CompressionCleanupPlan{CoverageBefore: CompressionCoverageFromRules(in.Snapshot, in.Tag, in.Sites, in.Protected, 0)}
+	out := CompressionCleanupPlan{CoverageBefore: CompressionCoverageFromRules(in.Snapshot, in.Tag, in.OtherTag, in.Sites, in.Protected, 0)}
 	out.Remaining = len(in.Snapshot.Rules)
 	out.ProtectedKnown = !in.ProtectedUnknown
+	refs, blockers := compressionRefsFromSites(in.Sites, compressionRefsCurrentAndNext)
+	gateOpen := !in.ProtectedUnknown && len(refs) > 0 && len(blockers) == 0 && out.CoverageBefore.Complete &&
+		strings.TrimSpace(in.Snapshot.Revision) != ""
 	if in.ProtectedUnknown {
 		out.Deferred = append(out.Deferred, PlanIssue{Code: IssueTransitionProtected, Message: "过渡保护状态未知，保留全部压缩清理候选"})
-		return out
 	}
-	if !out.CoverageBefore.Complete {
+	if !gateOpen && !in.ProtectedUnknown {
 		out.CoverageBlocked = true
 		out.Deferred = append(out.Deferred, PlanIssue{Code: IssueCoverageNotReady, Message: "实际规则集未完整覆盖原始授权，保留全部压缩清理候选"})
-		return out
-	}
-	refs, blockers := compressionRefsFromSites(in.Sites, compressionRefsCurrentAndNext)
-	if len(blockers) > 0 {
-		out.CoverageBlocked = true
-		out.Deferred = append(out.Deferred, PlanIssue{Code: IssueCoverageNotReady, Message: "站点输入不完整，保留全部压缩清理候选"})
-		return out
 	}
 	keep := make(map[FunctionalKey]bool, len(in.KeepKeys))
 	for _, key := range in.KeepKeys {
 		keep[key] = true
 	}
 	ownedIndex, externalIndex, otherTagIndex := compressionRuleIndexes(in.Snapshot.Rules, in.Tag, in.OtherTag)
+	var eligible []config.RuleInfo
 	for _, rule := range in.Snapshot.Rules {
 		row, ok := compressionRowFromRule(rule)
 		if !ok || !tag.IsOwned(rule.Description, in.Tag) {
 			continue
 		}
-		if compressionRetained(row, in.Retained) {
+		if compressionRetained(row, in.Retained) || slices.Contains(in.RetainedRules, rule) {
 			continue
 		}
 		keys, known := SnapshotRuleKeys(rule)
 		if !known || len(keys) == 0 {
 			continue
 		}
-		skip := false
-		for _, key := range keys {
-			if keep[key] {
-				skip = true
-				break
-			}
-		}
-		if skip {
+		if compressionKeepKey(keys, keep) {
 			continue
 		}
+		out.Candidates = append(out.Candidates, rule)
 		if issue, bad := cleanupLocatorIssue(config.CloudTCLighthouse, rule, keys, ownedIndex, externalIndex, otherTagIndex); bad {
 			out.Deferred = append(out.Deferred, issue)
 			continue
@@ -787,12 +709,14 @@ func PlanCompressionCleanup(in CompressionCleanupInput) CompressionCleanupPlan {
 			})
 			continue
 		}
-		out.Candidates = append(out.Candidates, rule)
+		if gateOpen {
+			eligible = append(eligible, rule)
+		}
 	}
 	working := append([]config.RuleInfo(nil), in.Snapshot.Rules...)
-	for _, candidate := range out.Candidates {
+	for _, candidate := range eligible {
 		trial := removeRuleAt(working, candidate)
-		coverage := compressionCoverageForRefs(trial, refs, in.Tag)
+		coverage := compressionCoverageForRefs(trial, refs, in.Tag, in.OtherTag)
 		if !coverage.Complete {
 			out.Deferred = append(out.Deferred, PlanIssue{
 				Code: IssueCoverageNotReady, Message: "移除该候选后无法完整覆盖原始授权，保留为残留",
@@ -802,7 +726,10 @@ func PlanCompressionCleanup(in CompressionCleanupInput) CompressionCleanupPlan {
 		working = trial
 		out.Deletable = append(out.Deletable, candidate)
 	}
-	out.CoverageAfter = compressionCoverageForRefs(working, refs, in.Tag)
+	out.CoverageAfter = out.CoverageBefore
+	if len(out.Deletable) > 0 {
+		out.CoverageAfter = compressionCoverageForRefs(working, refs, in.Tag, in.OtherTag)
+	}
 	out.Remaining = len(working)
 	return out
 }
@@ -844,6 +771,15 @@ func compressionRetained(row CompressionRow, retained []CompressionRow) bool {
 	return false
 }
 
+func compressionKeepKey(keys []FunctionalKey, keep map[FunctionalKey]bool) bool {
+	for _, key := range keys {
+		if keep[key] {
+			return true
+		}
+	}
+	return false
+}
+
 func compressionRuleProtected(protected []CompressionAuthorization, keys []FunctionalKey) bool {
 	for _, item := range protected {
 		prefix, err := netip.ParsePrefix(item.Prefix)
@@ -861,20 +797,6 @@ func compressionRuleProtected(protected []CompressionAuthorization, keys []Funct
 		}
 	}
 	return false
-}
-
-func compressionLocatorCounts(rules []config.RuleInfo) map[FunctionalKey]int {
-	out := make(map[FunctionalKey]int)
-	for _, rule := range rules {
-		keys, ok := SnapshotRuleKeys(rule)
-		if !ok {
-			continue
-		}
-		for _, key := range keys {
-			out[key]++
-		}
-	}
-	return out
 }
 
 func removeRuleAt(rules []config.RuleInfo, target config.RuleInfo) []config.RuleInfo {
@@ -916,5 +838,34 @@ func sortCompressionBlockers(in []CompressionBlocker) []CompressionBlocker {
 		}
 		return a.Port < b.Port
 	})
+	return out
+}
+
+// VerifyCompressionCleanupReadback proves a cleanup-only attempt using the S0
+// rules it adopted, plus currently verified exact external coverage.
+func VerifyCompressionCleanupReadback(in LighthouseCompressionInput, retained []config.RuleInfo) CompressionReadback {
+	witnesses := make([]config.RuleInfo, 0, len(in.Snapshot.Rules))
+	for _, rule := range in.Snapshot.Rules {
+		if !tag.IsOwned(rule.Description, in.EdgeOneTag) {
+			witnesses = append(witnesses, rule)
+			continue
+		}
+		for _, original := range retained {
+			if rule == original {
+				witnesses = append(witnesses, rule)
+				break
+			}
+		}
+	}
+	refs, blockers := compressionRefsFromSites(in.Sites, compressionRefsCurrentAndNext)
+	coverage := compressionCoverageForRefs(witnesses, refs, in.EdgeOneTag, in.OtherTag)
+	out := CompressionReadback{
+		Coverage: CompressionCoverageFromRules(in.Snapshot, in.EdgeOneTag, in.OtherTag, in.Sites, in.Protected, in.Config.ExtraIPv4Limit),
+		Reasons:  append(blockers, coverage.Conflicts...),
+	}
+	if !coverage.Complete {
+		out.Reasons = append(out.Reasons, CompressionBlocker{Code: CompressionBlockedSnapshotIncomplete, Message: "回读无法验证纯清理所采用的规则"})
+	}
+	out.Complete = coverage.Complete && len(out.Reasons) == 0
 	return out
 }

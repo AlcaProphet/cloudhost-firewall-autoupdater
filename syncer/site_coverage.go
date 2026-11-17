@@ -264,7 +264,7 @@ func siteCoverageForAttempt(state *RuntimeState, exec targetExecution, plan prov
 		}
 		if compressed {
 			switch {
-			case c.Selected == nil:
+			case c.Selected == nil && !c.CleanupOnly:
 				proof.Reasons = append(proof.Reasons, "compression_blocked")
 				if len(c.Blockers) > 0 {
 					proof.HasConflicts = true
@@ -277,10 +277,11 @@ func siteCoverageForAttempt(state *RuntimeState, exec targetExecution, plan prov
 					proof.HasConflicts = true
 				}
 			}
-			if c.Readback != nil && c.Readback.Coverage.RiskKnown &&
-				c.Readback.Coverage.ExtraIPv4 > uint64(c.Settings.ExtraIPv4Allow) {
-				proof.Reasons = append(proof.Reasons, "compression_risk")
-			}
+		}
+		if !c.Coverage.RiskKnown {
+			proof.Reasons = append(proof.Reasons, "compression_risk_unknown")
+		} else if c.Coverage.ExtraIPv4 > uint64(c.riskLimit()) {
+			proof.Reasons = append(proof.Reasons, "compression_risk")
 		}
 		proof.Reasons = stableUniqueStrings(proof.Reasons)
 		proof.HasConflicts = proof.HasConflicts || len(plan.Conflicts) > 0 ||
