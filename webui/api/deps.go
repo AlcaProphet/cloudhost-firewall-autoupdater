@@ -56,6 +56,11 @@ type Deps struct {
 	// createRuntime 标记惰性协调器是否应构造并发布运行时状态。
 	createRuntime bool
 
+	// cleanupPreviews 是 Build9 Step 4 的进程内一次性 TAG 清理预览注册表。
+	// 惰性创建，不持久化；Step 5 通过同一入口复核并消费预览标识。
+	cleanupPreviews     *CleanupPreviewRegistry
+	cleanupPreviewsOnce sync.Once
+
 	// Health 运行健康来源（Build7 Step 4）：唯一 OperationalHealth 计算源，
 	// 同时提供配置保存后的唤醒入口。可为 nil（未接线时 operational 端点返回 503）。
 	Health OperationalHealthSource
@@ -84,6 +89,19 @@ func (d *Deps) SetRuntimeWiring(runtime *syncer.RuntimeManager, alerts *AlertMan
 // run.go 用它在同步主循环启动前注入 WithStableConfig 稳定区。
 func (d *Deps) ConfigCoordinator() *ConfigCoordinator {
 	return d.coordinator()
+}
+
+// cleanupPreviewRegistry 返回（必要时创建）进程内清理预览注册表。
+//
+// 注册表只保存一次性预览关联，不写数据库或正式运行状态；Step 5 必须使用
+// 同一注册表实例调用 Lookup/Take。
+func (d *Deps) cleanupPreviewRegistry() *CleanupPreviewRegistry {
+	d.cleanupPreviewsOnce.Do(func() {
+		if d.cleanupPreviews == nil {
+			d.cleanupPreviews = NewCleanupPreviewRegistry()
+		}
+	})
+	return d.cleanupPreviews
 }
 
 // coordinator 返回配置变更协调器；未注入时惰性创建（测试与最小接线场景）。
@@ -225,6 +243,8 @@ func (d *Deps) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/edgeone/sites/{zone_id}", d.handleUpdateEdgeOneSite)
 	mux.HandleFunc("DELETE /api/edgeone/sites/{zone_id}", d.handleDeleteEdgeOneSite)
 	mux.HandleFunc("GET /api/edgeone/status", d.handleGetEdgeOneStatus)
+	// EdgeOne TAG 手动清理只读预览（Build9 Step 4；执行与结果查询留 Step 5）
+	mux.HandleFunc("POST /api/edgeone/firewall-cleanup/preview", d.handleEdgeOneCleanupPreview)
 	// 规则管理
 	mux.HandleFunc("GET /api/rules", d.handleGetRules)
 	mux.HandleFunc("POST /api/rules", d.handleAddRule)

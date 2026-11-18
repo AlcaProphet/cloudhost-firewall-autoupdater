@@ -73,13 +73,13 @@
 - [x] [Step 1 实例配置、迁移与备份](#step-1)
 - [x] [Step 2 压缩规划、物理容量与风险额度](#step-2)
 - [x] [Step 3 正式同步、覆盖证明与模拟](#step-3)
-- [ ] [Step 4 EdgeOne TAG 清理预览](#step-4)
+- [x] [Step 4 EdgeOne TAG 清理预览](#step-4)
 - [ ] [Step 5 条件删除、同步互斥与回读结果](#step-5)
 - [ ] [Step 6 WebUI 配置、绑定提示与清理操作](#step-6)
 - [ ] [Step 7 本地端到端验收](#step-7)
 - [ ] [Step 8 真实云验收与发布证据](#step-8)
 
-**当前进度（2026-11-17）**　Step 0 基线、Step 1 实例配置/迁移/v5、Step 2 纯压缩规划与容量风险判定、Step 3 初次实施已提交为 `f7bd2f6`。本次核验修复基于该提交，源码、回归和文档已更新，工作树尚未提交。Step 4～8 待执行。Build8 Step 17 的真实只读及测算见[两阶段验收衔接](#build8-step17-link)。
+**当前进度（2026-11-18）**　Step 0 基线、Step 1 实例配置/迁移/v5、Step 2 纯压缩规划与容量风险判定、Step 3 初次实施 `f7bd2f6` 及核验修复 `7820d6c` 已提交。Step 4 EdgeOne TAG 清理预览已本地实施，定向回归、全仓 race、`make all` 与判别性反例通过，工作树尚未提交。Step 5～8 待执行。Build8 Step 17 的真实只读及测算见[两阶段验收衔接](#build8-step17-link)。
 
 <a name="step-0"></a>
 
@@ -194,13 +194,27 @@
 
 依赖 Step 0。交付只读的删除候选和一次性确认关联。 [Design6 §10.1](Design6.md#edgeone-tag-cleanup) · [TAG 归属](internal/tag/tag.go) · [目标身份](config/edgeone.go) · [Provider 接口](provider/provider.go)
 
-**实施与收口**　解析已配置目标清单，归并物理别名并支持仍已配置的解绑目标。完整规则快照按当前 `edgeone_tag` 归类，并在全快照检查定位歧义。以物理行计数，回显作用范围、可删、跳过和未读目标，以及共享目标的潜在 DNS 依赖。服务端预览标识关联 TAG、目标、凭据代次和候选身份。
+**实施与收口**　解析已配置目标清单，归并物理别名并支持仍已配置的解绑目标。完整规则快照按当前 `edgeone_tag` 归类，并在全快照检查定位歧义。以物理行计数，回显作用范围、可删、跳过和未读目标，以及共享目标在只读 DNS 解析下的潜在／已确认依赖。服务端预览标识关联 TAG、目标、凭据代次、快照版本或稳定定位及可删候选身份，并以范围摘要供 Step 5 识别配置变化、过期和重复提交。
 
 **Checklist**
 
-- [ ] 同一快照混放合法前缀、相似 TAG、旧 TAG、DNS TAG、手工规则及多端口物理行，断言确切名单和条数。
-- [ ] 验证别名、全部已配置目标、空范围、未配置目标、缺定位或快照异常。安全组仅包含受管入站方向。
-- [ ] 预览零写入。配置变化、过期、重复提交所需的状态和拒绝原因可由执行接口识别。
+- [x] 同一快照混放合法前缀、相似 TAG、旧 TAG、DNS TAG、手工规则及多端口物理行，断言确切名单和条数。
+- [x] 验证别名、全部已配置目标、空范围、未配置目标、缺定位或快照异常。安全组仅包含受管入站方向。
+- [x] 预览零写入。配置变化、过期、重复提交所需的状态和拒绝原因可由执行接口识别。
+
+**本地实施证据（2026-11-18）**　实施前 `beta / 7820d6c`，工作树与暂存区干净。新增 `provider/firewall_cleanup.go` 纯归类：只把 `tag.IsOwned` 精确匹配行纳入明细；Lighthouse 逐功能 key 在全快照检查唯一性，任一端口歧义跳过整行；CVM 核对非空、非负、可解析且全快照唯一的入站 `PolicyIndex` 与 `Version`；SWAS/ECS 核对非空且全快照唯一的 `RuleId`／`SecurityGroupRuleId`。CVM/阿里云允许同一功能 key 多行但稳定 ID 唯一时分别可删，不套用 Lighthouse 的 key 歧义规则。安全组读取仍只含受管入站。
+
+新增 `webui/api/edgeone_cleanup.go`、`webui/api/edgeone_cleanup_preview.go` 与 `webui/api/deps.go` 路由：`POST /api/edgeone/firewall-cleanup/preview` 只接受 `target_ids` 或显式 `all:true`，拒绝空范围、未知目标、非正 ID、未知字段及 `all` 与 IDs 混用；按 `TargetIdentity` 归并全部别名，已配置但未绑定站点的目标可选。逐物理目标调用一次 `GetSnapshot`，返回平台、地域、实例／安全组、全部别名、站点绑定、完整物理行明细、匹配／可删／跳过／未读及原因。快照读取失败或不完整、凭据缺失按目标标记 `unread`；合法空快照仍按已读取返回零匹配行；全部未读时不签发预览标识。响应中的 `80,443` 只计一行，同时保留两个 canonical key。
+
+DNS 依赖按用户确认的 A 方案：只读解析适用 DNS 规则，复用 `provider.PlanTarget` 生成可实施 desired key；对每个 key 统计完整快照中覆盖它的全部物理行，只有这些行**全部**进入本次可删集合时才标记 `confirmed`；DNS TAG、手工、外部或跳过行仍有覆盖时只标 `potential`，解析失败标 `unverified`，不阻塞预览。解析器使用现有 `dns.Resolver`，不写熔断器、不发事件。
+
+预览标识为 16 字节随机值，仅存进程内存，TTL 10 分钟；范围摘要包含当前 TAG、DNS TAG、所选物理目标及全部别名、站点绑定、适用 DNS 规则和凭据指纹，`all` 模式还要求当前全部目标集合与预览时一致。Step 5 校验接口为 `Lookup`（只读状态）与 `Take(id, current RuntimeState)`（原子复核并消费）；拒绝原因固定为 `preview_not_found`、`preview_expired`、`preview_consumed`、`preview_config_changed`、`preview_invalidated`、`preview_unavailable`。配置变化后记录失效且不因配置恢复而复活；进程重启即丢失。Step 4 不实现确认受理、删除、同步互斥、关闭 EdgeOne 开关或结果查询。
+
+测试命令：`go test ./provider ./webui/api -run '^TestBuild9S4' -race -count=10 -timeout=20m` 通过，共 9 项 Provider 顶层回归与 22 项 API 顶层回归（含子用例）。`go test ./provider ./webui/api -race -count=1 -timeout=10m`、`go test ./... -race -count=1 -timeout=20m`（12 包）、`go vet ./...`、`go build ./...` 均通过，以上命令退出码均为 0。使用临时 npm 缓存执行 `make all`，退出码 0：前端构建成功、188 项行为回归全通过、12 个 Go 包无缓存 race 通过、`go vet` 与产品构建通过；`gofmt` 与 `git diff --check` 无输出。
+
+判别性反例共 13 组，均在仓外工作树副本上按行为断言失败：相似 TAG 前缀越界、按 key 数替代物理行、Lighthouse 只检查首个 key、CVM 只检查索引存在、阿里云只检查 ID 存在、按本地 ID 而非物理身份归组、空范围当全部、预览调用云写、`Take` 不消费、`Take` 不检查过期、摘要忽略 TAG、`all` 模式不复核目标集合、DNS 依赖只按单行而非整批最后覆盖。补测中发现 Lighthouse 初版只覆盖排序在前的 `443` 冲突；已补 `TestBuild9S4PreviewLighthouseMultiPortSecondKeyAmbiguity`，验证排序在后的 `80` 冲突同样使整行跳过，随后 `keys[:1]` 反例按行为变红。
+
+边界：仅本地 Provider/TEO/DNS 替身与临时 SQLite，未执行真实云查询／删除、TEO 确认、浏览器、Docker、远端 CI 或发布。`npm ci` 报告 10 项 high 依赖审计提示，本轮未执行独立 audit 或升级。源码、测试与文档尚未提交或推送。
 
 <a name="step-5"></a>
 
