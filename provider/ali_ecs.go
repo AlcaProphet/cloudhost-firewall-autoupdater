@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
@@ -236,12 +237,16 @@ func (p *AliECS) DeleteRules(_ RuleSnapshot, rules []config.RuleInfo) (DeleteRes
 			RegionId:            tea.String(p.regionID),
 			SecurityGroupRuleId: batch,
 		}
-		if _, err := p.client.RevokeSecurityGroup(req); err != nil {
+		resp, err := p.client.RevokeSecurityGroup(req)
+		if err != nil {
 			delErr := fmt.Errorf("删除安全组规则失败（第 %d/%d 批，本批 %d 条）: %w", i+1, len(batches), len(batch), err)
 			if deleted > 0 {
 				return DeleteResult{Deleted: deleted, Resolved: resolved}, &PartialDeleteError{Deleted: deleted, Err: delErr}
 			}
 			return DeleteResult{Deleted: deleted, Resolved: resolved}, delErr
+		}
+		if resp != nil && resp.Body != nil {
+			slog.Info("精确删除云端规则已确认", "provider", p.Name(), "request_id", tea.StringValue(resp.Body.RequestId), "rows", len(batch))
 		}
 		deleted += len(batch)
 		resolved += len(batch)

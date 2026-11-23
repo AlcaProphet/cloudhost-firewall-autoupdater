@@ -29,6 +29,9 @@ type Syncer struct {
 	runtime *RuntimeManager
 	bus     *notifier.EventBus
 
+	maintenanceCh    chan struct{} // 显式维护唤醒，任务只由 Run 执行
+	maintenanceQueue []func()      // mu 保护，退出前登记全部已受理任务终态
+
 	triggerCh chan struct{} // 手动触发同步（容量 1，可合并）
 	controlCh chan struct{} // 状态变化通知（容量 1，可合并；只表示「请重新读取状态」）
 	stopCh    chan struct{}
@@ -153,13 +156,14 @@ type Syncer struct {
 // 因此 New 不再接收分散的 cfg/providers/resolver 参数。
 func New(runtime *RuntimeManager) *Syncer {
 	s := &Syncer{
-		runtime:   runtime,
-		bus:       notifier.NewEventBus(),
-		triggerCh: make(chan struct{}, 1),
-		controlCh: make(chan struct{}, 1),
-		stopCh:    make(chan struct{}),
-		doneCh:    make(chan struct{}),
-		startedCh: make(chan struct{}),
+		runtime:       runtime,
+		bus:           notifier.NewEventBus(),
+		triggerCh:     make(chan struct{}, 1),
+		maintenanceCh: make(chan struct{}, 1),
+		controlCh:     make(chan struct{}, 1),
+		stopCh:        make(chan struct{}),
+		doneCh:        make(chan struct{}),
+		startedCh:     make(chan struct{}),
 	}
 	s.processStarted = time.Now()
 	if st := runtime.Snapshot(); st != nil {
@@ -342,6 +346,7 @@ func (s *Syncer) Run() {
 	defer close(s.doneCh)
 	s.markRunning()
 	defer s.setRunning(false)
+	defer func() { s.mu.Lock(); s.stopped = true; s.mu.Unlock(); s.finishMaintenance() }()
 
 	initial := s.runtime.Snapshot()
 	if initial == nil {
@@ -400,9 +405,11 @@ func (s *Syncer) Run() {
 		dispatched := false
 
 		if !enabled {
-			// 暂停子循环：不接收 ticker/trigger，只在状态通知或停止时退出。
+			// 暂停时仍处理显式维护，不接收 ticker/trigger。
 			select {
 			case <-s.controlCh:
+			case <-s.maintenanceCh:
+				s.runMaintenance()
 			case <-s.stopCh:
 				slog.Info("同步引擎停止")
 				return
@@ -475,6 +482,8 @@ func (s *Syncer) Run() {
 				}
 				dispatch = s.runScheduledRound(latest, dnsDue, edgeDue)
 				dispatched = true
+			case <-s.maintenanceCh:
+				s.runMaintenance()
 			case <-s.controlCh:
 			case <-s.stopCh:
 				slog.Info("同步引擎停止")

@@ -479,3 +479,12 @@ func cleanupPreviewRecordCopy(record CleanupPreviewRecord) CleanupPreviewRecord 
 	}
 	return out
 }
+
+// Invalidate 锁存执行期间观察到的配置变化；已消费记录也不能因配置恢复复活。
+func (r *CleanupPreviewRegistry) Invalidate(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if record, ok := r.previews[id]; ok {
+		record.Status = cleanupPreviewInvalidated
+	}
+}

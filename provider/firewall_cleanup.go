@@ -1,14 +1,21 @@
 package provider
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"strconv"
 	"strings"
 
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/config"
 	"github.com/alcaprophet/cloudhost-firewall-autoupdater/internal/tag"
+	"github.com/alibabacloud-go/tea/tea"
 )
 
-// 本文件承载 Build9 Step 4 的 EdgeOne TAG 手动清理只读归类。
+// 本文件承载 Build9 Step 4～5 的 EdgeOne TAG 清理归类、执行复核和错误摘要。
 //
 // 与自动清理 planner 的 cleanupLocatorIssue 刻意分开：
 //   - 自动清理只对本次 planner 的候选负责，CVM/阿里云定位只需证明字段存在，
@@ -263,4 +270,111 @@ func parseCVMIndex(value string) (int64, bool) {
 		return 0, false
 	}
 	return index, true
+}
+
+// ValidateFirewallCleanup 把新快照限定到已确认的整行候选；绝不扩大到新规则。
+// 腾讯版本变化、同一定位内容变化或任一候选歧义均拒绝整个目标。
+// absent 只表示旧身份已消失，不表示本操作实际删除。
+func ValidateFirewallCleanup(cloudType config.CloudType, snapshot RuleSnapshot, tagValue, revision string, authorized []config.RuleInfo) (rows []config.RuleInfo, absent int, err error) {
+	if (cloudType == config.CloudTCLighthouse || cloudType == config.CloudTCCVM) && snapshot.Revision != revision {
+		return nil, 0, fmt.Errorf("云端版本已变化，请重新预览")
+	}
+	assessment := AssessFirewallCleanup(cloudType, snapshot, tagValue)
+	rows = []config.RuleInfo{}
+	for _, old := range authorized {
+		found := false
+		for index, current := range snapshot.Rules {
+			sameLocator := cleanupAuthorizedIdentityEqual(current, old)
+			switch cloudType {
+			case config.CloudTCLighthouse:
+				oldKeys, _ := SnapshotRuleKeys(old)
+				currentKeys, _ := SnapshotRuleKeys(current)
+				for _, a := range oldKeys {
+					for _, b := range currentKeys {
+						if a == b {
+							sameLocator = true
+						}
+					}
+				}
+			case config.CloudTCCVM:
+				a, aok := parseCVMIndex(old.PolicyIndex)
+				b, bok := parseCVMIndex(current.PolicyIndex)
+				sameLocator = aok && bok && a == b
+				withoutIndex := current
+				withoutIndex.PolicyIndex = old.PolicyIndex
+				if !sameLocator && cleanupAuthorizedIdentityEqual(withoutIndex, old) {
+					return nil, 0, fmt.Errorf("候选入站索引已漂移，请重新预览")
+				}
+			case config.CloudAliSWAS, config.CloudAliECS:
+				sameLocator = strings.TrimSpace(current.RuleID) == strings.TrimSpace(old.RuleID)
+				// 同一旧行丢失 ID 不是可验证的“已不存在”。
+				withoutID := current
+				withoutID.RuleID = old.RuleID
+				if strings.TrimSpace(current.RuleID) == "" && cleanupAuthorizedIdentityEqual(withoutID, old) {
+					return nil, 0, fmt.Errorf("候选规则 ID 缺失，请重新预览")
+				}
+			}
+			if !sameLocator {
+				continue
+			}
+			if found || !cleanupAuthorizedIdentityEqual(current, old) {
+				return nil, 0, fmt.Errorf("候选身份或定位已变化，请重新预览")
+			}
+			safe := false
+			for _, row := range assessment.Rows {
+				if row.Index == index && row.Deletable() {
+					safe = true
+					break
+				}
+			}
+			if !safe {
+				return nil, 0, fmt.Errorf("候选定位或归属无法验证，请重新预览")
+			}
+			found = true
+			rows = append(rows, current)
+		}
+		if !found {
+			absent++
+		}
+	}
+	return rows, absent, nil
+}
+
+// FirewallCleanupErrorInfo 仅提取可用于核查的 RequestId 与结果未知标记，
+// 不把业务错误正文、请求参数或凭据复制到任务响应/日志。
+func FirewallCleanupErrorInfo(err error) (requestID string, unknown bool) {
+	if err == nil {
+		return "", false
+	}
+	var network net.Error
+	unknown = errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.As(err, &network)
+	var tc interface {
+		GetCode() string
+		GetRequestId() string
+	}
+	if errors.As(err, &tc) {
+		code := tc.GetCode()
+		return tc.GetRequestId(), unknown || code == "ClientError.NetworkError" || code == "InternalError" || strings.Contains(code, "Timeout")
+	}
+	var ali *tea.SDKError
+	if errors.As(err, &ali) {
+		code := tea.StringValue(ali.Code)
+		unknown = unknown || code == "InternalError" || strings.Contains(code, "Timeout")
+		if ali.Data != nil {
+			var data struct {
+				RequestID string `json:"RequestId"`
+			}
+			if jsonErr := json.Unmarshal([]byte(*ali.Data), &data); jsonErr == nil {
+				requestID = data.RequestID
+			}
+		}
+	}
+	return requestID, unknown
+}
+
+// cleanupAuthorizedIdentityEqual 不把人类备注纳入身份；当前 TAG 归属另由全快照归类核对。
+func cleanupAuthorizedIdentityEqual(a, b config.RuleInfo) bool {
+	a.Description = ""
+	b.Description = ""
+	return a == b
 }

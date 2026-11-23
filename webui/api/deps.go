@@ -58,8 +58,10 @@ type Deps struct {
 
 	// cleanupPreviews 是 Build9 Step 4 的进程内一次性 TAG 清理预览注册表。
 	// 惰性创建，不持久化；Step 5 通过同一入口复核并消费预览标识。
-	cleanupPreviews     *CleanupPreviewRegistry
-	cleanupPreviewsOnce sync.Once
+	cleanupPreviews       *CleanupPreviewRegistry
+	cleanupPreviewsOnce   sync.Once
+	cleanupOperations     *cleanupOperations
+	cleanupOperationsOnce sync.Once
 
 	// Health 运行健康来源（Build7 Step 4）：唯一 OperationalHealth 计算源，
 	// 同时提供配置保存后的唤醒入口。可为 nil（未接线时 operational 端点返回 503）。
@@ -243,8 +245,10 @@ func (d *Deps) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/edgeone/sites/{zone_id}", d.handleUpdateEdgeOneSite)
 	mux.HandleFunc("DELETE /api/edgeone/sites/{zone_id}", d.handleDeleteEdgeOneSite)
 	mux.HandleFunc("GET /api/edgeone/status", d.handleGetEdgeOneStatus)
-	// EdgeOne TAG 手动清理只读预览（Build9 Step 4；执行与结果查询留 Step 5）
+	// EdgeOne TAG 手动清理预览、一次性确认与结果查询（Build9 Step 4～5）
 	mux.HandleFunc("POST /api/edgeone/firewall-cleanup/preview", d.handleEdgeOneCleanupPreview)
+	mux.HandleFunc("POST /api/edgeone/firewall-cleanup", d.handleEdgeOneCleanupConfirm)
+	mux.HandleFunc("GET /api/edgeone/firewall-cleanup/{operation_id}", d.handleEdgeOneCleanupResult)
 	// 规则管理
 	mux.HandleFunc("GET /api/rules", d.handleGetRules)
 	mux.HandleFunc("POST /api/rules", d.handleAddRule)

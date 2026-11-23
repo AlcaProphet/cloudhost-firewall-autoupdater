@@ -241,8 +241,12 @@ func (p *AliSWAS) DeleteRules(_ RuleSnapshot, rules []config.RuleInfo) (DeleteRe
 		RuleIds:    ruleIDs,
 	}
 
-	if _, err := p.client.DeleteFirewallRules(req); err != nil {
+	resp, err := p.client.DeleteFirewallRules(req)
+	if err != nil {
 		return DeleteResult{}, fmt.Errorf("删除防火墙规则失败: %w", err)
+	}
+	if resp != nil && resp.Body != nil {
+		slog.Info("精确删除云端规则已确认", "provider", p.Name(), "request_id", tea.StringValue(resp.Body.RequestId), "rows", len(ruleIDs))
 	}
 	return DeleteResult{Deleted: len(ruleIDs), Resolved: len(ruleIDs)}, nil
 }

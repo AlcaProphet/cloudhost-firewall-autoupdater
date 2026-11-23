@@ -226,13 +226,17 @@ func (p *TCCVM) DeleteRules(snapshot RuleSnapshot, rules []config.RuleInfo) (Del
 		Version: common.StringPtr(version),
 	}
 
-	if _, err := p.client.DeleteSecurityGroupPolicies(req); err != nil {
+	resp, err := p.client.DeleteSecurityGroupPolicies(req)
+	if err != nil {
 		// ResourceNotFound 视为成功（幂等）：规则已不存在，不计入 Deleted
 		if strings.Contains(err.Error(), "ResourceNotFound") {
 			slog.Warn("安全组规则已不存在，按幂等处理", "provider", p.Name(), "数量", len(policies))
 			return DeleteResult{Resolved: len(policies)}, nil
 		}
 		return DeleteResult{}, fmt.Errorf("删除安全组规则失败: %w", err)
+	}
+	if resp != nil && resp.Response != nil {
+		slog.Info("精确删除云端规则已确认", "provider", p.Name(), "request_id", strVal(resp.Response.RequestId), "rows", len(policies))
 	}
 	return DeleteResult{Deleted: len(policies), Resolved: len(policies)}, nil
 }
