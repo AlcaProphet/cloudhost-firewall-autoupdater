@@ -40,6 +40,7 @@ function mount() {
   const components = Object.fromEntries(['NButton','NSpace','NCard','NDataTable','NAlert','NStatistic','NGrid','NGi','NTag'].map(name => [name, { name }]))
   function dependencies(name) {
     if (name === 'vue') return { ...vue, onUnmounted() {} }
+    if (name.endsWith('.vue')) return { __esModule: true, default: { name: name.split('/').pop().replace('.vue', '') } }
     if (name === 'naive-ui') return { ...components, useMessage: () => Object.fromEntries(['info','success','error'].map(kind => [kind, text => messages.push({ kind, text })])) }
     if (name.endsWith('/useDryRun')) return { useDryRun: () => state = hook() }
     if (name.endsWith('/constants')) return { cloudLabelMap: { tc_cvm: '腾讯云 CVM' } }

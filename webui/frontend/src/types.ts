@@ -274,6 +274,7 @@ export interface DryRunExecutionUnit {
   cleanup_deletable: RuleChange[]
   cleanup_protected: RuleChange[]
   error: string
+  compression?: DryRunCompression
 }
 
 export interface DryRunResponse {
@@ -382,4 +383,79 @@ export interface AlertUptimeKumaPushConfig {
   enabled: boolean
   url: string
   interval: string
+}
+
+export interface LighthouseCompression {
+  cloud_type: string
+  region: string
+  resource_id: string
+  enabled: boolean
+  extra_ipv4_allow: number
+  pending_review: boolean
+  pending_since: string
+  target_ids?: number[]
+}
+export interface DryRunCompression {
+  applicable: boolean
+  enabled: boolean
+  assumed: boolean
+  pending_review: boolean
+  pending_known: boolean
+  mode: string
+  s0_rows: number
+  other_new_rows: number
+  add_rows: number
+  normal_cap: number
+  reserved: number
+  hard_cap: number
+  normal_budget: number | null
+  peak: number | null
+  borrowed: number | null
+  expected_cleanup: number | null
+  expected_after: number | null
+  risk_limit: number | null
+  current_extra_ipv4: number | null
+  extra_ipv4: number | null
+  max_extra_run: number | null
+  per_port: { Protocol: string; Port: string; ExtraIPv4: number; MaxExtraRun: number; Ranges: string[] }[]
+  rows: { protocol: string; port: string; cidr: string; reused: boolean; serves_current: boolean; serves_next: boolean; lossy: boolean; description: string }[]
+  blockers: { Code: string; Message: string }[]
+  warnings: { Code: string; Message: string }[]
+  reserved_restored: boolean | null
+  residual_rows: number
+}
+export interface ImportPreview {
+  version: number
+  compression_default_disabled: boolean
+  compression_enabled_count: number
+  lighthouse_compression: (Pick<LighthouseCompression, 'cloud_type' | 'region' | 'resource_id' | 'enabled' | 'extra_ipv4_allow'> & { target_count: number })[]
+}
+export interface CleanupPreview {
+  preview_id: string
+  tag: string
+  scope: string
+  selected_target_ids: number[]
+  expires_at: string | null
+  all_read: boolean
+  summary: { targets: number; targets_read: number; targets_unread: number; deletable_rows: number; skipped_rows: number }
+  warnings: string[]
+  targets: {
+    target_ids: number[]; cloud_type: string; region: string; resource_id: string
+    status: string; reason?: string; revision: string; rules_read: number
+    deletable_rows: number; skipped_rows: number; retained_rows: number
+    sites: EdgeOneSite[]
+    dns_dependency: { status: string; reason?: string }
+    rows: { status: string; reason?: string; protocol: string; port: string; source: string; action: string; description: string; policy_index?: string; rule_id?: string }[]
+  }[]
+}
+export interface CleanupOperation {
+  operation_id: string; preview_id: string; tag: string
+  status: string; reason_code?: string; disable_edgeone: boolean; switch_action: string
+  cleared: boolean
+  targets: {
+    target_ids: number[]; cloud_type: string; region: string; resource_id: string
+    status: string; reason_code?: string; authorized_rows: number; confirmed_deleted: number
+    absent_rows: number | null; remaining_rows: number | null
+    readback_verified: boolean; outcome_unknown: boolean; requests_sent: number
+  }[]
 }

@@ -7,6 +7,7 @@
 //   - 无适用规则目标只显示未调度提示，不渲染空规划表格；
 //   - 所有数组在 DTO 层恒为 []，这里只做空态展示。
 import { NCard, NDataTable, NAlert, NSpace, NStatistic, NGrid, NGi, NTag, NButton } from 'naive-ui'
+import CompressionPreview from './CompressionPreview.vue'
 import { computed } from 'vue'
 import type { DryRunExecutionUnit, DryRunPreflight, DryRunResult, PlannedRule, RuleChange, PlanIssue, PlanMatch } from '../types'
 import { cloudLabelMap } from '../constants'
@@ -215,10 +216,11 @@ function issueText(issue: PlanIssue): string {
             物理目标 {{ unit.target_key }}；关联本地目标 {{ unit.target_ids.join(', ') || '-' }}
           </div>
           <div style="font-size: 14px; line-height: 1.9">
-            已读规则 <b>{{ unit.rules_read }}</b>；当前规则 <b>{{ unit.current_rule_count }}</b>；
-            预计新增 <b>{{ unit.planned_add }}</b>；过渡期峰值 <b>{{ unit.transition_peak }}</b>；
+            已读规则 <b>{{ unit.rules_read }}</b>；当前规则 <b>{{ unit.data_complete ? unit.current_rule_count : '未知' }}</b>；
+            预计新增 <b>{{ unit.planned_add }}</b>；过渡期峰值 <b>{{ unit.data_complete ? unit.transition_peak : '未知' }}</b>；
             已知限额 <b>{{ limitLabel(unit) }}</b>
           </div>
+          <CompressionPreview v-if="unit.compression?.applicable" :compression="unit.compression" :data-complete="unit.data_complete" />
           <NAlert v-if="unit.limit_exceeded" type="warning" :show-icon="false" style="margin-top: 6px">
             过渡期峰值 {{ unit.transition_peak }} 超过已知限额 {{ unit.limit }}，正式同步可能被平台拒绝。
           </NAlert>

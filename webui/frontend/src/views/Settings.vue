@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { NForm, NFormItem, NInput, NSelect, NButton, NSpace, NCard, NGrid, NGi, NModal, NSwitch, useMessage, useThemeVars } from 'naive-ui'
+import { NAlert, NForm, NFormItem, NInput, NSelect, NButton, NSpace, NCard, NGrid, NGi, NModal, NSwitch, useMessage, useThemeVars } from 'naive-ui'
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { request, RequestError, type MissingFieldsDetails } from '../api'
+import type { ImportPreview } from '../types'
 import { useZones } from '../composables/useZones'
 import { useScannedResources } from '../composables/useScannedResources'
 
@@ -189,7 +190,7 @@ async function save() {
   }
 }
 
-// ─── 配置导入导出（version 4 完整敏感快照，Build6 Step 5 / Build8 Step 4） ───
+// ─── 配置导入导出（version 5 完整敏感快照，Build6 Step 5 / Build8 Step 4） ───
 //
 // 安全边界：配置包是**明文完整敏感快照**（含腾讯云/阿里云密钥、SMTP 密码、
 // Webhook URL 与 Uptime Kuma Push URL），安全等级等同于生产 Secret 或 SQLite 数据库备份。
@@ -197,7 +198,7 @@ async function save() {
 // 不在 console 输出响应体；文件名从 Content-Disposition 解析，不可用时用固定安全名。
 
 // 导出响应不可用时的固定安全文件名
-const EXPORT_FALLBACK_FILENAME = 'fwalizer-config-v4.json'
+const EXPORT_FALLBACK_FILENAME = 'fwalizer-config-v5.json'
 
 // parseAttachmentFilename 从 Content-Disposition 中提取安全文件名。
 //
@@ -256,6 +257,7 @@ const showImportConfirm = ref(false)
 // 预检查不改写上传内容，保留原始重复字段与编码供后端严格解码。
 const pendingImport = ref<File | null>(null)
 const importFilename = ref('')
+const importPreview = ref<ImportPreview | null>(null)
 const readingImport = ref(false)
 const importing = ref(false)
 const showImportFailure = ref(false)
@@ -271,18 +273,28 @@ async function importConfig(e: Event) {
   if (!file || !pageActive || readingImport.value || importing.value) return
   readingImport.value = true
   pendingImport.value = null
+  importPreview.value = null
   showImportConfirm.value = false
   showImportFailure.value = false
   importFailure.value = null
   try {
-    // 仅作本地语法预检查；实际 POST 直接发送 File 原始字节。
+    // 本地语法及服务端严格预览均不改写原文件字节。
     JSON.parse(await file.text())
     if (!pageActive) return
+    const preview = await request<ImportPreview>('/api/config/import/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: file,
+    })
+    if (!pageActive) return
+    importPreview.value = preview
     pendingImport.value = file
     importFilename.value = file.name
     showImportConfirm.value = true
-  } catch {
-    if (pageActive) message.error('JSON 格式错误')
+  } catch (err: any) {
+    if (!pageActive) return
+    if (err instanceof RequestError && err.missingFields) {
+      importFailure.value = err.missingFields
+      showImportFailure.value = true
+    } else message.error(err instanceof SyntaxError ? 'JSON 格式错误' : `导入预览失败: ${err.message}`)
   } finally {
     readingImport.value = false
   }
@@ -514,6 +526,13 @@ async function confirmImport() {
       <p v-if="importFilename" style="margin: 0 0 16px; color: #d03050; line-height: 1.7">
         待导入文件：{{ importFilename }}
       </p>
+      <NAlert v-if="importPreview" type="warning" style="margin-bottom: 12px">
+        配置包 v{{ importPreview.version }}：显式开启 {{ importPreview.compression_enabled_count }} 个物理实例的策略压缩；缺省实例及旧版包默认关闭。
+        <div v-for="item in importPreview.lighthouse_compression.filter(item => item.enabled)" :key="`${item.region}/${item.resource_id}`">
+          {{ item.region }} · {{ item.resource_id }}：额外放行 IPv4 上限 {{ item.extra_ipv4_allow }}，共享别名 {{ item.target_count }} 个。
+        </div>
+        开启的实例可能额外放行回源列表之外的 IPv4 地址并绕过 EdgeOne 访问源站。请核对实例与额度。
+      </NAlert>
       <NSpace justify="end">
         <NButton size="large" @click="cancelImport">取消</NButton>
         <NButton type="error" size="large" :disabled="importing" :loading="importing" @click="confirmImport">确认导入</NButton>

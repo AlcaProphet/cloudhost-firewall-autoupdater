@@ -1,18 +1,20 @@
 <script setup lang="ts">
 import { NDataTable, NButton, NModal, NForm, NFormItem, NInput, NSelect, NSpace, NAlert, useMessage } from 'naive-ui'
 import { ref, onMounted, onUnmounted, h, watch, computed, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { request, RequestError } from '../api'
 import { cloudOptions, cloudLabelMap, resourceIdHint } from '../constants'
 import { useSettings } from '../composables/useSettings'
 import { useZones } from '../composables/useZones'
 import { useScannedResources } from '../composables/useScannedResources'
+import LighthouseCompressionEditor from '../components/LighthouseCompressionEditor.vue'
 import type { TargetConfig, TestConnectionResult } from '../types'
 
 const targets = ref<TargetConfig[]>([])
 const showModal = ref(false)
 // 保存包含后续列表刷新，锁定期间不允许重新创建或切换表单。
 const saving = ref(false)
+const compressionSaving = ref(false)
 const editingId = ref<number | null>(null)
 // resource_id 初始为 null：避免 NSelect tag 模式将空字符串视为已选值导致 placeholder 不显示
 const form = ref<{ cloud_type: string; region: string; resource_id: string | null }>({ cloud_type: 'tc_lighthouse', region: '', resource_id: null })
@@ -21,6 +23,8 @@ const message = useMessage()
 
 // ─── Keys 缺失提示（改进 12：仅提示，不阻止保存） ───
 const router = useRouter()
+const route = useRoute()
+const compressionTarget = computed(() => targets.value.find(t => t.id === editingId.value && t.cloud_type === form.value.cloud_type && t.region === form.value.region && t.resource_id === form.value.resource_id))
 const { refresh: refreshSettings, tcReady, aliReady } = useSettings()
 const credWarning = ref('')
 
@@ -100,10 +104,13 @@ async function load(failureLabel = '加载目标失败') {
 onMounted(async () => {
   await Promise.all([load(), refreshSettings(), loadZones(), loadScanned(form.value.cloud_type)])
   updateCredWarning()
+  const id = Number(route.query?.compression)
+  const target = targets.value.find(t => t.id === id)
+  if (target && pageActive) openEdit(target)
 })
 
 function openAdd() {
-  if (!pageActive || saving.value || deletePhase.value !== 'idle') return
+  if (!pageActive || saving.value || compressionSaving.value || deletePhase.value !== 'idle') return
   editingId.value = null
   form.value = { cloud_type: 'tc_lighthouse', region: '', resource_id: null }
   showModal.value = true
@@ -111,7 +118,7 @@ function openAdd() {
 }
 
 function openEdit(row: TargetConfig) {
-  if (!pageActive || saving.value || deletePhase.value !== 'idle') return
+  if (!pageActive || saving.value || compressionSaving.value || deletePhase.value !== 'idle') return
   editingId.value = row.id
   form.value = { cloud_type: row.cloud_type, region: row.region, resource_id: row.resource_id }
   showModal.value = true
@@ -119,7 +126,7 @@ function openEdit(row: TargetConfig) {
 }
 
 async function saveTarget() {
-  if (!pageActive || saving.value || deletePhase.value !== 'idle') return
+  if (!pageActive || saving.value || compressionSaving.value || deletePhase.value !== 'idle') return
   if (!showModal.value) return
   saving.value = true
   ++loadSequence
@@ -177,7 +184,7 @@ function focusDeleteCancel() {
 }
 
 function openDeleteConfirm(row: TargetConfig, origin: HTMLElement | null = null) {
-  if (!pageActive || saving.value || deletePhase.value !== 'idle' || showModal.value) return
+  if (!pageActive || saving.value || compressionSaving.value || deletePhase.value !== 'idle' || showModal.value) return
   pendingDelete.value = { ...row }
   deleteOrigin = origin
   deleteDialogLeft = false
@@ -235,7 +242,7 @@ async function confirmDelete() {
 
 // 弹窗内表单级「测试连接」：用未保存的表单值验证（保留），15s 超时
 async function testConnection() {
-  if (!pageActive || saving.value) return
+  if (!pageActive || saving.value || compressionSaving.value) return
   testResult.value = '测试中...'
   try {
     const data = await request<TestConnectionResult>(
@@ -265,8 +272,8 @@ const columns = [
     render(row: any) {
       return h(NSpace, { size: 'small' }, {
         default: () => [
-          h(NButton, { size: 'tiny', disabled: deleteBusy.value || saving.value, onClick: () => openEdit(row) }, { default: () => '编辑' }),
-          h(NButton, { size: 'tiny', type: 'error', disabled: deleteBusy.value || saving.value, onClick: (event: MouseEvent) => openDeleteConfirm(row, event.currentTarget as HTMLElement) }, { default: () => '删除' }),
+          h(NButton, { size: 'tiny', disabled: deleteBusy.value || saving.value || compressionSaving.value, onClick: () => openEdit(row) }, { default: () => '编辑' }),
+          h(NButton, { size: 'tiny', type: 'error', disabled: deleteBusy.value || saving.value || compressionSaving.value, onClick: (event: MouseEvent) => openDeleteConfirm(row, event.currentTarget as HTMLElement) }, { default: () => '删除' }),
         ]
       })
     }
@@ -277,11 +284,11 @@ const columns = [
 <template>
   <div>
     <h2>云资源管理</h2>
-    <NButton ref="pageAddButton" type="primary" size="large" :disabled="deleteBusy || saving" style="margin: 8px 0 12px" @click="openAdd">添加目标</NButton>
+    <NButton ref="pageAddButton" type="primary" size="large" :disabled="deleteBusy || saving || compressionSaving" style="margin: 8px 0 12px" @click="openAdd">添加目标</NButton>
     <NDataTable :columns="columns" :data="targets" :bordered="true" />
 
-    <NModal v-model:show="showModal" :title="editingId ? '编辑目标' : '添加目标'" preset="card" :closable="!saving" :mask-closable="!saving" :close-on-esc="!saving" style="width: 500px">
-      <NForm :disabled="saving" :model="form" label-placement="left" label-width="80">
+    <NModal v-model:show="showModal" :title="editingId ? '编辑目标' : '添加目标'" preset="card" :closable="!saving && !compressionSaving" :mask-closable="!saving && !compressionSaving" :close-on-esc="!saving && !compressionSaving" style="width: min(720px, calc(100vw - 32px))">
+      <NForm :disabled="saving || compressionSaving" :model="form" label-placement="left" label-width="80">
         <!-- Keys 缺失提示（改进 12） -->
         <NAlert v-if="credWarning" type="warning" style="margin-bottom: 12px">
           {{ credWarning }}
@@ -311,11 +318,13 @@ const columns = [
           />
         </NFormItem>
         <NSpace>
-          <NButton type="primary" :loading="saving" :disabled="saving" @click="saveTarget">保存</NButton>
-          <NButton :disabled="saving" @click="testConnection">测试连接</NButton>
+          <NButton type="primary" :loading="saving" :disabled="saving || compressionSaving" @click="saveTarget">保存</NButton>
+          <NButton :disabled="saving || compressionSaving" @click="testConnection">测试连接</NButton>
         </NSpace>
         <p v-if="testResult" style="margin-top: 8px; color: #666">{{ testResult }}</p>
       </NForm>
+      <LighthouseCompressionEditor v-if="showModal && compressionTarget?.cloud_type === 'tc_lighthouse'" :key="compressionTarget.id" :target="compressionTarget" :disabled="saving" @busy="(value) => compressionSaving = value" />
+      <p v-else-if="form.cloud_type === 'tc_lighthouse'">先保存目标身份，再编辑该实例的 EdgeOne 防火墙策略压缩设置。</p>
     </NModal>
 
     <!-- 删除只在确认处理函数发起；所有关闭入口均为取消。 -->

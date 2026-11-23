@@ -5,6 +5,8 @@ import {
   NAlert, NButton, NCard, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSwitch, NTag, useMessage,
 } from 'naive-ui'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import LighthouseBindingHints from '../components/LighthouseBindingHints.vue'
+import EdgeOneCleanup from '../components/EdgeOneCleanup.vue'
 import { request } from '../api'
 import type { EdgeOneSite, EdgeOneSiteStatus, EdgeOneStatus, TargetConfig } from '../types'
 
@@ -295,10 +297,13 @@ onMounted(async () => {
             <div style="font-size: 14px">
               协议 <b>{{ site.protocol }}</b>，端口 <b>{{ site.ports }}</b>，地址族 <b>{{ site.address_family }}</b>
             </div>
+            <LighthouseBindingHints :targets="targets" :target-ids="site.target_ids" />
           </NSpace>
         </NCard>
       </NSpace>
     </NCard>
+
+    <EdgeOneCleanup :targets="targets" :edge-enabled="edgeEnabled" @changed="loadAll(); loadStatus()" />
 
     <NCard title="站点运行状态" size="small" style="margin-top: 16px">
       <NAlert v-if="statusError" type="error" :show-icon="false" style="margin-bottom: 12px">
@@ -344,6 +349,7 @@ onMounted(async () => {
             @update:value="(value: number[] | null) => form.target_ids = (value || []).map(Number)"
           />
         </NFormItem>
+        <LighthouseBindingHints :targets="targets" :target-ids="form.target_ids" />
         <NFormItem label="协议">
           <NSelect v-model:value="form.protocol" :options="protocolOptions" />
         </NFormItem>

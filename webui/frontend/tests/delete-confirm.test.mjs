@@ -38,7 +38,7 @@ function mount(page, request, transform = source => source) {
       if (name === 'vue') return {
         ...vue, onMounted() {}, onUnmounted(fn) { unmounted = fn },
       }
-      if (name === 'vue-router') return { useRouter: () => ({ push() {} }) }
+      if (name === 'vue-router') return { useRoute: () => ({ query: {} }), useRouter: () => ({ push() {} }) }
       if (name === 'naive-ui') return {
         NButton: { name: 'NButton' }, NSpace: { name: 'NSpace' },
         useMessage: () => ({
@@ -51,6 +51,7 @@ function mount(page, request, transform = source => source) {
       if (name.endsWith('useSettings')) return { useSettings: () => ({ refresh: async () => {}, tcReady: vue.ref(false), aliReady: vue.ref(false) }) }
       if (name.endsWith('useZones')) return { useZones: () => ({ load: async () => {}, regionOptions: () => [] }) }
       if (name.endsWith('useScannedResources')) return { useScannedResources: () => ({ load: async () => {}, resourceOptions: () => [], resourcesOf: () => [] }) }
+    if (name.endsWith('.vue')) return { __esModule: true, default: { name: name.split('/').pop().replace('.vue', '') } }
       throw new Error(`未预期的依赖: ${name}`)
     },
   })

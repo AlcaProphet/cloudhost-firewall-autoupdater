@@ -14,13 +14,13 @@ const detail=(fields=['alerts.policy','alerts.email'],total=fields.length)=>({er
 const response=(data,status=400)=>({ok:status>=200&&status<300,status,json:async()=>data})
 function mount(){
  const calls=[],messages=[],timers=new Map(),delays=[];let reply=response({}),unmount=()=>{},reloads=0,timerID=0
- const components=Object.fromEntries(['NForm','NFormItem','NInput','NSelect','NButton','NSpace','NCard','NGrid','NGi','NModal'].map(name=>[name,{name}]))
+ const components=Object.fromEntries(['NAlert','NForm','NFormItem','NInput','NSelect','NButton','NSpace','NCard','NGrid','NGi','NModal'].map(name=>[name,{name}]))
  function evaluate(source,dependencies){
   const mod={exports:{}}
   const result=ts.transpileModule(source,{reportDiagnostics:true,compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}})
   assert.equal((result.diagnostics||[]).filter(x=>x.category===ts.DiagnosticCategory.Error).length,0)
   new Script(result.outputText).runInNewContext({module:mod,exports:mod.exports,require:dependencies,Error,AbortController,
-   fetch:(url,opts)=>{calls.push({url,opts});return reply},window:{location:{reload(){reloads++}}},
+   fetch:(url,opts)=>{if(url === '/api/config/import/preview') return response({version: 3, lighthouse_compression: [], compression_enabled_count: 0},200);calls.push({url,opts});return reply},window:{location:{reload(){reloads++}}},
    setTimeout:(fn,delay)=>{delays.push(delay);const id=++timerID;timers.set(id,fn);return id},clearTimeout:id=>timers.delete(id)})
   return mod.exports
  }
@@ -99,4 +99,12 @@ test('确认弹窗的关闭事件清除待提交文件，读取期间不替换�
  const waiting=deferred(),file=new File(['{}'],'first.json');file.text=()=>waiting.promise
  const first=h.s.importConfig(fileEvent(file));t.after(async()=>{waiting.resolve('{}');await first});await select(h,'{"version":4}');assert.equal(h.s.pendingImport.value,null)
  waiting.resolve('{}');await first;assert.equal(h.s.pendingImport.value,file);assert.equal(h.s.importFilename.value,'first.json')
+})
+
+test('维护确认 503 的操作 ID 保留供结果查询，其他错误不推导操作',async()=>{
+ const h=mount();h.reply(response({operation_id:'op-rejected',status:'rejected'},503))
+ await assert.rejects(h.api.request('/api/edgeone/firewall-cleanup'),err=>{assert.equal(err.operationId,'op-rejected');return true})
+ await assert.rejects(h.api.request('/unrelated'),err=>{assert.equal(err.operationId,undefined);return true})
+ h.reply(response({error:'engine unavailable'},503))
+ await assert.rejects(h.api.request('/api/edgeone/firewall-cleanup'),err=>{assert.equal(err.operationId,undefined);return true})
 })

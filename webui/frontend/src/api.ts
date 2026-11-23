@@ -21,6 +21,7 @@ function missingFieldsDetails(status: number, data: any): MissingFieldsDetails |
 export class RequestError extends Error {
   status: number
   missingFields?: MissingFieldsDetails
+  operationId?: string
   constructor(status: number, message: string, missingFields?: MissingFieldsDetails) {
     super(message)
     this.name = 'RequestError'
@@ -45,7 +46,10 @@ export async function request<T>(url: string, opts: RequestInit = {}, timeoutMs?
       /* 非 JSON 响应（如 SPA 兜底 HTML） */
     }
     if (!res.ok) {
-      throw new RequestError(res.status, data?.error || `请求失败 (${res.status})`, missingFieldsDetails(res.status, data))
+      const error = new RequestError(res.status, data?.error || `请求失败 (${res.status})`, missingFieldsDetails(res.status, data))
+      // 维护队列受理后拒绝也会返回操作 ID；保留它供只读回查终态。
+      if (url === '/api/edgeone/firewall-cleanup' && res.status === 503 && typeof data?.operation_id === 'string') error.operationId = data.operation_id
+      throw error
     }
     return data as T
   } catch (e: any) {

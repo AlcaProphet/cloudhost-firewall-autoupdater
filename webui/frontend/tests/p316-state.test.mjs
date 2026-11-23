@@ -36,6 +36,7 @@ function mount(name, request, extra={}) {
     if (name.endsWith('useSettings')) return { useSettings: () => ({ theme: vue.ref('light'), refresh: async () => {}, applyTheme() {}, setTheme() {}, tcReady: vue.ref(true), aliReady: vue.ref(true) }) }
     if (name.endsWith('useZones')) return { useZones: () => ({ load: async () => {}, regionOptions: () => [] }) }
     if (name.endsWith('useScannedResources')) return { useScannedResources: () => ({ load: async () => {}, resourceOptions: () => [], resourcesOf: () => [], clear: async () => {}, scan: async () => null, ...extra }) }
+    if (name.endsWith('.vue')) return { __esModule: true, default: { name: name.split('/').pop().replace('.vue', '') } }
     throw new Error(name)
   })
   return { s: module.default.setup({}, { expose() {} }), messages, route, unmount: () => unmount(), mounted: () => mounted(), template: descriptor.template.content }
@@ -107,12 +108,12 @@ for (const [page,save,row] of [['Targets','saveTarget',target],['Rules','saveRul
     const binding = (node, name) => node.props.find(prop => prop.type === 7 && prop.name === 'bind' && prop.arg?.content === name)?.exp?.content
     const modal = elements.find(node => node.tag === 'NModal' && node.props.some(prop => prop.type === 7 && prop.name === 'model' && prop.exp?.content === 'showModal'))
     assert.ok(modal)
-    for (const name of ['closable', 'mask-closable', 'close-on-esc']) assert.equal(binding(modal, name), '!saving')
+    for (const name of ['closable', 'mask-closable', 'close-on-esc']) assert.equal(binding(modal, name), page === 'Targets' ? '!saving && !compressionSaving' : '!saving')
     const button = elements.find(node => node.tag === 'NButton' && node.props.some(prop => prop.type === 7 && prop.name === 'on' && prop.exp?.content === save))
     assert.equal(binding(button, 'loading'), 'saving')
-    assert.equal(binding(button, 'disabled'), 'saving')
+    assert.equal(binding(button, 'disabled'), page === 'Targets' ? 'saving || compressionSaving' : 'saving')
     const form = elements.find(node => node.tag === 'NForm' && binding(node, 'model') === 'form')
-    assert.equal(binding(form, 'disabled'), 'saving')
+    assert.equal(binding(form, 'disabled'), page === 'Targets' ? 'saving || compressionSaving' : 'saving')
     if (page === 'Rules') {
       const ports = elements.find(node => node.tag === 'NInput' && node.props.some(prop => prop.type === 7 && prop.name === 'model' && prop.exp?.content === 'form.ports'))
       assert.equal(binding(ports, 'disabled'), "saving || form.protocol === 'ICMP'", '独立端口 disabled 不得覆盖保存锁')
