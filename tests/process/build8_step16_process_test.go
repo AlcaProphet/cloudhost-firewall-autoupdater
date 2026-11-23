@@ -156,7 +156,7 @@ func TestStep16ConfigBundleImportExport(t *testing.T) {
 	}
 	source.stop()
 
-	// v4 跨实例导入：目标 ID 重映射、站点双绑定保留。
+	// 当前 v5 跨实例导入：目标 ID 重映射、站点双绑定保留。
 	dest := newStep16Fixture(t)
 	dest.setup(5, nil)
 	dest.start()
@@ -188,13 +188,14 @@ func TestStep16ConfigBundleImportExport(t *testing.T) {
 	}
 	dest.stop()
 
-	// v3：删除 v4 增量字段后严格导入；站点被清空、EdgeOne 关闭、DNS 设置保留。
+	// v3：删除 v4/v5 增量字段后严格导入；站点被清空、EdgeOne 关闭、DNS 设置保留。
 	var bundle map[string]any
 	if err := json.Unmarshal(exportBody, &bundle); err != nil {
 		t.Fatal(err)
 	}
 	bundle["version"] = 3
 	delete(bundle, "edgeone_sites")
+	delete(bundle, "lighthouse_compression")
 	settings := bundle["settings"].(map[string]any)
 	for _, key := range []string{"dns_enabled", "edgeone_enabled", "edgeone_tag", "edgeone_interval"} {
 		delete(settings, key)

@@ -397,6 +397,7 @@
 ### 本地开发与构建入口（I8-03 / Q-05，2026-10-08 裁决 A）
 
 - Build8 Step 16 进程验收接线（2026-11-15）：TEO/Lighthouse 端点/协议是带生产默认值的包级变量；仅允许测试构建通过 `go build -ldflags "-X ..."` 指向回环替身，生产 `make all`、Docker 与发布构建不得传入覆盖，不新增部署环境变量或运行时 setter。`-tags step16` 的进程/浏览器夹具不进入默认 `go test ./...`、Make、CI 或发布。
+- Build9 Step 7 本地过程验收（2026-11-23）：复用 `step16` 独立标签与链接期回环端点；新增 `tests/process/build9_step7_*` 和 `testdata/step7/`，验证压缩配置／绑定／模拟／正式写入／关闭收窄／借用与生效还位、手动清理／互斥／部分失败／后续重建及真实 Chrome 受理响应断开后的幂等核对。Lighthouse 测试替身按 Offset/Limit 分页；指定回读缺端口、删除拒绝只属测试输入。目标 LastSync／汇总早于 TEO 确认终态，过程断言等待来源 LastCompletedAt；不得将目标完成当作站点确认完成。Go race 检查测试进程与回环服务，产品子进程沿正常 go build；不增加生产测试钩子或默认门禁。命令、调用计数和真实云／发布边界见 [Build9 Step 7](Build9.md#step-7) 与[复跑说明](tests/process/testdata/step7/README.md)。
 - 真实二进制进程测试集中在 `tests/process/`，从仓库根目录构建产品。Make 和 CI 的全仓 Go 测试带 `-count=1`，确保生产源码变化后执行独立进程包的测试；子进程构建的源码可能不在测试缓存的输入中。定向命令见 [Build8 Step 16](Build8.md#step-16)。
 - `make test`、`make vet`、`make build` 必须共享 `.PHONY frontend` 前置，先成功执行真实 `npm ci && npm run build` 再运行 Go 命令；前端失败时不得执行消费者，不以占位 dist、目录存在或旧 index.html 绕过构建。
 - 完整本地核验推荐一次 `make all`；同一次 Make 调用共享一次前端构建，分别调用会分别重建。`make -j4 all` 允许前端完成后的 Go 检查/测试/构建并行，任一失败返回非零，不承诺其他并行任务从未运行或多个独立 Make 进程互斥。

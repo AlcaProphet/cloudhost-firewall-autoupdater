@@ -90,6 +90,9 @@ type step16Instance struct {
 	// IncompleteDescribeCalls 是 1-based Describe 调用序号；命中时返回空规则集，
 	// 用于让 S1 缺项而不污染 S0。
 	IncompleteDescribeCalls map[int]bool
+	// Step 7：仅改变指定回读的端口，模拟云端未完整写入组合端口。
+	OmitPortOnDescribe map[int]string
+	DeleteError        bool
 }
 
 type step16Cloud struct {
@@ -162,6 +165,10 @@ func (c *step16Cloud) setInstance(instanceID string, inst step16Instance) {
 	cp.IncompleteDescribeCalls = map[int]bool{}
 	for k, v := range inst.IncompleteDescribeCalls {
 		cp.IncompleteDescribeCalls[k] = v
+	}
+	cp.OmitPortOnDescribe = map[int]string{}
+	for k, v := range inst.OmitPortOnDescribe {
+		cp.OmitPortOnDescribe[k] = v
 	}
 	c.instances[instanceID] = &cp
 }
@@ -392,6 +399,8 @@ func (c *step16Cloud) handleLighthouse(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		InstanceId      string `json:"InstanceId"`
 		FirewallVersion uint64 `json:"FirewallVersion"`
+		Offset          uint64 `json:"Offset"`
+		Limit           uint64 `json:"Limit"`
 		FirewallRules   []struct {
 			Protocol                string `json:"Protocol"`
 			Port                    string `json:"Port"`
@@ -419,6 +428,18 @@ func (c *step16Cloud) handleLighthouse(w http.ResponseWriter, r *http.Request) {
 		if inst.IncompleteDescribeCalls[call] {
 			rules = []step16LHRule{}
 		}
+		for i := range rules {
+			if port := inst.OmitPortOnDescribe[call]; port != "" && strings.HasPrefix(rules[i].Description, "[edgeone]") {
+				rules[i].Port = port
+			}
+		}
+		// SDK 使用 Offset/Limit 分页；满页必须由后续空页终止。
+		start := min(int(req.Offset), len(rules))
+		end := len(rules)
+		if req.Limit > 0 {
+			end = min(start+int(req.Limit), end)
+		}
+		rules = rules[start:end]
 		version := inst.Version
 		c.mu.Unlock()
 		out := make([]map[string]any, 0, len(rules))
@@ -465,6 +486,12 @@ func (c *step16Cloud) handleLighthouse(w http.ResponseWriter, r *http.Request) {
 			"RequestId":       fmt.Sprintf("req-lh-create-%s-%d", instanceID, version),
 		}})
 	case "DeleteFirewallRules":
+		if inst.DeleteError {
+			inst.DeleteCalls++
+			c.mu.Unlock()
+			writeTCJSON(w, map[string]any{"Response": map[string]any{"Error": map[string]any{"Code": "AuthFailure.UnauthorizedOperation", "Message": "fixture delete denied"}, "RequestId": "req-lh-delete-denied"}})
+			return
+		}
 		if req.FirewallVersion != inst.Version {
 			c.mu.Unlock()
 			writeTCJSON(w, map[string]any{"Response": map[string]any{

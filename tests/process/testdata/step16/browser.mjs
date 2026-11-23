@@ -2,6 +2,7 @@
 //
 // 用法：node browser.mjs <ui|edge> <appBaseURL> <controlBaseURL>
 // 由 `go test -tags=step16 ./tests/process` 启动。
+import { pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -393,7 +394,9 @@ async function main() {
   }
 }
 
-main().catch(err => {
+export { launchChrome, CDP, evalJS, waitFor, bodyText, waitText, navigate, reload, clickText, screenshot, sleep }
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(err => {
   process.stderr.write('STEP16_BROWSER FAIL ' + (err && err.stack ? err.stack : String(err)) + '\n')
   process.exit(1)
 })
